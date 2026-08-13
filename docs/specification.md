@@ -39,7 +39,7 @@ ecosystem:
 | xclingo2-class explanation tooling | program transformation with provenance (§7.4, §7.5) |
 | plingo-class probabilistic ASP | transformation, weak constraints, optimization, enumeration modes |
 | A new ASP solver's frontend | the syntax tier, importable wholesale (§6) |
-| A source formatter | the lossless syntax tree and owned comment-attachment policy (§6.3, §6.4) |
+| A source formatter | the lossless syntax tree and owned comment-attachment policy (§6.3, §6.4); the planned first consumer at the stage-2 checkpoint (§11) |
 | A language server for ASP | error-resilient parsing, structured diagnostics, cheap total reparse (§6.5, §6.6) |
 | A REPL for ASP | incremental program construction, multi-shot sessions, rendering (§9.4, §7.6) |
 | Declarative ASP testing (elenctic-successor) | comments as data, reasoning-mode vocabulary, search-sufficiency reporting (§9.2) |
@@ -717,7 +717,12 @@ an instrument-less stage is not done.
 1. `themelios-base` — source model, spans, the diagnostics model.
 2. `themelios-syntax` — lexer + fusion oracle; then parser + lossless
    tree + attachment policy; then typed AST + the ≈ apparatus. Fuzzing
-   starts in week one. The grammar document lands here.
+   starts in week one. The grammar document lands here. **Stage 2 exits
+   through a first-consumer checkpoint:** before later tiers harden on
+   this surface, a real consumer outside this repository builds against
+   it — a formatter-class tool is the planned first — and what it
+   surfaces, defects and pain points alike, folds back into the tier.
+   Witnesses prove capability; only a consumer reveals ergonomics.
 3. `themelios-program` — the Program value, lowering, constructors,
    provenance; then rendering; then transformation, patterns,
    unification.
