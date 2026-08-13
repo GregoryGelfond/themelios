@@ -51,6 +51,20 @@ only against named systems. Editor extensions generally — beyond the
 language server itself — are a named consumer class: any editor tooling
 should be assemblable from these libraries in-process.
 
+One horizon deserves naming, though it is no part of v1: the same
+library-first shape extends to a native, from-scratch ASP solver
+compatible with the clingo/clingcon language — not a monolith behind the
+seam, but a composition of themelios extension crates: grounding,
+semantic and structural analysis, and solving algorithms as separate
+libraries, with analysis directing which algorithm applies. A classifier
+reads a program's structure and routes it to a specialized method — the
+program classes of the literature (stratified, tight, and kin) each
+admit one — and the classifier and each algorithm are themselves crates
+that compose with everything else here. The reference solver (§12.2) is
+the seed of that shape, and the backend contract is written so a native
+backend composed of foundation crates is a first-class implementor
+(§9.1).
+
 ### 1.2 The ecosystem constitution
 
 Two rules bind every component of the ecosystem, themelios included:
@@ -529,6 +543,12 @@ The core may refuse-or-derive deliberately (deriving cautious
 consequences by intersection when an engine lacks them natively) and says
 so in the outcome's provenance.
 
+The contract does not assume the engine is foreign: a native backend
+built from foundation crates implements the same contract, and the
+contract's shapes must not force conversions a shared-representation
+backend would never need — the reference solver is the standing check on
+this.
+
 ### 9.2 The outcome vocabulary
 
 - `Determination`: the closed trichotomy — consistent, inconsistent,
@@ -796,7 +816,10 @@ Named reserved seams (deferred with reasons, not gaps): incremental
 computation machinery (§7.8); multi-threaded propagation (§9.6); the
 ground-program observer surface (§9.6); formal-methods tooling over the
 TCB (§12.3); hand-rolled green/red trees as the rowan fallback (§12.4);
-additional engine backends beyond clingo and clingcon.
+additional engine backends beyond clingo and clingcon; the native solver
+components — grounding, structural analysis and classification, and
+per-fragment solving algorithms — as themelios extension crates (the
+horizon of §1.1, seeded by the reference solver).
 
 Non-goals for v1: the satellites themselves (anchors, not deliverables);
 styled formatting; a language server; a REPL; publishing to crates.io
