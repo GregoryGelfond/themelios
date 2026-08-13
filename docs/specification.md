@@ -34,12 +34,12 @@ ecosystem:
 
 | satellite | what it needs from the foundation |
 |---|---|
-| A clingcon-class constraint extension, written in Rust | the custom propagator surface (§9.6) |
+| A clingcon-class constraint extension, written in Rust | the custom propagator surface (§9.6); its stabilization checkpoint (§11) |
 | clingo-dl-class and clingo-lp-class theory solvers | the same propagator surface |
 | xclingo2-class explanation tooling | program transformation with provenance (§7.4, §7.5) |
-| plingo-class probabilistic ASP | transformation, weak constraints, optimization, enumeration modes |
+| plingo-class probabilistic ASP (first: P-log semantics) | transformation, weak constraints, optimization, enumeration modes; stabilization checkpoint for those surfaces (§11) |
 | A new ASP solver's frontend | the syntax tier, importable wholesale (§6) |
-| A source formatter | the lossless syntax tree and owned comment-attachment policy (§6.3, §6.4); the planned first consumer at the stage-2 checkpoint (§11) |
+| morphe, the source formatter | the lossless syntax tree and owned comment-attachment policy (§6.3, §6.4); the planned first consumer at the stage-2 checkpoint (§11) |
 | A language server for ASP | error-resilient parsing, structured diagnostics, cheap total reparse (§6.5, §6.6) |
 | A REPL for ASP | incremental program construction, multi-shot sessions, rendering (§9.4, §7.6) |
 | Declarative ASP testing (elenctic-successor) | comments as data, reasoning-mode vocabulary, search-sufficiency reporting (§9.2) |
@@ -720,9 +720,10 @@ an instrument-less stage is not done.
    starts in week one. The grammar document lands here. **Stage 2 exits
    through a first-consumer checkpoint:** before later tiers harden on
    this surface, a real consumer outside this repository builds against
-   it — a formatter-class tool is the planned first — and what it
-   surfaces, defects and pain points alike, folds back into the tier.
-   Witnesses prove capability; only a consumer reveals ergonomics.
+   it — morphe (μορφή, *form*), the formatter, is the planned first —
+   and what it surfaces, defects and pain points alike, folds back into
+   the tier. Witnesses prove capability; only a consumer reveals
+   ergonomics.
 3. `themelios-program` — the Program value, lowering, constructors,
    provenance; then rendering; then transformation, patterns,
    unification.
@@ -739,6 +740,21 @@ an instrument-less stage is not done.
    `themelios-clingcon-sys` / `themelios-clingcon` as the thin delta.
 8. `themelios` facade — the witness roster (§3) complete, including
    comparator evidence; query tier completed against real outcomes.
+
+**Consumer checkpoints, generalized.** The stage-2 checkpoint is the
+first rung of a ladder: each major public surface earns its stability
+through a real consumer, never through witnesses alone. The planned
+ladder: **morphe** exercises the syntax tier at the stage-2 exit,
+inside v1; a **native clingcon-class extension** exercises the
+propagator surface; a **P-log implementation** (plingo-class,
+restricted to P-log semantics) exercises the transformation and
+optimization surfaces. The latter two gate *stabilization*, not v1
+completion: v1 ships those surfaces proven by witnesses and
+conformance, and they are not declared stable — nor published (§13) —
+until their consumers have built against them and the findings have
+folded back. Consumer projects remain their own repositories and their
+own work; a checkpoint asserts only that a surface met reality before
+it froze.
 
 ---
 
@@ -834,7 +850,8 @@ horizon of §1.1, seeded by the reference solver).
 
 Non-goals for v1: the satellites themselves (anchors, not deliverables);
 styled formatting; a language server; a REPL; publishing to crates.io
-before the surface stabilizes.
+before a surface stabilizes — stability is earned at §11's consumer
+checkpoints.
 
 ## 14. Repository facts
 
