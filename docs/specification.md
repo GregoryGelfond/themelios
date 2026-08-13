@@ -42,7 +42,7 @@ ecosystem:
 | morphe, the source formatter | the lossless syntax tree and owned comment-attachment policy (§6.3, §6.4); the planned first consumer at the stage-2 checkpoint (§11) |
 | A language server for ASP | error-resilient parsing, structured diagnostics, cheap total reparse (§6.5, §6.6) |
 | A REPL for ASP | incremental program construction, multi-shot sessions, rendering (§9.4, §7.6) |
-| Declarative ASP testing (elenctic-successor) | comments as data, reasoning-mode vocabulary, search-sufficiency reporting (§9.2) |
+| Declarative ASP testing (elenctic-successor) | comments as data, reasoning-mode vocabulary, search-sufficiency reporting (§9.2); stabilization checkpoint for the outcome and query surfaces (§11) |
 | pythia, distributed deployment and interaction | service-grade sessions: ownership, cancellation, stated thread posture (§9.4) |
 
 None of these is a v1 deliverable. Each is a **fitness anchor**: it names a
@@ -748,13 +748,17 @@ ladder: **morphe** exercises the syntax tier at the stage-2 exit,
 inside v1; a **native clingcon-class extension** exercises the
 propagator surface; a **P-log implementation** (plingo-class,
 restricted to P-log semantics) exercises the transformation and
-optimization surfaces. The latter two gate *stabilization*, not v1
-completion: v1 ships those surfaces proven by witnesses and
-conformance, and they are not declared stable — nor published (§13) —
-until their consumers have built against them and the findings have
-folded back. Consumer projects remain their own repositories and their
-own work; a checkpoint asserts only that a surface met reality before
-it froze.
+optimization surfaces; an **elenctic-successor** (declarative ASP
+testing) exercises the outcome vocabulary, the query surface, and
+comment-borne contract extraction — the reasoning modes under a
+consumer that reads them for verdicts. With these four, every major
+public surface has a named consumer. All but morphe gate
+*stabilization*, not v1 completion: v1 ships those surfaces proven by
+witnesses and conformance, and they are not declared stable — nor
+published (§13) — until their consumers have built against them and
+the findings have folded back. Consumer projects remain their own
+repositories and their own work; a checkpoint asserts only that a
+surface met reality before it froze.
 
 ---
 
