@@ -312,13 +312,19 @@ external authority exists.
 
 Each of the following is a constraint with its argument carried in place;
 where it rests on an engine behavior, that behavior is publicly
-reproducible against the named engine.
+reproducible against the named engine at a named version. Engine-behavior
+claims are version-scoped, never eternal: the adapters pin their engine
+versions, and an engine upgrade re-runs the spike suite (§10.1), which
+re-establishes each compensation's necessity or retires it.
 
 - **Concurrent interning is unsafe in libclingo despite its header's
-  thread-safety claim** (reproducible: concurrent symbol creation from
-  enough threads crashes deterministically). The compensation — a single,
-  owned interning discipline — lives in exactly one place, in the clingo
-  adapter (§9.5), never distributed across consumers.
+  thread-safety claim** — observed and reproducible against the clingo
+  5.8 line: concurrent symbol creation from enough threads crashes
+  deterministically. The 6.x line, in active development, may resolve
+  it; until the spike suite proves that against a pinned 6.x, the
+  compensation stands. It — a single, owned interning discipline — lives
+  in exactly one place, in the clingo adapter (§9.5), never distributed
+  across consumers.
 - **Ground values can be arbitrarily deep** — tens of thousands of
   nesting levels arise in practice from recursive constructions — so any
   recursive walk over user-reachable structure is a latent, uncatchable
