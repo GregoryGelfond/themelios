@@ -23,8 +23,12 @@ The ambition, stated so it can be checked: themelios is to become the gold
 standard for usability for any system that has to **interact with, or
 extend, an ASP solver** — leveraging Rust's strengths (invalid states
 unrepresentable through the type system) and exceeding the expressiveness of
-the existing APIs in this space dramatically. The named comparison set is
-**clingo's Python API, clingo's C and C++ APIs, and python-clingox**.
+the existing APIs in this space dramatically. The comparison set: **clingo's
+Python API and python-clingox are the evidenced comparators** — the field's
+usability benchmarks, against which superiority is demonstrated witness by
+witness per the comparator roster (§3.1) — while clingo's C and C++ APIs
+stand as named context: lower-level surfaces the Python API already
+dominates for the usability claim, and not separately evidenced.
 
 ### 1.1 The ecosystem thesis
 
@@ -84,18 +88,28 @@ Four audiences, layered rather than rivalrous:
 - **Tool builders** — people building solvers, formatters, explainers,
   analysis and editor tooling on the foundation. Their surface is the
   parser, the syntax trees, the program representation, the transformation
-  machinery, and the backend seam.
+  machinery, and the backend seam. *Assumed fluency: fluent Rust and ASP
+  as the literature speaks it; does not assume clingo's C API or
+  rust-analyzer's internals.*
 - **Application authors in Rust** — engineers embedding ASP to solve
   domain problems. Their surface is the program value, the macros, and the
-  solve and query tiers.
+  solve and query tiers. *Assumed fluency: fluent Rust; prior ASP is
+  **not** assumed — the solve and query documentation teaches each
+  reasoning-mode concept where its type first appears.*
 - **clingo-world practitioners** — arriving from the Python/Lua/text
   ecosystem. The shared concrete syntax and recognizable concept names
   serve them; familiarity is a constraint on every visible surface.
+  *Assumed fluency: clingo's language and workflow; working Rust only.*
 - **Mission-critical operators** — teams who must certify, audit, and
   operate systems containing themelios. Their surface is the failure
   semantics, the trust architecture, the dependency tree, and the paper
   trail. Their needs are a bar that binds every tier, not a trade-off
-  against any.
+  against any. *Assumed fluency: audit and certification practice; the
+  assurance documentation teaches the domain vocabulary it uses, because
+  the audit surface is deliberately document-shaped — the enumerated
+  manifest, the mechanical trust checks, the pinned provenance exist so
+  that certification does not require source fluency. Deep TCB audit is
+  the named specialist seat that additionally assumes fluent unsafe-Rust.*
 
 Where tool-builder and application-author needs collide, layering resolves
 it: the lower tiers serve the tool builder, the upper tiers the application
@@ -142,14 +156,18 @@ When v1 is done, all of the following are true:
    and none is needed for any named consumer.
 4. **The seam is real.** The core carries no engine types. The backend
    contract is specified, with a conformance suite; the clingo adapter,
-   the clingcon adapter, and the test-only reference solver all pass it;
-   and the solver pathologies named in §9.2 are unrepresentable in the
+   the clingcon adapter (or, under §9.5's named contingency, the clingo
+   adapter alone, with the clingcon adapter resuming immediately
+   post-v1), and the test-only reference solver all pass it; and the
+   solver pathologies named in §9.2 are unrepresentable in the
    contract's outcome types, not merely tested against.
 5. **clingo and clingcon are one experience.** Barring backend
    configuration at session construction, a user's program construction,
    session driving, outcomes, and queries are identical across the two;
    theory results (constraint assignments) are typed model data in the
-   same outcome vocabulary.
+   same outcome vocabulary. Under §9.5's named contingency this clause
+   binds at the design level, demonstrated through the propagator
+   surface, until the clingcon adapter lands.
 6. **The extension points exist at all three touch points.** Rust code can
    extend the pipeline at ground time (`@`-functions with typed,
    compile-time-checked signatures), at solve time (custom propagators,
@@ -173,80 +191,136 @@ When v1 is done, all of the following are true:
    diagnostics as its own face. Rendering is derived, never primary: the
    same diagnostic value yields the human view, the editor-protocol
    payload, and a machine-consumable form.
-10. **The comparators are visibly exceeded.** The witnesses ship beside
-    comparator-anchored evidence: the same task in themelios and in
-    clingo's Python API side by side, with the themelios rendering
-    stricter (invalid states unrepresentable at compile time where the
-    comparator discovers them at runtime or never), clearer, and
-    diagnostic-superior.
+10. **The evidenced comparators are visibly exceeded.** Per the
+    comparator roster (§3.1): witnesses with a comparator side ship
+    beside comparator-anchored evidence — the same task in themelios and
+    in the evidenced comparator side by side, with the themelios
+    rendering stricter (invalid states unrepresentable at compile time
+    where the comparator discovers them at runtime or never), clearer,
+    and diagnostic-superior.
 
 ## 3. The witness roster
 
 The floor of v1, stated as executable scenarios. Each is an example the
-gate runs, not merely compiles. Together they are the self-contained
-definition of "expressive enough": v1 is not done while any witness is
-missing, and a witness that is less clear or less safe than its
-clingo-Python rendering of the same task is a failure (§4).
+gate runs, not merely compiles, and each carries a **name** — the citation
+form used throughout this document, per the no-magic-numbers policy
+(§5.2): ordinals renumber when the roster grows; names do not. Together
+the witnesses are the self-contained definition of "expressive enough":
+v1 is not done while any witness is missing, and a witness whose
+comparator side the roster (§3.1) carries, and which comes out less clear
+or less safe than that rendering, is a failure (§4).
 
-1. **First solve.** Construct a small program twice — once through macros,
-   once through spelled-out constructors — verify the two are equal,
-   ground, solve, and read the answer sets back as owned typed values.
-2. **Enumeration.** Enumerate all answer sets of a program with a known
+1. **first-solve.** Construct a small program twice — once through
+   macros, once through spelled-out constructors — verify the two are
+   structurally equal (§7.1), ground, solve, and read the answer sets
+   back as owned typed values.
+2. **enumeration.** Enumerate all answer sets of a program with a known
    count; the outcome states that enumeration was exhaustive.
-3. **Optimization.** Solve to a proven optimum; the optimum is typed as
-   proven, distinct from best-found; the improving trajectory is available
-   when — and only when — the request asked for it.
-4. **Multi-shot with externals.** Declare externals, ground parts
-   incrementally, reassign externals across solves in one session, and
-   observe outcomes change accordingly.
-5. **Assumption scenarios with blame.** Solve under named assumption sets;
-   on inconsistency, obtain which assumptions are responsible, as typed
-   data.
-6. **Consequences.** Compute cautious and brave consequences; the outcome
+3. **optimization.** Solve to a proven optimum; the optimum is typed as
+   proven, distinct from best-found; the improving trajectory is
+   available when — and only when — the request asked for it.
+4. **multi-shot.** Declare externals, ground parts incrementally,
+   reassign externals across solves in one session, and observe outcomes
+   change accordingly.
+5. **blame.** Solve under named assumption sets; on inconsistency, obtain
+   which assumptions are responsible, as typed data.
+6. **consequences.** Compute cautious and brave consequences; the outcome
    names which semantics produced each set.
-7. **Three-valued query.** Ask whether a ground atom holds: receive yes,
+7. **three-valued-query.** Ask whether a ground atom holds: receive yes,
    no, or unknown, with unknown a genuine value; bindings for a
    non-ground pattern arrive partitioned by the same trichotomy.
-8. **Typed extraction.** Map answer sets into user-defined Rust types via
-   the derive-based extraction, including failure behavior on
-   non-matching atoms.
-9. **Transformation with provenance.** Apply a Program → Program rewrite;
-   provenance on rewritten rules reaches back to their origins; a
-   diagnostic raised on a transformed rule points at source.
-10. **Round trip.** Render a constructed program to concrete syntax, parse
-    it back, lower it, and obtain a program equal to the original (up to
-    provenance).
-11. **Comments as data.** Parse a program bearing comments; retrieve each
+8. **extraction.** Map answer sets into user-defined Rust types via the
+   derive-based extraction, including failure behavior on non-matching
+   atoms.
+9. **transformation.** Apply a Program → Program rewrite; provenance on
+   rewritten rules reaches back to their origins; a diagnostic raised on
+   a transformed rule points at source.
+10. **round-trip.** Render a constructed program to concrete syntax,
+    parse it back, lower it, and obtain a program structurally equal to
+    the original (up to provenance).
+11. **comments-as-data.** Parse a program bearing comments; retrieve each
     comment and its attachment (trailing, leading, dangling) through the
     public API; emit preserves them byte-for-byte.
-12. **Diagnostics quality.** Feed the parser a set of characteristic
+12. **diagnostics-quality.** Feed the parser a set of characteristic
     malformed programs; the rendered diagnostics match golden snapshots
     that a reviewer has accepted as rust-analyzer-grade.
-13. **Ground-time extension.** Define an `@`-function as a plain Rust fn
-    with the registration attribute; ground a program that calls it,
-    including a multi-valued case and a failing case that surfaces as a
-    typed ground-time fault.
-14. **Solve-time extension.** Run the worked difference-logic propagator
-    on a small scheduling program; the propagator is written against the
+13. **ground-extension.** Define an `@`-function as a plain Rust fn with
+    the registration attribute; ground a program that calls it, including
+    a multi-valued case and a failing case that surfaces as a typed
+    ground-time fault.
+14. **solve-extension.** Run the worked difference-logic propagator on a
+    small scheduling program; the propagator is written against the
     public trait only.
-15. **Theory uniformity.** Solve a constraint program under the clingcon
+15. **theory-uniformity.** Solve a constraint program under the clingcon
     backend; read constraint assignments as typed data; the
-    session-driving and outcome-reading code differs from witness 1 only
-    in backend configuration.
-16. **Comparator evidence.** For witnesses 1, 3, 5, 8, and 13: the same
-    task written against clingo's Python API, side by side, with the
-    differences in safety, clarity, and diagnostics stated. The themelios
-    side is the executed example; the comparator side is displayed
-    source, not run by the gate.
+    session-driving and outcome-reading code differs from *first-solve*
+    only in backend configuration.
+16. **hostile-input.** The public surface meets adversarial, malformed,
+    and absurdly deep input the way a service boundary receives it from
+    an untrusted caller — the pythia-class deployment and the
+    certifiable-environments claim are this witness's named consumers.
+    Every case answers with typed refusals or typed faults; no panic
+    escapes. Exercises what the threat model (§12.4) declares.
+17. **cancellation.** Interrupt a solve mid-enumeration from another
+    thread; `Conclusion` reads interrupted; `Determination` is not
+    falsely conclusive. The documented cancelled-solve ambush (§5.1),
+    exercised through a real adapter; the service-grade story,
+    executable.
+18. **budget.** Specify a budget at the request surface (§9.4); exhaust
+    it; `Conclusion` reads budget; truncation never masquerades as
+    completeness.
+19. **comparator-evidence.** For each witness the comparator roster
+    (§3.1) marks: the same task written against the evidenced comparator,
+    side by side, with the differences in safety, clarity, and
+    diagnostics stated. The themelios side is the executed example; the
+    comparator side is held honest by the out-of-band execution check
+    (§10.2) and accepted as idiomatic by a named reviewer — the
+    *diagnostics-quality* pattern applied to comparison.
+
+### 3.1 The comparator roster
+
+The single source for the comparator obligation; §1, §2, and §4 reference
+it and restate nothing.
+
+- **Evidenced comparators:** clingo's Python API — witness sides for
+  *first-solve*, *optimization*, *blame*, *extraction*, and
+  *ground-extension*; python-clingox — witness sides for
+  *transformation* and *extraction*, its own ground. Both are Python;
+  one out-of-band harness executes all comparator sources against the
+  pinned engine on a stated cadence (§10.2), and a named reviewer
+  accepts each rendering as idiomatic.
+- **Context comparators, not evidenced:** clingo's C and C++ APIs. The
+  dominance argument, stated once: the Python API is the field's
+  usability benchmark and the strongest comparator for the claim this
+  document makes; the C and C++ surfaces sit below it for that claim,
+  and separate evidence against them would cost maintenance without
+  strengthening the demonstrated conclusion.
+
+### 3.2 The macro floor, mapped
+
+Every member of §8's floor set is exercised by a named witness: `atom!`,
+`fact!`, `rule!`, `constraint!` — *first-solve*; `minimize!`,
+`maximize!` — *optimization*; `show!` — *enumeration*; `external!` —
+*multi-shot*; `scenario!` — *blame*; `#[derive(Extract)]` —
+*extraction*; `#[external]` — *ground-extension*. A macro absent from
+this mapping is a visible gap, not a silent one.
 
 ## 4. What counts as failure
 
-v1 has failed when any of the following holds:
+**Failing any clause of §2 is failure.** The bullets below are the
+checkable forms failure takes — the negations of §2's clauses plus the
+constitution's own rules (§1.2, §1.4, §1.5) — so a §2 amendment owes its
+§4 form, and completeness here is checkable by inspection:
 
 - A witness from §3 cannot be expressed, or is missing from the executed
   examples.
-- A witness comes out worse than its clingo-Python equivalent in clarity
-  or safety.
+- A witness with a comparator side in the roster (§3.1) comes out worse
+  than that evidenced rendering in clarity or safety.
+- A panic escapes the public surface on any input, or a public operation
+  ships without documented failure semantics.
+- The clingcon adapter is absent from v1 *without* §9.5's named
+  contingency having been invoked on the record — descope under the
+  stated condition is not failure; silent descope is.
 - A satellite-class consumer needs a private API, a fork, or a second
   grammar to exist — the composition test fails.
 - An engine type or engine-specific behavior leaks above the backend
@@ -351,6 +425,13 @@ re-establishes each compensation's necessity or retires it.
   makes about its own state are held to an executable-claims standard: a
   claim a test can hold, a test holds (§10.4). Nothing is promised in v1
   documentation that v1 does not gate.
+- **No magic numbers.** Any literal that carries meaning — an exit code,
+  a sentinel, an index with significance, a limit — gets a symbolic name
+  conveying its intent, because a reader cannot distinguish `1`-the-exit-
+  code from `1`-the-index from `1`-the-sentinel by staring at the
+  numeral. Bare numerals are reserved for values with no semantics. At
+  document scale the same rule names the witnesses (§3) rather than
+  citing ordinals that renumber.
 
 ---
 
@@ -410,14 +491,17 @@ precisely.
 
 ### 6.6 Diagnostics
 
-The `-base` diagnostics model instantiated to the rust-analyzer bar:
-stable namespaced identities, primary and secondary labeled spans,
-expected-set reporting at recovery points. The bar is *reviewable*:
-rendered diagnostic snapshots live in the test suite as golden cases, so
-message quality is a diffable artifact (witness 12).
+The `themelios-base` diagnostics model (§12.2) instantiated to the
+rust-analyzer bar: stable namespaced identities, primary and secondary
+labeled spans, expected-set reporting at recovery points. The bar is
+*reviewable*: rendered diagnostic snapshots live in the test suite as
+golden cases, so message quality is a diffable artifact (the
+*diagnostics-quality* witness).
 
-### 6.7 The ≈ apparatus
+### 6.7 Token-stream equivalence
 
+The public surface's name in words, per §1.4 — "≈" serves as prose
+shorthand for it after this introduction, never as the API's name.
 Structural token-stream equivalence plus comment-sequence comparison,
 native to the tier: any consumer claiming a layout-only or
 meaning-preserving transformation gets its certificate and its witness
@@ -446,6 +530,24 @@ weak constraints and minimize/maximize with weights and priorities.
 `#show`, `#external`, `#const`, and theory atoms are first-class. Set-like
 where the logic says set, ordered where meaning demands order.
 
+**Equality is structural, and named so.** The `Eq` this value carries is
+*structural equality*: the same set of rules, syntactically, up to
+provenance — cheap, decidable by traversal, and semantically silent. It
+is never presented as *equivalence*, which to an ASP practitioner means
+the semantic notions — ordinary equivalence (same answer sets) or strong
+equivalence in the Lifschitz–Pearce–Valverde sense — both of which are
+hard decision problems this foundation deliberately does not conflate
+with `Eq`. Semantic equivalence checking is a named reserved seam
+(§13).
+
+**Computational cost** (the engineering sense — distinguished throughout
+this document from ASP's own optimization costs, the weights and
+priorities of `#minimize`): structural equality and traversal are
+proportional to structure size; cloning copies and is linear; part-wise
+access for multi-shot use is cheap by construction; every walk is
+work-list based, so stack cost is independent of value depth (§7.2).
+These claims are held by the scaling-shape benchmarks of §10.1.
+
 ### 7.2 Totality and depth discipline
 
 All values are owned and total. No walk over user-reachable structure
@@ -469,6 +571,17 @@ it is the ground explanation-class tooling stands on: blame runs from
 answer sets back through rules to source *because provenance is data*,
 with explanations derived as views.
 
+**Computational cost, and the alternative rejected on argument:**
+per-node origin costs a small constant per node, linear in structure
+size overall, and equality is "up to provenance" so carrying it never
+changes what programs are equal. The standing alternative — a side
+table keyed by node identity, the mechanism kallos used for comments
+(§5.1) — is rejected because a side table cannot follow Program →
+Program transformation: rewritten nodes get new identities and the
+table's keys go stale, while an in-node field composes through every
+rewrite by construction. The formatter's side table worked because its
+tree was never transformed; this tier's whole point is transformation.
+
 ### 7.5 Transformation
 
 Program → Program as first-class pure functions, with visitor and
@@ -479,9 +592,9 @@ specific transforms stay theirs.
 ### 7.6 Rendering
 
 Program → concrete syntax, canonical and deterministic, round-trippable:
-render → parse → lower is identity up to provenance (witness 10). Styled
-layout is the formatter satellite's art; the foundation renders correctly
-and legibly, and no more.
+render → parse → lower is identity up to provenance (the *round-trip*
+witness). Styled layout is the formatter satellite's art; the foundation
+renders correctly and legibly, and no more.
 
 ### 7.7 Patterns and unification
 
@@ -512,7 +625,11 @@ argument. The floor set: `atom!`, `fact!`, `rule!`, `constraint!`,
 `minimize!`, `maximize!`, `show!`, `external!`, `scenario!`,
 `#[derive(Extract)]`, `#[external]`. The levels: program-level,
 statement-level, element-level, query-level, extraction and registration
-attributes.
+attributes. Every floor macro maps to the witness that exercises it
+(§3.2). One name owes its §1.4 reason here: `scenario!` names a
+*reusable, named assumption configuration* — a concept this library
+introduces, so this library names it; the literature's word
+("assumptions") names the raw sets, not the named, reusable bundle.
 
 Three laws govern every macro:
 
@@ -546,8 +663,14 @@ support and which theories, externals, `@`-function evaluation, custom
 propagators, multi-shot, assumptions, cancellation. Requests beyond
 declared capability receive a **typed refusal**, never a silent degrade.
 The core may refuse-or-derive deliberately (deriving cautious
-consequences by intersection when an engine lacks them natively) and says
-so in the outcome's provenance.
+consequences by intersection when an engine lacks them natively) — and
+the derived-versus-native distinction is legible **at the request
+surface, before the request is paid for**: the capability declaration
+says which path a request will take, because deriving consequences can
+cost enumeration, a different computational beast than one solve, and a
+cost divergence of that size disclosed only in the receipt would be a
+surprise this design exists to forbid. The outcome's provenance then
+records which path ran.
 
 The contract does not assume the engine is foreign: a native backend
 built from foundation crates implements the same contract, and the
@@ -559,9 +682,17 @@ this.
 
 - `Determination`: the closed trichotomy — consistent, inconsistent,
   inconclusive — where inconclusive is a real value, never collapsed.
-- `Conclusion`: how the search ended — exhausted, target reached, budget,
-  interrupted — so every consumer judges search-sufficiency for *its*
-  reading.
+- `Conclusion`: how the search ended — exhausted, target reached, budget
+  (the caller-specified budget of §9.4, reported as hit), interrupted —
+  so every consumer judges search-sufficiency for *its* reading.
+- The two type names owe their §1.4 reason, stated here: engines' own
+  result vocabularies conflate the logical question (*is the program
+  consistent?*) with the search question (*did the search finish?*) —
+  the exact mechanism of the documented ambushes (§5.1) — so these names
+  *separate what the engines confuse*; and Rust's own `Result` forecloses
+  the obvious alternative. The names are argued, not inherited: a
+  clearer pair discovered at design time supersedes them by satisfying
+  §1.4 in its turn.
 - Answer sets as owned, streamable values; proven optima typed distinct
   from best-found; cautious and brave consequences as typed sets with
   their semantics named.
@@ -574,7 +705,7 @@ this.
   flags — are **unconstructible in the vocabulary** (evidence for all
   three: §5.1).
 - Assumption blame: when a scenario is inconsistent, which assumptions
-  are responsible is an answerable, typed question (witness 5).
+  are responsible is an answerable, typed question (the *blame* witness).
 
 ### 9.3 Fault attribution
 
@@ -590,8 +721,14 @@ assumption scenarios, interrupt, re-solve. The session handle is the
 authority to drive the engine; dropping it is revocation; there is no
 ambient engine and no global state. Thread posture is explicit per
 backend; cancellation-from-another-thread is a declared capability.
-Service-grade by construction: a session is embeddable behind a service
-boundary or an editor host without ceremony.
+**Budgets are a request-side surface:** a caller specifies typed budgets
+(time at minimum, with room for model-count caps) at session or solve
+configuration; enforcement is a declared capability — an engine without
+native support gets it through the adapter's cancellation machinery —
+and `Conclusion` reports a hit budget as what it is. The *budget*
+witness exercises the full path: specify, exhaust, read a coherent
+outcome. Service-grade by construction: a session is embeddable behind a
+service boundary or an editor host without ceremony.
 
 ### 9.5 The clingo and clingcon adapters
 
@@ -605,11 +742,21 @@ ambush upward.
 
 The clingcon adapter is a thin delta over the same machinery:
 registration onto a clingo-backed session plus typed assignment
-retrieval. **Contingency:** if libclingcon's surface proves substantially
-larger than its registration-shaped appearance, the clingcon adapter
-descopes from v1 first and resumes immediately after; the uniformity
-clause (§2, item 5) then binds at the design level, demonstrated through
-the propagator surface instead.
+retrieval. The ground for the thin-delta shape is the working
+understanding that **clingcon extends clingo** — libclingcon registers
+its constraint theory onto a clingo control, and a theory-free program
+under clingcon behaves as clingo — confirmed by the spike suite against
+the pinned libclingcon at the adapter stage, per the version-scoped
+claims discipline (§5.2). One consequence stated so nobody mistakes it:
+clingcon shares clingo's machinery, so it is **not** the solver-agnostic
+seam's second engine — the seam's second independent implementor is the
+reference solver; clingcon exercises the *theory-capability dimension*
+of the contract over shared machinery. **Contingency:** if libclingcon's
+surface proves substantially larger than its registration-shaped
+appearance, the clingcon adapter descopes from v1 first and resumes
+immediately after; the uniformity clause (§2, item 5) then binds at the
+design level, demonstrated through the propagator surface instead — and
+§2 and §4 carry this condition in their own text.
 
 ### 9.6 The extension surfaces
 
@@ -620,7 +767,7 @@ the propagator surface instead.
   a failing `@`-function is a typed ground-time fault with a locus. The
   `#[external]` attribute macro derives registration from a plain Rust
   fn — compile-time-checked signatures where the Python comparator has
-  duck typing (witness 13).
+  duck typing (the *ground-extension* witness).
 - **Solve time — custom propagators.** A safe Rust trait for theory
   propagation — init, propagate, undo, check — with watch management and
   typed theory-atom access, registered onto a session. Panic containment
@@ -628,9 +775,11 @@ the propagator surface instead.
   propagation to a single solver thread, with multi-threaded propagation
   a named reserved seam. This surface is sufficient to build
   clingcon-class, clingo-dl-class, and clingo-lp-class systems in Rust;
-  the worked witness is a small difference-logic propagator (witness 14).
+  the worked witness is a small difference-logic propagator (the
+  *solve-extension* witness).
 - **Read time — typed extraction.** `#[derive(Extract)]`-class mapping
-  from answer sets to Rust values via the conversion traits (witness 8).
+  from answer sets to Rust values via the conversion traits (the
+  *extraction* witness).
 
 The ground-program observer surface is a named reserved seam — no v1
 anchor forces it, and gold-plating is how trusted computing bases stop
@@ -678,12 +827,32 @@ the engines' observed behaviors as a living regression guard against
 upstream drift; crash-capture apparatus installed early, not after the
 first unexplained crash.
 
-**Cross-cutting:** mutation testing as a standing per-milestone audit; a
-coverage floor enforced as the same number on every machine; unused-code
-warnings denied workspace-wide with the motivating argument cited beside
-the lint (§5.2); executed examples in the gate; documentation examples
-that run; pinned toolchain; Linux and macOS CI; memory-capped full-gate
-runs where the platform allows.
+**Cross-cutting:** property-based tests (proptest) and scaling-shape
+benchmarks (criterion) are standing per-tier instruments from each
+tier's landing — benches assert complexity shape (reparse stays linear,
+rendering linear in output, equality proportional to structure), which
+is machine-independent and CI-stable, while absolute-number claims
+("cheap total reparse", Program-value operations at depth) are held by
+out-of-band benchmark runs on a stated cadence (§10.2). Mutation
+testing as a standing per-milestone audit. A coverage floor enforced as
+the same number on every machine — with its argument: the floor is a
+per-change tripwire for the wholly untested module, which the
+per-milestone mutation audit would catch weeks late; the number is a
+tripwire, never a target — raising it is not a goal, gaming it is a
+defect, and mutation remains the auditor of whether tests ask anything.
+Unused-code warnings denied workspace-wide with the motivating argument
+cited beside the lint (§5.2); executed examples in the gate;
+documentation examples that run. Toolchain: the `rust-version` **floor**
+is declared in every manifest — the contract a stranger's build meets —
+set forward-facing to current stable at authoring (1.97 at this
+document's date) and moving with the toolchain during pre-1.0
+development; the CI **pin** is reproducibility and matches the floor.
+CI runs Linux and macOS; the platform split is explicit — valgrind and
+helgrind run on Linux CI runners (the development machine is macOS,
+where native `leaks` serves locally, with the recorded caveat that
+hosted-runner `leaks` hangs) — so no assurance claim depends on tools
+the working machine cannot run. Memory-capped full-gate runs where the
+platform allows.
 
 ### 10.2 In-gate versus out-of-band
 
@@ -691,8 +860,11 @@ The gate — run on every change — is: format check, clippy as errors, the
 test suite, the trust-boundary checks, executed examples, documentation
 build. Out-of-band, on stated cadences: fuzzing continuously with its
 corpus committed; mutation and the clingo differential per milestone;
-leak and race checks per release and in a dedicated CI job. Every
-instrument is documented with what it proves *and what it cannot*.
+the comparator-source execution check (§3.1) against the pinned engine
+per milestone and whenever the comparator pin moves; the numbered-claim
+benchmark runs (§10.1); leak and race checks per release and in a
+dedicated CI job. Every instrument is documented with what it proves
+*and what it cannot*.
 
 ### 10.3 Corpus sources
 
@@ -716,14 +888,22 @@ an instrument-less stage is not done.
 
 1. `themelios-base` — source model, spans, the diagnostics model.
 2. `themelios-syntax` — lexer + fusion oracle; then parser + lossless
-   tree + attachment policy; then typed AST + the ≈ apparatus. Fuzzing
-   starts in week one. The grammar document lands here. **Stage 2 exits
+   tree + attachment policy; then typed AST + token-stream equivalence
+   (§6.7). Fuzzing starts in week one. The grammar document lands here. **Stage 2 exits
    through a first-consumer checkpoint:** before later tiers harden on
    this surface, a real consumer outside this repository builds against
    it — morphe (μορφή, *form*), the formatter, is the planned first —
    and what it surfaces, defects and pain points alike, folds back into
    the tier. Witnesses prove capability; only a consumer reveals
-   ergonomics.
+   ergonomics. **The checkpoint tests the tier, not the consumer's
+   schedule** — a stall is attributed: if the consumer stalls *because
+   the syntax tier delivered poorly*, that is the checkpoint firing, and
+   the tier reopens to eat the findings; if it stalls for exogenous
+   reasons, v1 is not blocked — stage 3 proceeds, the checkpoint
+   obligation carries forward unmet with its residual risk named (the
+   surface hardens unexercised by a consumer), discharged by the first
+   consumer that arrives, whose later findings are acknowledged as
+   costlier to absorb.
 3. `themelios-program` — the Program value, lowering, constructors,
    provenance; then rendering; then transformation, patterns,
    unification.
@@ -777,7 +957,7 @@ Eleven workspace members. Satellites live in their own repositories.
 | crate | unsafe | purpose |
 |---|---|---|
 | `themelios-base` | forbid | Source-text model, spans, line indexing, and the diagnostics model. Zero dependencies. |
-| `themelios-syntax` | forbid | Lexer, parser, lossless tree, trivia policy, typed AST, token-fidelity emit, ≈ self-check, fusion oracle. FFI-free by dependency closure. Importable wholesale. |
+| `themelios-syntax` | forbid | Lexer, parser, lossless tree, trivia policy, typed AST, token-fidelity emit, token-stream equivalence (§6.7), fusion oracle. FFI-free by dependency closure. Importable wholesale. |
 | `themelios-program` | forbid | The Program value, lowering, constructors, provenance, transformation, rendering, patterns and unification. |
 | `themelios-macros` | forbid | Procedural macros as syntax-tier clients, expanding to public constructors and registration APIs only. |
 | `themelios-solve` | forbid | The backend contract, outcome vocabulary, sessions, fault taxonomy, query surface, conformance suite. Engine-free. |
@@ -824,7 +1004,31 @@ generally are the microkernel canon, translated to library terms:
    each privileged operation carries stated pre- and postconditions;
    formal-methods tooling over the TCB is a named reserved seam.
 
-### 12.4 Dependency policy
+### 12.4 The threat model, committed
+
+The mission-critical claim (§1) incurs four domain obligations; this
+document engages auditability, reproducibility, and supply-chain
+provenance concretely, and commits the fourth here: a **threat-model
+statement** — a section of this document's successor or a named
+companion — lands **before adapter-tier implementation begins** (stage
+7, §11). Its shape is **per component and surface**, because a library
+cannot know its deployment and threats are not uniform across tiers:
+for each tier and extension surface, (a) what it defends against
+*regardless of embedding* — the parser is total on arbitrary bytes; the
+TCB contains engine faults; trampolines contain panics; (b) what it
+*assumes trusted* — a registered propagator or `@`-function runs with
+the host process's full trust: themelios contains the extension
+author's accidents, never their malice; (c) what an *embedder must
+supply* to compose their own model — which surfaces may safely meet
+untrusted data (the syntax tier, by construction) and which never
+should. The shared frame — adversary classes, boundary vocabulary — is
+stated once; deployment contexts in scope explicitly include the
+pythia-class service boundary, where input arrives from untrusted
+callers. The *hostile-input* witness exercises what this document
+declares; the statement's *content* is security-review ground, its
+*presence* is this specification's obligation.
+
+### 12.5 Dependency policy
 
 **Import only what is truly necessary** is standing practice: every
 dependency carries an argued necessity where it is declared;
@@ -846,11 +1050,13 @@ and never in a default build.
 Named reserved seams (deferred with reasons, not gaps): incremental
 computation machinery (§7.8); multi-threaded propagation (§9.6); the
 ground-program observer surface (§9.6); formal-methods tooling over the
-TCB (§12.3); hand-rolled green/red trees as the rowan fallback (§12.4);
-additional engine backends beyond clingo and clingcon; the native solver
-components — grounding, structural analysis and classification, and
-per-fragment solving algorithms — as themelios extension crates (the
-horizon of §1.1, seeded by the reference solver).
+TCB (§12.3); hand-rolled green/red trees as the rowan fallback (§12.5);
+additional engine backends beyond clingo and clingcon; semantic
+equivalence checking — ordinary and strong equivalence as decision
+services, deliberately distinct from structural equality (§7.1); the
+native solver components — grounding, structural analysis and
+classification, and per-fragment solving algorithms — as themelios
+extension crates (the horizon of §1.1, seeded by the reference solver).
 
 Non-goals for v1: the satellites themselves (anchors, not deliverables);
 styled formatting; a language server; a REPL; publishing to crates.io
@@ -859,7 +1065,6 @@ checkpoints.
 
 ## 14. Repository facts
 
-`~/Projects/themelios`, private remote, MIT licensed, copyright Gregory
-Gelfond. This specification lives at `docs/specification.md` and is the
-repository's founding artifact; the grammar document (§6.1) joins it at
-stage 2.
+Private remote, MIT licensed, copyright Gregory Gelfond. This
+specification lives at `docs/specification.md` and is the repository's
+founding artifact; the grammar document (§6.1) joins it at stage 2.
