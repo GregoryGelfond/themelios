@@ -21,7 +21,7 @@ instruments the design names (base.md §10); coverage (`cargo-llvm-cov`)
 and mutation (`cargo-mutants`) run as externally installed cargo tools
 and never enter any manifest.
 
-**Design of record:** `docs/design/base.md` at commit `666f69d` — every
+**Design of record:** `docs/design/base.md` at commit `8d565ce` — every
 task derives from it and cites the sections it implements. Governing
 context: `docs/specification.md` §10–§11 (instruments and build order).
 Where this plan and base.md disagree, base.md governs and the
@@ -32,7 +32,7 @@ disagreement is a defect here.
 What this plan must be, stated so a review can check drift against it:
 
 > A faithful and complete derivation of `docs/design/base.md` at
-> `666f69d`: every task builds a surface, law, or instrument that
+> `8d565ce`: every task builds a surface, law, or instrument that
 > document states for stage 1; every surface, law, and instrument it
 > states for stage 1 is built by some task; and no task builds anything
 > beyond it — no reserved seam (base.md §11), no non-goal, no surface
@@ -77,7 +77,12 @@ argument lives.
   constant with its intent (`Source::MAX_LEN` is the pattern) (spec
   §5.2).
 - **Lints denied workspace-wide:** `unused` (group), `unused_must_use`,
-  `dead_code`, `missing_docs` (base.md §10; spec §5.2, §10.4).
+  `dead_code`, `missing_docs` (base.md §10; spec §5.2, §10.4) — and
+  clippy at its strictest coherent setting: `pedantic` denied via the
+  workspace manifest, every exclusion a named departure with its
+  argument beside it. A pedantic lint that fires unforeseen during
+  execution is repaired in code or added to that table with its
+  argument at the task's commit — never waived silently.
 - **Documentation is executable:** every public operation's rustdoc
   names its refusal type and cost, matching the base.md §9 table; doc
   examples run as doctests; nothing is claimed that a test does not
@@ -119,7 +124,8 @@ crates/themelios-base/
   tests/sources_laws.rs             the Sources law checker exercised
                                     against both outcomes
   tests/golden.rs                   golden-corpus harness (std-only)
-  tests/golden/*.txt                the nine seed-corpus renderings
+  tests/golden/*.txt                the design's nine seed cases plus
+                                    the stale-index fallback case
   tests/scaling_shape.rs            CI shape assertions (ratio-based)
   benches/scaling.rs                criterion benches (out-of-band
                                     absolute numbers)
@@ -173,6 +179,34 @@ missing_docs = "deny"
 unused = { level = "deny", priority = -1 }
 unused_must_use = "deny"
 dead_code = "deny"
+
+# The strictest coherent setting is the baseline; each allow below is
+# a named departure carrying its argument. An unforeseen pedantic lint
+# firing during a later task is repaired in code or added here with
+# its argument at that task's commit — never waived silently.
+[workspace.lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+# The design's names repeat their module's concern (source::Source,
+# span::Span, line::LineIndex); renaming either side would depart the
+# design of record.
+module_name_repetitions = "allow"
+# Every meaning-carrying cast carries its cannot-truncate argument in
+# place, resting on the admission-ceiling invariant; blanket try_from
+# ceremony would restate what is already argued.
+cast_possible_truncation = "allow"
+# The crate is plain data end to end; annotating every accessor
+# #[must_use] restates what the denied unused group already holds at
+# call sites. The by-value builders, where a dropped result loses the
+# build, do carry #[must_use].
+must_use_candidate = "allow"
+# Every fallible operation's rustdoc opens by naming exactly what it
+# refuses and at what cost — the base.md §9 discipline; a mandatory
+# `# Errors` heading would duplicate that sentence under a second
+# name.
+missing_errors_doc = "allow"
+# Doc comments cite design sections as prose (base.md §5); ticking
+# every citation adds markup without information.
+doc_markdown = "allow"
 ```
 
 `.gitignore`:
@@ -628,7 +662,9 @@ impl Span {
     }
 
     /// The covering span — total, including disjoint operands
-    /// (base.md §4.2). O(1).
+    /// (base.md §4.2). O(1). Dropping the result loses the join, so
+    /// the by-value combinator is must-use.
+    #[must_use]
     pub fn join(self, other: Span) -> Span {
         Span {
             start: self.start.min(other.start),
@@ -765,8 +801,8 @@ mod tests {
     }
 
     #[test]
-    fn the_admission_ceiling_is_the_offset_width() {
-        assert_eq!(Source::MAX_LEN, u32::MAX as usize);
+    fn admission_ceiling_fits_the_line_count() {
+        assert_eq!(Source::MAX_LEN, u32::MAX as usize - 1);
     }
 
     #[test]
@@ -848,7 +884,7 @@ mod tests {
         assert_eq!(
             TooLarge { len: 5_000_000_000 }.to_string(),
             "text is 5000000000 bytes; the admission ceiling \
-             Source::MAX_LEN is 4294967295 bytes"
+             Source::MAX_LEN is 4294967294 bytes"
         );
         assert_eq!(
             InvalidUtf8 { valid_up_to: 12 }.to_string(),
@@ -1010,10 +1046,12 @@ pub struct Source {
 }
 
 impl Source {
-    /// The admission ceiling: offsets are `u32`, so text is at most
-    /// `u32::MAX` bytes. The name exists so the limit is never a bare
-    /// numeral at a call site (base.md §3.2).
-    pub const MAX_LEN: usize = u32::MAX as usize;
+    /// The admission ceiling: offsets are `u32` and every text has
+    /// one more line start than newline bytes, so text is at most
+    /// `u32::MAX - 1` bytes — the line count then fits `u32` for
+    /// every admissible text. The name exists so the limit is never
+    /// a bare numeral at a call site (base.md §3.2).
+    pub const MAX_LEN: usize = u32::MAX as usize - 1;
 
     /// Admits owned text. Refuses `TooLarge`; O(1) beyond the length
     /// check. No repair at the door: no BOM stripping, no line-ending
@@ -1068,7 +1106,7 @@ impl Source {
     /// The one-past-end offset. Total; O(1).
     pub fn end(&self) -> ByteOffset {
         // The cast cannot truncate: admission guards
-        // len <= MAX_LEN == u32::MAX.
+        // len <= MAX_LEN < u32::MAX.
         ByteOffset::new(self.text.len() as u32)
     }
 
@@ -1226,13 +1264,18 @@ mod tests {
     }
 
     #[test]
-    fn lines_break_at_newline_and_content_excludes_the_terminator() {
+    fn lines_break_at_newline() {
         let index = index_of("ab\ncd");
         assert_eq!(index.line_count(), 2);
-        let first = index.line_span(0).unwrap();
-        assert_eq!((first.start().get(), first.end().get()), (0, 2));
         let second = index.line_span(1).unwrap();
         assert_eq!((second.start().get(), second.end().get()), (3, 5));
+    }
+
+    #[test]
+    fn content_excludes_the_terminator() {
+        let index = index_of("ab\ncd");
+        let first = index.line_span(0).unwrap();
+        assert_eq!((first.start().get(), first.end().get()), (0, 2));
     }
 
     #[test]
@@ -1525,6 +1568,12 @@ struct WideChar {
 /// Line and column structure for one source's text: an explicit, pure
 /// derivation you construct and hold. Does not retain the text
 /// (base.md §5). Memory is O(lines + non-ASCII characters).
+///
+/// A named refinement of the design's sketch: base.md §5 pictures the
+/// non-ASCII characters grouped per line; this index holds one
+/// offset-sorted table with prefix-sum surpluses instead — the same
+/// data and the same memory bound with simpler structure, and the
+/// query bound is O(log lines + log non-ASCII in the text).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LineIndex {
     /// Byte offset where each line starts; entry 0 is always 0, and a
@@ -1584,8 +1633,9 @@ impl LineIndex {
     /// How many lines the text has; empty text has one. Total; O(1) —
     /// a stored count (base.md §5, §9).
     pub fn line_count(&self) -> u32 {
-        // The cast cannot truncate: there are at most len + 1 lines
-        // and len <= u32::MAX.
+        // The cast cannot truncate: there are at most len + 1 lines,
+        // and the admission ceiling guards len + 1 <= u32::MAX
+        // (base.md §3.2).
         self.line_starts.len() as u32
     }
 
@@ -1617,21 +1667,15 @@ impl LineIndex {
 - [ ] **Step 4: Run to verify the tests pass**
 
 Run: `cargo test -p themelios-base`
-Expected: all `line::tests` pass. (`clippy` will flag nothing unused:
-the surplus tables and `wide` are read in Task 5's queries; if the
-lint fires here, mark nothing — proceed to Task 5 in the same
-working tree only if the two tasks are committed together. To keep
-commits green, `#[allow(dead_code)]` is **not** used; instead this
-task's Step 3 code compiles clean because `LineIndex` derives compare
-all fields.)
+Expected: all `line::tests` pass, and no `dead_code` fires: the
+derived `PartialEq` and `Eq` read every field, so the surplus tables
+and `wide` are live code before Task 5 queries them — settled here so
+no contingency reaches the executor.
 
 - [ ] **Step 5: Run the gate**
 
 Run: the full gate command from Task 1 Step 6.
-Expected: green. If `dead_code` fires on `wide`/`cp_surplus`/
-`utf16_surplus` (they are stored, compared by `PartialEq`, and not yet
-queried), fold Task 5 into this commit rather than allow the lint —
-denied lints are never waived (spec §5.2).
+Expected: green.
 
 - [ ] **Step 6: Commit**
 
@@ -1669,11 +1713,11 @@ Append to the test module in `src/line.rs`:
 
     #[test]
     fn position_answers_in_all_three_encodings() {
+        use ColumnEncoding::*;
         let index = index_of(MIXED);
         let at = |raw: u32, encoding| {
             index.position(ByteOffset::new(raw), encoding)
         };
-        use ColumnEncoding::*;
         assert_eq!(at(3, Utf8Bytes), Ok(LineCol { line: 0, col: 3 }));
         assert_eq!(at(3, CodePoints), Ok(LineCol { line: 0, col: 2 }));
         assert_eq!(at(3, Utf16Units), Ok(LineCol { line: 0, col: 2 }));
@@ -1707,8 +1751,8 @@ Append to the test module in `src/line.rs`:
 
     #[test]
     fn offset_answers_in_all_three_encodings() {
-        let index = index_of(MIXED);
         use ColumnEncoding::*;
+        let index = index_of(MIXED);
         let at = |line: u32, col: u32, encoding| {
             index.offset(LineCol { line, col }, encoding)
         };
@@ -1721,8 +1765,8 @@ Append to the test module in `src/line.rs`:
 
     #[test]
     fn offset_refuses_each_of_its_three_conditions() {
-        let index = index_of(MIXED);
         use ColumnEncoding::*;
+        let index = index_of(MIXED);
         assert_eq!(
             index.offset(LineCol { line: 5, col: 0 }, Utf8Bytes),
             Err(OffsetRefusal::LineOutOfBounds(LineOutOfBounds {
@@ -1781,7 +1825,7 @@ helpers):
     /// encoding. Offsets `0..=len` are in bounds; `len` is the
     /// end-of-text position. Refuses `PositionRefusal` — a
     /// mid-character offset is refused, never misplaced.
-    /// O(log lines + log non-ASCII) (base.md §5, §9).
+    /// O(log lines + log non-ASCII in the text) (base.md §5, §9).
     pub fn position(
         &self,
         offset: ByteOffset,
@@ -1832,8 +1876,8 @@ helpers):
     /// coordinate produced under one encoding and queried under
     /// another breaches the stated contract (base.md §5); on
     /// multi-byte text it surfaces as a refusal or a wrong position.
-    /// Refuses `OffsetRefusal`; O(log lines + log non-ASCII)
-    /// (base.md §5, §9).
+    /// Refuses `OffsetRefusal`; O(log lines + log non-ASCII in the
+    /// text) (base.md §5, §9).
     pub fn offset(
         &self,
         pos: LineCol,
@@ -1883,8 +1927,17 @@ helpers):
             ColumnEncoding::CodePoints => &self.cp_surplus,
             ColumnEncoding::Utf16Units => &self.utf16_surplus,
         };
-        // Unit encodings: consume the line's wide characters that
-        // start before the column, in O(log) via the prefix tables.
+        // Unit encodings. Definition: unit_pos(j) is wide character
+        // j's column within this line, in the query's encoding — its
+        // byte distance from the line start minus the units already
+        // saved by earlier in-line wide characters. The binary search
+        // below maintains the invariant that `consumed` counts the
+        // line's wide characters (indices lo..lo + consumed) whose
+        // unit_pos is strictly below pos.col; `open - consumed`
+        // halves every pass, so it terminates. partition_point cannot
+        // express this search because the predicate needs each
+        // element's *index* for the prefix tables, not the element
+        // alone — hence the hand-rolled form. O(log) via the tables.
         let up_to = |i: usize| if i == 0 { 0 } else { table[i - 1] };
         let lo = self.wide.partition_point(|w| w.offset < line_start);
         let hi = self.wide.partition_point(|w| w.offset < content_end);
@@ -1921,6 +1974,8 @@ helpers):
                 ));
             }
         }
+        // Bytes = units + the surplus of every consumed wide
+        // character: the inverse of unit_pos's defining relation.
         let bytes = pos.col + (up_to(lo + consumed) - up_to(lo));
         Ok(ByteOffset::new(line_start + bytes))
     }
@@ -2121,7 +2176,7 @@ use themelios_base::source::{
 };
 
 #[test]
-fn the_shipped_catalog_satisfies_the_laws_by_construction() {
+fn shipped_catalog_satisfies_the_laws() {
     let mut catalog = SourceSet::new();
     let first = catalog
         .add("demo.lp".to_owned(), "p(a).\n".to_owned())
@@ -2342,8 +2397,7 @@ pub fn check_sources_laws(
             // that is LineIndex::of over an admitted Source of it —
             // incoherent by definition.
             let coherent = Source::new(id, text.to_owned())
-                .map(|admitted| LineIndex::of(&admitted) == *index)
-                .unwrap_or(false);
+                .is_ok_and(|admitted| LineIndex::of(&admitted) == *index);
             if !coherent {
                 violations
                     .push(SourcesLawViolation::IncoherentIndex { id });
@@ -2816,6 +2870,24 @@ Append to the test module in `src/diagnostic.rs`:
     }
 
     #[test]
+    fn equal_diagnostics_hash_equally() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let hash_of = |diagnostic: &Diagnostic| {
+            let mut hasher = DefaultHasher::new();
+            diagnostic.hash(&mut hasher);
+            hasher.finish()
+        };
+        let forward = demo()
+            .with_secondary(label_at(2, 5))
+            .with_secondary(label_at(7, 9));
+        let backward = demo()
+            .with_secondary(label_at(7, 9))
+            .with_secondary(label_at(2, 5));
+        assert_eq!(hash_of(&forward), hash_of(&backward));
+    }
+
+    #[test]
     fn empty_message_displays_the_fixable_question() {
         assert_eq!(
             EmptyMessage.to_string(),
@@ -2859,7 +2931,7 @@ impl std::error::Error for EmptyMessage {}
 /// is required, so "a diagnostic without a precise span" is
 /// unrepresentable (base.md §6.4). Equality and hash are structural —
 /// and for the secondary labels that means *set* equality.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Diagnostic {
     id: DiagnosticId,
     severity: Severity,
@@ -2905,19 +2977,23 @@ impl Diagnostic {
     /// Adds a secondary label — by-value chaining, so even building
     /// reads as declaring (base.md §8.3). Inserting a label already
     /// present yields the same set: set semantics, not repair. Total;
-    /// O(log secondaries).
+    /// O(log secondaries). Dropping the result loses the build, so
+    /// every by-value builder is must-use.
+    #[must_use]
     pub fn with_secondary(mut self, label: Label) -> Diagnostic {
         self.secondary.insert(label);
         self
     }
 
     /// Appends to the note narrative. Total; O(1) beyond owned text.
+    #[must_use]
     pub fn with_note(mut self, note: String) -> Diagnostic {
         self.notes.push(note);
         self
     }
 
     /// Appends to the help narrative. Total; O(1) beyond owned text.
+    #[must_use]
     pub fn with_help(mut self, help: String) -> Diagnostic {
         self.helps.push(help);
         self
@@ -3181,31 +3257,28 @@ pub fn human(diagnostic: &Diagnostic, sources: &impl Sources) -> String {
         diagnostic.id(),
         diagnostic.message()
     ));
-    // The primary's source first, then other touched sources in
-    // identity order (secondary iteration is position order, which
-    // groups by identity).
-    let primary_source = diagnostic.primary().location.source;
-    let mut block_order = vec![primary_source];
+    // One pass groups the labels by source — O(labels · log sources),
+    // within the stated O(rendered size) (base.md §7.1, §9) — with
+    // the primary inserted at its position in its own block, marked.
+    // The primary's source renders first, then every other touched
+    // source in identity order.
+    let mut blocks: std::collections::BTreeMap<SourceId, Vec<(&Label, bool)>> =
+        std::collections::BTreeMap::new();
     for label in diagnostic.secondary() {
-        if !block_order.contains(&label.location.source) {
-            block_order.push(label.location.source);
-        }
+        blocks
+            .entry(label.location.source)
+            .or_default()
+            .push((label, false));
     }
-    for source in block_order {
-        // Within a block: labels in position order, primary marked.
-        let mut labels: Vec<(&Label, bool)> = Vec::new();
-        for label in diagnostic.secondary() {
-            if label.location.source == source {
-                labels.push((label, false));
-            }
-        }
-        if primary_source == source {
-            let primary = (diagnostic.primary(), true);
-            let at = labels
-                .partition_point(|(label, _)| *label < diagnostic.primary());
-            labels.insert(at, primary);
-        }
-        render_block(&mut out, source, &labels, sources);
+    let primary = diagnostic.primary();
+    let own_block = blocks.entry(primary.location.source).or_default();
+    let at = own_block.partition_point(|(label, _)| *label < primary);
+    own_block.insert(at, (primary, true));
+    if let Some(labels) = blocks.remove(&primary.location.source) {
+        render_block(&mut out, primary.location.source, &labels, sources);
+    }
+    for (&source, labels) in &blocks {
+        render_block(&mut out, source, labels, sources);
     }
     for note in diagnostic.notes() {
         out.push_str(&format!("  = note: {note}\n"));
@@ -3321,8 +3394,7 @@ fn render_block(
     let width = rows
         .keys()
         .next_back()
-        .map(|last| (last + 1).to_string().len())
-        .unwrap_or(1);
+        .map_or(1, |last| (last + 1).to_string().len());
     let pad = " ".repeat(width);
     out.push_str(&format!("{pad} |\n"));
 
@@ -3410,8 +3482,7 @@ fn line_extent(index: &LineIndex, text: &str, line: u32) -> u32 {
         .and_then(|span| {
             text.get(span.start().get() as usize..span.end().get() as usize)
         })
-        .map(|content| content.chars().count() as u32)
-        .unwrap_or(0)
+        .map_or(0, |content| content.chars().count() as u32)
 }
 ```
 
@@ -3420,7 +3491,7 @@ fn line_extent(index: &LineIndex, text: &str, line: u32) -> u32 {
 Run: `cargo test -p themelios-base`
 Expected: both `view::tests` pass — the committed layout, exactly.
 
-- [ ] **Step 5: Write the golden harness and the nine seed cases**
+- [ ] **Step 5: Write the golden harness and the ten golden cases**
 
 Create `crates/themelios-base/tests/golden.rs`. The harness is
 std-only — compare, or bless under an environment switch — so the
@@ -3602,14 +3673,57 @@ fn embedded_snippet_frame() {
     let d = diagnostic(label(snippet, 20, 31, Some("negated here")));
     check("embedded-snippet-frame", &human(&d, &catalog));
 }
+
+/// A catalog breaching the coherence law: the index predates the
+/// text — the one breach the views trust past (base.md §3.4), whose
+/// fallback rendering must be a reviewed artifact like every other
+/// placeholder.
+struct StaleIndexCatalog {
+    text: String,
+    index: themelios_base::line::LineIndex,
+}
+
+impl themelios_base::source::Sources for StaleIndexCatalog {
+    fn name(&self, _: SourceId) -> Option<&str> {
+        Some("stale.lp")
+    }
+    fn text(&self, _: SourceId) -> Option<&str> {
+        Some(&self.text)
+    }
+    fn line_index(
+        &self,
+        _: SourceId,
+    ) -> Option<&themelios_base::line::LineIndex> {
+        Some(&self.index)
+    }
+}
+
+#[test]
+fn stale_index() {
+    use themelios_base::source::Source;
+    // The index knows one long line; the text is now shorter. The
+    // renderer places its named placeholder — never a panic, never
+    // silence.
+    let old = Source::new(
+        SourceId::new(0),
+        "p(a). q(b). r(c). s(d).".to_owned(),
+    )
+    .expect("small text admits");
+    let catalog = StaleIndexCatalog {
+        text: "p.".to_owned(),
+        index: themelios_base::line::LineIndex::of(&old),
+    };
+    let d = diagnostic(label(SourceId::new(0), 6, 11, Some("was here")));
+    check("stale-index", &human(&d, &catalog));
+}
 ```
 
 - [ ] **Step 6: Bless, then review the corpus**
 
 Run: `mkdir -p crates/themelios-base/tests/golden && GOLDEN_BLESS=1 cargo test -p themelios-base --test golden && cargo test -p themelios-base --test golden`
-Expected: first run writes nine files; second run passes against them.
+Expected: first run writes ten files; second run passes against them.
 
-Then **read all nine files** and review each rendering against the
+Then **read all ten files** and review each rendering against the
 committed layout mechanics above and the base.md §7.1 commitments:
 headline form; window covers the labeled lines; one-based gutter;
 carets on the primary; secondaries with their messages in position
@@ -3629,7 +3743,8 @@ mod human_totality {
     use themelios_base::diagnostic::{
         Diagnostic, DiagnosticId, Label, Severity,
     };
-    use themelios_base::source::{SourceId, SourceSet};
+    use themelios_base::line::LineIndex;
+    use themelios_base::source::{SourceId, SourceSet, Sources};
     use themelios_base::span::{ByteOffset, Location, Span};
     use themelios_base::view::human;
 
@@ -3637,6 +3752,39 @@ mod human_totality {
         DiagnosticId::new("syntax", "unexpected-token"),
         DiagnosticId::new("program", "unknown-name"),
     ];
+
+    /// A catalog wrapper that drops facets per a generated mask —
+    /// the incomplete resolutions base.md §10 names as included in
+    /// the law's catalog space.
+    struct FacetDropping {
+        inner: SourceSet,
+        /// Kept-bits (name, text, index) per id; ids past the mask
+        /// resolve as the inner catalog answers.
+        mask: Vec<(bool, bool, bool)>,
+    }
+
+    impl FacetDropping {
+        fn kept(&self, id: SourceId) -> (bool, bool, bool) {
+            self.mask
+                .get(id.get() as usize)
+                .copied()
+                .unwrap_or((true, true, true))
+        }
+    }
+
+    impl Sources for FacetDropping {
+        fn name(&self, id: SourceId) -> Option<&str> {
+            self.kept(id).0.then(|| self.inner.name(id)).flatten()
+        }
+
+        fn text(&self, id: SourceId) -> Option<&str> {
+            self.kept(id).1.then(|| self.inner.text(id)).flatten()
+        }
+
+        fn line_index(&self, id: SourceId) -> Option<&LineIndex> {
+            self.kept(id).2.then(|| self.inner.line_index(id)).flatten()
+        }
+    }
 
     fn labels() -> impl Strategy<Value = Label> {
         // Sources 0..6 over a three-entry catalog, spans up to byte
@@ -3658,7 +3806,8 @@ mod human_totality {
 
     proptest! {
         /// base.md §10: `view::human` total on arbitrary well-formed
-        /// diagnostics over arbitrary catalogs.
+        /// diagnostics over arbitrary catalogs — unresolvable ids,
+        /// incomplete resolutions, and span/text mismatches included.
         #[test]
         fn human_is_total(
             id_choice in 0usize..2,
@@ -3667,13 +3816,19 @@ mod human_totality {
             primary in labels(),
             secondaries in proptest::collection::vec(labels(), 0..4),
             notes in proptest::collection::vec("[a-z ]{0,12}", 0..3),
+            helps in proptest::collection::vec("[a-z ]{0,12}", 0..3),
+            mask in proptest::collection::vec(
+                (any::<bool>(), any::<bool>(), any::<bool>()),
+                3,
+            ),
         ) {
-            let mut catalog = SourceSet::new();
+            let mut inner = SourceSet::new();
             for text in ["p(a).\nq(b).\n", "héllo\n🦀 line\n", ""] {
-                catalog
+                inner
                     .add("gen.lp".to_owned(), text.to_owned())
                     .expect("small text admits");
             }
+            let catalog = FacetDropping { inner, mask };
             let severity = [
                 Severity::Note,
                 Severity::Warning,
@@ -3691,6 +3846,9 @@ mod human_totality {
             }
             for note in notes {
                 diagnostic = diagnostic.with_note(note);
+            }
+            for help in helps {
+                diagnostic = diagnostic.with_help(help);
             }
             let rendered = human(&diagnostic, &catalog);
             // Total and never silent: the headline always leads.
@@ -3849,7 +4007,7 @@ Append to the test module in `src/view.rs`:
     }
 
     #[test]
-    fn the_view_refuses_a_completeness_breach_naming_the_facet() {
+    fn the_view_refuses_a_completeness_breach() {
         struct NameOnly;
         impl crate::source::Sources for NameOnly {
             fn name(&self, _: SourceId) -> Option<&str> {
@@ -4182,74 +4340,94 @@ Append to the test module in `src/view.rs`:
 ```rust
     use std::cmp::Ordering;
 
-    #[test]
-    fn canonical_order_sorts_source_span_severity_identity() {
-        let at = |source: u32, start: u32, severity, id| {
-            Diagnostic::new(
-                id,
-                severity,
-                "m".to_owned(),
-                Label {
-                    location: Location {
-                        source: SourceId::new(source),
-                        span: Span::new(
-                            ByteOffset::new(start),
-                            ByteOffset::new(start + 1),
-                        )
-                        .expect("ordered endpoints"),
-                    },
-                    message: None,
+    const OTHER: DiagnosticId =
+        DiagnosticId::new("program", "unknown-name");
+
+    fn diagnostic_at(
+        source: u32,
+        start: u32,
+        severity: Severity,
+        id: DiagnosticId,
+    ) -> Diagnostic {
+        Diagnostic::new(
+            id,
+            severity,
+            "m".to_owned(),
+            Label {
+                location: Location {
+                    source: SourceId::new(source),
+                    span: Span::new(
+                        ByteOffset::new(start),
+                        ByteOffset::new(start + 1),
+                    )
+                    .expect("ordered endpoints"),
                 },
-            )
-            .expect("non-empty headline")
-        };
-        const OTHER: DiagnosticId =
-            DiagnosticId::new("program", "unknown-name");
-        // Source groups first.
+                message: None,
+            },
+        )
+        .expect("non-empty headline")
+    }
+
+    #[test]
+    fn canonical_order_groups_by_source() {
         assert_eq!(
             canonical_order(
-                &at(0, 9, Severity::Note, UNEXPECTED),
-                &at(1, 0, Severity::Error, UNEXPECTED),
+                &diagnostic_at(0, 9, Severity::Note, UNEXPECTED),
+                &diagnostic_at(1, 0, Severity::Error, UNEXPECTED),
             ),
             Ordering::Less
         );
-        // Then primary span, document order.
+    }
+
+    #[test]
+    fn canonical_order_then_primary_span() {
         assert_eq!(
             canonical_order(
-                &at(0, 2, Severity::Note, UNEXPECTED),
-                &at(0, 5, Severity::Error, UNEXPECTED),
+                &diagnostic_at(0, 2, Severity::Note, UNEXPECTED),
+                &diagnostic_at(0, 5, Severity::Error, UNEXPECTED),
             ),
             Ordering::Less
         );
-        // Then severity, worst first.
+    }
+
+    #[test]
+    fn canonical_order_puts_worst_first() {
         assert_eq!(
             canonical_order(
-                &at(0, 2, Severity::Error, UNEXPECTED),
-                &at(0, 2, Severity::Warning, UNEXPECTED),
+                &diagnostic_at(0, 2, Severity::Error, UNEXPECTED),
+                &diagnostic_at(0, 2, Severity::Warning, UNEXPECTED),
             ),
             Ordering::Less
         );
-        // Then identity.
+    }
+
+    #[test]
+    fn canonical_order_then_identity() {
         assert_eq!(
             canonical_order(
-                &at(0, 2, Severity::Error, OTHER),
-                &at(0, 2, Severity::Error, UNEXPECTED),
+                &diagnostic_at(0, 2, Severity::Error, OTHER),
+                &diagnostic_at(0, 2, Severity::Error, UNEXPECTED),
             ),
             Ordering::Less
         );
-        // Equal exactly when structurally equal.
+    }
+
+    #[test]
+    fn canonical_order_equal_iff_structural() {
         assert_eq!(
             canonical_order(
-                &at(0, 2, Severity::Error, UNEXPECTED),
-                &at(0, 2, Severity::Error, UNEXPECTED),
+                &diagnostic_at(0, 2, Severity::Error, UNEXPECTED),
+                &diagnostic_at(0, 2, Severity::Error, UNEXPECTED),
             ),
             Ordering::Equal
         );
-        // The final tiebreak is full structural comparison.
-        let plain = at(0, 2, Severity::Error, UNEXPECTED);
-        let with_note =
-            at(0, 2, Severity::Error, UNEXPECTED).with_note("n".to_owned());
-        assert_ne!(canonical_order(&plain, &with_note), Ordering::Equal);
+        let plain = diagnostic_at(0, 2, Severity::Error, UNEXPECTED);
+        let with_note = diagnostic_at(0, 2, Severity::Error, UNEXPECTED)
+            .with_note("n".to_owned());
+        assert_ne!(
+            canonical_order(&plain, &with_note),
+            Ordering::Equal
+        );
     }
 ```
 
@@ -4586,9 +4764,11 @@ const LINE: &str = "p(a). % é🦀 comment\n";
 
 /// The data-size ratio between the small and large cases.
 const SIZE_RATIO: u128 = 16;
-/// A linear claim at SIZE_RATIO may cost at most this factor —
-/// eightfold noise headroom over linear; quadratic (x256) fails.
-const LINEAR_CEILING: u128 = SIZE_RATIO * 8;
+/// A linear claim at SIZE_RATIO may cost at most this factor:
+/// fourfold noise headroom above linear (x16) and fourfold
+/// separation below quadratic (x256) — real margin in both
+/// directions.
+const LINEAR_CEILING: u128 = SIZE_RATIO * 4;
 /// A logarithmic claim across a 64x data ratio may cost at most this
 /// factor — logarithmic is ~1.4x; linear (x64) fails.
 const LOG_CEILING: u128 = 8;
@@ -4708,12 +4888,63 @@ fn human_is_linear_in_rendered_output() {
          the linear shape allows at most x{LINEAR_CEILING}"
     );
 }
+
+#[test]
+fn human_is_linear_across_sources() {
+    // Every label in its own source — the cross-source worst case,
+    // which a single-source fixture cannot measure.
+    let build = |count: u32| {
+        let mut catalog = SourceSet::new();
+        let mut diagnostic: Option<Diagnostic> = None;
+        for ordinal in 0..count {
+            let file = catalog
+                .add(format!("s{ordinal}.lp"), LINE.to_owned())
+                .expect("test text admits");
+            let label = Label {
+                location: Location {
+                    source: file,
+                    span: Span::new(
+                        ByteOffset::new(0),
+                        ByteOffset::new(4),
+                    )
+                    .expect("ordered endpoints"),
+                },
+                message: Some("here".to_owned()),
+            };
+            diagnostic = Some(match diagnostic {
+                None => Diagnostic::new(
+                    DiagnosticId::new("syntax", "unexpected-token"),
+                    Severity::Error,
+                    "shape".to_owned(),
+                    label,
+                )
+                .expect("non-empty headline"),
+                Some(diagnostic) => diagnostic.with_secondary(label),
+            });
+        }
+        (catalog, diagnostic.expect("count is never zero"))
+    };
+    let (small_catalog, small_diagnostic) = build(16);
+    let (big_catalog, big_diagnostic) =
+        build(16 * SIZE_RATIO as u32);
+    let small = median_nanos(|| {
+        std::hint::black_box(human(&small_diagnostic, &small_catalog));
+    });
+    let big = median_nanos(|| {
+        std::hint::black_box(human(&big_diagnostic, &big_catalog));
+    });
+    assert!(
+        big < small * LINEAR_CEILING,
+        "human scaled {small}ns -> {big}ns over x{SIZE_RATIO} \
+         sources; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
 ```
 
 - [ ] **Step 5: Run the shape assertions and the gate**
 
 Run: `cargo test -p themelios-base --test scaling_shape`
-Expected: 3 passed (a few seconds — sizes are tuned so the suite
+Expected: 4 passed (a few seconds — sizes are tuned so the suite
 stays cheap enough for the per-change gate).
 Then the full gate command from Task 1 Step 6. Expected: green —
 clippy compiles the bench target too, so the gate holds it without
@@ -4732,6 +4963,7 @@ git commit -m "instruments: criterion benches out-of-band, complexity-shape asse
 
 **Files:**
 - Modify: `crates/themelios-base/src/lib.rs` (the worked example),
+  `crates/themelios-base/tests/trust.rs` (the plain-data assertion),
   `.github/workflows/gate.yml` (the coverage job)
 - Create: `.cargo/mutants.toml` (accepted survivors, argued)
 
@@ -4798,16 +5030,71 @@ Expected: the example runs and passes — refusals `?`-compose through
 `Box<dyn Error>`, which is the §8.5 posture demonstrated, not merely
 claimed.
 
-- [ ] **Step 2: Set the coverage floor**
+- [ ] **Step 2: Arm the plain-data assertion**
+
+Append to `crates/themelios-base/tests/trust.rs` — base.md §8.2's
+Send + Sync half is a trait-level property with a compile-time
+instrument, held on every build forever rather than by a one-time
+scan:
+
+```rust
+#[test]
+fn every_public_type_is_plain_data() {
+    // Compiles only while every listed type is Send + Sync
+    // (docs/design/base.md §8.2); the list is every public type.
+    fn holds<T: Send + Sync>() {}
+    holds::<themelios_base::source::SourceId>();
+    holds::<themelios_base::source::Source>();
+    holds::<themelios_base::source::TooLarge>();
+    holds::<themelios_base::source::InvalidUtf8>();
+    holds::<themelios_base::source::FromBytesRefusal>();
+    holds::<themelios_base::source::SliceRefusal>();
+    holds::<themelios_base::source::SourceFacet>();
+    holds::<themelios_base::source::SourcesLawViolation>();
+    holds::<themelios_base::source::SourceSet>();
+    holds::<themelios_base::span::ByteOffset>();
+    holds::<themelios_base::span::Span>();
+    holds::<themelios_base::span::EndBeforeStart>();
+    holds::<themelios_base::span::Location>();
+    holds::<themelios_base::line::LineIndex>();
+    holds::<themelios_base::line::LineCol>();
+    holds::<themelios_base::line::ColumnEncoding>();
+    holds::<themelios_base::line::OffsetOutOfBounds>();
+    holds::<themelios_base::line::NotCharBoundary>();
+    holds::<themelios_base::line::LineOutOfBounds>();
+    holds::<themelios_base::line::ColumnOutOfBounds>();
+    holds::<themelios_base::line::ColumnNotBoundary>();
+    holds::<themelios_base::line::PositionRefusal>();
+    holds::<themelios_base::line::OffsetRefusal>();
+    holds::<themelios_base::diagnostic::DiagnosticId>();
+    holds::<themelios_base::diagnostic::Severity>();
+    holds::<themelios_base::diagnostic::Label>();
+    holds::<themelios_base::diagnostic::Diagnostic>();
+    holds::<themelios_base::diagnostic::EmptyMessage>();
+    holds::<themelios_base::view::EditorDiagnostic>();
+    holds::<themelios_base::view::EditorRange>();
+    holds::<themelios_base::view::EditorRelated>();
+    holds::<themelios_base::view::EditorRefusal>();
+}
+```
+
+Run: `cargo test -p themelios-base --test trust`
+Expected: 5 passed.
+
+- [ ] **Step 3: Set the coverage floor**
 
 Measure: `cargo llvm-cov -p themelios-base --summary-only`
 (install once with `cargo install cargo-llvm-cov` if absent).
 
 Compute the floor: measured line coverage, rounded down to a multiple
-of five, minus five. With this plan's suite the measurement is
-expected to land at or above 90, making the floor **85** — if the
-measurement computes a different floor, write that value instead and
-record the measurement in the commit message.
+of five, minus five. The formula's argument: the five-point slack
+absorbs measurement drift across toolchain and coverage-tool
+versions, so routine bumps never churn the gate; rounding to fives
+keeps the number legible as a tripwire rather than a score to chase.
+With this plan's suite the measurement is expected to land at or
+above 90, making the floor **85** — if the measurement computes a
+different floor, write that value instead and record the measurement
+in the commit message.
 
 Append to `.github/workflows/gate.yml`:
 
@@ -4826,7 +5113,8 @@ Append to `.github/workflows/gate.yml`:
       # is a defect, and mutation remains the auditor of whether the
       # tests ask anything (docs/specification.md §10.1). Set at the
       # stage-1 landing: measured coverage rounded down to a multiple
-      # of five, minus five. One number on every machine.
+      # of five, minus five — slack that absorbs toolchain and
+      # coverage-tool measurement drift. One number on every machine.
       - run: cargo llvm-cov --workspace --fail-under-lines 85
 ```
 
@@ -4837,7 +5125,7 @@ platform-independent, and the platform split stays explicit (spec
 Run locally: `cargo llvm-cov --workspace --fail-under-lines 85`
 Expected: green.
 
-- [ ] **Step 3: Run the mutation milestone audit**
+- [ ] **Step 4: Run the mutation milestone audit**
 
 Run: `cargo mutants --package themelios-base`
 (install once with `cargo install cargo-mutants` if absent; this is
@@ -4850,29 +5138,30 @@ Triage every survivor, one by one:
   copying the survivor's printed description into the pattern, with
   the argument as a comment.
 
-Create `.cargo/mutants.toml` with the one pre-declared acceptance
-(Task 3 named it when the arm was written):
+Create `.cargo/mutants.toml` — it ships with the argument and no
+patterns, because a pattern broader than its argument is a defect and
+patterns are honest only when copied from survivor descriptions
+cargo-mutants actually prints:
 
 ```toml
 # Accepted mutation survivors, each carrying its argument. This list
-# is a reviewed artifact: an entry without an argument is a defect.
+# is a reviewed artifact: an entry without an argument is a defect,
+# and a pattern broader than its argument is a defect — so patterns
+# are added only from printed survivor descriptions at triage, never
+# authored in advance.
 #
-# The TooLarge admission arms (docs/design/base.md §3.2) need a text
-# over four gibibytes to exercise, which no test allocation will do;
-# each is held by inspection — one comparison against the named
-# ceiling Source::MAX_LEN.
-exclude_re = [
-    "source.rs.*TooLarge",
-]
+# Pre-declared for triage (docs/design/base.md §3.2, Task 3): the
+# len > MAX_LEN comparison arms in Source::new and Source::from_bytes
+# need a text over four gibibytes to exercise; when their survivors
+# print, exclude them here by their printed descriptions, pinned to
+# those two arms alone.
+exclude_re = []
 ```
-
-Tighten the pattern to the survivors cargo-mutants actually prints;
-a pattern broader than its argument is a defect.
 
 Expected end state: `cargo mutants --package themelios-base` reports
 every mutant caught, unviable, or excluded-with-argument.
 
-- [ ] **Step 4: Walk the failure conditions**
+- [ ] **Step 5: Walk the failure conditions**
 
 base.md §2 names the design's failure conditions. Verify each is held,
 and record the walk in the commit message of the closing commit:
@@ -4887,9 +5176,11 @@ and record the walk in the commit message of the closing commit:
 - *A panic escapes, or failure semantics undocumented* — the totality
   and refusal laws (Tasks 3, 5, 9, 11); `missing_docs` denied with
   every operation's rustdoc naming its refusal type and cost.
-- *A result depends on non-inputs, or hidden mutation* — no ambient
-  state in the crate. Verify mechanically:
-  `rg -n "static|RefCell|Cell<|Mutex|thread_local|std::fs|std::net|std::env" crates/themelios-base/src`
+- *A result depends on non-inputs, or hidden mutation* — the
+  Send + Sync half is held permanently by Step 2's compile-time
+  assertion; the remainder is textual and stays rg (ambient state and
+  lock-based interior mutability are Sync-invisible):
+  `rg -n "static|Mutex|RwLock|thread_local|std::fs|std::net|std::env" crates/themelios-base/src`
   Expected: no hits (`tests/` may read the bless switch; `src/` may
   not).
 - *A dependency in the shipped closure, unsafe code, or ASP knowledge
@@ -4919,16 +5210,16 @@ refusal column is exactly the operation's error type, and every
 public operation not in the table is total. Expected: exact
 agreement; any divergence is a defect in the code, not the table.
 
-- [ ] **Step 5: Final gate, clean tree**
+- [ ] **Step 6: Final gate, clean tree**
 
 Run: `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`
 Expected: green, from a clean working tree.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add crates/themelios-base/src .github/workflows/gate.yml .cargo/mutants.toml
-git commit -m "Stage close: worked example, coverage floor armed, mutation audit clean, failure walk recorded"
+git add crates/themelios-base .github/workflows/gate.yml .cargo/mutants.toml
+git commit -m "Stage close: worked example, plain-data assertion, coverage floor armed, mutation audit clean, failure walk recorded"
 ```
 
 ---
