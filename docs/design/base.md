@@ -139,10 +139,12 @@ pub enum FromBytesRefusal {
 }
 
 impl Source {
-    /// The admission ceiling: offsets are u32, so text is at most
-    /// u32::MAX bytes. The name exists so the limit is never a bare
+    /// The admission ceiling: offsets are u32 and every text has one
+    /// more line start than newline bytes, so text is at most
+    /// u32::MAX - 1 bytes — the line count then fits u32 for every
+    /// admissible text. The name exists so the limit is never a bare
     /// numeral at a call site (spec §5.2, no magic numbers).
-    pub const MAX_LEN: usize = u32::MAX as usize;
+    pub const MAX_LEN: usize = u32::MAX as usize - 1;
 
     pub fn new(id: SourceId, text: String)
         -> Result<Source, TooLarge>;
@@ -283,6 +285,7 @@ One implementor ships, for tests, witnesses, and single-file tools:
 /// use, not this crate seizing minting. Satisfies both laws by
 /// construction: it admits under the Source doors and builds each
 /// LineIndex eagerly at add — an explicit derivation, not lazy state.
+#[derive(Clone, Debug)]
 pub struct SourceSet { /* private */ }
 
 impl SourceSet {
@@ -290,6 +293,9 @@ impl SourceSet {
     pub fn add(&mut self, name: String, text: String)
         -> Result<SourceId, TooLarge>;
 }
+
+impl Default for SourceSet { /* new() — the std idiom for an
+                                argument-free constructor */ }
 
 impl Sources for SourceSet { /* ... */ }
 ```
@@ -505,8 +511,8 @@ position, and the contract, not the type system, is what forbids it.
 
 **Computational cost.** `of` is O(n) in the text — this linearity is what
 keeps total reparse cheap (spec §6.8), and the scaling
-bench holds it. `position` and `offset` are O(log lines + log non-ASCII
-in the line). `line_count` is O(1) (a stored count); `line_span` is O(1)
+bench holds it. `position` and `offset` are O(log lines + log
+non-ASCII). `line_count` is O(1) (a stored count); `line_span` is O(1)
 (a bounds check and an array lookup — the terminator exclusion is
 deterministic from adjacent line starts). A changed text is a new
 `Source` and a new index; there is no edit application here (§11).
@@ -603,7 +609,7 @@ rendering prints notes, then helps, the compiler convention.
 /// A report about source. Located by construction: the primary label is
 /// required, so "a diagnostic without a precise span" is
 /// unrepresentable (spec §4).
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Diagnostic {
     /* private:
        id:        DiagnosticId,
