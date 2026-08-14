@@ -206,9 +206,11 @@ gate runs, not merely compiles, and each carries a **name** — the citation
 form used throughout this document, per the no-magic-numbers policy
 (§5.2): ordinals renumber when the roster grows; names do not. Together
 the witnesses are the self-contained definition of "expressive enough":
-v1 is not done while any witness is missing, and a witness whose
-comparator side the roster (§3.1) carries, and which comes out less clear
-or less safe than that rendering, is a failure (§4).
+v1 is not done while any witness is missing — save *theory-uniformity*
+while §9.5's contingency stands invoked on the record, which binds it at
+the design level (§2, item 5) until the clingcon adapter lands — and a
+witness whose comparator side the roster (§3.1) carries, and which comes
+out less clear or less safe than that rendering, is a failure (§4).
 
 1. **first-solve.** Construct a small program twice — once through
    macros, once through spelled-out constructors — verify the two are
@@ -254,7 +256,9 @@ or less safe than that rendering, is a failure (§4).
 15. **theory-uniformity.** Solve a constraint program under the clingcon
     backend; read constraint assignments as typed data; the
     session-driving and outcome-reading code differs from *first-solve*
-    only in backend configuration.
+    only in backend configuration. Under §9.5's named contingency this
+    witness binds at the design level per §2 item 5, demonstrated
+    through the propagator surface, until the clingcon adapter lands.
 16. **hostile-input.** The public surface meets adversarial, malformed,
     and absurdly deep input the way a service boundary receives it from
     an untrusted caller — the pythia-class deployment and the
@@ -313,7 +317,8 @@ constitution's own rules (§1.2, §1.4, §1.5) — so a §2 amendment owes its
 §4 form, and completeness here is checkable by inspection:
 
 - A witness from §3 cannot be expressed, or is missing from the executed
-  examples.
+  examples — save *theory-uniformity* while §9.5's contingency stands
+  invoked on the record (§2, item 5).
 - A witness with a comparator side in the roster (§3.1) comes out worse
   than that evidenced rendering in clarity or safety.
 - A panic escapes the public surface on any input, or a public operation
@@ -500,12 +505,10 @@ golden cases, so message quality is a diffable artifact (the
 
 ### 6.7 Token-stream equivalence
 
-The public surface's name in words, per §1.4 — "≈" serves as prose
-shorthand for it after this introduction, never as the API's name.
-Structural token-stream equivalence plus comment-sequence comparison,
-native to the tier: any consumer claiming a layout-only or
-meaning-preserving transformation gets its certificate and its witness
-here.
+The public surface's name in words, per §1.4. Structural token-stream
+equivalence plus comment-sequence comparison, native to the tier: any
+consumer claiming a layout-only or meaning-preserving transformation
+gets its certificate and its witness here.
 
 ### 6.8 Incrementality preconditions
 
@@ -756,7 +759,7 @@ surface proves substantially larger than its registration-shaped
 appearance, the clingcon adapter descopes from v1 first and resumes
 immediately after; the uniformity clause (§2, item 5) then binds at the
 design level, demonstrated through the propagator surface instead — and
-§2 and §4 carry this condition in their own text.
+§2, §3, and §4 carry this condition in their own text.
 
 ### 9.6 The extension surfaces
 
