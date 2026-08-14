@@ -59,7 +59,12 @@ and a quoted `"…"` names a token by its spelling where that reads
 better than its name. Where a rule resists symbolic statement —
 modes, regions, nesting, tie-breaks — a canonical block states it as
 a **worded rule**, a name introduced by `:` rather than `=`, and the
-words are exactly as normative as the symbols. In the macro dialect's
+words are exactly as normative as the symbols. A quoted lowercase
+word that is no §4 token's spelling — `"default"`, `"unary"`, and
+kin (§5.9) — denotes an IDENTIFIER with exactly that spelling, never
+a reserved token. Inside `"…"` and `[…]` in the lexical blocks, a
+backslash escapes the character after it (`"\""` is the double-quote
+character). In the macro dialect's
 blocks (§9), `RUST-`-prefixed uppercase names denote Rust's token
 model rather than §4's roster. Productions are written for precision,
 not for implementation shape: the parser's organization is the syntax
@@ -320,6 +325,9 @@ is precisely why the dialect is declared rather than inferred.
 "#true"
 
 "not"
+
+HASH-WORD = "#" [A-Za-z0-9_]*   — a lexical error unless it spells a
+                                  keyword above
 ```
 
 `not` is the language's one reserved word: it always lexes as the
@@ -1299,7 +1307,8 @@ recorded exception with its argument.
 - `&a { {x : y} }` — a `:` at depth one opens no condition and no
   production admits it; a syntax error (§4.7, §5.8).
 - `#sum { : }`, `#sum { a : }` — empty elements and conditions,
-  legal (§5.3).
+  legal in body position (§5.3); errors as heads, where the element
+  requires a literal after its colon.
 - `1 < X < 5` — one chained comparison literal (§5.2).
 - `|X;Y|` — pooled absolute value (§5.1).
 - `#include < lib > .` — legal at the pin, three tokens (§5.9); the
