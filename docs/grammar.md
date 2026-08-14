@@ -56,9 +56,14 @@ is EBNF over the token roster: `UPPERCASE` names are tokens from §4,
 `lowercase` names are nonterminals, `::=` defines, `|` alternates,
 `[ x ]` is optional, `{ x }` repeats zero or more times, `( )` groups,
 and a quoted `"…"` names a token by its spelling where that reads
-better than its name. Productions are written for precision, not for
-implementation shape: the parser's organization is the syntax tier's
-design, held to *this* language.
+better than its name. Where a rule resists symbolic statement —
+modes, regions, nesting, tie-breaks — a canonical block states it as
+a **worded rule**, a name introduced by `:` rather than `=`, and the
+words are exactly as normative as the symbols. In the macro dialect's
+blocks (§9), `RUST-`-prefixed uppercase names denote Rust's token
+model rather than §4's roster. Productions are written for precision,
+not for implementation shape: the parser's organization is the syntax
+tier's design, held to *this* language.
 
 The fenced grammar blocks of §4, §5, §6, and §9 are the canonical
 statement: they carry no commentary or citations, and concatenated in
@@ -142,6 +147,14 @@ grammar level since before v5.7.1: the only grammar-file change on the
 5.7→5.8 line removed declared-but-unused parser terminals, and the
 v5.8.0→v5.8.2 lexer changes are generator mechanics.
 
+**The secondary cross-check's obligation.** The pinned
+tree-sitter-clingo is consumed out of band: at the syntax tier's
+landing, and at every pin move thereafter, the corpus is parsed under
+both this grammar's implementation and the pinned tree-sitter grammar,
+and every disagreement is read against the authority — agreement is
+corroboration, disagreement lands in §11 like any divergence. Its
+discharge lives with the syntax tier's instruments (spec §10.1).
+
 **The ASP-Core-2 dialect's authority is a document.** For that dialect
 the authority is the standard itself, as the ASP Standardization
 Working Group restated it in *ASP-Core-2 Input Language Format*, TPLP
@@ -201,13 +214,18 @@ the clingo dialect — the default. The ASP-Core-2 dialect's lexical
 deltas are exactly two, both stated in §6: the string rule and comment
 nesting; every other token below is shared by both dialects.
 
-**The matching discipline, stated once and normative.** Tokens are
-recognized by **maximal munch**: at each point the longest match wins,
-and among rules matching the same length, the more specific rule wins —
-concretely, a quoted spelling beats a character-class rule of the same
-length (`not` is the keyword, never an IDENTIFIER; a lone `;` inside a
-theory expression is structural, never a one-character THEORY-OP).
-Every tie this document relies on is resolved by these two sentences.
+**The matching discipline, stated once and normative.**
+
+```
+MATCHING : tokens are recognized by maximal munch — at each point the
+           longest match wins; among rules matching the same length,
+           a quoted spelling beats a character-class rule.
+```
+
+Every tie this document relies on is resolved by that rule: `not` is
+the keyword, never an IDENTIFIER; a lone `;` inside a theory
+expression is structural, never a one-character THEORY-OP; `***` is
+`**` `*`.
 
 ### 4.1 Whitespace and comments
 
@@ -218,10 +236,11 @@ LINE-COMMENT    = "%" not beginning "%*", through end of line
 SHEBANG-COMMENT = "#!", through end of line
 
 BLOCK-COMMENT   : "%*" opens, "*%" closes, and they nest by depth.
-                  Inside a block comment, a "%" that begins neither
-                  "%*" nor "*%" silences the rest of its line — openers
-                  and closers on that line are inert. End of input
-                  inside a block comment is a lexical error.
+                  Scanning inside a block comment recognizes, in
+                  order: "%*" (one level deeper), "*%" (one level
+                  shallower), then any other "%" — which silences the
+                  rest of its line, openers and closers included. End
+                  of input inside a block comment is a lexical error.
 ```
 
 Whitespace and comments may appear between any two tokens and bind to
@@ -359,11 +378,16 @@ Within a theory expression:
   - whitespace and comments as everywhere.
 
 The region where these rules hold: from the "{" that opens a theory
-atom's elements through its matching "}", excluding each element's
-condition (from the structural ":" that introduces it to the element's
-end at ";" or "}"), and continuing through the atom's guard when one
-follows the "}". The atom's name and its optional parenthesized
-arguments lex in normal mode.
+atom's elements through its matching "}", and continuing through the
+atom's guard when one follows that "}". Each element's condition is
+excluded: a structural ":" at the element's own depth — zero unclosed
+"(" "[" "{" since the element began — opens the condition, which runs
+to the element's end, the first ";" or the closing "}" at that same
+depth; a ":" at greater depth opens nothing. The guard extends from
+the theory operator after the "}" through the longest token sequence
+derivable as theory-opterm; the first token that cannot extend it —
+"," ";" "." among them — lexes in normal mode. The atom's name and
+its optional parenthesized arguments lex in normal mode.
 ```
 
 The consequences worth spelling out, each a §11 seed: `..`, `:=`,
@@ -574,10 +598,14 @@ sign.
 
 ```
 conditional-literal ::= literal ":" [ condition ]
+
+termination : after the ":", a "," extends the condition; a
+              conditional literal ends only at ";" or at the
+              statement's ".".
 ```
 
-**The condition-termination rule, stated as the disambiguation it
-is.** After the colon, commas extend the condition: in
+**The condition-termination rule, canonical above.** After the colon,
+commas extend the condition: in
 `:- p : q, r, s.` all of `q, r, s` condition `p`. A conditional
 literal in a body is therefore ended only by `;` or by the statement's
 dot (`nongroundgrammar.yy:639,648`) — to continue the body after one,
@@ -595,24 +623,36 @@ head ::= literal
 
 disjunction ::= disjunction-element separator disjunction-element
                 { separator disjunction-element }
+              | literal ":" [ condition ]
 separator   ::= ";" | "|" | ","
 disjunction-element ::= literal [ ":" [ condition ] ]
+
+separation : a "," may follow only an element without a condition;
+             after a condition, the next separator is ";" or "|".
 ```
 
-A disjunction has at least two elements; its separators are `;`, `|`,
-and `,`, mixable in one head — with one asymmetry, read from the
-authority's own machinery (`nongroundgrammar.yy:604–625`): **a comma
-may follow only an element without a condition.** After a condition,
-commas extend the condition (§5.4's rule again), so the next separator
-must be `;` or `|`. The comma-separated head — `a, b.` — parses as a
-disjunction node; what the engine makes of it is the tiers' concern,
-and this document records only the shape. One stated hole, present at
-the authority pin and documented in its grammar's own comments
-(`nongroundgrammar.yy:609–610`): an *empty-conditioned* element
-directly before `|` — `p(X) : | q(X)` — does not parse; write `;`
-there. `not p.` and `#false.` are grammatical heads (a head is a
-literal, sign included); head aggregates and theory atoms stand in
-head position unsigned.
+A disjunction has at least two elements — or exactly one, when that
+one carries a condition: the singleton conditioned head
+`p(X) : q(X).` is a one-element disjunction, derived by the second
+alternative exactly as the authority derives it
+(`nongroundgrammar.yy:622–625`); its condition may be empty
+(`a : .`); a lone *unconditioned* literal is a `literal` head, never
+a disjunction. The separators are `;`, `|`, and `,`, mixable in one
+head — with the asymmetry the separation rule states, read from the
+authority's own machinery (`nongroundgrammar.yy:604–625`): after a
+condition, commas extend the condition (§5.4's rule again), so the
+next separator must be `;` or `|`. The comma-separated head —
+`a, b.` — parses as a disjunction node; what the engine makes of it
+is the tiers' concern, and this document records only the shape. One
+stated hole, present at the authority pin and documented in its
+grammar's own comments (`nongroundgrammar.yy:609–610`): an
+*empty-conditioned* element directly before `|` — `p(X) : | q(X)` —
+does not parse. The collision §5.1 points here is the cause: after
+the empty condition, a `|` could equally open an absolute-value term
+inside a condition literal, and the authority's grammar declines to
+decide between the readings — write `;` there. `not p.` and
+`#false.` are grammatical heads (a head is a literal, sign included);
+head aggregates and theory atoms stand in head position unsigned.
 
 ### 5.6 Bodies
 
@@ -648,14 +688,13 @@ optimize-statement ::= ( "#minimize" | "#maximize" )
                        "{" [ optimize-elements ] "}" "."
 optimize-elements ::= optimize-element { ";" optimize-element }
 optimize-element  ::= term [ "@" term ] [ "," terms ]
-                      [ ":" [ optimize-condition ] ]
-optimize-condition ::= literal { "," literal }
+                      [ ":" [ condition ] ]
 ```
 
 `head :- .` and the empty constraint `:- .` are both grammatical
 (`nongroundgrammar.yy:662–668`). The weak constraint's bracket comes
-*after* the statement's dot — the first of three statement families
-whose dot is not their last token (§5.11) — and carries weight,
+*after* the statement's dot — the first of the four
+annotation-after-dot families §5.11 enumerates — and carries weight,
 optional `@`-priority, and an optional term tuple. Optimize statements
 carry semicolon-separated elements of the same weight-priority-tuple
 shape with an optional condition; empty braces are legal; a bare colon
@@ -715,6 +754,11 @@ show-statement ::= "#show" "."
                  | "#show" term ":" body-list "."
 signature      ::= [ "-" ] IDENTIFIER "/" NUMBER
 
+signature-reading : "#show" followed by [ "-" ] IDENTIFIER "/" NUMBER
+                    and the statement "." — trivia legal throughout —
+                    is the signature form; anything else after
+                    "#show" is the term form.
+
 project-statement ::= "#project" signature "."
                     | "#project" atom conditional-dot
 defined-statement ::= "#defined" signature "."
@@ -729,7 +773,7 @@ conditional-dot ::= "." | ":" "." | ":" body-list "."
 const-statement ::= "#const" IDENTIFIER "=" constant-term "."
                     [ "[" ( "default" | "override" ) "]" ]
 
-constant-term ::= constant-term BINOP-NI constant-term
+constant-term ::= constant-term BINOP-NO-INTERVAL constant-term
                 | UNOP constant-term
                 | "(" ")" | "(" "," ")"
                 | "(" constant-terms [ "," ] ")"
@@ -738,8 +782,8 @@ constant-term ::= constant-term BINOP-NI constant-term
                 | "|" constant-term "|"
                 | IDENTIFIER | NUMBER | STRING | "#inf" | "#sup"
 constant-terms ::= constant-term { "," constant-term }
-BINOP-NI ::= "^" | "?" | "&" | "+" | "-"
-           | "*" | "/" | "\" | "**"
+BINOP-NO-INTERVAL ::= "^" | "?" | "&" | "+" | "-"
+                    | "*" | "/" | "\" | "**"
 
 script-statement  ::= "#script" "(" IDENTIFIER ")"
                       SCRIPT-BODY "#end" "."
@@ -762,23 +806,21 @@ atom-definition   ::= "&" IDENTIFIER "/" NUMBER ":" IDENTIFIER ","
                       ( "head" | "body" | "any" | "directive" )
 ```
 
-**The show-signature reading, stated as the disambiguation it is.**
-`#show` followed by an optional `-`, a name, `/`, a numeral, and the
-statement dot — whitespace and comments legal throughout — is the
-signature form; anything else after `#show` is the term form. The
-authority implements this as bounded lookahead to the dot
+**The show-signature reading, canonical above.** The
+authority implements it as bounded lookahead to the dot
 (`nongroundlexer.xch:53,81`), so `#show p/2.` is a signature while
 `#show p/2 : q.` and `#show (p/2).` are term forms — the trailing
 context decides.
 
-**Annotations after the dot.** `#external` and `#const` join the weak
-constraint (§5.7) as the statement families whose dot may be followed
-by a bracketed annotation: `#external p. [t]` with any term,
+**Annotations after the dot.** `#external`, `#const`, and
+`#heuristic` join the weak constraint (§5.7) in the four-family
+enumeration §5.11 states: `#external p. [t]` with any term,
 `#const n = c. [default]` or `[override]` with exactly those two
-spellings as identifiers (`nongroundgrammar.yy:760–806`). An
-`#external` without the bracket takes the engine's default; the value
-inside is any term, with the meaningful vocabulary an admission
-concern.
+spellings as identifiers (`nongroundgrammar.yy:760–806`), and
+`#heuristic`'s bracket — *mandatory*, where the other three are
+optional — per its production above. An `#external` without the
+bracket takes the engine's default; the value inside is any term,
+with the meaningful vocabulary an admission concern.
 
 **The constant-term subset.** `#const` bodies exclude variables,
 anonymous variables, pools, and intervals — the production above is
@@ -800,7 +842,7 @@ and atom definitions may interleave in any order at the pin
 ### 5.10 The term-value sublanguage
 
 ```
-value-term ::= value-term BINOP-NI value-term
+value-term ::= value-term BINOP-NO-INTERVAL value-term
              | UNOP value-term
              | "|" value-term "|"
              | "(" ")" | "(" "," ")"
@@ -838,12 +880,14 @@ statement ::= rule
 ```
 
 A program is a sequence of statements, empty included. Every
-statement contains a dot, and for exactly three families — weak
-constraints, `#external`, `#const` — the dot may be followed by a
-bracketed annotation, so **the dot is not always the statement's last
-token**: a fact every tool that scans for statement boundaries must
-carry, stated here so none rediscovers it. The clingo dialect has no
-query statement; §6 adds it for the ASP-Core-2 dialect as the final
+statement contains a dot, and for exactly four families the dot is
+followed by a bracketed annotation — **weak constraints** and
+**`#heuristic`** always, **`#external`** and **`#const`** optionally —
+so **the dot is not always the statement's last token**: a fact every
+tool that scans for statement boundaries must carry, stated here once
+(§5.7 and §5.9 cite it) so none rediscovers it, and for `#heuristic`
+the dot is *never* the last token. The clingo dialect has no query
+statement; §6 adds it for the ASP-Core-2 dialect as the final
 statement of a program.
 
 ## 6. The ASP-Core-2 dialect
@@ -862,6 +906,10 @@ checking is admission, above.
 ```
 program (ASP-Core-2 dialect) ::= { statement } [ query ]
 query ::= atom "?"
+
+query-reading : the query reading applies exactly when the "?" is the
+                program's final token, trivia aside; a "?" anywhere
+                else is the bitwise-or operator.
 ```
 
 The standard's one construct with no clingo counterpart
@@ -869,15 +917,18 @@ The standard's one construct with no clingo counterpart
 query, an atom followed by the query mark, no dot. Variables are legal
 in it; the standard defines non-ground query answering by
 substitution, and the answer semantics is cautious — which is what
-lowers it onto the query surface (spec §9.7). The disambiguation is
-positional and deterministic: at statement level, `?` after a
-complete atom is the query, and any statement after a query is a
-syntax error by the production above. Inside terms, `?` remains the
-bitwise-or of §5.1 in both dialects — `x(1?2).` stays a fact about a
-term, and `p ? q.` is an error in both dialects (in this one, a query
-followed by a stray statement; in clingo's, a term where a literal is
-required). The atom here is §5.2's shape — a superset of the
-standard's classical literal — per the additive posture.
+lowers it onto the query surface (spec §9.7). The query-reading rule
+makes the disambiguation positional, deterministic, and *additive*:
+`p(1)?` ending the program is the query; `p ? q = X.` parses in this
+dialect exactly as in clingo's — a comparison-headed rule, since the
+`?` is not final; `p ? q.` is the same syntax error in both dialects
+(a term where a literal is required); and `x(1?2).` stays a fact
+about a term. No clingo-dialect program changes membership under this
+dialect — the additive posture holds without exception, and every
+conformant program's query, standing at the program's end as the
+standard requires, is recognized. The atom here is §5.2's shape — a
+superset of the standard's classical literal — per the additive
+posture.
 
 ### 6.2 The string rule
 
@@ -1061,30 +1112,53 @@ Rust's token model, with this mapping onto §4's roster:
 
 ```
 In macro bodies:
-  - a Rust identifier lexes by §4.2's classes: lowercase-initial is
-    IDENTIFIER, uppercase-initial is VARIABLE, "_" is ANONYMOUS;
-    "not" is the keyword;
+  - a Rust identifier lexes by the name classes: lowercase-initial is
+    IDENTIFIER, uppercase-initial is VARIABLE, "_" alone is ANONYMOUS;
+    "not" is the keyword; an identifier no class matches whole
+    ("__", "_1") is a dialect error;
   - a Rust integer literal is NUMBER, by value;
-  - a Rust string literal is STRING, by value;
-  - "#" immediately before a keyword word forms the §4.5 keyword;
-  - Rust punctuation maps one-to-one onto §4.6; a multi-character
-    operator exists where its characters are adjacent and joined,
-    and §4.7's operator runs form the same way inside theory
-    expressions;
+  - a Rust string literal is STRING, by value — raw strings included;
+  - span adjacency is part of the dialect: "#" forms a keyword exactly
+    when it is span-adjacent to the keyword's word — and, for "#sum+",
+    to the "+" beyond it; a "#" separated from its word is a dialect
+    error;
+  - Rust punctuation maps one-to-one onto the operator roster; a
+    multi-character operator exists where its characters are adjacent
+    and joined, and theory-operator runs form the same way inside
+    theory expressions;
   - comments do not exist in the dialect;
-  - "$" begins a splice (below) and exists only here.
+  - "$" begins a splice by token order alone: it takes the next
+    identifier or parenthesized group, spacing irrelevant, and exists
+    only here;
+  - every Rust token this mapping does not name is a dialect error at
+    the macro site: float, char, and byte literals, suffixed
+    numerals, lifetimes, and raw identifiers — "r#not" is an error,
+    never a way to spell the reserved name.
 
 splice ::= "$" RUST-IDENTIFIER
          | "$" "(" RUST-EXPRESSION ")"
 
-term (macro dialect) ::= any §5.1 term | splice
+term (macro dialect)        ::= any term        | splice
+theory-term (macro dialect) ::= any theory-term | splice
 ```
 
+Two of the mapping's rules deserve their mechanism named. Rust's token
+model records adjacency only between punctuation tokens, so the
+`#`-keyword rule cannot ride on it: *span adjacency* — the tokens'
+source positions abutting — is declared part of the dialect's
+definition, which is what decides `# const` (an error) and assembles
+`#sum+` from its three Rust tokens. The splice marker needs no such
+rule: `$` binds its operand by token order, so `$x`, `$ x`, and
+`$ (…)` all splice.
+
 **Splices.** `$name` splices the value of a Rust binding; `$( … )`
-splices any Rust expression. A splice stands exactly where a term may
-stand — term position is the v1 floor, and further splice sites
-(names, tuples, statements) are future vocabulary, each admitted on
-argument as the macro tiers accrete (spec §8). The spliced value
+splices any Rust expression. A splice stands where a term *or a
+theory term* may stand — both positions are the v1 floor, so
+`&sum { $x } <= $bound` is expressible, and the marker's absence from
+the theory-operator alphabet (§4.7) is what keeps it unambiguous
+there. Further splice sites (names, tuples, statements) are future
+vocabulary, each admitted on argument as the macro tiers accrete
+(spec §8). The spliced value
 crosses through the conversion traits, and what fails to convert
 refuses at the constructor doors the expansion calls (spec §7.3; §8
 law 2): a macro expands to the public constructors, so a splice is
@@ -1131,8 +1205,9 @@ the term families composes by *iteration* (statement sequences, body
 lists, element lists, condition lists, guard chains, disjunction
 elements) plus a fixed number of layers: a path from `program` down
 to a term family crosses a constant number of productions — for
-instance `program → rule → head → disjunction-element → literal →
-comparison → term` — fixed by this grammar, independent of input.
+instance `program → rule → head → disjunction → disjunction-element →
+literal → comparison → term` — fixed by this grammar, independent of
+input.
 Aggregates do not nest (an aggregate is a body or head element, never
 a literal, and conditions hold literals only); conditional literals
 do not nest; statements are flat. The lexer recurses nowhere: §4 is
@@ -1175,9 +1250,12 @@ recorded exception with its argument.
   observe and record.
 - `0X1F` — NUMBER `0` then VARIABLE `X1F`; syntax error downstream.
 - `__` and `_1` — two tokens each, never names (§4.2).
-- `%* a % *% b *%` — one comment closing at the second `*%`
-  (line-silencing, §4.1); under the ASP-Core-2 dialect, closes at the
-  first (§6.3).
+- `%* a % *%` followed, on the next line, by `b *%` — one comment
+  closing at the second `*%`: the first line's closer is silenced, the
+  next line's counts (§4.1). All on one line, `%* a % *% b *%` is an
+  unterminated comment — both closers silenced — and a lexical error.
+  Under the ASP-Core-2 dialect either input closes at the first `*%`
+  (§6.3).
 - `%* %* *%` — unterminated under the clingo dialect; closed under
   ASP-Core-2 (§6.3).
 - `"a\nb"`, `"a\b"`, a string spanning lines — the string meaning
@@ -1209,6 +1287,17 @@ recorded exception with its argument.
 - `p(X) : | q(X)` — the stated hole (§5.5); error at the pin.
 - `:- p : .` — empty condition after a conditional literal, legal
   (§5.4).
+- `a : b.`, `p(X) : q(X) :- r.`, `a : .` — singleton conditioned
+  heads, legal as one-element disjunctions (§5.5).
+- `#heuristic a. [1,sign]` — the mandatory bracket after the dot; the
+  fourth annotation family (§5.9, §5.11).
+- `&a { t : p((x;y)), q ; u }` — the `;` inside the condition's pool
+  stays in the condition; only the depth-zero `;` ends the element
+  (§4.7).
+- `:- &sum { x } >= 5, not p.` — the guard ends before the `,`; `not
+  p` lexes in normal mode (§4.7).
+- `&a { {x : y} }` — a `:` at depth one opens no condition and no
+  production admits it; a syntax error (§4.7, §5.8).
 - `#sum { : }`, `#sum { a : }` — empty elements and conditions,
   legal (§5.3).
 - `1 < X < 5` — one chained comparison literal (§5.2).
@@ -1227,13 +1316,32 @@ recorded exception with its argument.
 
 **Dialect seeds.**
 
-- `p(1)?` as the final statement — the query, ASP-Core-2 dialect
-  only (§6.1); a syntax error under the clingo dialect.
-- `p ? q.` — an error in both dialects, differently (§6.1).
+- `p(1)?` as the program's final token — the query, ASP-Core-2
+  dialect only (§6.1); a syntax error under the clingo dialect.
+- `p ? q.` — the same syntax error in both dialects: the `?` is not
+  final, so the term reading holds and no literal results (§6.1).
+- `p ? q = X.` and `p(1)?2 > 3.` — comparison-headed rules,
+  grammatical and identical under both dialects; the query-reading
+  rule does not fire because the `?` is not the program's final token
+  (§6.1).
 - `x(1?2).` — a fact in both dialects; `?` stays bitwise-or inside
   terms (§6.1).
 - `"a\" b"` and `"a\"` — the standard's maximal-munch string
   readings (§6.2).
+
+**Macro-dialect seeds** (held by the macro tier's tests rather than
+the differential; listed here so the seed corpus is one list).
+
+- `# const` — a dialect error: keyword formation requires span
+  adjacency (§9).
+- `#sum+` inside a macro aggregate — one keyword assembled from three
+  span-adjacent Rust tokens (§9).
+- `$x`, `$ x`, `$( base + margin )` — splices; spacing irrelevant
+  (§9).
+- `&sum { $x } <= $bound` — splices in theory-term position (§9).
+- `r#not`, `1.5`, `1u8`, `'a`, `__` — dialect errors at the macro
+  site (§9).
+- `r"raw"` — STRING, by value (§9).
 
 ## 12. The clingo 6.0 watch
 
