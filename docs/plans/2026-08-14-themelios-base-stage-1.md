@@ -21,7 +21,7 @@ instruments the design names (base.md §10); coverage (`cargo-llvm-cov`)
 and mutation (`cargo-mutants`) run as externally installed cargo tools
 and never enter any manifest.
 
-**Design of record:** `docs/design/base.md` at commit `8d565ce` — every
+**Design of record:** `docs/design/base.md` at commit `0855be0` — every
 task derives from it and cites the sections it implements. Governing
 context: `docs/specification.md` §10–§11 (instruments and build order).
 Where this plan and base.md disagree, base.md governs and the
@@ -32,7 +32,7 @@ disagreement is a defect here.
 What this plan must be, stated so a review can check drift against it:
 
 > A faithful and complete derivation of `docs/design/base.md` at
-> `8d565ce`: every task builds a surface, law, or instrument that
+> `0855be0`: every task builds a surface, law, or instrument that
 > document states for stage 1; every surface, law, and instrument it
 > states for stage 1 is built by some task; and no task builds anything
 > beyond it — no reserved seam (base.md §11), no non-goal, no surface
