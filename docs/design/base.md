@@ -118,10 +118,12 @@ four billion sources exceeds any embedding.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Source { /* id, text: private */ }
 
-// Refusal conditions are each defined once, as structs; every
-// operation's error type is exactly the condition — or enum of
-// conditions — it can produce, so a signature never claims a refusal
-// its operation cannot issue.
+// Refusal conditions shared across operations are defined once, as
+// structs, and wrapped where used; a condition private to one
+// operation may live inline in its enum. Every operation's error
+// type is exactly the condition — or enum of conditions — it can
+// produce, so a signature never claims a refusal its operation
+// cannot issue.
 
 /// Text longer than `Source::MAX_LEN` bytes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -160,10 +162,16 @@ impl Source {
     pub fn slice(&self, span: Span) -> Result<&str, SliceRefusal>;
 }
 
+/// The shared boundary condition: an offset inside a multi-byte
+/// character. Defined once, at the first door where span meets text;
+/// §5's position queries wrap the same condition.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct NotCharBoundary { pub offset: ByteOffset }
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SliceRefusal {
     OutOfBounds { end: ByteOffset, max: ByteOffset },
-    NotCharBoundary { offset: ByteOffset },
+    NotCharBoundary(NotCharBoundary),
 }
 ```
 
@@ -428,8 +436,8 @@ pub enum ColumnEncoding { Utf8Bytes, CodePoints, Utf16Units }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct OffsetOutOfBounds { pub offset: ByteOffset, pub max: ByteOffset }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct NotCharBoundary { pub offset: ByteOffset }
+// The boundary condition NotCharBoundary is §3.2's shared struct,
+// wrapped here by PositionRefusal.
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct LineOutOfBounds { pub line: u32, pub line_count: u32 }

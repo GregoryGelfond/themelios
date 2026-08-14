@@ -80,9 +80,10 @@ argument lives.
   `dead_code`, `missing_docs` (base.md §10; spec §5.2, §10.4) — and
   clippy at its strictest coherent setting: `pedantic` denied via the
   workspace manifest, every exclusion a named departure with its
-  argument beside it. A pedantic lint that fires unforeseen during
-  execution is repaired in code or added to that table with its
-  argument at the task's commit — never waived silently.
+  argument beside it. Any denied lint — rustc or clippy — that fires
+  unforeseen during execution is repaired in code or allowed in the
+  matching lints table with its argument at the task's commit — never
+  waived silently.
 - **Documentation is executable:** every public operation's rustdoc
   names its refusal type and cost, matching the base.md §9 table; doc
   examples run as doctests; nothing is claimed that a test does not
@@ -181,9 +182,10 @@ unused_must_use = "deny"
 dead_code = "deny"
 
 # The strictest coherent setting is the baseline; each allow below is
-# a named departure carrying its argument. An unforeseen pedantic lint
-# firing during a later task is repaired in code or added here with
-# its argument at that task's commit — never waived silently.
+# a named departure carrying its argument. Any denied lint — rustc or
+# clippy — firing unforeseen during a later task is repaired in code
+# or allowed in the matching lints table with its argument at that
+# task's commit — never waived silently.
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
 # The design's names repeat their module's concern (source::Source,
@@ -194,10 +196,11 @@ module_name_repetitions = "allow"
 # place, resting on the admission-ceiling invariant; blanket try_from
 # ceremony would restate what is already argued.
 cast_possible_truncation = "allow"
-# The crate is plain data end to end; annotating every accessor
-# #[must_use] restates what the denied unused group already holds at
-# call sites. The by-value builders, where a dropped result loses the
-# build, do carry #[must_use].
+# Every fallible operation returns Result — must-use by std's own
+# annotation — and the by-value builders, where a dropped result
+# loses the build, carry #[must_use] explicitly. What remains are
+# pure accessors of plain data, where a discarded call is harmless;
+# annotating some thirty of them taxes the reader and buys nothing.
 must_use_candidate = "allow"
 # Every fallible operation's rustdoc opens by naming exactly what it
 # refuses and at what cost — the base.md §9 discipline; a mandatory
@@ -336,12 +339,40 @@ fn rust_version_floor_is_declared() {
         "docs/specification.md §10.1: every manifest carries the floor"
     );
 }
+
+#[test]
+fn the_only_dependency_table_is_dev() {
+    // A dependency can also arrive through a target-specific table
+    // ([target.'cfg(...)'.dependencies]) or [build-dependencies] —
+    // routes into the shipped closure the [dependencies] scan above
+    // cannot see. Any dependencies-bearing header other than the two
+    // literal tables below therefore fails; still a plain line scan,
+    // exact on a manifest this repository owns.
+    let manifest = fs::read_to_string(manifest_dir().join("Cargo.toml"))
+        .expect("crate manifest is readable");
+    let offending: Vec<&str> = manifest
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.starts_with('[') && line.contains("dependencies")
+        })
+        .filter(|line| {
+            *line != "[dependencies]" && *line != "[dev-dependencies]"
+        })
+        .collect();
+    assert_eq!(
+        offending,
+        Vec::<&str>::new(),
+        "docs/design/base.md §1: the shipped closure admits no \
+         dependency table beyond the empty [dependencies]"
+    );
+}
 ```
 
 - [ ] **Step 4: Run the trust checks**
 
 Run: `cargo test -p themelios-base --test trust`
-Expected: 4 passed.
+Expected: 5 passed.
 
 - [ ] **Step 5: Write the CI gate**
 
@@ -771,6 +802,8 @@ extra API), §4.3 (`Location`), §8.5, §9, §10 (the `from_bytes` law).
   `id()`, `text() -> &str`, `span() -> Span`, `end() -> ByteOffset`,
   `slice(Span) -> Result<&str, SliceRefusal>`); refusals `TooLarge
   { len }`, `InvalidUtf8 { valid_up_to }`, `FromBytesRefusal`,
+  `NotCharBoundary { offset }` (the shared boundary condition —
+  wrapped by `SliceRefusal` here and by Task 5's position queries),
   `SliceRefusal`; `span::Location { source, span }`. Tasks 4–11 build
   on all of these.
 
@@ -858,9 +891,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             source.slice(span),
-            Err(SliceRefusal::NotCharBoundary {
+            Err(SliceRefusal::NotCharBoundary(NotCharBoundary {
                 offset: ByteOffset::new(2)
-            })
+            }))
         );
     }
 
@@ -891,8 +924,9 @@ mod tests {
             "bytes are not valid UTF-8 past byte 12"
         );
         let _: &dyn std::error::Error = &TooLarge { len: 0 };
-        let _: &dyn std::error::Error =
-            &SliceRefusal::NotCharBoundary { offset: ByteOffset::ZERO };
+        let _: &dyn std::error::Error = &SliceRefusal::NotCharBoundary(
+            NotCharBoundary { offset: ByteOffset::ZERO },
+        );
     }
 }
 ```
@@ -959,6 +993,16 @@ pub enum FromBytesRefusal {
     InvalidUtf8(InvalidUtf8),
 }
 
+/// The shared boundary condition (base.md §3.2): an offset inside a
+/// multi-byte character. Defined once, at the first door where span
+/// meets text; the line module's position queries wrap the same
+/// condition.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct NotCharBoundary {
+    /// The offending offset.
+    pub offset: ByteOffset,
+}
+
 /// What `Source::slice` can refuse (base.md §3.2).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SliceRefusal {
@@ -970,10 +1014,7 @@ pub enum SliceRefusal {
         max: ByteOffset,
     },
     /// A span endpoint falls inside a multi-byte character.
-    NotCharBoundary {
-        /// The offending endpoint.
-        offset: ByteOffset,
-    },
+    NotCharBoundary(NotCharBoundary),
 }
 
 impl fmt::Display for TooLarge {
@@ -1016,6 +1057,14 @@ impl std::error::Error for FromBytesRefusal {
     }
 }
 
+impl fmt::Display for NotCharBoundary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "byte {} is not a character boundary", self.offset.get())
+    }
+}
+
+impl std::error::Error for NotCharBoundary {}
+
 impl fmt::Display for SliceRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1025,16 +1074,19 @@ impl fmt::Display for SliceRefusal {
                 end.get(),
                 max.get()
             ),
-            SliceRefusal::NotCharBoundary { offset } => write!(
-                f,
-                "byte {} is not a character boundary",
-                offset.get()
-            ),
+            SliceRefusal::NotCharBoundary(refusal) => refusal.fmt(f),
         }
     }
 }
 
-impl std::error::Error for SliceRefusal {}
+impl std::error::Error for SliceRefusal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            SliceRefusal::OutOfBounds { .. } => None,
+            SliceRefusal::NotCharBoundary(refusal) => Some(refusal),
+        }
+    }
+}
 
 /// One owned source text and its identity. UTF-8 by construction
 /// (base.md §3.2): arbitrary bytes meet a typed refusal at admission,
@@ -1121,14 +1173,14 @@ impl Source {
         let start = span.start().get() as usize;
         let end = span.end().get() as usize;
         if !self.text.is_char_boundary(start) {
-            return Err(SliceRefusal::NotCharBoundary {
+            return Err(SliceRefusal::NotCharBoundary(NotCharBoundary {
                 offset: span.start(),
-            });
+            }));
         }
         if !self.text.is_char_boundary(end) {
-            return Err(SliceRefusal::NotCharBoundary {
+            return Err(SliceRefusal::NotCharBoundary(NotCharBoundary {
                 offset: span.end(),
-            });
+            }));
         }
         Ok(&self.text[start..end])
     }
@@ -1232,9 +1284,10 @@ definition, zero-based coordinates, costs), §8.5, §9.
   no `&str` door; `line_count() -> u32`;
   `line_span(u32) -> Result<Span, LineOutOfBounds>`); `LineCol { line,
   col }`; `ColumnEncoding { Utf8Bytes, CodePoints, Utf16Units }`; all
-  five refusal condition structs and both refusal enums (`position`
-  and `offset` themselves land in Task 5). Tasks 5–6 and 10 build on
-  these.
+  four remaining refusal condition structs (the shared
+  `NotCharBoundary` arrives from Task 3) and both refusal enums
+  (`position` and `offset` themselves land in Task 5). Tasks 5–6 and
+  10 build on these.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1360,7 +1413,7 @@ Prepend to `src/line.rs`:
 
 use std::fmt;
 
-use crate::source::Source;
+use crate::source::{NotCharBoundary, Source};
 use crate::span::{ByteOffset, Span};
 
 /// A zero-based line/column coordinate. What `col` counts is named by
@@ -1397,12 +1450,9 @@ pub struct OffsetOutOfBounds {
     pub max: ByteOffset,
 }
 
-/// An offset inside a multi-byte character (base.md §5).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct NotCharBoundary {
-    /// The offending offset.
-    pub offset: ByteOffset,
-}
+// The boundary condition `NotCharBoundary` is base.md §3.2's shared
+// struct, defined in the source module and wrapped here by
+// `PositionRefusal`.
 
 /// A line at or past the line count (base.md §5).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1467,14 +1517,6 @@ impl fmt::Display for OffsetOutOfBounds {
 }
 
 impl std::error::Error for OffsetOutOfBounds {}
-
-impl fmt::Display for NotCharBoundary {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "byte {} is not a character boundary", self.offset.get())
-    }
-}
-
-impl std::error::Error for NotCharBoundary {}
 
 impl fmt::Display for LineOutOfBounds {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -2004,10 +2046,9 @@ Append to `tests/properties.rs`:
 mod line_conversions {
     use proptest::prelude::*;
     use themelios_base::line::{
-        ColumnEncoding, LineCol, LineIndex, NotCharBoundary,
-        PositionRefusal,
+        ColumnEncoding, LineCol, LineIndex, PositionRefusal,
     };
-    use themelios_base::source::{Source, SourceId};
+    use themelios_base::source::{NotCharBoundary, Source, SourceId};
     use themelios_base::span::ByteOffset;
 
     const ENCODINGS: [ColumnEncoding; 3] = [
@@ -2127,8 +2168,7 @@ mod line_conversions {
 
 Run: `cargo test -p themelios-base --test properties`
 Expected: 6 passed.
-Then the full gate command from Task 1 Step 6. Expected: green —
-including any `dead_code` deferred from Task 4 Step 5, now consumed.
+Then the full gate command from Task 1 Step 6. Expected: green.
 
 - [ ] **Step 7: Commit**
 
@@ -3914,10 +3954,8 @@ documented step, not this crate's.
 Append to the test module in `src/view.rs`:
 
 ```rust
-    use crate::line::{
-        ColumnEncoding, LineCol, NotCharBoundary, PositionRefusal,
-    };
-    use crate::source::{SourceFacet, SourceId};
+    use crate::line::{ColumnEncoding, LineCol, PositionRefusal};
+    use crate::source::{NotCharBoundary, SourceFacet, SourceId};
 
     fn editor_fixture() -> (SourceSet, crate::source::SourceId, Diagnostic) {
         let mut catalog = SourceSet::new();
@@ -5048,6 +5086,7 @@ fn every_public_type_is_plain_data() {
     holds::<themelios_base::source::TooLarge>();
     holds::<themelios_base::source::InvalidUtf8>();
     holds::<themelios_base::source::FromBytesRefusal>();
+    holds::<themelios_base::source::NotCharBoundary>();
     holds::<themelios_base::source::SliceRefusal>();
     holds::<themelios_base::source::SourceFacet>();
     holds::<themelios_base::source::SourcesLawViolation>();
@@ -5060,7 +5099,6 @@ fn every_public_type_is_plain_data() {
     holds::<themelios_base::line::LineCol>();
     holds::<themelios_base::line::ColumnEncoding>();
     holds::<themelios_base::line::OffsetOutOfBounds>();
-    holds::<themelios_base::line::NotCharBoundary>();
     holds::<themelios_base::line::LineOutOfBounds>();
     holds::<themelios_base::line::ColumnOutOfBounds>();
     holds::<themelios_base::line::ColumnNotBoundary>();
@@ -5079,7 +5117,7 @@ fn every_public_type_is_plain_data() {
 ```
 
 Run: `cargo test -p themelios-base --test trust`
-Expected: 5 passed.
+Expected: 6 passed.
 
 - [ ] **Step 3: Set the coverage floor**
 
