@@ -32,15 +32,16 @@ tooling infrastructure, and its nearest audience is the tool builder
 (spec §1.3), whose literature this is. Names below that depart from common
 tooling usage carry their own stated reasons in place.
 
-**Crate facts, carried as constraints.** Zero dependencies (spec §12.5).
-`#![forbid(unsafe_code)]` with the workspace trust checks asserting an
-FFI-free dependency closure and no build script (spec §12.3). The
-workspace `rust-version` floor (spec §10.1). Every public type is plain
-data: `Send`, `Sync`, no interior mutability, no global state, no I/O
-(spec §1.2).
+**Crate facts, carried as constraints.** Zero dependencies in the
+shipped library's closure (spec §12.5); the §10 instruments are
+dev-dependencies, outside that claim. `#![forbid(unsafe_code)]` with the
+workspace trust checks asserting an FFI-free dependency closure and no
+build script (spec §12.3). The workspace `rust-version` floor (spec
+§10.1). Every public type is plain data: `Send`, `Sync`, no interior
+mutability, no global state, no I/O (spec §1.2).
 
 **Module map.** Five modules, one concern each: `source` (§3), `span`
-(§4), `line` (§5), `diagnostic` (§6), `render` (§7).
+(§4), `line` (§5), `diagnostic` (§6), `view` (§7).
 
 ## 2. What this design is for
 
@@ -62,9 +63,12 @@ the following holds:
 - A panic escapes any public operation on any input, or an operation
   ships without documented failure semantics (spec §2 item 8).
 - A public operation's result depends on anything but its explicit
-  inputs, or it observably mutates anything the caller holds.
-- A dependency appears (spec §12.5), unsafe code appears (spec §12.3),
-  or ASP knowledge appears in this crate.
+  inputs, or it mutates anything except through an explicit `&mut` in
+  its signature.
+- A dependency appears in the shipped library's closure (spec §12.5 —
+  the §10 instruments are dev-dependencies outside the claim, the only
+  reading consistent with spec §12.5 and spec §10.1 jointly), unsafe
+  code appears (spec §12.3), or ASP knowledge appears in this crate.
 - **The syntax tier cannot express spec §6.6's demands** — stable
   namespaced identities, primary and secondary labeled spans,
   expected-set reporting at recovery points — through this model and its
@@ -114,13 +118,24 @@ four billion sources exceeds any embedding.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Source { /* id, text: private */ }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum SourceRefusal {
-    /// Text longer than `Source::MAX_LEN` bytes.
-    TooLarge { len: usize },
-    /// Bytes that are not valid UTF-8; `valid_up_to` mirrors the
-    /// standard library's error detail.
-    InvalidUtf8 { valid_up_to: usize },
+// Refusal conditions are each defined once, as structs; every
+// operation's error type is exactly the condition — or enum of
+// conditions — it can produce, so a signature never claims a refusal
+// its operation cannot issue.
+
+/// Text longer than `Source::MAX_LEN` bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TooLarge { pub len: usize }
+
+/// Bytes that are not valid UTF-8; `valid_up_to` mirrors the standard
+/// library's error detail.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct InvalidUtf8 { pub valid_up_to: usize }
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FromBytesRefusal {
+    TooLarge(TooLarge),
+    InvalidUtf8(InvalidUtf8),
 }
 
 impl Source {
@@ -130,9 +145,9 @@ impl Source {
     pub const MAX_LEN: usize = u32::MAX as usize;
 
     pub fn new(id: SourceId, text: String)
-        -> Result<Source, SourceRefusal>;          // refuses TooLarge
+        -> Result<Source, TooLarge>;
     pub fn from_bytes(id: SourceId, bytes: Vec<u8>)
-        -> Result<Source, SourceRefusal>;          // adds InvalidUtf8
+        -> Result<Source, FromBytesRefusal>;
 
     pub fn id(&self) -> SourceId;
     pub fn text(&self) -> &str;
@@ -146,7 +161,7 @@ impl Source {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SliceRefusal {
     OutOfBounds { end: ByteOffset, max: ByteOffset },
-    NotCharBoundary { at: ByteOffset },
+    NotCharBoundary { offset: ByteOffset },
 }
 ```
 
@@ -206,29 +221,74 @@ Views resolve identity to display data through one small trait — the
 view environment:
 
 ```rust
+/// The view environment. Two laws bind every implementor — see below.
 pub trait Sources {
     fn name(&self, id: SourceId) -> Option<&str>;
     fn text(&self, id: SourceId) -> Option<&str>;
     fn line_index(&self, id: SourceId) -> Option<&LineIndex>;
 }
+
+/// Which accessor a resolution lacked — used by the law checker's
+/// report, the editor view's refusal, and the human view's placeholder.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SourceFacet { Name, Text, Index }
 ```
 
 Unknown identities answer `None` — a refusal, never a panic. The `name`
 is whatever the host declares; it is display data, not a path.
 
+**The trait's laws, stated as contract.** The three accessors are not
+independently partial; an implementor is bound by:
+
+1. **Completeness.** For a given id, answer all three or none. Partial
+   resolution — `text` resolving while `line_index` does not — is a
+   contract breach, not a state the views must interpret.
+2. **Coherence.** `line_index(id)` is observationally `LineIndex::of`
+   applied to an admitted `Source` of `text(id)` — the index *of* that
+   text, not of any earlier version of it. A host that caches an index
+   across an edit and answers with the stale one has breached this law,
+   and the breach is the one route to §2's misplaced-caret failure that
+   no in-crate instrument can see.
+
+What the views can check, they check: a completeness breach is
+detectable at view time, and each view names it (§7.1's placeholder,
+§7.2's refusal — both carry the missing `SourceFacet`). Coherence is
+*not* cheaply checkable at view time — verifying it means rebuilding the
+index — so the views trust it, and that trust is this contract's stated
+boundary. What holds coherence instead is test-time machinery:
+
+```rust
+/// The laws, checkable: verifies completeness per id and coherence by
+/// re-deriving the index from the resolved text. Deterministic, total,
+/// O(total resolved text). Implementors run it in their own tests.
+pub fn check_sources_laws(
+    sources: &impl Sources,
+    ids: &[SourceId],
+) -> Vec<SourcesLawViolation>;
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SourcesLawViolation {
+    Incomplete { id: SourceId, missing: SourceFacet },
+    IncoherentIndex { id: SourceId },
+}
+```
+
+An empty report is the laws holding over those ids. This checker is the
+instrument §10 lists for the seam every host crosses.
+
 One implementor ships, for tests, witnesses, and single-file tools:
 
 ```rust
 /// A Vec-backed catalog that mints ids sequentially — a host you can
-/// use, not this crate seizing minting.
+/// use, not this crate seizing minting. Satisfies both laws by
+/// construction: it admits under the Source doors and builds each
+/// LineIndex eagerly at add — an explicit derivation, not lazy state.
 pub struct SourceSet { /* private */ }
 
 impl SourceSet {
     pub fn new() -> SourceSet;
-    /// Admits text under the Source doors and builds its LineIndex
-    /// eagerly — an explicit derivation, not lazy state.
     pub fn add(&mut self, name: String, text: String)
-        -> Result<SourceId, SourceRefusal>;
+        -> Result<SourceId, TooLarge>;
 }
 
 impl Sources for SourceSet { /* ... */ }
@@ -275,14 +335,14 @@ scattered across operations.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Span { /* start, end: private — the invariant is guarded */ }
 
+/// The one refusal `Span` construction can issue — carried as the
+/// condition itself, per the per-operation refusal discipline (§3.2).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SpanRefusal {
-    EndBeforeStart { start: ByteOffset, end: ByteOffset },
-}
+pub struct EndBeforeStart { pub start: ByteOffset, pub end: ByteOffset }
 
 impl Span {
     pub fn new(start: ByteOffset, end: ByteOffset)
-        -> Result<Span, SpanRefusal>;
+        -> Result<Span, EndBeforeStart>;
     pub const fn empty(at: ByteOffset) -> Span;
 
     pub fn start(self) -> ByteOffset;
@@ -354,13 +414,38 @@ pub struct LineCol {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ColumnEncoding { Utf8Bytes, CodePoints, Utf16Units }
 
+// Refusal conditions, each defined once (the §3.2 discipline); every
+// query's error type is exactly what that query can produce. The
+// out-of-bounds refusals carry the bound that was exceeded, and the
+// boundary refusals the offending coordinate — the question the caller
+// can fix.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum IndexRefusal {
-    OffsetOutOfBounds { offset: ByteOffset, max: ByteOffset },
-    NotCharBoundary { offset: ByteOffset },
-    LineOutOfBounds { line: u32, line_count: u32 },
-    ColumnOutOfBounds { col: u32 },
-    ColumnNotBoundary { col: u32 },
+pub struct OffsetOutOfBounds { pub offset: ByteOffset, pub max: ByteOffset }
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct NotCharBoundary { pub offset: ByteOffset }
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LineOutOfBounds { pub line: u32, pub line_count: u32 }
+
+/// `max` is the line's extent in the encoding the query stated.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ColumnOutOfBounds { pub line: u32, pub col: u32, pub max: u32 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ColumnNotBoundary { pub line: u32, pub col: u32 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PositionRefusal {
+    OutOfBounds(OffsetOutOfBounds),
+    NotCharBoundary(NotCharBoundary),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OffsetRefusal {
+    LineOutOfBounds(LineOutOfBounds),
+    ColumnOutOfBounds(ColumnOutOfBounds),
+    ColumnNotBoundary(ColumnNotBoundary),
 }
 
 impl LineIndex {
@@ -371,12 +456,12 @@ impl LineIndex {
     pub fn line_count(&self) -> u32;
     /// The span of one line's content, excluding its terminator —
     /// renderers want the content; the terminator is derivable.
-    pub fn line_span(&self, line: u32) -> Result<Span, IndexRefusal>;
+    pub fn line_span(&self, line: u32) -> Result<Span, LineOutOfBounds>;
 
     pub fn position(&self, offset: ByteOffset, encoding: ColumnEncoding)
-        -> Result<LineCol, IndexRefusal>;
+        -> Result<LineCol, PositionRefusal>;
     pub fn offset(&self, pos: LineCol, encoding: ColumnEncoding)
-        -> Result<ByteOffset, IndexRefusal>;
+        -> Result<ByteOffset, OffsetRefusal>;
 }
 ```
 
@@ -403,12 +488,28 @@ because internal arithmetic and the editor protocol are; one-based
 coordinates exist only inside the human rendering (§7.1), stated there as
 presentation.
 
+**One coordinate type, argued.** A `LineCol` does not carry the encoding
+that gives its `col` meaning, deliberately: it is a transient query
+result, and the encoding is in the caller's hand at the call that
+produced it — the same checked-at-use posture `Location` states for
+validity (§4.3). The editor protocol itself negotiates position encoding
+once per session, not per value, so taxing every coordinate with the
+field would serve no named consumer; and the §10 property laws hold the
+arithmetic per encoding. The one value that *outlives* its producing
+call — the editor payload — records the encoding it was derived under
+(§7.2), which is where the distinction stops being transient and starts
+being data. A mismatched pairing at `offset` (a coordinate produced
+under one encoding, queried under another) is the caller breaching this
+stated contract; on multi-byte text it surfaces as a refusal or a wrong
+position, and the contract, not the type system, is what forbids it.
+
 **Computational cost.** `of` is O(n) in the text — this linearity is what
 keeps total reparse cheap (spec §6.8), and the scaling
 bench holds it. `position` and `offset` are O(log lines + log non-ASCII
-in the line). `line_span` and `line_count` are O(1) and O(log) or better.
-A changed text is a new `Source` and a new index; there is no edit
-application here (§11).
+in the line). `line_count` is O(1) (a stored count); `line_span` is O(1)
+(a bounds check and an array lookup — the terminator exclusion is
+deterministic from adjacent line starts). A changed text is a new
+`Source` and a new index; there is no edit application here (§11).
 
 **Round-trip law.** For every valid offset,
 `offset(position(o, e), e) == o` in every encoding — the first property
@@ -463,6 +564,17 @@ class as its own face — not merely an attachment role. An editor-protocol
 `Hint` has no v1 producer; it is recorded as known pressure at the
 language-server consumer checkpoint (§11), not carried now.
 
+**Closedness is a ruled tradeoff, both sides on the page.** Closed buys
+every consumer exhaustive matching on the specification's own
+trichotomy. The price, accepted here: if the recorded `Hint` pressure
+lands at the language-server checkpoint, admitting it is a breaking
+change through every exhaustive match — which the pre-1.0 stability
+posture prices correctly (spec §13: stability is earned at consumer
+checkpoints, and this surface will not have frozen before that
+checkpoint runs). `#[non_exhaustive]` was considered and rejected: it
+would tax every consumer with a wildcard arm on a closed trichotomy
+today to hedge a pressure that has no producer yet.
+
 ### 6.3 Labels and attachments
 
 ```rust
@@ -504,18 +616,19 @@ pub struct Diagnostic {
     */
 }
 
+/// The one refusal construction can issue, carried as the condition
+/// itself (the §3.2 discipline): an empty headline, which would break
+/// every view by construction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum DiagnosticRefusal { EmptyMessage }
+pub struct EmptyMessage;
 
 impl Diagnostic {
-    /// Refuses exactly one thing: an empty headline, which would break
-    /// every view by construction.
     pub fn new(
         id: DiagnosticId,
         severity: Severity,
         message: String,
         primary: Label,
-    ) -> Result<Diagnostic, DiagnosticRefusal>;
+    ) -> Result<Diagnostic, EmptyMessage>;
 
     /// By-value chaining: even building reads as declaring.
     pub fn with_secondary(self, label: Label) -> Diagnostic;
@@ -603,9 +716,20 @@ crate, stated as presentation); caret underlining for the primary label,
 secondary underlines with their messages, labels in position order; then
 notes, then helps. Exact layout mechanics are implementation, held
 reviewable by the golden corpus (§10) — the same instrument spec §6.6
-names for message quality. An unresolvable `SourceId`
-renders an honest inline placeholder naming the identity — the view
-stays total, and degradation is honest and maximal (§3.3).
+names for message quality.
+
+**Degradation, fully specified — the view stays total.** §3.3's
+honest-and-maximal rule governs every input the renderer cannot honor,
+not only the obvious one: an unresolvable `SourceId` renders an inline
+placeholder naming the identity; a catalog breaching the completeness
+law (§3.4) renders the placeholder naming the missing `SourceFacet`; and
+a label that does not fit its *resolved* text — out of bounds, or ending
+mid-character — renders its snippet block with an inline placeholder
+naming the defect (the label's span against the text's extent), while
+every coherent label still renders. Nothing panics, nothing is silently
+dropped, and none of these renderings is an accident: each has a golden
+case (§10), so the behavior is reviewed, not inherited from whoever
+writes the loop.
 
 **Computational cost.** O(rendered size): proportional to the windowed
 lines plus labels; flat iteration, no recursion.
@@ -619,8 +743,14 @@ lines plus labels; flat iteration, no recursion.
 pub struct EditorDiagnostic {
     pub source: SourceId,
     pub range: EditorRange,
+    /// The encoding every range in this payload was derived under —
+    /// the view records the derivation it ran, so the payload is
+    /// self-describing when stored, compared, or forwarded.
+    pub encoding: ColumnEncoding,
     pub severity: Severity,
-    pub code: String,          // "namespace::name"
+    /// Typed identity; the "namespace::name" string is the consumer's
+    /// serialization step, via Display (§8.5).
+    pub code: DiagnosticId,
     pub message: String,       // headline, then notes/helps folded as
                                // "note: ..." / "help: ..." lines — the
                                // protocol convention
@@ -639,27 +769,47 @@ pub struct EditorRelated {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ViewRefusal {
+pub enum EditorRefusal {
+    /// The catalog resolves nothing for this id.
     UnknownSource { id: SourceId },
-    Position { refusal: IndexRefusal },
+    /// The catalog breached the completeness law (§3.4): it resolved
+    /// this id partially, and this is the facet the view lacked.
+    IncompleteSource { id: SourceId, missing: SourceFacet },
+    /// A position query failed; `at` is the label whose location was
+    /// being converted, so the caller need not replay the iteration.
+    Position { at: Location, refusal: PositionRefusal },
 }
 
 pub fn editor(
     diagnostic: &Diagnostic,
     sources: &impl Sources,
     encoding: ColumnEncoding,
-) -> Result<EditorDiagnostic, ViewRefusal>;
+) -> Result<EditorDiagnostic, EditorRefusal>;
 ```
 
 This view refuses rather than fabricate: a protocol payload with invented
-ranges is worse than no payload. A message-less secondary label
-contributes the diagnostic's headline as its related message — the
-location still ships; nothing is dropped silently. The severity stays
-this crate's typed
+ranges is worse than no payload, and each refusal names its locus — the
+question the caller can fix. A message-less secondary label contributes
+the diagnostic's headline as its related message — the location still
+ships; nothing is dropped silently. The severity stays this crate's typed
 `Severity`; the JSON layer's mapping (`Note` to the protocol's
-information class) is the consumer's documented step. **Computational
-cost.** O(labels), each position query O(log) via the resolved line
-index.
+information class) is the consumer's documented step.
+
+**A typed intermediate shape, deliberately — the argument.** Every other
+result in this crate is the model or a rendering of it; `EditorDiagnostic`
+is a *structure* a view returns, and that wants its reason stated rather
+than assumed. The reason: the honest alternative — a view straight to
+protocol bytes — is foreclosed by the zero-dependency constraint (spec
+§12.5), since bytes here means JSON and JSON means a serializer; and the
+dishonest alternative — consumers walking `Diagnostic` themselves per
+protocol — re-derives position conversion and label linearization in
+every host. So the view stops at the last typed point before bytes. What
+keeps this shape from becoming a second model: it is produced by exactly
+one pure function, held by nothing in this crate, mirrors the protocol's
+categories rather than the model's, and can never disagree with the
+model because nothing maintains it — every instance is a fresh
+derivation. **Computational cost.** O(labels), each position query
+O(log) via the resolved line index.
 
 ### 7.3 The machine view
 
@@ -677,13 +827,19 @@ pub fn canonical_order(a: &Diagnostic, b: &Diagnostic) -> Ordering;
 ```
 
 Defined once because every batch consumer needs one — the golden corpus
-first among them — and each inventing its own would diverge.
+first among them — and each inventing its own would diverge. A free
+function deliberately, not an `Ord` impl on `Diagnostic`: an `Ord` impl
+would claim *the* natural order of diagnostics, and there is none — this
+is one batch derivation among possible ones, and it lives with the views
+because ordering a batch for consumption is itself a linearization
+(§8.4).
 
 ## 8. Posture
 
-Four rules, stated as one discipline; the postcondition and failure
-conditions (§2) carry the first two, and all four bind every API
-decision here — a departure is a defect owing a stated reason.
+Four rules stated as one discipline, and one stated posture (§8.5). The
+postcondition and failure conditions (§2) carry the first two rules; all
+four bind every API decision here — a departure is a defect owing a
+stated reason.
 
 ### 8.1 Observational purity
 
@@ -723,24 +879,42 @@ and the linearization order is the view's stated derivation
 "set-like where the logic says set" adopted below the Program value, as
 standing rule.
 
+### 8.5 The std-trait posture
+
+Stated because the fluent-Rust audience's priors sit exactly here (spec
+§1.3): every refusal type — `TooLarge`, `InvalidUtf8`,
+`FromBytesRefusal`, `SliceRefusal`, `EndBeforeStart`, the line-index
+condition structs and their two enums, `EmptyMessage`, `EditorRefusal` —
+implements `Display` (the refusal's question-the-caller-can-fix, in
+words) and `std::error::Error` (std only; hosts `?`-compose these
+through their own error stacks). `DiagnosticId` and `Severity` implement
+`Display`, and the documented renderings — `namespace::name`, lowercase
+severity names — *are* those impls: the strings are contract, carried by
+the type, not an incident private to the views. No other public type
+claims a `Display`; refusal `Display` texts are presentation and may
+improve, while the two identity renderings above are stable.
+
 ## 9. Failure semantics and computational costs, consolidated
 
 Spec §2 item 8's obligation, discharged at design
 level. Nothing in this crate panics on any input; the table names every
-refusing door, and every operation not listed is total.
+refusing door, and every operation not listed is total. Under the
+per-operation refusal discipline (§3.2), each row's refusal column is
+exactly the operation's error type — the table is derivable from the
+signatures, which is the point.
 
 | operation | refuses with | cost |
 |---|---|---|
 | `Source::new` | `TooLarge` | O(1) |
-| `Source::from_bytes` | `TooLarge`, `InvalidUtf8` | O(n) |
-| `Source::slice` | `OutOfBounds`, `NotCharBoundary` | O(1) |
+| `Source::from_bytes` | `FromBytesRefusal` (`TooLarge` \| `InvalidUtf8`) | O(n) |
+| `Source::slice` | `SliceRefusal` (`OutOfBounds` \| `NotCharBoundary`) | O(1) |
 | `Span::new` | `EndBeforeStart` | O(1) |
 | `ByteOffset::checked_add` / `checked_sub` | `None` on overflow | O(1) |
-| `LineIndex::position` | `OffsetOutOfBounds`, `NotCharBoundary` | O(log) |
-| `LineIndex::offset` | `LineOutOfBounds`, `ColumnOutOfBounds`, `ColumnNotBoundary` | O(log) |
-| `LineIndex::line_span` | `LineOutOfBounds` | O(log) |
+| `LineIndex::position` | `PositionRefusal` (`OutOfBounds` \| `NotCharBoundary`) | O(log) |
+| `LineIndex::offset` | `OffsetRefusal` (`LineOutOfBounds` \| `ColumnOutOfBounds` \| `ColumnNotBoundary`) | O(log) |
+| `LineIndex::line_span` | `LineOutOfBounds` | O(1) |
 | `Diagnostic::new` | `EmptyMessage` | O(1) |
-| `render::editor` | `UnknownSource`, `Position` | O(labels · log) |
+| `view::editor` | `EditorRefusal` (`UnknownSource` \| `IncompleteSource` \| `Position`, locus carried) | O(labels · log) |
 | `SourceSet::add` | `TooLarge` | O(n) |
 | `Sources::{name, text, line_index}` | `None` on unknown id | O(1)* |
 
@@ -749,8 +923,9 @@ refusing door, and every operation not listed is total.
 Total (never refuse, never panic): every accessor; all `Span` operations
 except `new` (`join` included — the covering span is total even on
 disjoint operands); `LineIndex::of` and `line_count`; `Diagnostic` chaining;
-`render::human` (unresolvable sources render a named placeholder);
-`canonical_order`; `SourceSet::new`; the `ToDiagnostic` impls.
+`view::human` (every degradation renders a named placeholder — §7.1);
+`canonical_order`; `check_sources_laws` (an empty report is the laws
+holding); `SourceSet::new`; the `ToDiagnostic` impls.
 
 Empty attachment strings are admitted unaltered — accepting a value
 as-is is not repair, and attachment *quality* is the emitting tier's
@@ -769,15 +944,21 @@ tier's landing.
   (join idempotent, commutative, associative; intersect consistent with
   `contains_span`); `Source::from_bytes` on arbitrary bytes never panics
   and refuses exactly when the standard library's validator does;
-  `render::human` total on arbitrary well-formed diagnostics over
-  arbitrary catalogs (including unresolvable ids); `canonical_order` a
-  total order (antisymmetric, transitive, total).
+  `view::human` total on arbitrary well-formed diagnostics over
+  arbitrary catalogs — unresolvable ids, incomplete resolutions, and
+  span/text mismatches included; `canonical_order` a total order
+  (antisymmetric, transitive, total).
+- **The `Sources` law checker, checked:** `check_sources_laws` (§3.4)
+  passes `SourceSet` by construction and fails deliberately incoherent
+  and incomplete catalogs — the instrument for the one seam every host
+  crosses, shipped to implementors and exercised here against both
+  outcomes.
 - **Golden snapshots:** the human renderer's seed corpus — single span;
   multiple spans on one line; a multi-line span; a cross-source
-  secondary; notes and helps; the unresolvable-source placeholder; the
-  embedded-snippet frame — reviewed against the rust-analyzer bar. This
-  corpus is the foundation the *diagnostics-quality* witness builds on
-  at stage 2.
+  secondary; notes and helps; the unresolvable-source, missing-facet,
+  and span/text-mismatch placeholders; the embedded-snippet frame —
+  reviewed against the rust-analyzer bar. This corpus is the foundation
+  the *diagnostics-quality* witness builds on at stage 2.
 - **Scaling shapes (criterion):** `LineIndex::of` linear in text;
   `position`/`offset` logarithmic; `human` linear in rendered output.
   Shape assertions in CI; absolute numbers out-of-band (spec §10.2).
@@ -808,9 +989,9 @@ consumers, not gaps:
   is a field on `Source` and a `Sources` accessor; lands with the first
   consumer that acts on the distinction — today none does, and a
   distinction nothing consumes is cut (§3.3 works through host naming).
-- **Render options** (color, width, context lines): view evolution once
-  a consumer needs them; v1's single canonical output is what the golden
-  corpus reviews.
+- **Human-view render options** (color, width, context lines): view
+  evolution once a consumer needs them; v1's single canonical output is
+  what the golden corpus reviews.
 - **Interning:** no client below the syntax tier; decided there, not
   here.
 - **Incremental text edits** (ropes, edit application): spec §7.8
