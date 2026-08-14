@@ -16,7 +16,8 @@ formatters, test harnesses, explainers, probabilistic extensions, editor
 tooling and language servers, REPLs, deployment services — natural extensions
 or elegant compositions of its parts. It speaks the vocabulary of knowledge
 representation and ASP as the literature speaks it, shares the concrete
-syntax of clingo and clingcon, and is built to be certifiable into
+syntax of clingo and clingcon — with the ASP-Core-2 standard language
+supported as a declared dialect — and is built to be certifiable into
 environments where failure is expensive.
 
 The ambition, stated so it can be checked: themelios is to become the gold
@@ -146,14 +147,18 @@ When v1 is done, all of the following are true:
 1. **The witness roster runs.** Every scenario in §3 exists as an
    executable, gate-run example.
 2. **The syntax tier is a product.** Lossless, error-resilient,
-   trivia-preserving parsing of the shared clingo/clingcon syntax,
-   importable wholesale: a formatter-class, language-server-class, or
-   contract-extraction consumer needs nothing outside the public surface.
+   trivia-preserving parsing of the shared clingo/clingcon syntax and,
+   as a declared dialect of the one grammar (§6.1), the ASP-Core-2
+   standard language, importable wholesale: a formatter-class,
+   language-server-class, or contract-extraction consumer needs nothing
+   outside the public surface.
    Parse → emit → reparse token-stream equivalence holds and is checkable
    natively.
 3. **One grammar.** The macros are compile-time clients of the syntax
    tier. No second parser of the ASP language exists anywhere in the tree,
-   and none is needed for any named consumer.
+   and none is needed for any named consumer. The ASP-Core-2 dialect is a
+   parameterization of the one grammar — an enumerated delta set in the
+   grammar document (§6.1) — never a second parser.
 4. **The seam is real.** The core carries no engine types. The backend
    contract is specified, with a conformance suite; the clingo adapter,
    the clingcon adapter (or, under §9.5's named contingency, the clingo
@@ -280,6 +285,11 @@ out less clear or less safe than that rendering, is a failure (§4).
     comparator side is held honest by the out-of-band execution check
     (§10.2) and accepted as idiomatic by a named reviewer — the
     *diagnostics-quality* pattern applied to comparison.
+20. **asp-core-2.** Parse a conformant ASP-Core-2 program — query
+    included — under the declared dialect; the shared constructs lower
+    to the same Program value the clingo dialect yields; the query is
+    answered through the query surface (§9.7), whose cautious semantics
+    is the standard's own definition of query answering.
 
 ### 3.1 The comparator roster
 
@@ -328,6 +338,9 @@ constitution's own rules (§1.2, §1.4, §1.5) — so a §2 amendment owes its
   stated condition is not failure; silent descope is.
 - A satellite-class consumer needs a private API, a fork, or a second
   grammar to exist — the composition test fails.
+- A conformant ASP-Core-2 program is rejected or mis-lowered under the
+  declared dialect, or the dialects diverge anywhere beyond the grammar
+  document's enumerated deltas.
 - An engine type or engine-specific behavior leaks above the backend
   seam, or the conformance suite passes an adapter exhibiting a named
   pathology (§9.2).
@@ -450,8 +463,16 @@ stated once, auditable by a reader. Its reference roster: the clingo and
 clingcon implementations themselves (both open source, MIT) as reference
 implementations; the tree-sitter-clingo grammar as a secondary
 cross-check; the corpus (§10.3) as reachability evidence. Where
-references disagree, **clingo's observed behavior is the authority**,
-settled by differential test and recorded in the grammar document. Theory
+references disagree, **clingo's observed behavior is the authority** for
+the clingo/clingcon dialect, settled by differential test and recorded
+in the grammar document. The grammar document also specifies the
+**ASP-Core-2 dialect**: the standard input language, as the working
+group restated it in TPLP 2020, supported as a declared parameterization
+of the one grammar — an enumerated delta set covering exactly where the
+standard and the clingo language diverge — with the standard document as
+the dialect's authority. Shared constructs lower to the one Program
+representation; the standard's query form lowers onto the query surface
+(§9.7). Theory
 atoms parse grammar-generically at this tier — `&name { … }` with guards —
 with admission against `#theory` definitions a concern of tiers above. The
 grammar document also specifies the **macro dialect**: the interpolation
