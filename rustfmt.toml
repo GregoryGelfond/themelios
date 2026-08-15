@@ -1,0 +1,5 @@
+# rustfmt's default reorders `mod` declarations alphabetically; the crate
+# root declares its modules in the design's dependency order instead
+# (docs/design/base.md §1: source, span, line, diagnostic, view), so the
+# formatter is told to leave that order to the author.
+reorder_modules = false

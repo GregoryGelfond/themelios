@@ -274,6 +274,88 @@ pub enum SourceFacet {
     Index,
 }
 
+impl SourceFacet {
+    /// The facet's word, as the views name it in placeholders and
+    /// refusals — one table for both. Crate-private: `Display` is
+    /// reserved for the refusals and the two identity renderings
+    /// (base.md §8.5).
+    pub(crate) const fn word(self) -> &'static str {
+        match self {
+            SourceFacet::Name => "name",
+            SourceFacet::Text => "text",
+            SourceFacet::Index => "index",
+        }
+    }
+}
+
+/// One identity's resolution under the completeness law (base.md §3.4):
+/// the three facets as the catalog answered them, carried once so every
+/// consumer — the law checker, the human view's block, the editor
+/// view's resolution — asks the same questions of the same value
+/// rather than re-deriving them from the accessors.
+pub(crate) struct Resolution<'a> {
+    /// `Sources::name`'s answer.
+    pub(crate) name: Option<&'a str>,
+    /// `Sources::text`'s answer.
+    pub(crate) text: Option<&'a str>,
+    /// `Sources::line_index`'s answer.
+    pub(crate) index: Option<&'a LineIndex>,
+}
+
+/// The completeness law's verdict on one identity.
+pub(crate) enum Verdict<'a> {
+    /// The catalog resolves nothing for the id.
+    Unknown,
+    /// A completeness breach: some facets resolved and this one — the
+    /// first lacking, in `Name`, `Text`, `Index` order — did not.
+    Partial(SourceFacet),
+    /// All three facets resolved; the index — the facet the coherence
+    /// law binds to the text — travels with the verdict for the
+    /// consumer that proceeds on it.
+    Complete(&'a LineIndex),
+}
+
+impl<'a> Resolution<'a> {
+    /// The three accessors, asked once. Cost: three lookups.
+    pub(crate) fn of(sources: &'a impl Sources, id: SourceId) -> Resolution<'a> {
+        Resolution {
+            name: sources.name(id),
+            text: sources.text(id),
+            index: sources.line_index(id),
+        }
+    }
+
+    /// Whether nothing resolved. O(1).
+    pub(crate) fn is_unknown(&self) -> bool {
+        matches!(self.verdict(), Verdict::Unknown)
+    }
+
+    /// The facets that did not resolve, in `Name`, `Text`, `Index`
+    /// order — every one of them, for the law checker's report; empty
+    /// when the resolution is complete. O(1).
+    pub(crate) fn missing(&self) -> impl Iterator<Item = SourceFacet> {
+        [
+            (self.name.is_none(), SourceFacet::Name),
+            (self.text.is_none(), SourceFacet::Text),
+            (self.index.is_none(), SourceFacet::Index),
+        ]
+        .into_iter()
+        .filter_map(|(missing, facet)| missing.then_some(facet))
+    }
+
+    /// The law's verdict. O(1).
+    pub(crate) fn verdict(&self) -> Verdict<'a> {
+        match (self.name, self.text, self.index) {
+            (None, None, None) => Verdict::Unknown,
+            (Some(_), Some(_), Some(index)) => Verdict::Complete(index),
+            // Partial: the first missing facet, in the law's order.
+            (None, _, _) => Verdict::Partial(SourceFacet::Name),
+            (_, None, _) => Verdict::Partial(SourceFacet::Text),
+            (_, _, None) => Verdict::Partial(SourceFacet::Index),
+        }
+    }
+}
+
 /// One law breach found by `check_sources_laws` (base.md §3.4).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SourcesLawViolation {
@@ -301,26 +383,18 @@ pub enum SourcesLawViolation {
 /// facet in `Name`, `Text`, `Index` order; coherence is checked
 /// whenever text and index both resolve, independent of the
 /// completeness verdict.
+#[must_use = "an empty report is the laws holding; a discarded report checks nothing"]
 pub fn check_sources_laws(sources: &impl Sources, ids: &[SourceId]) -> Vec<SourcesLawViolation> {
     let mut violations = Vec::new();
     for &id in ids {
-        let name = sources.name(id);
-        let text = sources.text(id);
-        let index = sources.line_index(id);
-        let facets = [
-            (name.is_some(), SourceFacet::Name),
-            (text.is_some(), SourceFacet::Text),
-            (index.is_some(), SourceFacet::Index),
-        ];
-        let resolved = facets.iter().filter(|(present, _)| *present).count();
-        if 0 < resolved && resolved < facets.len() {
-            for (present, facet) in facets {
-                if !present {
-                    violations.push(SourcesLawViolation::Incomplete { id, missing: facet });
-                }
+        let resolution = Resolution::of(sources, id);
+        // An unknown id breaches nothing; a known one owes every facet.
+        if !resolution.is_unknown() {
+            for missing in resolution.missing() {
+                violations.push(SourcesLawViolation::Incomplete { id, missing });
             }
         }
-        if let (Some(text), Some(index)) = (text, index) {
+        if let (Some(text), Some(index)) = (resolution.text, resolution.index) {
             // A text the admission door refuses cannot have an index
             // that is LineIndex::of over an admitted Source of it —
             // incoherent by definition.
@@ -340,6 +414,8 @@ pub fn check_sources_laws(sources: &impl Sources, ids: &[SourceId]) -> Vec<Sourc
 /// `LineIndex` eagerly at `add` — an explicit derivation, not lazy
 /// state. Deliberately not a virtual file system, and it never grows
 /// toward one: no paths, no watching, no loading (base.md §3.4, §11).
+/// Each lookup is O(1) — a bounds-checked index into the entry vector
+/// (base.md §9).
 #[derive(Clone, Debug)]
 pub struct SourceSet {
     entries: Vec<SourceSetEntry>,
@@ -364,9 +440,12 @@ impl SourceSet {
     /// eagerly, and mints the next sequential id. Refuses `TooLarge`;
     /// O(n) — admission plus the index build (base.md §3.4, §9).
     pub fn add(&mut self, name: String, text: String) -> Result<SourceId, TooLarge> {
-        // The cast cannot truncate in any real embedding: entries own
-        // their text, so a wrapped mint would need more entries than
-        // memory holds bytes.
+        // The cast rests on a resource bound, not the admission ceiling:
+        // every entry costs on the order of a hundred bytes before its
+        // text (the entry, its name, its index's vectors), so a mint that
+        // wrapped past u32::MAX would need hundreds of gigabytes of empty
+        // sources — beyond any embedding this catalog serves (base.md
+        // §3.1: four billion sources exceeds any embedding).
         let id = SourceId::new(self.entries.len() as u32);
         let source = Source::new(id, text)?;
         let index = LineIndex::of(&source);

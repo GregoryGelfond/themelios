@@ -47,8 +47,8 @@
 //! ```
 #![forbid(unsafe_code)]
 
-pub mod diagnostic;
-pub mod line;
 pub mod source;
 pub mod span;
+pub mod line;
+pub mod diagnostic;
 pub mod view;

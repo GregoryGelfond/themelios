@@ -55,16 +55,10 @@ impl fmt::Display for DiagnosticId {
 /// Closed. Declared least-severe first, so `Error` is the maximum and
 /// worst-first sorting is descending order (base.md §6.2).
 ///
-/// Closedness is a ruled tradeoff, both sides on the page: closed
-/// buys every consumer exhaustive matching on the specification's own
-/// trichotomy; the price, accepted, is that admitting a later
-/// severity (the recorded `Hint` pressure) is a breaking change
-/// through every exhaustive match — priced correctly by the pre-1.0
-/// stability posture, since this surface will not have frozen before
-/// the language-server consumer checkpoint runs. `#[non_exhaustive]`
-/// was considered and rejected: it would tax every consumer with a
-/// wildcard arm on a closed trichotomy today to hedge a pressure that
-/// has no producer yet.
+/// Closed is the contract: consumers match exhaustively on the
+/// specification's own trichotomy, and admitting a later severity is
+/// a breaking change through every such match — the tradeoff base.md
+/// §6.2 rules, with its argument.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Severity {
     /// Informational, and a real standalone severity — a solver

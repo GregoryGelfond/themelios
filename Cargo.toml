@@ -29,8 +29,11 @@ pedantic = { level = "deny", priority = -1 }
 # design of record.
 module_name_repetitions = "allow"
 # Every meaning-carrying cast carries its cannot-truncate argument in
-# place, resting on the admission-ceiling invariant; blanket try_from
-# ceremony would restate what is already argued.
+# place — resting on the admission-ceiling invariant, save two whose
+# argument is beside them: SourceSet::add's mint (a stated resource
+# bound) and LineIndex::of's character widths (std's contract for
+# len_utf8 and len_utf16); blanket try_from ceremony would restate what
+# is already argued.
 cast_possible_truncation = "allow"
 # Every fallible operation returns Result — must-use by std's own
 # annotation — and the by-value builders, where a dropped result
@@ -46,10 +49,3 @@ missing_errors_doc = "allow"
 # Doc comments cite design sections as prose (base.md §5); ticking
 # every citation adds markup without information.
 doc_markdown = "allow"
-# The human renderer builds its output by pushing formatted rows onto
-# one String — one allocation per row inside a view whose stated cost
-# is O(rendered size) either way. The lint's alternative, `write!` into
-# the String, returns a fmt::Result the type never yields, so every row
-# would carry a discarded result: a signal this crate reserves for real
-# refusals (base.md §3.2, §7.1).
-format_push_string = "allow"

@@ -3,20 +3,4 @@
 # and a pattern broader than its argument is a defect — so patterns
 # are added only from printed survivor descriptions at triage, never
 # authored in advance.
-#
-# The one survivor pre-declared at planning (docs/design/base.md §3.2:
-# the len > MAX_LEN comparison, reachable only with a text over four
-# gibibytes) was retired before the audit: both admission doors share
-# Source::admit_len, whose boundary is held at MAX_LEN and MAX_LEN + 1
-# without an allocation, so its mutants are expected to be caught.
-exclude_re = [
-    # An equivalent mutant, not an untested arm. check_sources_laws
-    # states "partial" plainly as `0 < resolved && resolved <
-    # facets.len()`; replacing the second `<` with `<=` admits the
-    # fully resolved case into a walk that emits only the missing
-    # facets — of which it has none — so the mutant is observationally
-    # identical to the code and no test can distinguish it. Pinned to
-    # the printed description; if the site moves, it resurfaces at the
-    # next audit and is re-pinned there.
-    "source\\.rs:316:37: replace < with <= in check_sources_laws",
-]
+exclude_re = []

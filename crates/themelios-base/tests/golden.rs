@@ -94,6 +94,19 @@ fn multi_line_span() {
 }
 
 #[test]
+fn elided_lines() {
+    let (catalog, file) = demo_catalog();
+    // Labels on lines 2 and 4 of one source: line 3 is elided.
+    let d = diagnostic(label(file, 14, 18, Some("this literal"))).with_secondary(label(
+        file,
+        28,
+        34,
+        Some("and here"),
+    ));
+    check("elided-lines", &human(&d, &catalog));
+}
+
+#[test]
 fn cross_source_secondary() {
     let (mut catalog, file) = demo_catalog();
     let other = catalog

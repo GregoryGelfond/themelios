@@ -1,0 +1,8 @@
+error[syntax::unexpected-token]: expected `.` after the rule body
+ --> demo.lp:2:9
+  |
+2 | q(X) :- r(X)
+  |         ^^^^ this literal
+ ..
+4 | % done
+  | ------ and here
