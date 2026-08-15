@@ -2,8 +2,7 @@
 //! identity, from anywhere — this crate does no I/O and never sees a
 //! path. Admission is the one well-formedness authority for text;
 //! everything downstream rides on a `Source` and inherits its
-//! guarantees. The module's catalog half — `Sources`, its laws,
-//! `SourceSet` — lands beside the line index it resolves.
+//! guarantees.
 
 use std::fmt;
 
@@ -92,7 +91,7 @@ impl fmt::Display for InvalidUtf8 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "bytes are not valid UTF-8 past byte {}",
+            "bytes are not valid UTF-8 from byte {}",
             self.valid_up_to
         )
     }
@@ -109,14 +108,10 @@ impl fmt::Display for FromBytesRefusal {
     }
 }
 
-impl std::error::Error for FromBytesRefusal {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            FromBytesRefusal::TooLarge(refusal) => Some(refusal),
-            FromBytesRefusal::InvalidUtf8(refusal) => Some(refusal),
-        }
-    }
-}
+// The wrapper is the condition itself (base.md §3.2), not a layer over a
+// lower-level cause: it forwards Display and reports no `source()`, so a
+// host's error chain states each refusal once.
+impl std::error::Error for FromBytesRefusal {}
 
 impl fmt::Display for NotCharBoundary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -140,14 +135,7 @@ impl fmt::Display for SliceRefusal {
     }
 }
 
-impl std::error::Error for SliceRefusal {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            SliceRefusal::OutOfBounds { .. } => None,
-            SliceRefusal::NotCharBoundary(refusal) => Some(refusal),
-        }
-    }
-}
+impl std::error::Error for SliceRefusal {}
 
 /// One owned source text and its identity. UTF-8 by construction
 /// (base.md §3.2): arbitrary bytes meet a typed refusal at admission,
@@ -204,9 +192,7 @@ impl Source {
     /// The covering span: `ByteOffset::ZERO` to the one-past-end
     /// offset. Total; O(1).
     pub fn span(&self) -> Span {
-        // join is total, so the covering region needs no fallible
-        // construction (base.md §4.2).
-        Span::empty(ByteOffset::ZERO).join(Span::empty(self.end()))
+        Span::covering(ByteOffset::ZERO, self.end())
     }
 
     /// The one-past-end offset. Total; O(1).
@@ -217,8 +203,9 @@ impl Source {
     }
 
     /// The spanned text. Refuses out-of-bounds and non-boundary
-    /// endpoints (`SliceRefusal`); O(1) — bounds and boundary checks
-    /// against the owned text (base.md §3.2).
+    /// endpoints (`SliceRefusal`) — the end against the text's extent
+    /// first, then the start and the end as character boundaries, in
+    /// that order; O(1) against the owned text (base.md §3.2).
     pub fn slice(&self, span: Span) -> Result<&str, SliceRefusal> {
         let max = self.end();
         if span.end() > max {
@@ -246,7 +233,7 @@ impl Source {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::span::{ByteOffset, Location, Span};
+    use crate::span::{ByteOffset, Span};
 
     fn id() -> SourceId {
         SourceId::new(7)
@@ -264,7 +251,9 @@ mod tests {
 
     #[test]
     fn admission_ceiling_fits_the_line_count() {
-        assert_eq!(Source::MAX_LEN, u32::MAX as usize - 1);
+        // A text of `len` bytes has at most `len + 1` lines, so the line
+        // count of every admissible text must fit the index's u32.
+        assert!(u32::try_from(Source::MAX_LEN + 1).is_ok());
     }
 
     #[test]
@@ -324,19 +313,6 @@ mod tests {
     }
 
     #[test]
-    fn location_orders_by_source_then_span() {
-        let a = Location {
-            source: SourceId::new(1),
-            span: Span::new(ByteOffset::new(9), ByteOffset::new(10)).unwrap(),
-        };
-        let b = Location {
-            source: SourceId::new(2),
-            span: Span::new(ByteOffset::new(0), ByteOffset::new(1)).unwrap(),
-        };
-        assert!(a < b);
-    }
-
-    #[test]
     fn refusals_display_the_fixable_question() {
         assert_eq!(
             TooLarge { len: 5_000_000_000 }.to_string(),
@@ -345,7 +321,7 @@ mod tests {
         );
         assert_eq!(
             InvalidUtf8 { valid_up_to: 12 }.to_string(),
-            "bytes are not valid UTF-8 past byte 12"
+            "bytes are not valid UTF-8 from byte 12"
         );
         let _: &dyn std::error::Error = &TooLarge { len: 0 };
         let _: &dyn std::error::Error = &SliceRefusal::NotCharBoundary(NotCharBoundary {

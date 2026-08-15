@@ -26,6 +26,7 @@ impl ByteOffset {
 
     /// Checked arithmetic only: overflow answers `None`, never wraps
     /// (base.md §4.1). O(1).
+    #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn checked_add(self, bytes: u32) -> Option<ByteOffset> {
         match self.0.checked_add(bytes) {
             Some(raw) => Some(ByteOffset(raw)),
@@ -35,6 +36,7 @@ impl ByteOffset {
 
     /// Checked arithmetic only: underflow answers `None`, never wraps
     /// (base.md §4.1). O(1).
+    #[must_use = "this returns the result of the operation, without modifying the original"]
     pub const fn checked_sub(self, bytes: u32) -> Option<ByteOffset> {
         match self.0.checked_sub(bytes) {
             Some(raw) => Some(ByteOffset(raw)),
@@ -91,6 +93,19 @@ impl Span {
         Span { start: at, end: at }
     }
 
+    /// The covering span of two offsets, `[min, max)` — ordered by
+    /// construction, so the crate builds regions it knows to be ordered
+    /// (a text's extent, a line's content) without a fallible door.
+    /// Crate-private: the public surface stays exactly base.md §4.2's.
+    /// Total; O(1).
+    pub(crate) const fn covering(a: ByteOffset, b: ByteOffset) -> Span {
+        if a.0 <= b.0 {
+            Span { start: a, end: b }
+        } else {
+            Span { start: b, end: a }
+        }
+    }
+
     /// The start offset. Total; O(1).
     pub fn start(self) -> ByteOffset {
         self.start
@@ -125,6 +140,9 @@ impl Span {
     /// Interval intersection: `Some` exactly when the intervals meet,
     /// including an empty span at a touch point — which keeps this
     /// consistent with `contains_span` on empty operands. Total; O(1).
+    /// Dropping the result loses the intersection, so the by-value
+    /// combinator is must-use.
+    #[must_use]
     pub fn intersect(self, other: Span) -> Option<Span> {
         let start = self.start.max(other.start);
         let end = self.end.min(other.end);
@@ -163,6 +181,7 @@ pub struct Location {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source::SourceId;
 
     #[test]
     fn construction_refuses_end_before_start() {
@@ -232,6 +251,34 @@ mod tests {
         assert_eq!(ByteOffset::new(u32::MAX).checked_add(1), None);
         assert_eq!(ByteOffset::ZERO.checked_sub(1), None);
         assert_eq!(ByteOffset::new(3).checked_add(4), Some(ByteOffset::new(7)));
+    }
+
+    #[test]
+    fn covering_orders_its_offsets() {
+        let ordered = Span::covering(ByteOffset::new(2), ByteOffset::new(5));
+        let reversed = Span::covering(ByteOffset::new(5), ByteOffset::new(2));
+        assert_eq!(
+            ordered,
+            Span::new(ByteOffset::new(2), ByteOffset::new(5)).unwrap()
+        );
+        assert_eq!(reversed, ordered);
+        assert_eq!(
+            Span::covering(ByteOffset::new(4), ByteOffset::new(4)),
+            Span::empty(ByteOffset::new(4))
+        );
+    }
+
+    #[test]
+    fn location_orders_by_source_then_span() {
+        let a = Location {
+            source: SourceId::new(1),
+            span: Span::new(ByteOffset::new(9), ByteOffset::new(10)).unwrap(),
+        };
+        let b = Location {
+            source: SourceId::new(2),
+            span: Span::new(ByteOffset::new(0), ByteOffset::new(1)).unwrap(),
+        };
+        assert!(a < b);
     }
 
     #[test]

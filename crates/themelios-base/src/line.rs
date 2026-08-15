@@ -5,6 +5,7 @@
 //! `\r` stays in its line's content; nothing is normalized, ever.
 
 use std::fmt;
+use std::ops::Range;
 
 use crate::source::{NotCharBoundary, Source};
 use crate::span::{ByteOffset, Span};
@@ -156,14 +157,10 @@ impl fmt::Display for PositionRefusal {
     }
 }
 
-impl std::error::Error for PositionRefusal {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            PositionRefusal::OutOfBounds(refusal) => Some(refusal),
-            PositionRefusal::NotCharBoundary(refusal) => Some(refusal),
-        }
-    }
-}
+// The wrapper enums are the conditions themselves (base.md §3.2), not a
+// layer over a lower-level cause: each forwards Display and reports no
+// `source()`, so a host's error chain states each refusal once.
+impl std::error::Error for PositionRefusal {}
 
 impl fmt::Display for OffsetRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -175,21 +172,13 @@ impl fmt::Display for OffsetRefusal {
     }
 }
 
-impl std::error::Error for OffsetRefusal {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            OffsetRefusal::LineOutOfBounds(refusal) => Some(refusal),
-            OffsetRefusal::ColumnOutOfBounds(refusal) => Some(refusal),
-            OffsetRefusal::ColumnNotBoundary(refusal) => Some(refusal),
-        }
-    }
-}
+impl std::error::Error for OffsetRefusal {}
 
-/// One non-ASCII character: where it starts and what it costs in each
-/// encoding. With the running surpluses beside it, this is enough to
-/// answer all three encodings — and to *refuse* a mid-character offset
-/// rather than misplace a caret — without retaining the text
-/// (base.md §5).
+/// One non-ASCII character: where it starts, its width in each encoding,
+/// and the surplus — bytes minus units — accumulated by the wide
+/// characters before it. That is enough to answer every column question
+/// in every encoding, and to *refuse* a mid-character offset rather than
+/// misplace a caret, without retaining the text (base.md §5).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct WideChar {
     /// Byte offset of the character's first byte.
@@ -198,31 +187,56 @@ struct WideChar {
     byte_len: u8,
     /// 1 or 2 UTF-16 units.
     utf16_len: u8,
+    /// Bytes minus code points over every wide character before this
+    /// one — the running surplus, carried on the entry so one search
+    /// finds both the character and its prefix.
+    cp_before: u32,
+    /// Bytes minus UTF-16 units over every wide character before this
+    /// one, likewise.
+    utf16_before: u32,
+}
+
+impl WideChar {
+    /// The character's width in the encoding's units.
+    fn unit_len(self, encoding: ColumnEncoding) -> u32 {
+        match encoding {
+            ColumnEncoding::Utf8Bytes => u32::from(self.byte_len),
+            // Every character is one code point.
+            ColumnEncoding::CodePoints => 1,
+            ColumnEncoding::Utf16Units => u32::from(self.utf16_len),
+        }
+    }
+
+    /// Bytes minus units: what this character adds to the surplus.
+    fn surplus(self, encoding: ColumnEncoding) -> u32 {
+        u32::from(self.byte_len) - self.unit_len(encoding)
+    }
+
+    /// The surplus of every wide character before this one; zero in the
+    /// byte encoding, where bytes are the units.
+    fn surplus_before(self, encoding: ColumnEncoding) -> u32 {
+        match encoding {
+            ColumnEncoding::Utf8Bytes => 0,
+            ColumnEncoding::CodePoints => self.cp_before,
+            ColumnEncoding::Utf16Units => self.utf16_before,
+        }
+    }
 }
 
 /// Line and column structure for one source's text: an explicit, pure
 /// derivation you construct and hold. Does not retain the text
 /// (base.md §5). Memory is O(lines + non-ASCII characters).
-///
-/// A named refinement of the design's sketch: base.md §5 pictures the
-/// non-ASCII characters grouped per line; this index holds one
-/// offset-sorted table with prefix-sum surpluses instead — the same
-/// data and the same memory bound with simpler structure, and the
-/// query bound is O(log lines + log non-ASCII in the text).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LineIndex {
     /// Byte offset where each line starts; entry 0 is always 0, and a
     /// new entry follows every `\n`.
     line_starts: Vec<u32>,
+    // One offset-sorted table of the non-ASCII characters, each carrying
+    // the surplus accumulated before it, rather than base.md §5's
+    // per-line grouping: the same data and memory bound, and one
+    // `partition_point` answers every column question.
     /// Every non-ASCII character, in offset order.
     wide: Vec<WideChar>,
-    /// Running total over `wide[..=i]` of `byte_len - 1`: bytes minus
-    /// code points contributed by wide characters. Prefix sums keep
-    /// column queries logarithmic (base.md §5's stated cost).
-    cp_surplus: Vec<u32>,
-    /// Running total over `wide[..=i]` of `byte_len - utf16_len`:
-    /// bytes minus UTF-16 units, likewise.
-    utf16_surplus: Vec<u32>,
     /// The end-of-text position, in bytes.
     len: u32,
 }
@@ -235,10 +249,7 @@ impl LineIndex {
         let text = source.text();
         let mut line_starts = vec![0u32];
         let mut wide = Vec::new();
-        let mut cp_surplus = Vec::new();
-        let mut utf16_surplus = Vec::new();
-        let mut cp_running = 0u32;
-        let mut utf16_running = 0u32;
+        let (mut cp_before, mut utf16_before) = (0u32, 0u32);
         for (offset, character) in text.char_indices() {
             // The cast cannot truncate: admission guards the length.
             let offset = offset as u32;
@@ -246,24 +257,26 @@ impl LineIndex {
                 line_starts.push(offset + 1);
             }
             if !character.is_ascii() {
+                // The casts cannot truncate: by std's contract
+                // `char::len_utf8` is 1..=4 and `char::len_utf16` is
+                // 1..=2.
                 let byte_len = character.len_utf8() as u8;
                 let utf16_len = character.len_utf16() as u8;
-                wide.push(WideChar {
+                let w = WideChar {
                     offset,
                     byte_len,
                     utf16_len,
-                });
-                cp_running += u32::from(byte_len) - 1;
-                utf16_running += u32::from(byte_len) - u32::from(utf16_len);
-                cp_surplus.push(cp_running);
-                utf16_surplus.push(utf16_running);
+                    cp_before,
+                    utf16_before,
+                };
+                cp_before += w.surplus(ColumnEncoding::CodePoints);
+                utf16_before += w.surplus(ColumnEncoding::Utf16Units);
+                wide.push(w);
             }
         }
         LineIndex {
             line_starts,
             wide,
-            cp_surplus,
-            utf16_surplus,
             len: source.end().get(),
         }
     }
@@ -294,9 +307,7 @@ impl LineIndex {
             Some(next_start) => next_start - 1,
             None => self.len,
         };
-        // Total construction of an ordered region: join of two empty
-        // spans, as in Source::span.
-        Ok(Span::empty(ByteOffset::new(start)).join(Span::empty(ByteOffset::new(end))))
+        Ok(Span::covering(ByteOffset::new(start), ByteOffset::new(end)))
     }
 
     /// Where a byte offset falls, as a coordinate in the stated
@@ -317,27 +328,17 @@ impl LineIndex {
             }));
         }
         let raw = offset.get();
-        let before = self.wide.partition_point(|w| w.offset < raw);
-        if before > 0 {
-            let last = self.wide[before - 1];
-            if raw < last.offset + u32::from(last.byte_len) {
-                return Err(PositionRefusal::NotCharBoundary(NotCharBoundary { offset }));
-            }
+        if !self.is_char_boundary(raw) {
+            return Err(PositionRefusal::NotCharBoundary(NotCharBoundary { offset }));
         }
         // The line whose start is last at or before the offset; entry
         // 0 is 0, so the partition point is at least 1.
         let line = self.line_starts.partition_point(|&start| start <= raw) - 1;
         let line_start = self.line_starts[line];
-        let bytes = raw - line_start;
-        let col = match encoding {
-            ColumnEncoding::Utf8Bytes => bytes,
-            ColumnEncoding::CodePoints => {
-                bytes - self.surplus_between(line_start, raw, &self.cp_surplus)
-            }
-            ColumnEncoding::Utf16Units => {
-                bytes - self.surplus_between(line_start, raw, &self.utf16_surplus)
-            }
-        };
+        // Units = bytes minus the surplus of the wide characters between
+        // the line start and the offset; the byte encoding's surplus is
+        // identically zero.
+        let col = (raw - line_start) - self.surplus_between(line_start, raw, encoding);
         // The cast cannot truncate: line < line_count <= u32::MAX.
         Ok(LineCol {
             line: line as u32,
@@ -356,60 +357,22 @@ impl LineIndex {
         pos: LineCol,
         encoding: ColumnEncoding,
     ) -> Result<ByteOffset, OffsetRefusal> {
-        let line_count = self.line_count();
-        if pos.line >= line_count {
-            return Err(OffsetRefusal::LineOutOfBounds(LineOutOfBounds {
-                line: pos.line,
-                line_count,
-            }));
-        }
-        let line_start = self.line_starts[pos.line as usize];
-        let content_end = match self.line_starts.get(pos.line as usize + 1) {
-            Some(next_start) => next_start - 1,
-            None => self.len,
-        };
-        let extent_bytes = content_end - line_start;
-        let table = match encoding {
-            ColumnEncoding::Utf8Bytes => {
-                // Bytes: bound, then boundary, directly.
-                if pos.col > extent_bytes {
-                    return Err(OffsetRefusal::ColumnOutOfBounds(ColumnOutOfBounds {
-                        line: pos.line,
-                        col: pos.col,
-                        max: extent_bytes,
-                    }));
-                }
-                let raw = line_start + pos.col;
-                let before = self.wide.partition_point(|w| w.offset < raw);
-                if before > 0 {
-                    let last = self.wide[before - 1];
-                    if raw < last.offset + u32::from(last.byte_len) {
-                        return Err(OffsetRefusal::ColumnNotBoundary(ColumnNotBoundary {
-                            line: pos.line,
-                            col: pos.col,
-                        }));
-                    }
-                }
-                return Ok(ByteOffset::new(raw));
-            }
-            ColumnEncoding::CodePoints => &self.cp_surplus,
-            ColumnEncoding::Utf16Units => &self.utf16_surplus,
-        };
-        // Unit encodings. Definition: unit_pos(j) is wide character
-        // j's column within this line, in the query's encoding — its
-        // byte distance from the line start minus the units already
-        // saved by earlier in-line wide characters. The binary search
-        // below maintains the invariant that `consumed` counts the
-        // line's wide characters (indices lo..lo + consumed) whose
-        // unit_pos is strictly below pos.col; `open - consumed`
-        // halves every pass, so it terminates. partition_point cannot
-        // express this search because the predicate needs each
-        // element's *index* for the prefix tables, not the element
-        // alone — hence the hand-rolled form. O(log) via the tables.
-        let up_to = |i: usize| if i == 0 { 0 } else { table[i - 1] };
-        let lo = self.wide.partition_point(|w| w.offset < line_start);
-        let hi = self.wide.partition_point(|w| w.offset < content_end);
-        let max = extent_bytes - (up_to(hi) - up_to(lo));
+        let content = self
+            .line_span(pos.line)
+            .map_err(OffsetRefusal::LineOutOfBounds)?;
+        let line_start = content.start().get();
+        let in_line = self.wide_in(line_start, content.end().get());
+        // The surplus accumulated before this line's first wide
+        // character: the base every in-line prefix is measured from.
+        let base = self.surplus_before_index(in_line.start, encoding);
+        let line_wide = &self.wide[in_line.clone()];
+        // A wide character's column within this line, in the query's
+        // encoding: its byte distance from the line start minus the
+        // units already saved by earlier in-line wide characters —
+        // strictly increasing along the line, which is what lets a
+        // partition point find the column's place.
+        let unit_col = |w: &WideChar| (w.offset - line_start) - (w.surplus_before(encoding) - base);
+        let max = content.len() - (self.surplus_before_index(in_line.end, encoding) - base);
         if pos.col > max {
             return Err(OffsetRefusal::ColumnOutOfBounds(ColumnOutOfBounds {
                 line: pos.line,
@@ -417,45 +380,63 @@ impl LineIndex {
                 max,
             }));
         }
-        let unit_pos = |j: usize| (self.wide[j].offset - line_start) - (up_to(j) - up_to(lo));
-        let mut consumed = 0;
-        let mut open = hi - lo;
-        while consumed < open {
-            let mid = consumed + (open - consumed) / 2;
-            if unit_pos(lo + mid) < pos.col {
-                consumed = mid + 1;
-            } else {
-                open = mid;
-            }
+        // The line's wide characters that begin strictly before the
+        // column; if the column falls inside the last of them — a byte
+        // of a multi-byte character, or the second unit of a UTF-16
+        // surrogate pair — it is not a boundary.
+        let consumed = line_wide.partition_point(|w| unit_col(w) < pos.col);
+        if let Some(last) = line_wide[..consumed].last()
+            && unit_col(last) + last.unit_len(encoding) > pos.col
+        {
+            return Err(OffsetRefusal::ColumnNotBoundary(ColumnNotBoundary {
+                line: pos.line,
+                col: pos.col,
+            }));
         }
-        if consumed > 0 {
-            let j = lo + consumed - 1;
-            let w = self.wide[j];
-            // A wide character's width in this encoding's units; for
-            // code points it is 1, so the branch below cannot fire
-            // there — only a UTF-16 surrogate pair can be entered.
-            let unit_len = u32::from(w.byte_len) - (up_to(j + 1) - up_to(j));
-            if unit_pos(j) + unit_len > pos.col {
-                return Err(OffsetRefusal::ColumnNotBoundary(ColumnNotBoundary {
-                    line: pos.line,
-                    col: pos.col,
-                }));
-            }
-        }
-        // Bytes = units + the surplus of every consumed wide
-        // character: the inverse of unit_pos's defining relation.
-        let bytes = pos.col + (up_to(lo + consumed) - up_to(lo));
+        // Bytes = units + the surplus of every consumed wide character:
+        // the inverse of unit_col's defining relation.
+        let bytes =
+            pos.col + (self.surplus_before_index(in_line.start + consumed, encoding) - base);
         Ok(ByteOffset::new(line_start + bytes))
     }
 
-    /// Total surplus (bytes minus units) of wide characters starting
-    /// in `[from, to)`, where both bounds are character boundaries.
-    /// O(log non-ASCII) via the prefix tables.
-    fn surplus_between(&self, from: u32, to: u32, table: &[u32]) -> u32 {
-        let up_to = |i: usize| if i == 0 { 0 } else { table[i - 1] };
+    /// Whether `raw` is a character boundary of the indexed text: not
+    /// strictly inside any wide character. Mirrors `str::is_char_boundary`
+    /// without the text. O(log non-ASCII).
+    fn is_char_boundary(&self, raw: u32) -> bool {
+        let before = self.wide.partition_point(|w| w.offset < raw);
+        self.wide[..before]
+            .last()
+            .is_none_or(|last| raw >= last.offset + u32::from(last.byte_len))
+    }
+
+    /// The indices of the wide characters whose first byte lies in
+    /// `[from, to)`. O(log non-ASCII).
+    fn wide_in(&self, from: u32, to: u32) -> Range<usize> {
         let lo = self.wide.partition_point(|w| w.offset < from);
         let hi = self.wide.partition_point(|w| w.offset < to);
-        up_to(hi) - up_to(lo)
+        lo..hi
+    }
+
+    /// The surplus — bytes minus the encoding's units — of every wide
+    /// character before index `i` of the table; at `i == len`, of all of
+    /// them. O(1).
+    fn surplus_before_index(&self, i: usize, encoding: ColumnEncoding) -> u32 {
+        match self.wide.get(i) {
+            Some(w) => w.surplus_before(encoding),
+            None => self
+                .wide
+                .last()
+                .map_or(0, |w| w.surplus_before(encoding) + w.surplus(encoding)),
+        }
+    }
+
+    /// The surplus of the wide characters starting in `[from, to)`,
+    /// where both bounds are character boundaries. O(log non-ASCII).
+    fn surplus_between(&self, from: u32, to: u32, encoding: ColumnEncoding) -> u32 {
+        let range = self.wide_in(from, to);
+        self.surplus_before_index(range.end, encoding)
+            - self.surplus_before_index(range.start, encoding)
     }
 }
 
