@@ -23,3 +23,20 @@ jobs:
       - run: cargo doc --workspace --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          rustup toolchain install 1.97.1 --profile minimal \
+            --component llvm-tools
+          rustup default 1.97.1
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # The floor is a per-change tripwire for the wholly untested
+      # module, never a target: raising it is not a goal, gaming it
+      # is a defect, and mutation remains the auditor of whether the
+      # tests ask anything (docs/specification.md §10.1). Set at the
+      # stage-1 landing: measured coverage rounded down to a multiple
+      # of five, minus five — slack that absorbs toolchain and
+      # coverage-tool measurement drift. One number on every machine.
+      - run: cargo llvm-cov --workspace --fail-under-lines 90

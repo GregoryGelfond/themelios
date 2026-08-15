@@ -475,6 +475,14 @@ mod tests {
     }
 
     #[test]
+    fn slice_admits_a_span_ending_at_the_text_end() {
+        // The end-of-text position is in bounds: the covering span
+        // slices to the whole text.
+        let source = Source::new(id(), "héllo".to_owned()).unwrap();
+        assert_eq!(source.slice(source.span()), Ok("héllo"));
+    }
+
+    #[test]
     fn slice_refuses_out_of_bounds_with_both_facts() {
         let source = Source::new(id(), "abc".to_owned()).unwrap();
         let span = Span::new(ByteOffset::new(1), ByteOffset::new(9)).unwrap();

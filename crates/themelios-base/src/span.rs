@@ -204,6 +204,13 @@ mod tests {
     }
 
     #[test]
+    fn a_span_with_extent_is_not_empty() {
+        let span = Span::new(ByteOffset::new(2), ByteOffset::new(5)).expect("ordered endpoints");
+        assert_eq!(span.len(), 3);
+        assert!(!span.is_empty());
+    }
+
+    #[test]
     fn contains_is_half_open() {
         let span = Span::new(ByteOffset::new(2), ByteOffset::new(5)).expect("ordered endpoints");
         assert!(span.contains(ByteOffset::new(2)));

@@ -160,10 +160,11 @@ fn rust_version_floor_is_declared() {
     );
 }
 
-/// docs/design/base.md §1: every public type is plain data — `Send`,
-/// `Sync`, owned. The traits hold what they can; no interior mutability,
-/// no global state, and no I/O are held by reading. Extended as public
-/// types land.
+/// docs/design/base.md §1, §8.2: every public type is plain data —
+/// `Send`, `Sync`, owned. Compiles only while every listed type is
+/// `Send + Sync`, so the trait-level half is held on every build; no
+/// interior mutability, no global state, and no I/O are held by
+/// reading. The list is every public type, extended as types land.
 #[test]
 fn every_public_type_is_plain_data() {
     fn plain_data<T: Send + Sync>() {}

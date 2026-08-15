@@ -810,4 +810,117 @@ warning[syntax::unexpected-token]: w
         let with_note = diagnostic_at(0, 2, Severity::Error, UNEXPECTED).with_note("n".to_owned());
         assert_ne!(canonical_order(&plain, &with_note), Ordering::Equal);
     }
+
+    fn rendering_of(text: &str, primary: Label, secondaries: &[Label]) -> String {
+        let mut catalog = SourceSet::new();
+        catalog
+            .add("demo.lp".to_owned(), text.to_owned())
+            .expect("small text admits");
+        let mut diagnostic = Diagnostic::new(UNEXPECTED, Severity::Error, "m".to_owned(), primary)
+            .expect("non-empty headline");
+        for secondary in secondaries {
+            diagnostic = diagnostic.with_secondary(secondary.clone());
+        }
+        human(&diagnostic, &catalog)
+    }
+
+    fn label_in_first_source(start: u32, end: u32) -> Label {
+        Label {
+            location: Location {
+                source: SourceId::new(0),
+                span: Span::new(ByteOffset::new(start), ByteOffset::new(end))
+                    .expect("ordered endpoints"),
+            },
+            message: None,
+        }
+    }
+
+    #[test]
+    fn a_secondary_identical_to_the_primary_renders_after_it() {
+        // Two labels on one span, one primary and one secondary: the
+        // primary's carets come first among equals.
+        let rendered = rendering_of(
+            "p(a).\n",
+            label_in_first_source(0, 4),
+            &[label_in_first_source(0, 4)],
+        );
+        let expected = "\
+error[syntax::unexpected-token]: m
+ --> demo.lp:1:1
+  |
+1 | p(a).
+  | ^^^^
+  | ----
+";
+        assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn a_missing_name_renders_its_placeholder_in_the_header() {
+        struct NoName {
+            text: String,
+            index: crate::line::LineIndex,
+        }
+        impl crate::source::Sources for NoName {
+            fn name(&self, _: SourceId) -> Option<&str> {
+                None
+            }
+            fn text(&self, _: SourceId) -> Option<&str> {
+                Some(&self.text)
+            }
+            fn line_index(&self, _: SourceId) -> Option<&crate::line::LineIndex> {
+                Some(&self.index)
+            }
+        }
+        let source = crate::source::Source::new(SourceId::new(0), "p(a).\n".to_owned())
+            .expect("small text admits");
+        let catalog = NoName {
+            text: source.text().to_owned(),
+            index: crate::line::LineIndex::of(&source),
+        };
+        let diagnostic = Diagnostic::new(
+            UNEXPECTED,
+            Severity::Error,
+            "m".to_owned(),
+            label_in_first_source(0, 4),
+        )
+        .expect("non-empty headline");
+        let expected = "\
+error[syntax::unexpected-token]: m
+ --> <source 0: missing name>:1:1
+  |
+1 | p(a).
+  | ^^^^
+";
+        assert_eq!(human(&diagnostic, &catalog), expected);
+    }
+
+    #[test]
+    fn the_gutter_width_follows_the_largest_line_number() {
+        // A label on the tenth line: the gutter widens to two columns.
+        let rendered = rendering_of(&"a\n".repeat(10), label_in_first_source(18, 19), &[]);
+        let expected = "\
+error[syntax::unexpected-token]: m
+ --> demo.lp:10:1
+   |
+10 | a
+   | ^
+";
+        assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn an_empty_span_at_a_line_start_anchors_on_its_own_line() {
+        // Byte 6 is the start of line 2; an empty span there is on
+        // line 2, not pulled back onto line 1.
+        let rendered = rendering_of("p(a).\nq(X).\n", label_in_first_source(6, 6), &[]);
+        let expected = "\
+error[syntax::unexpected-token]: m
+ --> demo.lp:2:1
+  |
+2 | q(X).
+  | ^
+";
+        assert_eq!(rendered, expected);
+    }
 }
