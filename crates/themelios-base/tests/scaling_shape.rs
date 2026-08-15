@@ -28,9 +28,15 @@ const SIZE_RATIO: u128 = 16;
 /// separation below quadratic (x256) — real margin in both
 /// directions.
 const LINEAR_CEILING: u128 = SIZE_RATIO * 4;
-/// A logarithmic claim across a 64x data ratio may cost at most this
+/// The data-size ratio for the logarithmic claim: wide, so a linear
+/// scan and a logarithmic search separate by a factor no machine noise
+/// closes.
+const LOG_SIZE_RATIO: usize = 64;
+/// A logarithmic claim across LOG_SIZE_RATIO may cost at most this
 /// factor — logarithmic is ~1.4x; linear (x64) fails.
 const LOG_CEILING: u128 = 8;
+/// Wall-clock samples per measurement; the median of them is taken.
+const SAMPLES: usize = 5;
 
 fn text_of(bytes: usize) -> String {
     LINE.repeat(bytes / LINE.len() + 1)
@@ -42,13 +48,13 @@ fn admitted(bytes: usize) -> Source {
 
 fn median_nanos(mut work: impl FnMut()) -> u128 {
     let mut samples = Vec::new();
-    for _ in 0..5 {
+    for _ in 0..SAMPLES {
         let start = Instant::now();
         work();
         samples.push(start.elapsed().as_nanos());
     }
     samples.sort_unstable();
-    samples[2].max(1)
+    samples[SAMPLES / 2].max(1)
 }
 
 #[test]
@@ -92,13 +98,13 @@ fn position_and_offset_are_logarithmic() {
             }
         })
     };
-    // 64x the indexed text, the same number of queries.
+    // LOG_SIZE_RATIO times the indexed text, the same number of queries.
     let small = run(64 * 1024);
-    let big = run(4096 * 1024);
+    let big = run(64 * 1024 * LOG_SIZE_RATIO);
     assert!(
         big < small * LOG_CEILING,
-        "position/offset scaled {small}ns -> {big}ns over x64 data; \
-         the logarithmic shape allows at most x{LOG_CEILING}"
+        "position/offset scaled {small}ns -> {big}ns over x{LOG_SIZE_RATIO} \
+         data; the logarithmic shape allows at most x{LOG_CEILING}"
     );
 }
 

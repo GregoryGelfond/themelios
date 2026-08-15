@@ -41,6 +41,11 @@ struct Human<'a, S: Sources> {
     sources: &'a S,
 }
 
+/// The unit the human view lays columns out in: code points, so a
+/// caret sits under the character it names (base.md §7.1). Named once
+/// — `place_labels` positions in it and `line_extent` counts in it.
+const HUMAN_COLUMNS: ColumnEncoding = ColumnEncoding::CodePoints;
+
 /// A label's role in its diagnostic (base.md §6.4): the required
 /// primary, or one of the secondary set — the distinction the underline
 /// marker and the header anchor read.
@@ -73,12 +78,10 @@ impl<S: Sources> fmt::Display for Human<'_, S> {
                 .push((label, Role::Secondary));
         }
         let primary = diagnostic.primary();
-        let own_block = blocks.entry(primary.location.source).or_default();
+        let mut own_block = blocks.remove(&primary.location.source).unwrap_or_default();
         let at = own_block.partition_point(|(label, _)| *label < primary);
         own_block.insert(at, (primary, Role::Primary));
-        if let Some(labels) = blocks.remove(&primary.location.source) {
-            render_block(f, primary.location.source, &labels, self.sources)?;
-        }
+        render_block(f, primary.location.source, &own_block, self.sources)?;
         for (&source, labels) in &blocks {
             render_block(f, source, labels, self.sources)?;
         }
@@ -194,6 +197,10 @@ fn render_block(
     }
     for (label, refusal) in misfits {
         let span = label.location.span;
+        // Worded here rather than through the refusal's Display: the
+        // placeholder's words are the golden corpus's, held apart from
+        // refusal Display texts, which are presentation and may move
+        // (base.md §8.5).
         let reason = match refusal {
             PositionRefusal::OutOfBounds(oob) => {
                 format!("the text ends at byte {}", oob.max.get())
@@ -225,10 +232,9 @@ fn place_labels<'a>(
     let mut misfits = Vec::new();
     for &(label, role) in labels {
         let span = label.location.span;
-        let cp = ColumnEncoding::CodePoints;
         match (
-            index.position(span.start(), cp),
-            index.position(span.end(), cp),
+            index.position(span.start(), HUMAN_COLUMNS),
+            index.position(span.end(), HUMAN_COLUMNS),
         ) {
             (Ok(start), Ok(mut end)) => {
                 if end.line > start.line && end.col == 0 {
@@ -271,8 +277,10 @@ fn render_line(
 
 /// One label's underline on one line it touches: `^` for the primary,
 /// `-` for a secondary, covering the label's overlap with the line's
-/// content (clamped; minimum width one on the label's anchor line),
-/// with the message following on the label's last touched line.
+/// content — clamped, with a minimum width of one on the label's anchor
+/// line and on its last touched line, so an empty last line still
+/// carries the row the message follows: nothing is silently dropped
+/// (base.md §7.1).
 fn render_underline(
     f: &mut fmt::Formatter<'_>,
     fit: &Fitting<'_>,
@@ -292,9 +300,9 @@ fn render_underline(
     } else {
         extent
     };
-    let anchor_line = line == fit.start.line;
+    let anchored = line == fit.start.line || line == fit.end.line;
     let width_cols = to.saturating_sub(from);
-    if width_cols == 0 && !anchor_line {
+    if width_cols == 0 && !anchored {
         return Ok(());
     }
     let marker = match fit.role {
@@ -311,13 +319,18 @@ fn render_underline(
     writeln!(f)
 }
 
-/// A line's content extent in code points, fallibly: zero when the
-/// index and text disagree (the coherence trust boundary).
+/// A line's content extent in `HUMAN_COLUMNS` — `chars()` counts code
+/// points — taken from the rendered content rather than the index, so
+/// an underline never outruns what the row shows; fallibly: zero when
+/// the index and text disagree (the coherence trust boundary).
 fn line_extent(index: &LineIndex, text: &str, line: u32) -> u32 {
     index
         .line_span(line)
         .ok()
         .and_then(|span| text.get(span.start().get() as usize..span.end().get() as usize))
+        // The cast cannot truncate: the content is a slice of one line
+        // of an admitted text, at most Source::MAX_LEN bytes, and a
+        // character count never exceeds a byte count.
         .map_or(0, |content| content.chars().count() as u32)
 }
 
@@ -772,6 +785,59 @@ error[syntax::unexpected-token]: m
   | ^
 ";
         assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn a_label_starting_at_a_line_end_marks_that_line() {
+        // The label begins at the end of line 1 (covering its
+        // terminator) and ends inside line 2: the anchor line still
+        // shows a minimum-width marker where the label begins.
+        let rendered = rendering_of("ab\ncd", label_in_first_source(2, 4), &[]);
+        let expected = "\
+error[syntax::unexpected-token]: m
+ --> demo.lp:1:3
+  |
+1 | ab
+  |   ^
+2 | cd
+  | ^
+";
+        assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn a_message_lands_on_an_empty_last_line() {
+        // The label covers line 1 and the empty line 2's terminator, so
+        // line 2 is its last touched line: the message lands there, on a
+        // minimum-width row, rather than being dropped.
+        let mut catalog = SourceSet::new();
+        catalog
+            .add("demo.lp".to_owned(), "a\n\nb".to_owned())
+            .expect("small text admits");
+        let diagnostic = Diagnostic::new(
+            UNEXPECTED,
+            Severity::Error,
+            "m".to_owned(),
+            Label {
+                location: Location {
+                    source: SourceId::new(0),
+                    span: Span::new(ByteOffset::new(0), ByteOffset::new(3))
+                        .expect("ordered endpoints"),
+                },
+                message: Some("here".to_owned()),
+            },
+        )
+        .expect("non-empty headline");
+        let expected = "\
+error[syntax::unexpected-token]: m
+ --> demo.lp:1:1
+  |
+1 | a
+  | ^
+2 | 
+  | ^ here
+";
+        assert_eq!(human(&diagnostic, &catalog), expected);
     }
 
     // The editor view (base.md §7.2).

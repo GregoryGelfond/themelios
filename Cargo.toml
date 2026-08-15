@@ -28,12 +28,14 @@ pedantic = { level = "deny", priority = -1 }
 # span::Span, line::LineIndex); renaming either side would depart the
 # design of record.
 module_name_repetitions = "allow"
-# Every meaning-carrying cast carries its cannot-truncate argument in
-# place — resting on the admission-ceiling invariant, save two whose
-# argument is beside them: SourceSet::add's mint (a stated resource
-# bound) and LineIndex::of's character widths (std's contract for
-# len_utf8 and len_utf16); blanket try_from ceremony would restate what
-# is already argued.
+# In the shipped library, every meaning-carrying cast carries its
+# cannot-truncate argument in place — resting on the admission-ceiling
+# invariant, save two whose argument is beside them: SourceSet::add's
+# mint (a stated resource bound) and LineIndex::of's character widths
+# (std's contract for len_utf8 and len_utf16); blanket try_from
+# ceremony would restate what is already argued. The test and bench
+# targets, under the same table, narrow generator-bounded sizes far
+# below u32.
 cast_possible_truncation = "allow"
 # Every fallible operation returns Result — must-use by std's own
 # annotation — and the by-value builders, where a dropped result
