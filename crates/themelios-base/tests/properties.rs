@@ -78,3 +78,113 @@ mod source_admission {
         }
     }
 }
+
+mod line_conversions {
+    use proptest::prelude::*;
+    use themelios_base::line::{ColumnEncoding, LineCol, LineIndex, PositionRefusal};
+    use themelios_base::source::{NotCharBoundary, Source, SourceId};
+    use themelios_base::span::ByteOffset;
+
+    const ENCODINGS: [ColumnEncoding; 3] = [
+        ColumnEncoding::Utf8Bytes,
+        ColumnEncoding::CodePoints,
+        ColumnEncoding::Utf16Units,
+    ];
+
+    /// Multi-byte-heavy generated text (base.md §10): ASCII, two-,
+    /// three-, and four-byte characters, plus every newline shape.
+    fn multibyte_text() -> impl Strategy<Value = String> {
+        proptest::collection::vec(
+            prop_oneof![
+                Just("a"),
+                Just("Z"),
+                Just(" "),
+                Just("é"),
+                Just("√"),
+                Just("你"),
+                Just("🦀"),
+                Just("\n"),
+                Just("\r"),
+                Just("\r\n"),
+            ],
+            0..120,
+        )
+        .prop_map(|pieces| pieces.concat())
+    }
+
+    /// The naive character-walk oracle: recompute the coordinate from
+    /// scratch, one character at a time.
+    fn oracle(text: &str, target: usize, encoding: ColumnEncoding) -> LineCol {
+        let (mut line, mut col) = (0u32, 0u32);
+        for (i, character) in text.char_indices() {
+            if i >= target {
+                break;
+            }
+            if character == '\n' {
+                line += 1;
+                col = 0;
+            } else {
+                col += match encoding {
+                    ColumnEncoding::Utf8Bytes => character.len_utf8() as u32,
+                    ColumnEncoding::CodePoints => 1,
+                    ColumnEncoding::Utf16Units => character.len_utf16() as u32,
+                };
+            }
+        }
+        LineCol { line, col }
+    }
+
+    proptest! {
+        /// base.md §10: oracle agreement on every boundary, the
+        /// round-trip identity in every encoding, refusal on every
+        /// non-boundary, refusal past the end.
+        #[test]
+        fn conversions_agree_with_the_oracle_and_round_trip(
+            text in multibyte_text(),
+        ) {
+            let source =
+                Source::new(SourceId::new(0), text.clone())
+                    .expect("generated text admits");
+            let index = LineIndex::of(&source);
+            let boundaries: Vec<usize> = text
+                .char_indices()
+                .map(|(i, _)| i)
+                .chain([text.len()])
+                .collect();
+            for &encoding in &ENCODINGS {
+                for &boundary in &boundaries {
+                    let offset = ByteOffset::new(boundary as u32);
+                    let position = index
+                        .position(offset, encoding)
+                        .expect("boundary offsets position");
+                    prop_assert_eq!(
+                        position,
+                        oracle(&text, boundary, encoding)
+                    );
+                    prop_assert_eq!(
+                        index.offset(position, encoding),
+                        Ok(offset)
+                    );
+                }
+                for byte in 0..text.len() {
+                    if !text.is_char_boundary(byte) {
+                        let offset = ByteOffset::new(byte as u32);
+                        prop_assert_eq!(
+                            index.position(offset, encoding),
+                            Err(PositionRefusal::NotCharBoundary(
+                                NotCharBoundary { offset }
+                            ))
+                        );
+                    }
+                }
+                prop_assert!(matches!(
+                    index.position(
+                        ByteOffset::new(text.len() as u32 + 1),
+                        encoding,
+                    ),
+                    Err(PositionRefusal::OutOfBounds(_))
+                ));
+            }
+        }
+    }
+}

@@ -298,6 +298,165 @@ impl LineIndex {
         // spans, as in Source::span.
         Ok(Span::empty(ByteOffset::new(start)).join(Span::empty(ByteOffset::new(end))))
     }
+
+    /// Where a byte offset falls, as a coordinate in the stated
+    /// encoding. Offsets `0..=len` are in bounds; `len` is the
+    /// end-of-text position. Refuses `PositionRefusal` — a
+    /// mid-character offset is refused, never misplaced.
+    /// O(log lines + log non-ASCII in the text) (base.md §5, §9).
+    pub fn position(
+        &self,
+        offset: ByteOffset,
+        encoding: ColumnEncoding,
+    ) -> Result<LineCol, PositionRefusal> {
+        let max = ByteOffset::new(self.len);
+        if offset > max {
+            return Err(PositionRefusal::OutOfBounds(OffsetOutOfBounds {
+                offset,
+                max,
+            }));
+        }
+        let raw = offset.get();
+        let before = self.wide.partition_point(|w| w.offset < raw);
+        if before > 0 {
+            let last = self.wide[before - 1];
+            if raw < last.offset + u32::from(last.byte_len) {
+                return Err(PositionRefusal::NotCharBoundary(NotCharBoundary { offset }));
+            }
+        }
+        // The line whose start is last at or before the offset; entry
+        // 0 is 0, so the partition point is at least 1.
+        let line = self.line_starts.partition_point(|&start| start <= raw) - 1;
+        let line_start = self.line_starts[line];
+        let bytes = raw - line_start;
+        let col = match encoding {
+            ColumnEncoding::Utf8Bytes => bytes,
+            ColumnEncoding::CodePoints => {
+                bytes - self.surplus_between(line_start, raw, &self.cp_surplus)
+            }
+            ColumnEncoding::Utf16Units => {
+                bytes - self.surplus_between(line_start, raw, &self.utf16_surplus)
+            }
+        };
+        // The cast cannot truncate: line < line_count <= u32::MAX.
+        Ok(LineCol {
+            line: line as u32,
+            col,
+        })
+    }
+
+    /// The byte offset of a coordinate in the stated encoding. A
+    /// coordinate produced under one encoding and queried under
+    /// another breaches the stated contract (base.md §5); on
+    /// multi-byte text it surfaces as a refusal or a wrong position.
+    /// Refuses `OffsetRefusal`; O(log lines + log non-ASCII in the
+    /// text) (base.md §5, §9).
+    pub fn offset(
+        &self,
+        pos: LineCol,
+        encoding: ColumnEncoding,
+    ) -> Result<ByteOffset, OffsetRefusal> {
+        let line_count = self.line_count();
+        if pos.line >= line_count {
+            return Err(OffsetRefusal::LineOutOfBounds(LineOutOfBounds {
+                line: pos.line,
+                line_count,
+            }));
+        }
+        let line_start = self.line_starts[pos.line as usize];
+        let content_end = match self.line_starts.get(pos.line as usize + 1) {
+            Some(next_start) => next_start - 1,
+            None => self.len,
+        };
+        let extent_bytes = content_end - line_start;
+        let table = match encoding {
+            ColumnEncoding::Utf8Bytes => {
+                // Bytes: bound, then boundary, directly.
+                if pos.col > extent_bytes {
+                    return Err(OffsetRefusal::ColumnOutOfBounds(ColumnOutOfBounds {
+                        line: pos.line,
+                        col: pos.col,
+                        max: extent_bytes,
+                    }));
+                }
+                let raw = line_start + pos.col;
+                let before = self.wide.partition_point(|w| w.offset < raw);
+                if before > 0 {
+                    let last = self.wide[before - 1];
+                    if raw < last.offset + u32::from(last.byte_len) {
+                        return Err(OffsetRefusal::ColumnNotBoundary(ColumnNotBoundary {
+                            line: pos.line,
+                            col: pos.col,
+                        }));
+                    }
+                }
+                return Ok(ByteOffset::new(raw));
+            }
+            ColumnEncoding::CodePoints => &self.cp_surplus,
+            ColumnEncoding::Utf16Units => &self.utf16_surplus,
+        };
+        // Unit encodings. Definition: unit_pos(j) is wide character
+        // j's column within this line, in the query's encoding — its
+        // byte distance from the line start minus the units already
+        // saved by earlier in-line wide characters. The binary search
+        // below maintains the invariant that `consumed` counts the
+        // line's wide characters (indices lo..lo + consumed) whose
+        // unit_pos is strictly below pos.col; `open - consumed`
+        // halves every pass, so it terminates. partition_point cannot
+        // express this search because the predicate needs each
+        // element's *index* for the prefix tables, not the element
+        // alone — hence the hand-rolled form. O(log) via the tables.
+        let up_to = |i: usize| if i == 0 { 0 } else { table[i - 1] };
+        let lo = self.wide.partition_point(|w| w.offset < line_start);
+        let hi = self.wide.partition_point(|w| w.offset < content_end);
+        let max = extent_bytes - (up_to(hi) - up_to(lo));
+        if pos.col > max {
+            return Err(OffsetRefusal::ColumnOutOfBounds(ColumnOutOfBounds {
+                line: pos.line,
+                col: pos.col,
+                max,
+            }));
+        }
+        let unit_pos = |j: usize| (self.wide[j].offset - line_start) - (up_to(j) - up_to(lo));
+        let mut consumed = 0;
+        let mut open = hi - lo;
+        while consumed < open {
+            let mid = consumed + (open - consumed) / 2;
+            if unit_pos(lo + mid) < pos.col {
+                consumed = mid + 1;
+            } else {
+                open = mid;
+            }
+        }
+        if consumed > 0 {
+            let j = lo + consumed - 1;
+            let w = self.wide[j];
+            // A wide character's width in this encoding's units; for
+            // code points it is 1, so the branch below cannot fire
+            // there — only a UTF-16 surrogate pair can be entered.
+            let unit_len = u32::from(w.byte_len) - (up_to(j + 1) - up_to(j));
+            if unit_pos(j) + unit_len > pos.col {
+                return Err(OffsetRefusal::ColumnNotBoundary(ColumnNotBoundary {
+                    line: pos.line,
+                    col: pos.col,
+                }));
+            }
+        }
+        // Bytes = units + the surplus of every consumed wide
+        // character: the inverse of unit_pos's defining relation.
+        let bytes = pos.col + (up_to(lo + consumed) - up_to(lo));
+        Ok(ByteOffset::new(line_start + bytes))
+    }
+
+    /// Total surplus (bytes minus units) of wide characters starting
+    /// in `[from, to)`, where both bounds are character boundaries.
+    /// O(log non-ASCII) via the prefix tables.
+    fn surplus_between(&self, from: u32, to: u32, table: &[u32]) -> u32 {
+        let up_to = |i: usize| if i == 0 { 0 } else { table[i - 1] };
+        let lo = self.wide.partition_point(|w| w.offset < from);
+        let hi = self.wide.partition_point(|w| w.offset < to);
+        up_to(hi) - up_to(lo)
+    }
 }
 
 #[cfg(test)]
@@ -412,5 +571,102 @@ mod tests {
             line: 0,
             line_count: 1,
         };
+    }
+
+    // Layout of "aé🦀\nb": a=0, é=1..3, 🦀=3..7, \n=7, b=8; len 9.
+    const MIXED: &str = "aé🦀\nb";
+
+    #[test]
+    fn position_answers_in_all_three_encodings() {
+        use ColumnEncoding::*;
+        let index = index_of(MIXED);
+        let at = |raw: u32, encoding| index.position(ByteOffset::new(raw), encoding);
+        assert_eq!(at(3, Utf8Bytes), Ok(LineCol { line: 0, col: 3 }));
+        assert_eq!(at(3, CodePoints), Ok(LineCol { line: 0, col: 2 }));
+        assert_eq!(at(3, Utf16Units), Ok(LineCol { line: 0, col: 2 }));
+        // At the terminator: the line's full content extent.
+        assert_eq!(at(7, Utf8Bytes), Ok(LineCol { line: 0, col: 7 }));
+        assert_eq!(at(7, CodePoints), Ok(LineCol { line: 0, col: 3 }));
+        assert_eq!(at(7, Utf16Units), Ok(LineCol { line: 0, col: 4 }));
+        // Past the terminator: the next line.
+        assert_eq!(at(8, Utf8Bytes), Ok(LineCol { line: 1, col: 0 }));
+        // End-of-text is in bounds (base.md §5: offsets 0..=len).
+        assert_eq!(at(9, Utf8Bytes), Ok(LineCol { line: 1, col: 1 }));
+    }
+
+    #[test]
+    fn position_refuses_rather_than_misplaces() {
+        let index = index_of(MIXED);
+        assert_eq!(
+            index.position(ByteOffset::new(2), ColumnEncoding::CodePoints),
+            Err(PositionRefusal::NotCharBoundary(NotCharBoundary {
+                offset: ByteOffset::new(2),
+            }))
+        );
+        assert_eq!(
+            index.position(ByteOffset::new(10), ColumnEncoding::Utf8Bytes),
+            Err(PositionRefusal::OutOfBounds(OffsetOutOfBounds {
+                offset: ByteOffset::new(10),
+                max: ByteOffset::new(9),
+            }))
+        );
+    }
+
+    #[test]
+    fn offset_answers_in_all_three_encodings() {
+        use ColumnEncoding::*;
+        let index = index_of(MIXED);
+        let at = |line: u32, col: u32, encoding| index.offset(LineCol { line, col }, encoding);
+        assert_eq!(at(0, 3, Utf8Bytes), Ok(ByteOffset::new(3)));
+        assert_eq!(at(0, 2, CodePoints), Ok(ByteOffset::new(3)));
+        assert_eq!(at(0, 2, Utf16Units), Ok(ByteOffset::new(3)));
+        assert_eq!(at(0, 4, Utf16Units), Ok(ByteOffset::new(7)));
+        assert_eq!(at(1, 1, Utf8Bytes), Ok(ByteOffset::new(9)));
+    }
+
+    #[test]
+    fn offset_refuses_each_of_its_three_conditions() {
+        use ColumnEncoding::*;
+        let index = index_of(MIXED);
+        assert_eq!(
+            index.offset(LineCol { line: 5, col: 0 }, Utf8Bytes),
+            Err(OffsetRefusal::LineOutOfBounds(LineOutOfBounds {
+                line: 5,
+                line_count: 2,
+            }))
+        );
+        // max is the line's extent in the encoding the query stated.
+        assert_eq!(
+            index.offset(LineCol { line: 0, col: 9 }, Utf8Bytes),
+            Err(OffsetRefusal::ColumnOutOfBounds(ColumnOutOfBounds {
+                line: 0,
+                col: 9,
+                max: 7,
+            }))
+        );
+        assert_eq!(
+            index.offset(LineCol { line: 0, col: 4 }, CodePoints),
+            Err(OffsetRefusal::ColumnOutOfBounds(ColumnOutOfBounds {
+                line: 0,
+                col: 4,
+                max: 3,
+            }))
+        );
+        // Inside é's bytes.
+        assert_eq!(
+            index.offset(LineCol { line: 0, col: 2 }, Utf8Bytes),
+            Err(OffsetRefusal::ColumnNotBoundary(ColumnNotBoundary {
+                line: 0,
+                col: 2,
+            }))
+        );
+        // Inside 🦀's surrogate pair.
+        assert_eq!(
+            index.offset(LineCol { line: 0, col: 3 }, Utf16Units),
+            Err(OffsetRefusal::ColumnNotBoundary(ColumnNotBoundary {
+                line: 0,
+                col: 3,
+            }))
+        );
     }
 }
