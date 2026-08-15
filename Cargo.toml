@@ -1,0 +1,48 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+
+# Denied workspace-wide: unused code is either a defect or a claim the
+# crate does not need (docs/specification.md §5.2, §10.1); missing docs
+# break the executable-claims posture (docs/specification.md §10.4).
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "deny"
+unused = { level = "deny", priority = -1 }
+unused_must_use = "deny"
+dead_code = "deny"
+
+# The strictest coherent setting is the baseline; each allow below is
+# a named departure carrying its argument. Any denied lint — rustc or
+# clippy — firing unforeseen during a later task is repaired in code
+# or allowed in the matching lints table with its argument at that
+# task's commit — never waived silently.
+[workspace.lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+# The design's names repeat their module's concern (source::Source,
+# span::Span, line::LineIndex); renaming either side would depart the
+# design of record.
+module_name_repetitions = "allow"
+# Every meaning-carrying cast carries its cannot-truncate argument in
+# place, resting on the admission-ceiling invariant; blanket try_from
+# ceremony would restate what is already argued.
+cast_possible_truncation = "allow"
+# Every fallible operation returns Result — must-use by std's own
+# annotation — and the by-value builders, where a dropped result
+# loses the build, carry #[must_use] explicitly. What remains are
+# pure accessors of plain data, where a discarded call is harmless;
+# annotating some thirty of them taxes the reader and buys nothing.
+must_use_candidate = "allow"
+# Every fallible operation's rustdoc opens by naming exactly what it
+# refuses and at what cost — the base.md §9 discipline; a mandatory
+# `# Errors` heading would duplicate that sentence under a second
+# name.
+missing_errors_doc = "allow"
+# Doc comments cite design sections as prose (base.md §5); ticking
+# every citation adds markup without information.
+doc_markdown = "allow"

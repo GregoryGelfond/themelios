@@ -1,0 +1,20 @@
+[package]
+name = "themelios-base"
+version = "0.1.0"
+description = "Source-text model, spans, line indexing, and the diagnostics model."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Empty by design, forever: zero dependencies in the shipped library's
+# closure (docs/design/base.md §1). tests/trust.rs holds this claim.
+[dependencies]
+
+# The stage-1 instruments (docs/design/base.md §10), outside the
+# shipped closure's claim.
+[dev-dependencies]
+proptest = "1"
+criterion = "0.7"
+
+[lints]
+workspace = true
