@@ -486,3 +486,84 @@ mod human_totality {
         }
     }
 }
+
+mod canonical_order_law {
+    use std::cmp::Ordering;
+
+    use proptest::prelude::*;
+    use themelios_base::diagnostic::{Diagnostic, DiagnosticId, Label, Severity};
+    use themelios_base::source::SourceId;
+    use themelios_base::span::{ByteOffset, Location, Span};
+    use themelios_base::view::canonical_order;
+
+    fn diagnostics() -> impl Strategy<Value = Diagnostic> {
+        // A deliberately collision-heavy space, so every comparison
+        // key — including the structural tiebreak — is exercised.
+        (
+            0u32..2,
+            0u32..3,
+            0usize..3,
+            0usize..2,
+            "[ab]{1,2}",
+            proptest::collection::vec("[ab]{0,2}", 0..2),
+        )
+            .prop_map(|(source, start, severity, id, message, notes)| {
+                let severity = [Severity::Note, Severity::Warning, Severity::Error][severity];
+                let id = [
+                    DiagnosticId::new("syntax", "unexpected-token"),
+                    DiagnosticId::new("program", "unknown-name"),
+                ][id];
+                let mut diagnostic = Diagnostic::new(
+                    id,
+                    severity,
+                    message,
+                    Label {
+                        location: Location {
+                            source: SourceId::new(source),
+                            span: Span::new(ByteOffset::new(start), ByteOffset::new(start + 1))
+                                .expect("ordered endpoints"),
+                        },
+                        message: None,
+                    },
+                )
+                .expect("generated headline is non-empty");
+                for note in notes {
+                    diagnostic = diagnostic.with_note(note);
+                }
+                diagnostic
+            })
+    }
+
+    proptest! {
+        /// base.md §10: canonical_order is a total order —
+        /// antisymmetric, transitive, total — and Equal exactly on
+        /// structural equality.
+        #[test]
+        fn canonical_order_is_a_total_order(
+            a in diagnostics(),
+            b in diagnostics(),
+            c in diagnostics(),
+        ) {
+            prop_assert_eq!(
+                canonical_order(&a, &b),
+                canonical_order(&b, &a).reverse()
+            );
+            if canonical_order(&a, &b) != Ordering::Greater
+                && canonical_order(&b, &c) != Ordering::Greater
+            {
+                prop_assert_ne!(
+                    canonical_order(&a, &c),
+                    Ordering::Greater
+                );
+            }
+            prop_assert_eq!(
+                canonical_order(&a, &b) == Ordering::Equal,
+                a == b
+            );
+            prop_assert_eq!(
+                canonical_order(&a, &a),
+                Ordering::Equal
+            );
+        }
+    }
+}

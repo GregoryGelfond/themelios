@@ -5,6 +5,7 @@
 //! view does need is over its *environment*, and that is the
 //! `Sources` trait.
 
+use std::cmp::Ordering;
 use std::fmt;
 
 use crate::diagnostic::{Diagnostic, DiagnosticId, Label, Severity};
@@ -485,6 +486,31 @@ fn range_of(
     })
 }
 
+/// One deterministic order for batches: source, then primary span,
+/// then severity (worst first), then identity, then full structural
+/// comparison as the final tiebreak (base.md §7.4).
+///
+/// Defined once because every batch consumer needs one — the golden
+/// corpus first among them — and each inventing its own would
+/// diverge. A free function deliberately, not an `Ord` impl: an `Ord`
+/// impl would claim *the* natural order of diagnostics, and there is
+/// none — this is one batch derivation among possible ones, and
+/// ordering a batch for consumption is itself a linearization
+/// (base.md §8.4). Total; `Equal` exactly on structural equality;
+/// O(structure).
+pub fn canonical_order(a: &Diagnostic, b: &Diagnostic) -> Ordering {
+    (a.primary().location.source)
+        .cmp(&b.primary().location.source)
+        .then_with(|| a.primary().location.span.cmp(&b.primary().location.span))
+        .then_with(|| b.severity().cmp(&a.severity()))
+        .then_with(|| a.id().cmp(&b.id()))
+        .then_with(|| a.message().cmp(b.message()))
+        .then_with(|| a.primary().message.cmp(&b.primary().message))
+        .then_with(|| a.secondary().iter().cmp(b.secondary().iter()))
+        .then_with(|| a.notes().cmp(b.notes()))
+        .then_with(|| a.helps().cmp(b.helps()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -704,5 +730,84 @@ warning[syntax::unexpected-token]: w
             "source 3 resolved partially: missing index"
         );
         let _: &dyn std::error::Error = &refusal;
+    }
+
+    use std::cmp::Ordering;
+
+    const OTHER: DiagnosticId = DiagnosticId::new("program", "unknown-name");
+
+    fn diagnostic_at(source: u32, start: u32, severity: Severity, id: DiagnosticId) -> Diagnostic {
+        Diagnostic::new(
+            id,
+            severity,
+            "m".to_owned(),
+            Label {
+                location: Location {
+                    source: SourceId::new(source),
+                    span: Span::new(ByteOffset::new(start), ByteOffset::new(start + 1))
+                        .expect("ordered endpoints"),
+                },
+                message: None,
+            },
+        )
+        .expect("non-empty headline")
+    }
+
+    #[test]
+    fn canonical_order_groups_by_source() {
+        assert_eq!(
+            canonical_order(
+                &diagnostic_at(0, 9, Severity::Note, UNEXPECTED),
+                &diagnostic_at(1, 0, Severity::Error, UNEXPECTED),
+            ),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn canonical_order_then_primary_span() {
+        assert_eq!(
+            canonical_order(
+                &diagnostic_at(0, 2, Severity::Note, UNEXPECTED),
+                &diagnostic_at(0, 5, Severity::Error, UNEXPECTED),
+            ),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn canonical_order_puts_worst_first() {
+        assert_eq!(
+            canonical_order(
+                &diagnostic_at(0, 2, Severity::Error, UNEXPECTED),
+                &diagnostic_at(0, 2, Severity::Warning, UNEXPECTED),
+            ),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn canonical_order_then_identity() {
+        assert_eq!(
+            canonical_order(
+                &diagnostic_at(0, 2, Severity::Error, OTHER),
+                &diagnostic_at(0, 2, Severity::Error, UNEXPECTED),
+            ),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn canonical_order_equal_iff_structural() {
+        assert_eq!(
+            canonical_order(
+                &diagnostic_at(0, 2, Severity::Error, UNEXPECTED),
+                &diagnostic_at(0, 2, Severity::Error, UNEXPECTED),
+            ),
+            Ordering::Equal
+        );
+        let plain = diagnostic_at(0, 2, Severity::Error, UNEXPECTED);
+        let with_note = diagnostic_at(0, 2, Severity::Error, UNEXPECTED).with_note("n".to_owned());
+        assert_ne!(canonical_order(&plain, &with_note), Ordering::Equal);
     }
 }
