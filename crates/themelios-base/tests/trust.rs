@@ -18,6 +18,7 @@
 use std::fs;
 use std::path::Path;
 
+use themelios_base::diagnostic::{DiagnosticId, Label, Severity};
 use themelios_base::line::{
     ColumnEncoding, ColumnNotBoundary, ColumnOutOfBounds, LineCol, LineIndex, LineOutOfBounds,
     OffsetOutOfBounds, OffsetRefusal, PositionRefusal,
@@ -165,6 +166,9 @@ fn rust_version_floor_is_declared() {
 #[test]
 fn every_public_type_is_plain_data() {
     fn plain_data<T: Send + Sync>() {}
+    plain_data::<DiagnosticId>();
+    plain_data::<Severity>();
+    plain_data::<Label>();
     plain_data::<SourceId>();
     plain_data::<Source>();
     plain_data::<TooLarge>();

@@ -7,6 +7,7 @@
 //! holds no global state, and knows nothing about any language.
 #![forbid(unsafe_code)]
 
+pub mod diagnostic;
 pub mod line;
 pub mod source;
 pub mod span;
