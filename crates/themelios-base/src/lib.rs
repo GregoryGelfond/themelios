@@ -6,3 +6,5 @@
 //! operation and consolidated in base.md §9. This crate does no I/O,
 //! holds no global state, and knows nothing about any language.
 #![forbid(unsafe_code)]
+
+pub mod span;
