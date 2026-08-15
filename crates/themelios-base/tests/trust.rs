@@ -18,7 +18,7 @@
 use std::fs;
 use std::path::Path;
 
-use themelios_base::diagnostic::{DiagnosticId, Label, Severity};
+use themelios_base::diagnostic::{Diagnostic, DiagnosticId, EmptyMessage, Label, Severity};
 use themelios_base::line::{
     ColumnEncoding, ColumnNotBoundary, ColumnOutOfBounds, LineCol, LineIndex, LineOutOfBounds,
     OffsetOutOfBounds, OffsetRefusal, PositionRefusal,
@@ -169,6 +169,8 @@ fn every_public_type_is_plain_data() {
     plain_data::<DiagnosticId>();
     plain_data::<Severity>();
     plain_data::<Label>();
+    plain_data::<Diagnostic>();
+    plain_data::<EmptyMessage>();
     plain_data::<SourceId>();
     plain_data::<Source>();
     plain_data::<TooLarge>();
