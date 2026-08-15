@@ -1,8 +1,9 @@
-//! Line and column structure for one source's text (docs/design/
-//! base.md §5): an explicit, pure derivation you construct and hold.
-//! Zero-based throughout; one-based coordinates exist only inside the
-//! human rendering, as presentation. Lines break at `\n` alone; a
-//! `\r` stays in its line's content; nothing is normalized, ever.
+//! Line and column structure for one source's text
+//! (docs/design/base.md §5): an explicit, pure derivation you construct
+//! and hold. Zero-based throughout; one-based coordinates exist only
+//! inside the human rendering, as presentation. Lines break at `\n`
+//! alone; a `\r` stays in its line's content; nothing is normalized,
+//! ever.
 
 use std::fmt;
 use std::ops::Range;

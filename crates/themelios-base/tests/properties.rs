@@ -51,7 +51,13 @@ mod span_algebra {
                 (a, Span::new(a.end(), end).expect("touching span is ordered"))
             }),
             1 => (spans(), any::<u32>(), any::<u32>()).prop_map(|(a, x, y)| {
-                let inner = |raw: u32| ByteOffset::new(a.start().get() + raw % (a.len() + 1));
+                // Positions within `a` are 0..=len; the modulus is taken in
+                // u64 so a full-range span cannot overflow it, and the cast
+                // cannot truncate: the remainder is at most len.
+                let positions = u64::from(a.len()) + 1;
+                let inner = |raw: u32| {
+                    ByteOffset::new(a.start().get() + (u64::from(raw) % positions) as u32)
+                };
                 let (s, e) = (inner(x), inner(y));
                 let (s, e) = if s <= e { (s, e) } else { (e, s) };
                 (a, Span::new(s, e).expect("nested span is ordered"))

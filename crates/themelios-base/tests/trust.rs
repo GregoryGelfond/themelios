@@ -3,9 +3,29 @@
 //! manifests this repository owns, line by line: a manifest line is
 //! trimmed, and blank and comment lines are dropped, so a claim is met
 //! only by a live line, never by a commented-out or quoted copy.
+//!
+//! The dependency checks answer a question about Cargo's resolved
+//! graph by reading one manifest's text — a named departure from the
+//! structural instrument (`cargo tree`, `cargo metadata`), taken because
+//! the claim at this stage is that the table is empty, which the owned
+//! manifest states exactly, and because holding it structurally would
+//! cost a subprocess or a dependency inside the test suite for no added
+//! evidence. The claim changes shape at stage 2, when the closure is
+//! non-empty and must be FFI-free (docs/specification.md §12.3, §12.5):
+//! that is a property of the resolved graph, and its check moves to
+//! Cargo's own account of it.
 
 use std::fs;
 use std::path::Path;
+
+use themelios_base::line::{
+    ColumnEncoding, ColumnNotBoundary, ColumnOutOfBounds, LineCol, LineIndex, LineOutOfBounds,
+    OffsetOutOfBounds, OffsetRefusal, PositionRefusal,
+};
+use themelios_base::source::{
+    FromBytesRefusal, InvalidUtf8, NotCharBoundary, SliceRefusal, Source, SourceId, TooLarge,
+};
+use themelios_base::span::{ByteOffset, EndBeforeStart, Location, Span};
 
 fn manifest_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -135,4 +155,33 @@ fn rust_version_floor_is_declared() {
         }),
         "docs/specification.md §10.1: every manifest carries the floor"
     );
+}
+
+/// docs/design/base.md §1: every public type is plain data — `Send`,
+/// `Sync`, owned. The traits hold what they can; no interior mutability,
+/// no global state, and no I/O are held by reading. Extended as public
+/// types land.
+#[test]
+fn every_public_type_is_plain_data() {
+    fn plain_data<T: Send + Sync>() {}
+    plain_data::<SourceId>();
+    plain_data::<Source>();
+    plain_data::<TooLarge>();
+    plain_data::<InvalidUtf8>();
+    plain_data::<FromBytesRefusal>();
+    plain_data::<NotCharBoundary>();
+    plain_data::<SliceRefusal>();
+    plain_data::<ByteOffset>();
+    plain_data::<Span>();
+    plain_data::<EndBeforeStart>();
+    plain_data::<Location>();
+    plain_data::<LineCol>();
+    plain_data::<ColumnEncoding>();
+    plain_data::<OffsetOutOfBounds>();
+    plain_data::<LineOutOfBounds>();
+    plain_data::<ColumnOutOfBounds>();
+    plain_data::<ColumnNotBoundary>();
+    plain_data::<PositionRefusal>();
+    plain_data::<OffsetRefusal>();
+    plain_data::<LineIndex>();
 }

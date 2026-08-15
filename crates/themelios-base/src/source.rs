@@ -154,23 +154,28 @@ impl Source {
     /// a bare numeral at a call site (base.md §3.2).
     pub const MAX_LEN: usize = u32::MAX as usize - 1;
 
+    /// The one admission-ceiling check, shared by both doors: a length
+    /// admits exactly when it is at most `MAX_LEN`. O(1).
+    fn admit_len(len: usize) -> Result<(), TooLarge> {
+        if len > Source::MAX_LEN {
+            Err(TooLarge { len })
+        } else {
+            Ok(())
+        }
+    }
+
     /// Admits owned text. Refuses `TooLarge`; O(1) beyond the length
     /// check. No repair at the door: no BOM stripping, no line-ending
     /// normalization — author bytes are data (base.md §3.2).
     pub fn new(id: SourceId, text: String) -> Result<Source, TooLarge> {
-        if text.len() > Source::MAX_LEN {
-            Err(TooLarge { len: text.len() })
-        } else {
-            Ok(Source { id, text })
-        }
+        Source::admit_len(text.len())?;
+        Ok(Source { id, text })
     }
 
     /// Admits raw bytes. Refuses `FromBytesRefusal` — the length check
     /// first, then UTF-8 validation; O(n) validation (base.md §3.2).
     pub fn from_bytes(id: SourceId, bytes: Vec<u8>) -> Result<Source, FromBytesRefusal> {
-        if bytes.len() > Source::MAX_LEN {
-            return Err(FromBytesRefusal::TooLarge(TooLarge { len: bytes.len() }));
-        }
+        Source::admit_len(bytes.len()).map_err(FromBytesRefusal::TooLarge)?;
         match String::from_utf8(bytes) {
             Ok(text) => Ok(Source { id, text }),
             Err(error) => Err(FromBytesRefusal::InvalidUtf8(InvalidUtf8 {
@@ -250,6 +255,19 @@ mod tests {
     }
 
     #[test]
+    fn admission_ceiling_is_the_boundary() {
+        // The check both doors share, held at its boundary without a
+        // four-gibibyte witness.
+        assert_eq!(Source::admit_len(Source::MAX_LEN), Ok(()));
+        assert_eq!(
+            Source::admit_len(Source::MAX_LEN + 1),
+            Err(TooLarge {
+                len: Source::MAX_LEN + 1
+            })
+        );
+    }
+
+    #[test]
     fn admission_ceiling_fits_the_line_count() {
         // A text of `len` bytes has at most `len + 1` lines, so the line
         // count of every admissible text must fit the index's u32.
@@ -315,8 +333,11 @@ mod tests {
     #[test]
     fn refusals_display_the_fixable_question() {
         assert_eq!(
-            TooLarge { len: 5_000_000_000 }.to_string(),
-            "text is 5000000000 bytes; the admission ceiling \
+            TooLarge {
+                len: Source::MAX_LEN + 1
+            }
+            .to_string(),
+            "text is 4294967295 bytes; the admission ceiling \
              Source::MAX_LEN is 4294967294 bytes"
         );
         assert_eq!(
