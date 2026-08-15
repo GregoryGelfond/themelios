@@ -23,7 +23,8 @@ use themelios_base::line::{
     OffsetOutOfBounds, OffsetRefusal, PositionRefusal,
 };
 use themelios_base::source::{
-    FromBytesRefusal, InvalidUtf8, NotCharBoundary, SliceRefusal, Source, SourceId, TooLarge,
+    FromBytesRefusal, InvalidUtf8, NotCharBoundary, SliceRefusal, Source, SourceFacet, SourceId,
+    SourceSet, SourcesLawViolation, TooLarge,
 };
 use themelios_base::span::{ByteOffset, EndBeforeStart, Location, Span};
 
@@ -171,6 +172,9 @@ fn every_public_type_is_plain_data() {
     plain_data::<FromBytesRefusal>();
     plain_data::<NotCharBoundary>();
     plain_data::<SliceRefusal>();
+    plain_data::<SourceFacet>();
+    plain_data::<SourcesLawViolation>();
+    plain_data::<SourceSet>();
     plain_data::<ByteOffset>();
     plain_data::<Span>();
     plain_data::<EndBeforeStart>();

@@ -6,6 +6,7 @@
 
 use std::fmt;
 
+use crate::line::LineIndex;
 use crate::span::{ByteOffset, Span};
 
 /// An opaque identity for one source text. The embedding host mints it,
@@ -232,6 +233,175 @@ impl Source {
             }));
         }
         Ok(&self.text[start..end])
+    }
+}
+
+/// The view environment: resolves identity to display data. Two laws
+/// bind every implementor (base.md §3.4):
+///
+/// 1. **Completeness.** For a given id, answer all three accessors or
+///    none. Partial resolution is a contract breach, not a state the
+///    views must interpret.
+/// 2. **Coherence.** `line_index(id)` is observationally
+///    `LineIndex::of` applied to an admitted `Source` of `text(id)` —
+///    the index *of* that text, not of any earlier version of it.
+///
+/// Unknown identities answer `None` — a refusal, never a panic. The
+/// name is whatever the host declares: display data, not a path. What
+/// the views can check, they check — a completeness breach is named
+/// at view time. Coherence is not cheaply checkable there, so the
+/// views trust it; that trust is this contract's stated boundary, and
+/// `check_sources_laws` is the test-time instrument that holds it.
+pub trait Sources {
+    /// The display name the host declares for this source.
+    fn name(&self, id: SourceId) -> Option<&str>;
+    /// The source's text.
+    fn text(&self, id: SourceId) -> Option<&str>;
+    /// The line index of exactly that text.
+    fn line_index(&self, id: SourceId) -> Option<&LineIndex>;
+}
+
+/// Which accessor a resolution lacked — used by the law checker's
+/// report, the editor view's refusal, and the human view's
+/// placeholder (base.md §3.4).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SourceFacet {
+    /// `Sources::name` answered `None`.
+    Name,
+    /// `Sources::text` answered `None`.
+    Text,
+    /// `Sources::line_index` answered `None`.
+    Index,
+}
+
+/// One law breach found by `check_sources_laws` (base.md §3.4).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SourcesLawViolation {
+    /// The id resolved some facets but not all three.
+    Incomplete {
+        /// The id whose resolution was partial.
+        id: SourceId,
+        /// A facet that did not resolve.
+        missing: SourceFacet,
+    },
+    /// The resolved index is not the index of the resolved text.
+    IncoherentIndex {
+        /// The id whose index disagrees with its text.
+        id: SourceId,
+    },
+}
+
+/// The laws, checkable: verifies completeness per id and coherence by
+/// re-deriving the index from the resolved text. Deterministic and
+/// total — an empty report is the laws holding over those ids;
+/// O(total resolved text). Implementors run it in their own tests
+/// (base.md §3.4).
+///
+/// Ids are checked in the order given, one `Incomplete` per missing
+/// facet in `Name`, `Text`, `Index` order; coherence is checked
+/// whenever text and index both resolve, independent of the
+/// completeness verdict.
+pub fn check_sources_laws(sources: &impl Sources, ids: &[SourceId]) -> Vec<SourcesLawViolation> {
+    let mut violations = Vec::new();
+    for &id in ids {
+        let name = sources.name(id);
+        let text = sources.text(id);
+        let index = sources.line_index(id);
+        let facets = [
+            (name.is_some(), SourceFacet::Name),
+            (text.is_some(), SourceFacet::Text),
+            (index.is_some(), SourceFacet::Index),
+        ];
+        let resolved = facets.iter().filter(|(present, _)| *present).count();
+        if 0 < resolved && resolved < facets.len() {
+            for (present, facet) in facets {
+                if !present {
+                    violations.push(SourcesLawViolation::Incomplete { id, missing: facet });
+                }
+            }
+        }
+        if let (Some(text), Some(index)) = (text, index) {
+            // A text the admission door refuses cannot have an index
+            // that is LineIndex::of over an admitted Source of it —
+            // incoherent by definition.
+            let coherent = Source::new(id, text.to_owned())
+                .is_ok_and(|admitted| LineIndex::of(&admitted) == *index);
+            if !coherent {
+                violations.push(SourcesLawViolation::IncoherentIndex { id });
+            }
+        }
+    }
+    violations
+}
+
+/// A Vec-backed catalog that mints ids sequentially — a host you can
+/// use, not this crate seizing minting. Satisfies both laws by
+/// construction: it admits under the `Source` doors and builds each
+/// `LineIndex` eagerly at `add` — an explicit derivation, not lazy
+/// state. Deliberately not a virtual file system, and it never grows
+/// toward one: no paths, no watching, no loading (base.md §3.4, §11).
+#[derive(Clone, Debug)]
+pub struct SourceSet {
+    entries: Vec<SourceSetEntry>,
+}
+
+#[derive(Clone, Debug)]
+struct SourceSetEntry {
+    name: String,
+    source: Source,
+    index: LineIndex,
+}
+
+impl SourceSet {
+    /// An empty catalog. Total; O(1).
+    pub fn new() -> SourceSet {
+        SourceSet {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Admits one source under the `Source` doors, builds its index
+    /// eagerly, and mints the next sequential id. Refuses `TooLarge`;
+    /// O(n) — admission plus the index build (base.md §3.4, §9).
+    pub fn add(&mut self, name: String, text: String) -> Result<SourceId, TooLarge> {
+        // The cast cannot truncate in any real embedding: entries own
+        // their text, so a wrapped mint would need more entries than
+        // memory holds bytes.
+        let id = SourceId::new(self.entries.len() as u32);
+        let source = Source::new(id, text)?;
+        let index = LineIndex::of(&source);
+        self.entries.push(SourceSetEntry {
+            name,
+            source,
+            index,
+        });
+        Ok(id)
+    }
+
+    fn entry(&self, id: SourceId) -> Option<&SourceSetEntry> {
+        self.entries.get(id.get() as usize)
+    }
+}
+
+impl Default for SourceSet {
+    // The std idiom for an argument-free constructor;
+    // clippy::new_without_default holds it.
+    fn default() -> SourceSet {
+        SourceSet::new()
+    }
+}
+
+impl Sources for SourceSet {
+    fn name(&self, id: SourceId) -> Option<&str> {
+        self.entry(id).map(|entry| entry.name.as_str())
+    }
+
+    fn text(&self, id: SourceId) -> Option<&str> {
+        self.entry(id).map(|entry| entry.source.text())
+    }
+
+    fn line_index(&self, id: SourceId) -> Option<&LineIndex> {
+        self.entry(id).map(|entry| &entry.index)
     }
 }
 
