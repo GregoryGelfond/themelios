@@ -11,3 +11,4 @@ pub mod diagnostic;
 pub mod line;
 pub mod source;
 pub mod span;
+pub mod view;

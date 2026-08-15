@@ -1,0 +1,6 @@
+error[syntax::unexpected-token]: expected `.` after the rule body
+ --> demo.lp:2:10
+  |
+2 | q(X) :- r(X)
+  |          - still renders
+  | <label 90..95 does not fit source 0: the text ends at byte 35>

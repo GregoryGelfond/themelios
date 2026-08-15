@@ -1,0 +1,9 @@
+error[syntax::unexpected-token]: expected `.` after the rule body
+ --> demo.lp:2:1
+  |
+2 | q(X) :- r(X)
+  | ^^^^^^^^^^^^
+3 | s(1..3).
+  | ^^^^^^^^
+4 | % done
+  | ^^^^^^ this whole region

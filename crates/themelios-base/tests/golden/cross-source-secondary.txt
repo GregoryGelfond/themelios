@@ -1,0 +1,9 @@
+error[syntax::unexpected-token]: expected `.` after the rule body
+ --> demo.lp:2:9
+  |
+2 | q(X) :- r(X)
+  |         ^^^^
+ --> defs.lp:1:1
+  |
+1 | r(1).
+  | ----- defined here

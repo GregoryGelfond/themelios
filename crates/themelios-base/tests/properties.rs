@@ -362,3 +362,127 @@ mod line_conversions {
         }
     }
 }
+
+mod human_totality {
+    use proptest::prelude::*;
+    use themelios_base::diagnostic::{Diagnostic, DiagnosticId, Label, Severity};
+    use themelios_base::line::LineIndex;
+    use themelios_base::source::{SourceId, SourceSet, Sources};
+    use themelios_base::span::{ByteOffset, Location, Span};
+    use themelios_base::view::human;
+
+    const IDS: [DiagnosticId; 2] = [
+        DiagnosticId::new("syntax", "unexpected-token"),
+        DiagnosticId::new("program", "unknown-name"),
+    ];
+
+    /// A catalog wrapper that drops facets per a generated mask —
+    /// the incomplete resolutions base.md §10 names as included in
+    /// the law's catalog space.
+    struct FacetDropping {
+        inner: SourceSet,
+        /// Kept-bits (name, text, index) per id; ids past the mask
+        /// resolve as the inner catalog answers.
+        mask: Vec<(bool, bool, bool)>,
+    }
+
+    impl FacetDropping {
+        fn kept(&self, id: SourceId) -> (bool, bool, bool) {
+            self.mask
+                .get(id.get() as usize)
+                .copied()
+                .unwrap_or((true, true, true))
+        }
+    }
+
+    impl Sources for FacetDropping {
+        fn name(&self, id: SourceId) -> Option<&str> {
+            self.kept(id).0.then(|| self.inner.name(id)).flatten()
+        }
+
+        fn text(&self, id: SourceId) -> Option<&str> {
+            self.kept(id).1.then(|| self.inner.text(id)).flatten()
+        }
+
+        fn line_index(&self, id: SourceId) -> Option<&LineIndex> {
+            self.kept(id).2.then(|| self.inner.line_index(id)).flatten()
+        }
+    }
+
+    fn labels() -> impl Strategy<Value = Label> {
+        // Sources 0..6 over a three-entry catalog, spans up to byte
+        // 40 over shorter texts: unresolvable ids, out-of-bounds and
+        // mid-character spans included by construction (base.md §10).
+        (
+            0u32..6,
+            0u32..40,
+            0u32..8,
+            proptest::option::of("[a-z]{0,6}"),
+        )
+            .prop_map(|(source, start, extra, message)| Label {
+                location: Location {
+                    source: SourceId::new(source),
+                    span: Span::new(ByteOffset::new(start), ByteOffset::new(start + extra))
+                        .expect("ordered endpoints"),
+                },
+                message,
+            })
+    }
+
+    proptest! {
+        /// base.md §10: `view::human` total on arbitrary well-formed
+        /// diagnostics over arbitrary catalogs — unresolvable ids,
+        /// incomplete resolutions, and span/text mismatches included.
+        #[test]
+        fn human_is_total(
+            id_choice in 0usize..2,
+            severity_choice in 0usize..3,
+            message in "[a-z ]{1,20}",
+            primary in labels(),
+            secondaries in proptest::collection::vec(labels(), 0..4),
+            notes in proptest::collection::vec("[a-z ]{0,12}", 0..3),
+            helps in proptest::collection::vec("[a-z ]{0,12}", 0..3),
+            mask in proptest::collection::vec(
+                (any::<bool>(), any::<bool>(), any::<bool>()),
+                3,
+            ),
+        ) {
+            let mut inner = SourceSet::new();
+            for text in ["p(a).\nq(b).\n", "héllo\n🦀 line\n", ""] {
+                inner
+                    .add("gen.lp".to_owned(), text.to_owned())
+                    .expect("small text admits");
+            }
+            let catalog = FacetDropping { inner, mask };
+            let severity = [
+                Severity::Note,
+                Severity::Warning,
+                Severity::Error,
+            ][severity_choice];
+            let mut diagnostic = Diagnostic::new(
+                IDS[id_choice],
+                severity,
+                message,
+                primary,
+            )
+            .expect("generated headline is non-empty");
+            for secondary in secondaries {
+                diagnostic = diagnostic.with_secondary(secondary);
+            }
+            for note in notes {
+                diagnostic = diagnostic.with_note(note);
+            }
+            for help in helps {
+                diagnostic = diagnostic.with_help(help);
+            }
+            let rendered = human(&diagnostic, &catalog);
+            // Total and never silent: the headline always leads. (Bound
+            // first: `prop_assert!` stringifies its condition into the
+            // failure message, where a format string's braces would read
+            // as placeholders.)
+            let headline = format!("{}[{}]: ", severity, IDS[id_choice]);
+            prop_assert!(rendered.starts_with(&headline));
+            prop_assert!(rendered.ends_with('\n'));
+        }
+    }
+}

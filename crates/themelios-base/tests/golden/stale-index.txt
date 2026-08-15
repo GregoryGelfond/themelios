@@ -1,0 +1,5 @@
+error[syntax::unexpected-token]: expected `.` after the rule body
+ --> stale.lp:1:7
+  |
+1 | <line does not fit the resolved text>
+  |       ^ was here

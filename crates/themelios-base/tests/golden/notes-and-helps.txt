@@ -1,0 +1,8 @@
+error[syntax::unexpected-token]: expected `.` after the rule body
+ --> demo.lp:2:9
+  |
+2 | q(X) :- r(X)
+  |         ^^^^
+  = note: expected because of this rule form
+  = note: the statement began at line 2
+  = help: add `.` at the end of the rule
