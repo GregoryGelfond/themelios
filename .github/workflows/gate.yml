@@ -3,6 +3,19 @@ on:
   push:
   pull_request:
 
+# The gate reads the repository and writes nothing back, so the workflow
+# token is read-only: a compromised action can do no more than read
+# (docs/specification.md §12.4, supply-chain provenance).
+permissions:
+  contents: read
+
+# The toolchain the gate pins, named once and referenced at every rustup
+# call. The pin is reproducibility and matches the floor
+# (docs/specification.md §10.1); rust-version = "1.97" in Cargo.toml is the
+# floor, and this pin is at or above it.
+env:
+  RUST_TOOLCHAIN: "1.97.1"
+
 jobs:
   gate:
     strategy:
@@ -10,12 +23,14 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      # The pin matches the floor (docs/specification.md §10.1).
+      # Necessary: the gate builds from the repository contents, and this
+      # is the first-party action for that. Pinned to a commit for
+      # reproducible provenance, never a movable tag (§10.1, §12.4).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: |
-          rustup toolchain install 1.97.1 --profile minimal \
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal \
             --component rustfmt,clippy
-          rustup default 1.97.1
+          rustup default "$RUST_TOOLCHAIN"
       - run: cargo fmt --all --check
       # --locked: the committed Cargo.lock is certified, never re-resolved.
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -26,12 +41,18 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: |
-          rustup toolchain install 1.97.1 --profile minimal \
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal \
             --component llvm-tools
-          rustup default 1.97.1
-      - uses: taiki-e/install-action@cargo-llvm-cov
+          rustup default "$RUST_TOOLCHAIN"
+      # Necessary: installs the cargo-llvm-cov binary the coverage floor
+      # measures with; hand-installing it is more moving parts than the
+      # pinned action. The action is pinned to a commit, and the tool to
+      # an exact version, so neither floats (§10.1, §12.4).
+      - uses: taiki-e/install-action@51c9d223e46ef0189fd65bfe00a28e0de249282c # cargo-llvm-cov
+        with:
+          tool: cargo-llvm-cov@0.8.7
       # The floor is a per-change tripwire for the wholly untested
       # module, never a target: raising it is not a goal, gaming it
       # is a defect, and mutation remains the auditor of whether the
