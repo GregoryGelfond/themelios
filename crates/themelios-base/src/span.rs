@@ -147,6 +147,19 @@ impl Span {
     }
 }
 
+/// A span in a named source — the cross-source form (base.md §4.3).
+/// Fields are public: any (source, span) pair is a valid value;
+/// validity against a particular text is checked where text is in
+/// scope. Derived ordering is (source, then span): batch order groups
+/// by source.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Location {
+    /// The source the span points into.
+    pub source: crate::source::SourceId,
+    /// The region within that source's text.
+    pub span: Span,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

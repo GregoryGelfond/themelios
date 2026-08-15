@@ -44,3 +44,37 @@ proptest! {
         prop_assert_eq!(a.intersect(b), b.intersect(a));
     }
 }
+
+mod source_admission {
+    use proptest::prelude::*;
+    use themelios_base::source::{FromBytesRefusal, Source, SourceId};
+
+    proptest! {
+        /// base.md §10: `from_bytes` on arbitrary bytes never panics
+        /// and refuses exactly when the standard library's validator
+        /// does. (`TooLarge` is unreachable at generated sizes.)
+        #[test]
+        fn from_bytes_agrees_with_the_std_validator(
+            bytes in proptest::collection::vec(any::<u8>(), 0..2048),
+        ) {
+            let admitted =
+                Source::from_bytes(SourceId::new(0), bytes.clone());
+            match std::str::from_utf8(&bytes) {
+                Ok(_) => prop_assert!(admitted.is_ok()),
+                Err(error) => match admitted {
+                    Err(FromBytesRefusal::InvalidUtf8(refusal)) => {
+                        prop_assert_eq!(
+                            refusal.valid_up_to,
+                            error.valid_up_to()
+                        );
+                    }
+                    other => prop_assert!(
+                        false,
+                        "expected InvalidUtf8, got {:?}",
+                        other
+                    ),
+                },
+            }
+        }
+    }
+}
