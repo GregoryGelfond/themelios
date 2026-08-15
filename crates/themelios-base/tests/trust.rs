@@ -28,6 +28,7 @@ use themelios_base::source::{
     SourceSet, SourcesLawViolation, TooLarge,
 };
 use themelios_base::span::{ByteOffset, EndBeforeStart, Location, Span};
+use themelios_base::view::{EditorDiagnostic, EditorRange, EditorRefusal, EditorRelated};
 
 fn manifest_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -194,4 +195,8 @@ fn every_public_type_is_plain_data() {
     plain_data::<PositionRefusal>();
     plain_data::<OffsetRefusal>();
     plain_data::<LineIndex>();
+    plain_data::<EditorDiagnostic>();
+    plain_data::<EditorRange>();
+    plain_data::<EditorRelated>();
+    plain_data::<EditorRefusal>();
 }

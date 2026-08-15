@@ -5,9 +5,12 @@
 //! view does need is over its *environment*, and that is the
 //! `Sources` trait.
 
-use crate::diagnostic::{Diagnostic, Label};
+use std::fmt;
+
+use crate::diagnostic::{Diagnostic, DiagnosticId, Label, Severity};
 use crate::line::{ColumnEncoding, LineCol, LineIndex, PositionRefusal};
-use crate::source::{SourceId, Sources};
+use crate::source::{SourceFacet, SourceId, Sources};
+use crate::span::Location;
 
 /// The human rendering: total and deterministic, with zero options —
 /// one canonical output, which is what a reviewable golden corpus
@@ -277,6 +280,211 @@ fn line_extent(index: &LineIndex, text: &str, line: u32) -> u32 {
         .map_or(0, |content| content.chars().count() as u32)
 }
 
+/// The editor-protocol payload as a typed value. Serialization is the
+/// consumer's step: this crate ships shapes, not bytes (base.md §7.2).
+///
+/// A typed intermediate shape, deliberately: the honest alternative —
+/// a view straight to protocol bytes — is foreclosed by the
+/// zero-dependency constraint, and the dishonest one — consumers
+/// walking `Diagnostic` per protocol — re-derives position conversion
+/// and label linearization in every host. So the view stops at the
+/// last typed point before bytes. What keeps this from becoming a
+/// second model: exactly one pure function produces it, nothing in
+/// this crate holds it, it mirrors the protocol's categories, and
+/// nothing maintains it — every instance is a fresh derivation.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct EditorDiagnostic {
+    /// The primary label's source.
+    pub source: SourceId,
+    /// The primary label's range.
+    pub range: EditorRange,
+    /// The encoding every range in this payload was derived under —
+    /// the view records the derivation it ran, so the payload is
+    /// self-describing when stored, compared, or forwarded.
+    pub encoding: ColumnEncoding,
+    /// The model's typed severity; the protocol mapping (`Note` to
+    /// the information class) is the JSON layer's documented step.
+    pub severity: Severity,
+    /// Typed identity; the `namespace::name` string is the consumer's
+    /// serialization step, via `Display`.
+    pub code: DiagnosticId,
+    /// The headline, then notes and helps folded as `note:` and
+    /// `help:` lines — the protocol convention.
+    pub message: String,
+    /// The secondary labels, linearized in position order — a view
+    /// linearizes (base.md §8.4).
+    pub related: Vec<EditorRelated>,
+}
+
+/// A protocol range: two zero-based coordinates in the payload's
+/// stated encoding (base.md §7.2).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EditorRange {
+    /// Where the range begins.
+    pub start: LineCol,
+    /// Where the range ends, exclusive.
+    pub end: LineCol,
+}
+
+/// One related location in the payload (base.md §7.2).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct EditorRelated {
+    /// The related label's source.
+    pub source: SourceId,
+    /// The related label's range.
+    pub range: EditorRange,
+    /// The label's message, or the diagnostic's headline when the
+    /// label carries none — the location still ships.
+    pub message: String,
+}
+
+/// Why `view::editor` refused: each refusal names its locus — the
+/// question the caller can fix (base.md §7.2).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EditorRefusal {
+    /// The catalog resolves nothing for this id.
+    UnknownSource {
+        /// The unresolved id.
+        id: SourceId,
+    },
+    /// The catalog breached the completeness law: it resolved this id
+    /// partially, and this is the facet the view lacked.
+    IncompleteSource {
+        /// The partially resolved id.
+        id: SourceId,
+        /// The first missing facet, in name, text, index order.
+        missing: SourceFacet,
+    },
+    /// A position query failed; `at` is the label whose location was
+    /// being converted, so the caller need not replay the iteration.
+    Position {
+        /// The label under conversion.
+        at: Location,
+        /// What the line index refused.
+        refusal: PositionRefusal,
+    },
+}
+
+impl fmt::Display for EditorRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EditorRefusal::UnknownSource { id } => {
+                write!(f, "source {} resolves nothing in the catalog", id.get())
+            }
+            EditorRefusal::IncompleteSource { id, missing } => {
+                let facet = match missing {
+                    SourceFacet::Name => "name",
+                    SourceFacet::Text => "text",
+                    SourceFacet::Index => "index",
+                };
+                write!(f, "source {} resolved partially: missing {facet}", id.get())
+            }
+            EditorRefusal::Position { at, refusal } => write!(
+                f,
+                "a position query failed at source {} bytes {}..{}: {}",
+                at.source.get(),
+                at.span.start().get(),
+                at.span.end().get(),
+                refusal
+            ),
+        }
+    }
+}
+
+// The refusal is the condition itself (base.md §3.2): `Position`'s
+// Display already states the position refusal it carries, so it
+// reports no `source()` and a host's error chain says it once.
+impl std::error::Error for EditorRefusal {}
+
+/// The editor view: refuses rather than fabricate — a protocol
+/// payload with invented ranges is worse than no payload. Refuses
+/// `EditorRefusal`, the primary first, then secondaries in position
+/// order; O(labels · log) via the resolved line index (base.md §7.2,
+/// §9).
+pub fn editor(
+    diagnostic: &Diagnostic,
+    sources: &impl Sources,
+    encoding: ColumnEncoding,
+) -> Result<EditorDiagnostic, EditorRefusal> {
+    let primary = diagnostic.primary();
+    let index = resolve_complete(sources, primary.location.source)?;
+    let range = range_of(index, primary.location, encoding)?;
+    let mut message = diagnostic.message().to_owned();
+    for note in diagnostic.notes() {
+        message.push_str("\nnote: ");
+        message.push_str(note);
+    }
+    for help in diagnostic.helps() {
+        message.push_str("\nhelp: ");
+        message.push_str(help);
+    }
+    let mut related = Vec::new();
+    for label in diagnostic.secondary() {
+        let index = resolve_complete(sources, label.location.source)?;
+        let range = range_of(index, label.location, encoding)?;
+        related.push(EditorRelated {
+            source: label.location.source,
+            range,
+            message: label
+                .message
+                .clone()
+                .unwrap_or_else(|| diagnostic.message().to_owned()),
+        });
+    }
+    Ok(EditorDiagnostic {
+        source: primary.location.source,
+        range,
+        encoding,
+        severity: diagnostic.severity(),
+        code: diagnostic.id(),
+        message,
+        related,
+    })
+}
+
+/// Resolution under the completeness law: all three facets or a named
+/// refusal.
+fn resolve_complete(sources: &impl Sources, id: SourceId) -> Result<&LineIndex, EditorRefusal> {
+    let name = sources.name(id);
+    let text = sources.text(id);
+    let index = sources.line_index(id);
+    match (name, text, index) {
+        (None, None, None) => Err(EditorRefusal::UnknownSource { id }),
+        (Some(_), Some(_), Some(index)) => Ok(index),
+        (name, text, _) => {
+            let missing = if name.is_none() {
+                SourceFacet::Name
+            } else if text.is_none() {
+                SourceFacet::Text
+            } else {
+                SourceFacet::Index
+            };
+            Err(EditorRefusal::IncompleteSource { id, missing })
+        }
+    }
+}
+
+/// Both span ends positioned under the stated encoding, the refusal
+/// carrying the label's location as its locus.
+fn range_of(
+    index: &LineIndex,
+    location: Location,
+    encoding: ColumnEncoding,
+) -> Result<EditorRange, EditorRefusal> {
+    let position = |offset| {
+        index
+            .position(offset, encoding)
+            .map_err(|refusal| EditorRefusal::Position {
+                at: location,
+                refusal,
+            })
+    };
+    Ok(EditorRange {
+        start: position(location.span.start())?,
+        end: position(location.span.end())?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +549,160 @@ warning[syntax::unexpected-token]: w
  --> <source 7: unresolved>
 ";
         assert_eq!(rendered, expected);
+    }
+
+    use crate::line::{ColumnEncoding, LineCol, PositionRefusal};
+    use crate::source::{NotCharBoundary, SourceFacet, SourceId};
+
+    fn editor_fixture() -> (SourceSet, crate::source::SourceId, Diagnostic) {
+        let mut catalog = SourceSet::new();
+        let file = catalog
+            .add("demo.lp".to_owned(), "p(a).\nq(é) :- r(é)\n".to_owned())
+            .expect("small text admits");
+        // Line 2 starts at byte 6: q=6 (=7 é=8..10 )=10 ␣=11 :=12
+        // -=13 ␣=14 r=15 (=16 é=17..19 )=19; "r(é)" is bytes 15..20.
+        let diagnostic = Diagnostic::new(
+            UNEXPECTED,
+            Severity::Error,
+            "expected `.` after the rule body".to_owned(),
+            Label {
+                location: Location {
+                    source: file,
+                    span: Span::new(ByteOffset::new(15), ByteOffset::new(20))
+                        .expect("ordered endpoints"),
+                },
+                message: Some("dropped by this projection".to_owned()),
+            },
+        )
+        .expect("non-empty headline")
+        .with_secondary(Label {
+            location: Location {
+                source: file,
+                span: Span::new(ByteOffset::new(6), ByteOffset::new(10))
+                    .expect("ordered endpoints"),
+            },
+            message: None,
+        })
+        .with_note("a note".to_owned())
+        .with_help("a help".to_owned());
+        (catalog, file, diagnostic)
+    }
+
+    #[test]
+    fn the_payload_is_typed_self_describing_and_folded() {
+        let (catalog, file, diagnostic) = editor_fixture();
+        let payload = editor(&diagnostic, &catalog, ColumnEncoding::Utf16Units)
+            .expect("a coherent catalog yields a payload");
+        assert_eq!(payload.source, file);
+        assert_eq!(payload.encoding, ColumnEncoding::Utf16Units);
+        assert_eq!(payload.severity, Severity::Error);
+        assert_eq!(payload.code, UNEXPECTED);
+        // Bytes 15..20 on "q(é) :- r(é)": the é before the span is
+        // one UTF-16 unit for two bytes, so columns are 8..12 in
+        // UTF-16 units, zero-based.
+        assert_eq!(
+            payload.range,
+            EditorRange {
+                start: LineCol { line: 1, col: 8 },
+                end: LineCol { line: 1, col: 12 },
+            }
+        );
+        assert_eq!(
+            payload.message,
+            "expected `.` after the rule body\nnote: a note\nhelp: a help"
+        );
+        // The message-less secondary ships its location with the
+        // headline as its message — nothing dropped silently.
+        assert_eq!(payload.related.len(), 1);
+        assert_eq!(
+            payload.related[0].message,
+            "expected `.` after the rule body"
+        );
+        assert_eq!(
+            payload.related[0].range,
+            EditorRange {
+                start: LineCol { line: 1, col: 0 },
+                end: LineCol { line: 1, col: 3 },
+            }
+        );
+    }
+
+    #[test]
+    fn the_view_refuses_an_unknown_source() {
+        let (_, _, diagnostic) = editor_fixture();
+        let empty = SourceSet::new();
+        assert_eq!(
+            editor(&diagnostic, &empty, ColumnEncoding::Utf16Units),
+            Err(EditorRefusal::UnknownSource {
+                id: SourceId::new(0)
+            })
+        );
+    }
+
+    #[test]
+    fn the_view_refuses_a_completeness_breach() {
+        struct NameOnly;
+        impl crate::source::Sources for NameOnly {
+            fn name(&self, _: SourceId) -> Option<&str> {
+                Some("partial.lp")
+            }
+            fn text(&self, _: SourceId) -> Option<&str> {
+                None
+            }
+            fn line_index(&self, _: SourceId) -> Option<&crate::line::LineIndex> {
+                None
+            }
+        }
+        let (_, _, diagnostic) = editor_fixture();
+        assert_eq!(
+            editor(&diagnostic, &NameOnly, ColumnEncoding::Utf8Bytes),
+            Err(EditorRefusal::IncompleteSource {
+                id: SourceId::new(0),
+                missing: SourceFacet::Text,
+            })
+        );
+    }
+
+    #[test]
+    fn the_view_refuses_a_misfit_span_carrying_its_locus() {
+        let (catalog, file, _) = editor_fixture();
+        // Byte 9 splits the é on line 2 (line starts at 6: q=6, (=7,
+        // é=8..10).
+        let location = Location {
+            source: file,
+            span: Span::new(ByteOffset::new(9), ByteOffset::new(10)).expect("ordered endpoints"),
+        };
+        let diagnostic = Diagnostic::new(
+            UNEXPECTED,
+            Severity::Warning,
+            "w".to_owned(),
+            Label {
+                location,
+                message: None,
+            },
+        )
+        .expect("non-empty headline");
+        assert_eq!(
+            editor(&diagnostic, &catalog, ColumnEncoding::CodePoints),
+            Err(EditorRefusal::Position {
+                at: location,
+                refusal: PositionRefusal::NotCharBoundary(NotCharBoundary {
+                    offset: ByteOffset::new(9)
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn editor_refusals_display_the_fixable_question() {
+        let refusal = EditorRefusal::IncompleteSource {
+            id: SourceId::new(3),
+            missing: SourceFacet::Index,
+        };
+        assert_eq!(
+            refusal.to_string(),
+            "source 3 resolved partially: missing index"
+        );
+        let _: &dyn std::error::Error = &refusal;
     }
 }
