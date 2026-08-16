@@ -476,7 +476,11 @@ representation; the standard's query form lowers onto the query surface
 atoms parse grammar-generically at this tier — `&name { … }` with guards —
 with admission against `#theory` definitions a concern of tiers above. The
 grammar document also specifies the **macro dialect**: the interpolation
-forms by which macros splice Rust values into program syntax (§8).
+forms by which macros splice Rust values into program syntax (§8). And it
+specifies the **doc-comment form** (§6.4): themelios's one extension of
+the file language, membership-neutral by construction — under every
+dialect's authority a doc comment is a comment — so a program documented
+for themelios remains a program of clingo and of the standard.
 
 ### 6.2 Lexer
 
@@ -504,7 +508,15 @@ specified, tested, and **exposed as API** by this tier, once, for every
 consumer: formatter, language server, and comment-borne contract
 extraction all query the same attachment rather than re-deriving it.
 kallos's documented scars (§5.1) are the opening test corpus. Doc comments
-are first-class syntax, not trivia.
+are first-class syntax, not trivia: the `%!` line form is themelios's own,
+stated in the grammar document (§6.1); a run of doc-comment lines before
+a statement is that statement's documentation in the tree — structure the
+parser places, not a comment the attachment policy assigns; a doc comment
+nothing follows, or one inside a statement, degrades to diagnosed trivia,
+never to a rejection, so no clingo program is refused for its comments.
+The interior text is comment text: any tag or markup language over it is a
+tool's, in the comments-as-data extension region the grammar document
+names.
 
 ### 6.5 Parser
 
