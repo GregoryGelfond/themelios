@@ -23,18 +23,23 @@ every consumer that claims "parses the shared clingo/clingcon syntax"
 means *this* statement of it.
 
 **Scope, exactly.** This document defines the shared clingo/clingcon
-language, its ASP-Core-2 dialect (§6), and the macro dialect (§9) —
-nothing else. Three boundaries carry the definition:
+language, its ASP-Core-2 dialect (§6), the macro dialect (§9), and the
+doc-comment form (§4.1, §5.11) — nothing else. Three boundaries carry
+the definition:
 
 - **It records; it does not invent.** Every file-syntax construct here
   is the pinned references' language (§3). Where this document and a
   dialect's authority disagree, the authority governs and the
   disagreement is a defect here (§3); where an authority underdetermines
   a question this document must answer, the stated resolution is marked
-  as this document's own interpretation. The one deliberate extension —
-  the macro dialect — exists only inside Rust macro invocations and is
-  marked as such everywhere it appears (§9); the file language admits
-  none of it.
+  as this document's own interpretation. Two deliberate extensions
+  exist, each marked wherever it appears: the macro dialect, which lives
+  only inside Rust macro invocations (§9) — the file language admits
+  none of it — and the doc-comment form (§4.1, §5.11), the file
+  language's one extension, **membership-neutral** by construction:
+  under every authority a doc comment is a comment, so the form
+  partitions the comment class and gives one part a place in the tree
+  without admitting or refusing a single program.
 - **Admission and semantics live above.** Theory atoms parse
   grammar-generically here; whether `&sum { … }` matches a `#theory`
   definition is a concern of tiers above (spec §6.1). Likewise safety,
@@ -94,8 +99,11 @@ The postcondition, stated so a review can check drift against it:
 > either declared dialect — modes, precedences, and tie-breaks included
 > — is decidable from this document alone; every divergence between
 > this statement and a dialect's authority is a defect here, settled
-> and recorded per §3's discipline; and the macro dialect is specified
-> fully enough that spec §8's third law is dischargeable against it.
+> and recorded per §3's discipline; the macro dialect is specified
+> fully enough that spec §8's third law is dischargeable against it; and
+> the doc-comment form is stated fully enough that the syntax tier can
+> place documentation in the tree without admitting or refusing any
+> program the authorities admit or refuse.
 
 This document has failed — independent of any local defect — when any
 of the following holds:
@@ -111,6 +119,9 @@ of the following holds:
   — the reachability-evidence obligation of spec §6.1.
 - A macro-dialect form is admitted in file syntax, or a file-syntax
   form is expressible only through the dialect (§9).
+- The doc-comment form changes membership under either dialect — a
+  program admitted or refused because of it — the membership
+  neutrality §1 promises broken.
 - Admission or semantics is stated normatively here — the §1 boundary
   breached.
 - Any production of this language is stated authoritatively anywhere
@@ -237,7 +248,8 @@ expression is structural, never a one-character THEORY-OP; `***` is
 ```
 WHITESPACE      = [ \t\r\n]+
 
-LINE-COMMENT    = "%" not beginning "%*", through end of line
+DOC-COMMENT     = "%!", through end of line
+LINE-COMMENT    = "%" not beginning "%*" or "%!", through end of line
 SHEBANG-COMMENT = "#!", through end of line
 
 BLOCK-COMMENT   : "%*" opens, "*%" closes, and they nest by depth.
@@ -248,15 +260,32 @@ BLOCK-COMMENT   : "%*" opens, "*%" closes, and they nest by depth.
                   of input inside a block comment is a lexical error.
 ```
 
-Whitespace and comments may appear between any two tokens and bind to
-none (the lossless tree carries them as trivia; attachment is the
-tier's owned policy, spec §6.4). Both comment forms end at end of input
-without error; only an unterminated block comment is a lexical error.
+Whitespace, line comments, block comments, and the shebang form may
+appear between any two tokens and bind to none (the lossless tree
+carries them as trivia; attachment is the tier's owned policy, spec
+§6.4). The three line forms end at end of input without error; only an
+unterminated block comment is a lexical error.
 Block-comment nesting and the line-silencing rule are behavior read
 from the authority (`nongroundlexer.xch:149,178–217`): `%* a % *%` on
 one line does *not* close at that `*%` — the `%` before it silenced the
 line. The shebang form exists so executable program files lex cleanly;
 it is a comment anywhere, not only on the first line.
+
+**The doc comment is this document's own form** (§1), and the one
+comment that is not always trivia: a run of doc-comment lines directly
+before a statement is that statement's documentation, a token sequence
+§5.11's `docs` production admits; anywhere else — inside a statement,
+after the last statement, inside a theory expression — a doc comment is
+trivia like any comment, and the syntax tier diagnoses it (spec §6.4).
+Membership is untouched either way. Under the authority a `%!` line is
+a line comment — only `%*` opens a block, every other `%` opens a line
+comment (`nongroundlexer.xch:149–150`) — and under the standard
+likewise (§6.3), so the form admits and refuses nothing; it partitions
+the comment class. Its marker is the one Prolog's documentation
+tooling uses for the same purpose, so a logic-programming reader meets
+no new convention. The doc-comment token is the `%!` and the rest of
+its line; what that text means — a tag language, markup — is a tool's,
+in the comments-as-data region (§8), never this document's.
 
 ### 4.2 Names
 
@@ -877,7 +906,8 @@ a trailing-comma form (§11).
 ### 5.11 Programs
 
 ```
-program   ::= { statement }
+program   ::= { [ docs ] statement }
+docs      ::= DOC-COMMENT { DOC-COMMENT }
 statement ::= rule
             | weak-constraint
             | optimize-statement
@@ -887,7 +917,13 @@ statement ::= rule
             | program-statement | theory-definition
 ```
 
-A program is a sequence of statements, empty included. Every
+A program is a sequence of statements, empty included. A statement
+may be preceded by its documentation — one or more doc-comment lines
+(§4.1) — which belongs to the statement it precedes whatever whitespace
+stands between: the blank-line detach the attachment policy applies to trivia
+comments (spec §6.4) has no bearing on `docs`, which is structure. A
+doc-comment run that no statement follows is not `docs` and derives
+nothing; it is trivia (§4.1). Every
 statement contains a dot, and for exactly four families the dot is
 followed by a bracketed annotation — **weak constraints** and
 **`#heuristic`** always, **`#external`** and **`#const`** optionally —
@@ -912,7 +948,7 @@ checking is admission, above.
 ### 6.1 The query statement
 
 ```
-program (ASP-Core-2 dialect) ::= { statement } [ query ]
+program (ASP-Core-2 dialect) ::= { [ docs ] statement } [ [ docs ] query ]
 query ::= atom "?"
 
 query-reading : the query reading applies exactly when the "?" is the
@@ -922,8 +958,9 @@ query-reading : the query reading applies exactly when the "?" is the
 
 The standard's one construct with no clingo counterpart
 (2.03c §4; TPLP §6): a program may end — and only end — with a single
-query, an atom followed by the query mark, no dot. Variables are legal
-in it; the standard defines non-ground query answering by
+query, an atom followed by the query mark, no dot — and, like every
+statement, it may be preceded by its documentation (§5.11). Variables
+are legal in it; the standard defines non-ground query answering by
 substitution, and the answer semantics is cautious — which is what
 lowers it onto the query surface (spec §9.7). The query-reading rule
 makes the disambiguation positional, deterministic, and *additive*:
@@ -976,8 +1013,10 @@ standard's `MULTI_LINE_COMMENT` pattern (2.03c §5; TPLP §6). The
 membership consequence cuts both ways and seeds §11: `%* %* *%` is a
 closed comment here and an unterminated one under the clingo dialect;
 `%* a % *% b *%` closes at the first `*%` here (the standard has no
-line-silencing) and at the second there. Line comments and `#!` are
-§4.1's, unchanged — the standard's line-comment pattern agrees, and
+line-silencing) and at the second there. Line comments, `#!`, and the
+doc comment are §4.1's, unchanged — the standard's line-comment pattern
+agrees, so a `%!` line is a comment under the standard exactly as under
+the authority and the doc-comment form is membership-neutral here too;
 `#!` is a clingo-dialect extension available under the additive
 posture.
 
@@ -1088,8 +1127,11 @@ them, growth means a new language:
    already exist through it (`&show/0 : …, directive`).
 2. **Comments as data.** The tier exposes comments and their
    attachment as API (spec §6.4), and doc comments are first-class
-   syntax; tool-owned languages ride on comment text — contract
-   extraction is the spec's named consumer class (spec §11). Their
+   syntax — the `%!` form (§4.1, §5.11) is the one carrier this
+   document itself names inside the region, a comment class given a
+   place in the tree; tool-owned languages ride on comment text —
+   contract extraction is the spec's named consumer class (spec §11),
+   and a doc comment's tag or markup language is another. Their
    grammars are their own, over comment text, and outside this
    document by construction.
 3. **The macro dialect** (§9). Compile-time interpolation for Rust
@@ -1338,6 +1380,33 @@ recorded exception with its argument.
 - `"a\" b"` and `"a\"` — the standard's maximal-munch string
   readings (§6.2).
 
+**Doc-comment seeds.**
+
+- `%! doc` on one line, `p.` on the next — `docs` then a statement:
+  `p.` documented (§5.11); under the authority a comment and the fact
+  `p.` — the same program.
+- `%! a`, a blank line, then `p.` — still `p.`'s documentation: `docs`
+  is structure, and blank lines do not detach it (§5.11).
+- `p :- %! x` with `q.` on the next line — a doc comment inside a
+  statement: trivia, diagnosed by the tier, membership unchanged (§4.1).
+- `%! x` as the input's last line — no statement follows: trivia,
+  diagnosed (§4.1, §5.11).
+- `%%! x` and `% ! x` — LINE-COMMENT both; only the exact prefix `%!`
+  is the doc marker (§4.1).
+- `%* %! *%` on one line — under the clingo dialect the `%` of `%!`
+  silences the rest of the line, so the `*%` does not close: an
+  unterminated block comment (§4.1); no doc marker exists inside a
+  block comment. Under the ASP-Core-2 dialect the comment closes at
+  `*%` (§6.3).
+- `#!` on the first line, `%! d` on the second, `p.` on the third —
+  shebang, then `p.`'s documentation.
+- `%! q` then `p(1)?` as the program's end — the query's documentation
+  under the ASP-Core-2 dialect (§6.1); under the clingo dialect the
+  same syntax error `p(1)?` is, docs or no docs.
+- `&a { %! x` continued on the next line — a doc comment inside a
+  theory expression: trivia here (§4.1), and at the authority pin the
+  D1 quirk applies to it as to any comment.
+
 **Macro-dialect seeds** (held by the macro tier's tests rather than
 the differential; listed here so the seed corpus is one list).
 
@@ -1414,5 +1483,7 @@ does not cover, with where each concern lives:
   the syntax tier design's ground (spec §6.5); this document defines
   only membership.
 - **Rendering and formatting style** (spec §7.6).
+- **The interior language of doc comments** — tags, markup, argument
+  descriptions — a tool's, over comment text (§8).
 - **The engine's command-line definition mini-language** (`-c
   name=value`) — an API surface of the tiers, not file syntax.
