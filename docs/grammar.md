@@ -1280,7 +1280,7 @@ authority rule names (§3) for divergences, where each future finding
 arrives as a numbered entry with its resolution — a repair here, or a
 recorded exception with its argument.
 
-**Recorded divergences at authoring.**
+**Recorded divergences.**
 
 - **D1 — comments inside theory expressions.** At the pin, any
   comment inside a theory expression resets lexing to normal mode
@@ -1291,6 +1291,28 @@ recorded exception with its argument.
   authority's development line adopts. Obligation: pin the
   authority's exact behavior differentially; keep such inputs out of
   the shared corpus; revisit when the pin moves.
+- **D2 — nesting depth** (recorded 2026-08-17). The four term families
+  of §10 nest without bound in this grammar's productions (§5.1, §5.8,
+  §5.9, §5.10) and in the standard's, and no production limits them.
+  The authority is a generated parser with a stack: at the pin it
+  refuses input nested past its parser-stack ceiling — a limit of the
+  implementation, not a rule of the language, and one this document
+  does not state because it is measured, not read. The syntax tier,
+  for its part, bounds nesting at construction by a named constant of
+  its own — a frame count, refused with a diagnostic and nothing
+  truncated (its design §6.6) — so that no tree it hands out has depth
+  proportional to the input; that is a refusal this grammar does not
+  make, and it applies under both dialects. Wherever the tier's
+  constant and the authority's ceiling differ, the inputs nested
+  between them are a disagreement with the authority — admitted by one
+  and refused by the other, whichever side the constant sits. Operator
+  chains are outside this entry: the tier holds a same-precedence chain
+  flat, so no chain length is refused. Obligation: the differential
+  measures the authority's ceiling per family at the pin and records
+  both values beside this entry; the tier's constant is set by its own
+  depth instrument, safety before parity, so a constant under the
+  ceiling widens the band rather than moving the constant; the shared
+  corpus holds no input inside the band; a pin move re-measures.
 
 **Lexical seeds.**
 
