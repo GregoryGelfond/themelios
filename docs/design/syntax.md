@@ -35,15 +35,15 @@ writing that it changed nothing else); the **language server** (error
 resilience, structured diagnostics, positional identity, cheap total
 reparse); a **solver frontend** for which this tier is the parser of
 record and whose face these diagnostics are (spec §2 item 9); a **REPL**
-(statement-at-a-time reading, the term-value sublanguage for symbols,
-and a typed answer to "is this input finished or wrong?"); the **macro
-tier**, a compile-time client that hands its token stream to this parser
-and no other (spec §8, law 1); **contract extraction** and every
-comments-as-data reader; and the **program tier**, which lowers the typed
-AST with byte-precise provenance. The one-grammar rule (spec §2 item 3)
-is discharged here: this crate carries the only parser of the language,
-and its fragment entry points and token-source door exist so that no
-consumer needs a second.
+(a growing buffer read statement by statement, the term-value
+sublanguage for symbols, and a typed answer to "is this input finished
+or wrong?"); the **macro tier**, a compile-time client that hands its
+token stream to this parser and no other (spec §8, law 1); **contract
+extraction** and every comments-as-data reader; and the **program
+tier**, which lowers the typed AST with byte-precise provenance. The
+one-grammar rule (spec §2 item 3) is discharged here: this crate carries
+the only parser of the language, and its fragment entry points and
+token-source door exist so that no consumer needs a second.
 
 **Naming ground, stated once per spec §1.4.** Two vocabularies meet here
 and both are the field's. Tooling objects — token, lexer, parser, syntax
@@ -68,12 +68,20 @@ with rowan's own closure — the one named exception of spec §12.5, pinned,
 with its audit note in §14 and the hand-rolled green/red tree recorded as
 the reserved fallback (§17). No lexer or parser dependency; no
 hash-map utility of this crate's own (rowan's suffice internally). The
-closure is FFI-free and holds no build script of this workspace's own,
-asserted structurally over Cargo's resolved graph (spec §12.3, §14). The
-workspace `rust-version` floor. No I/O, no global state, no runtime
-(spec §1.2): a parse is a pure function of its inputs (spec §6.8, §12).
-Every public *value* type is plain `Send + Sync` data with one stated
-exception — rowan's red-tree cursors are views, not data (§5.1).
+closure is FFI-free and holds no build script of this workspace's own;
+the one build script inside it is admitted by name under spec §12.3's
+closure clause and argued in §14 — both asserted structurally over
+Cargo's resolved graph (spec §12.3, §14). The base tier is re-exported
+whole under a module name — `pub use themelios_base as base;` — so the
+vocabulary every door here speaks (`Source`, `ByteOffset`, `Span`,
+`Location`, `Severity`, `Diagnostic`, the line index, the views) is
+reachable through this crate alone, which is what makes §2's "nothing
+outside it" true rather than approximate. The workspace `rust-version`
+floor. No I/O, no global state, no runtime (spec §1.2): a parse is a
+pure function of its inputs (spec §6.8, §12). Every public *value* type
+is plain `Send + Sync` data with one stated exception — rowan's red-tree
+cursors, the typed wrappers over them, and an attachment, whose anchor
+is a cursor, are views, not data (§5.1).
 
 **Module map.** Ten modules, one concern each: `dialect` (§3), `tree`
 (§4–§5: the kind roster, the language, the tree aliases, coordinate
@@ -91,11 +99,11 @@ The postcondition, stated so a review can check drift against it:
 > the rust-analyzer bar, an owned and exposed attachment policy, an exact
 > fusion oracle, and two token-stream certificates, all on one public
 > surface importable wholesale, such that a formatter, a language server,
-> a solver frontend, a REPL, the macro tier, and a comments-as-data
-> reader need nothing outside it and no second parser exists anywhere;
-> every public operation is total and observationally pure; and no walk
-> this crate performs, and no structure it hands out, has depth
-> proportional to the input's nesting.
+> a solver frontend, a REPL, the macro tier, the program tier, and a
+> comments-as-data reader need nothing outside it and no second parser
+> exists anywhere; every public operation is total and observationally
+> pure; and no walk this crate performs, and no structure it hands out,
+> has depth proportional to the input's nesting.
 
 This design has failed — independent of any local defect — when any of
 the following holds:
@@ -103,8 +111,9 @@ the following holds:
 - A parse panics, diverges, or yields a tree whose text differs from its
   input, on any admitted text (spec §2 item 8, spec §6.3, spec §6.5).
 - The parser admits or refuses an input the grammar of record does not,
-  under either dialect, beyond the grammar's recorded divergences (spec
-  §4; grammar §2).
+  under either dialect, beyond the grammar's recorded divergences —
+  grammar §11's register, whose entry D2 is this tier's depth bound
+  (§6.6) (spec §4; grammar §2).
 - A consumer spec §1.1 names needs a private API, a fork, or a second
   grammar — the composition test (spec §4) — including the macro tier's
   law that a macro-site syntax error is the file parser's own diagnostic
@@ -116,8 +125,9 @@ the following holds:
   under a transformation that preserved everything the policy reads
   (spec §6.4, §9).
 - A certificate is granted to a transformation that changed a
-  significant token or a comment (spec §6.7, §11), or the fusion oracle
-  certifies an adjacency the lexer would fuse (spec §6.2, §10).
+  significant token or a comment, or moved one across the other (spec
+  §6.7, §11), or the fusion oracle certifies an adjacency the lexer
+  would fuse (spec §6.2, §10).
 - Any walk over user-reachable structure recurses in the input's
   nesting, or a tree handed to a consumer can be dropped or traversed
   only with stack proportional to that nesting (spec §5.2, grammar §10,
@@ -161,6 +171,21 @@ string spanning a line, and no `%*` or `%` inside a block comment — the
 two dialects yield structurally equal trees and equal diagnostics
 (§16).
 
+**The tree carries no dialect; the parse does.** The green tree is data
+of one shape under both dialects — kinds and texts, nothing that says
+which rule formed a `STRING` — and it is handed on as subtrees, cursors,
+and typed wrappers that have no parse to ask. So every operation whose
+answer depends on the dialect takes it from the caller (`StringLit::value`
+in §8.3, the oracle in §10), and `Parse` records the dialect it was
+parsed under so a consumer holding the parse never guesses (§5.5's
+`dialect()`, and `Parse::string_value`, the door that cannot be handed
+the wrong one). The hazard, named because it is sharper than base §5's
+analogue: `"a\nb"` is a valid string under both dialects and denotes
+differently under each (grammar §4.4, §6.2), so a wrong dialect at
+`StringLit::value` yields a plausible wrong `String`, not a refusal —
+which is why the parse-level door exists and the free accessor's doc
+says so.
+
 ## 4. Tokens and the lexer
 
 ### 4.1 The kind roster
@@ -179,9 +204,10 @@ rowan idiom, where a tree's whole vocabulary is one closed set the
 pub enum SyntaxKind { /* Appendix A */ }
 
 impl SyntaxKind {
-    /// Trivia: whitespace and the comment forms — including a doc
-    /// comment, whose trivia-or-structure status is positional (§5.4)
-    /// and therefore not a property of the kind alone.
+    /// The kinds that are trivia wherever they stand: WHITESPACE,
+    /// LINE_COMMENT, BLOCK_COMMENT, SHEBANG_COMMENT. DOC_COMMENT is not
+    /// among them — its status is positional, and `role` (§5.4) is the
+    /// predicate that answers it for a token.
     pub const fn is_trivia(self) -> bool;
     /// The comment forms: LINE_COMMENT, BLOCK_COMMENT, SHEBANG_COMMENT,
     /// DOC_COMMENT.
@@ -237,16 +263,19 @@ the mode arrives from the one parser; each source applies its own
 formation rules under it (grammar §9: "theory-operator runs form the
 same way inside theory expressions").
 
-**Bounded re-lexing at region ends, stated once.** Grammar §4.7's guard
-rule — the guard extends through the longest token sequence derivable as
-a theory-opterm, and "the first token that cannot extend it lexes in
-normal mode" — means the parser must sometimes look at a token under
-theory mode, decide it does not extend the guard, and take it again
-under normal mode. The token-source door is a pure function of
-`(offset, mode)` (§4.3), so taking a token again is calling that
-function again at the same offset; no state is unwound. Every token is
-requested at most a fixed number of times (twice, at a region boundary),
-which keeps parsing linear (§6.8).
+**Bounded re-lexing at region ends, stated once.** At the end of a
+theory region the parser looks at a token under theory mode, decides
+it does not extend the region — the guard-end rule of §6.3, which is
+greedy — and takes it again under normal mode. The token-source door is
+a pure function of `(offset, mode)` (§4.3), so taking a token again is
+calling that function again at the same offset; no state is unwound.
+Every token is requested at most a fixed number of times (twice, at a
+region boundary), which keeps parsing linear (§6.8). A lexical
+diagnostic is raised when an `ERROR` token is *placed in the tree*,
+never at the door: a token peeked under one mode and discarded at a
+region boundary raises nothing, so the token that lexes as an unknown
+`#`-word under theory mode and as `#count` under normal mode leaves no
+trace of its first reading.
 
 ### 4.3 The token-source door
 
@@ -262,7 +291,9 @@ pub trait TokenSource {
     /// The dialect the source lexes under; the parser reads it here so
     /// lexer and parser cannot disagree (§3).
     fn dialect(&self) -> Dialect;
-    /// The whole text. Every token is a slice of it (the slice law).
+    /// The whole text this source owns and tiles. Every token is a
+    /// slice of it (the slice law), and every span this crate hands
+    /// back is in its coordinates.
     fn text(&self) -> &str;
     /// The token that begins at `at` under `mode`: the longest token the
     /// mode's rules form there, an ERROR token (§4.5), or `EOF` with
@@ -276,6 +307,21 @@ pub trait TokenSource {
 }
 ```
 
+**A source owns its text.** The file lexer's text is base's admitted
+`Source` (§4.4). A foreign source's text is one it declares — the macro
+token source, whose host has already lexed the body and hands over Rust
+tokens with literals by value (grammar §9), assembles a text of its own
+from those tokens' spellings and tiles *that*; nothing in the laws
+below asks where a text came from, only that the source answer for it.
+Every token, every span, every `Location`, and the tree's text (§5.4)
+are in the owning source's coordinates, under the identity it minted
+(base §3.1); a host that embeds such a text re-bases into its own
+coordinates by its own arithmetic (base §3.3), which is exact because
+spans are byte-precise. By-value literals reach the tree as the
+spellings the source chose, which is why a `STRING` token from a
+foreign source may fail the dialect's rule and `StringLit::value` may
+refuse it (§8.3); the file lexer's tokens never do.
+
 **The laws, stated as contract.** A token source is bound by four:
 
 1. **Tiling.** Starting at offset zero under `Normal` mode and advancing
@@ -283,9 +329,10 @@ pub trait TokenSource {
    at `EOF` at the text's length. (Under other modes tiling holds from
    any offset the parser reaches — the parser never asks elsewhere.)
 2. **Slice.** `token_at(at, mode)?.text` is `&text()[at .. at + len]`:
-   the token's text is the source's text, never a synthesis. This is
-   what makes the tree's text the input (§5.4): the tree is built from
-   the tokens' texts and nothing else.
+   the token's text is a slice of the source's own text, never a
+   synthesis at the door. This is what makes the tree's text the
+   source's text (§5.4): the tree is built from the tokens' texts and
+   nothing else.
 3. **Determinism.** Same offset and mode, same answer — a source is a
    pure function of its text.
 4. **Refusal.** `token_at` refuses exactly at offsets that are not
@@ -294,11 +341,14 @@ pub trait TokenSource {
 What the parser can check, it checks: a refusal at an offset the parser
 reached by tiling, an `EOF` before the text's end, or a token running
 past it is a tiling breach the parser sees and treats as end of input,
-with a diagnostic naming the breach (Appendix B). The slice law is not
-cheaply checkable at every token — verifying it means comparing every
-token against the text — so the parser trusts it, and that trust is this
+with a diagnostic naming the breach (Appendix B; §7.1's `SourceBreach`
+carries exactly the two breaches the parser can witness — a tiling
+breach and a refusal — because the slice law is trusted and
+determinism is unobservable in one pass). The slice law is not cheaply
+checkable at every token — verifying it means comparing every token
+against the text — so the parser trusts it, and that trust is this
 contract's stated boundary, exactly as base §3.4 trusts coherence: what
-holds it is test-time machinery,
+holds it is test-time machinery:
 
 ```rust
 /// The laws, checkable: tiles the source under `Normal` mode from zero,
@@ -307,7 +357,11 @@ holds it is test-time machinery,
 /// the end and once inside a multi-byte character of each token that
 /// has one. Total; O(text) for a lawful source. Implementors run it in
 /// their own tests; the file lexer passes by construction, and §16
-/// exercises the checker against deliberately breaching sources.
+/// exercises the checker against deliberately breaching sources. What
+/// it does not exercise: `Theory` and `ScriptBody` mode — the modes
+/// under which a foreign source forms operator runs and script bodies
+/// — so an implementor holds those under its own tests, over inputs
+/// its parser reaches.
 pub fn check_token_source_laws(source: &impl TokenSource)
     -> Vec<TokenSourceLawViolation>;
 
@@ -383,18 +437,22 @@ grammar says *what* is a lexical error; this design says *how much* one
   by maximal munch (grammar §4.5).
 - **An unterminated block comment or script region** is one `ERROR`
   token to the end of input.
-- **A `_` inside a theory expression** is one `ERROR` token of one
-  character (grammar §4.7).
 - **Any other character that begins no token** — `!` and `$` outside
-  their regions, control characters, non-ASCII text outside strings and
-  comments — joins the maximal run of such characters into one `ERROR`
-  token per run.
+  their regions, `_` inside a theory expression (grammar §4.7), control
+  characters, non-ASCII text outside strings and comments — joins the
+  maximal run of such characters into one `ERROR` token per run. A run
+  of `_` alone under theory mode is diagnosed as what it is, the
+  anonymous variable where none is admitted
+  (`anonymous-in-theory-expression`); every other run as
+  `unexpected-characters` (§7.1).
 
-Each `ERROR` token yields exactly one lexical diagnostic (§7), so a
-hostile input of a megabyte of `$` costs one token and one diagnostic,
-not a million. Error tokens are significant tokens for the tree, the
-token stream, and the certificates (§11): a formatter carries them
-verbatim.
+Each `ERROR` token placed in the tree yields exactly one lexical
+diagnostic (§7) — save inside an aspif dispatch (§6.3) or a
+depth-refused statement (§6.6), whose one diagnostic stands for the
+whole — so a hostile input of a megabyte of `$`, or of `_` inside a
+theory atom, costs one token and one diagnostic, not a million. Error
+tokens are significant tokens for the tree, the token stream, and the
+certificates (§11): a formatter carries them verbatim.
 
 ### 4.6 Computational cost
 
@@ -424,11 +482,13 @@ a consumer needs; the rest is naming.
 **The stated exception to plain data.** Every public *value* in this
 crate is `Send + Sync` owned data (base §8.2 adopted) — `Parse`, `Token`,
 the diagnostics, the certificates' witnesses — because the model is the
-green tree. The red cursors and the typed AST wrappers over them are
-*views*, `!Send`, borrowed from the model by construction; a consumer
-that crosses threads sends the `Parse` and mints cursors on the other
-side. That is one exception, stated once, and it is the reason the tree
-is data first and cursors second.
+green tree. The red cursors, the typed AST wrappers over them, and an
+`Attachment` (§9.1), whose anchor is a cursor, are *views*, `!Send`,
+borrowed from the model by construction; a consumer that crosses
+threads sends the `Parse` and mints cursors — and re-derives
+attachments, a reading and not a record (§9.3) — on the other side.
+That is one exception, stated once, and it is the reason the tree is
+data first and cursors second.
 
 ### 5.2 The language and the aliases
 
@@ -499,41 +559,103 @@ where its audience expects it, converted at the seam and nowhere else.
 
 ### 5.4 The tree's laws
 
-Four laws, each held by an instrument (§16):
+Four laws, each held by an instrument (§16), and two definitions the
+laws and the sections after them read — the role of a token, and the
+empty node.
 
-1. **Text.** For every parse, the root's text equals the source's text —
+1. **Text.** For every parse over a lawful token source (§4.3), the
+   root's text equals the source's text —
    `parse.syntax().text() == source.text()`, unconditionally: on valid
    programs, on garbage, on truncated input, under either dialect (spec
    §6.3). It holds because the tree is built from the tokens' texts and
    the tokens tile the text (§4.3); nothing is inserted, dropped, or
-   normalized. Author whitespace is a `WHITESPACE` token in the tree; a
+   normalized. For the file
+   lexer, lawful by construction, that is every admitted text; for a
+   foreign source that breaches the tiling law the parser stops at the
+   breach with its diagnostic (§4.3), and the tree's text is the prefix
+   tiled — the one case the law does not cover, named here rather than
+   absorbed. Author whitespace is a `WHITESPACE` token in the tree; a
    formatter chooses to replace it, and the tree carries no opinion.
    This law is the tier's token-fidelity emit (spec §12.2): there is no
-   emitter — `text()` renders the tree byte for byte, and `Display` on
-   a node is that text.
+   emitter — `text()` renders the tree byte for byte, and `Display` on a
+   node is that text.
 2. **Trivia placement.** The parser opens a node at its first
    significant token and closes it at its last, so every trivia token is
    a child of the node that was open where the trivia stood: trivia
    before a node's first token belongs to the parent, trivia between a
    node's children to the node, trivia after its last token to the
-   parent. Consequently **every node but a root begins and ends with a
-   significant token**, and trivia between statements belongs to
-   `PROGRAM`. Docs are the one shaping rule beyond it: a statement's
-   documentation (grammar §5.11) is a leading run of `DOC_COMMENT` tokens
-   *inside* the statement's node, significant, with the whitespace
-   between them; a doc comment anywhere else is trivia under this law
-   and diagnosed (§6.3). There is no `DOCS` node — the tokens' kind and
-   position say what they are, and a wrapper would carry nothing they
-   do not (Appendix A records the mapping).
-3. **Bounded depth.** No tree this crate produces is deeper than
-   `MAX_NESTING_DEPTH` plus the grammar's fixed layer count (§6.6): the
-   parser refuses to open nesting past the constant, and the surplus is
-   flattened losslessly under `ERROR` with a diagnostic. This is the law
-   that makes the tree safe to hold: rowan's own drop and one of its
-   queries recurse in tree depth (§14), a fact no work-list discipline
-   in this crate can reach, so the depth is bounded at construction.
+   parent. Consequently **every non-empty node but a root begins and
+   ends with a significant token**, and trivia between statements
+   belongs to `PROGRAM`. Docs are the one shaping rule beyond it: a
+   statement's documentation (grammar §5.11) is a leading run of
+   `DOC_COMMENT` tokens *inside* the statement's node, significant, with
+   the trivia between them — whitespace, and any comment that stands
+   between two doc lines, which grammar §5.11 admits; a doc comment
+   anywhere else is trivia under this law and diagnosed (§6.3). There
+   is no `DOCS` node — the tokens' kind and position say what they are,
+   and a wrapper would carry nothing they do not (Appendix A records the
+   mapping).
+3. **Bounded depth.** No tree this crate produces is deeper than a
+   bound fixed by `MAX_NESTING_DEPTH` and two constants of the grammar
+   (§6.6): at most `MAX_NESTING_DEPTH` frames, each contributing at most
+   the term families' per-frame layer count, under the fixed layer count
+   of everything above the term families. Every axis along which the
+   roster's kinds can nest is accounted for. Bracket contexts — a pool,
+   an argument list, an absolute-value pair, a theory set, list, tuple,
+   or function's arguments — are frames, and the parser refuses to open
+   one past the constant, flattening the surplus losslessly under
+   `ERROR` with a diagnostic. Operator chains and unary runs are *flat*:
+   a `BINARY_TERM` holds one precedence level's whole chain and a
+   `UNARY_TERM` a whole run of prefix operators (§6.2, §8.2), so a chain
+   of any length deepens the tree by at most the number of precedence
+   levels. Everything else nests by iteration or by the grammar's fixed
+   layers (grammar §10). This is the law that makes the tree safe to
+   hold: rowan's own drop and one of its queries recurse in tree depth
+   (§14), a fact no work-list discipline in this crate can reach, so
+   the depth is bounded at construction.
 4. **Determinism.** Same text, same dialect, same entry point — a
    structurally equal green tree and equal diagnostics (spec §6.8).
+
+**The role of a token, named once.** Whether a `DOC_COMMENT` token is a
+statement's documentation or a stray comment is a fact of position, not
+of kind, and it is read at every seam this document draws — the token
+stream and the certificates (§11), attachment (§9), the two token
+wrappers over the kind (§8.3), `HasDocs` (§8.2). So it has one name:
+
+```rust
+/// What a token is, where it stands. `Documentation`: a DOC_COMMENT in
+/// docs position — a leading child of a statement node with only
+/// trivia and other DOC_COMMENT tokens before it (law 2). `Trivia`:
+/// whitespace, the plain comment forms wherever they stand, and a
+/// DOC_COMMENT anywhere else. `Significant`: every other token. Total;
+/// O(preceding siblings of the token).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum TokenRole { Documentation, Trivia, Significant }
+
+pub fn role(token: &SyntaxToken) -> TokenRole;
+```
+
+`SyntaxKind::is_trivia` (§4.1) answers by kind, for the kinds whose role
+never varies; `role` answers by position, and every site that needs the
+positional answer reads it here — the token stream is every token whose
+role is not `Trivia`; a trivia comment is a token whose role is `Trivia`
+and whose kind is a comment; `DocLine` casts exactly the
+`Documentation` tokens and `Comment` exactly the trivia comments (§8.3).
+When the reserved inner-docs form (§17) arrives, this definition moves
+and the sites do not.
+
+**The empty node, defined once.** Exactly three kinds may be empty —
+zero-length, holding no token: `BODY` (the empty body of `h :- .` and
+`: .`), `CONDITION` (a colon with nothing after it), and `TUPLE` (the
+empty tuple of `()`, and the empty pooled alternatives of `f()`, `f(;)`,
+and `f(a;)` — grammar §5.1). An empty node is placed immediately after
+the token that licenses it — the neck, the colon, the opening
+parenthesis or the pooling semicolon — and never holds trivia; trivia
+after that token belongs to the parent, as law 2 says. Law 2 speaks of
+non-empty nodes because of exactly these three, and §9.2 reads `prev`
+and `next` over non-empty siblings for the same reason. No other kind is
+ever empty: under recovery a missing child is *absent* (§6.7), never an
+empty node.
 
 ### 5.5 The parse
 
@@ -541,11 +663,15 @@ Four laws, each held by an instrument (§16):
 /// The result of a parse: the green tree, the diagnostics, and the
 /// facts a consumer needs to interpret both. Owned, `Send + Sync`,
 /// cheap to clone (the tree is reference-counted). `T` is the typed
-/// root the entry point yields (§6.1).
-#[derive(Clone, PartialEq, Eq, Debug)]
+/// root the entry point yields (§6.1) — a view type, `!Send`, so it is
+/// carried as `PhantomData<fn() -> T>`: a phantom that names `T`
+/// without inheriting its auto-traits, and `Clone`, `PartialEq`, `Eq`,
+/// `Debug` are implemented without a bound on `T` (the derive would add
+/// one). §16 holds `Send + Sync` at compile time.
 pub struct Parse<T: AstNode<Language = Asp>> {
     /* private: green: GreenNode, diagnostics: Vec<SyntaxError>,
-       source: SourceId, dialect: Dialect, entry: EntryPoint, _root: PhantomData<T> */
+       source: SourceId, dialect: Dialect, entry: EntryPoint,
+       _root: PhantomData<fn() -> T> */
 }
 
 impl<T: AstNode<Language = Asp>> Parse<T> {
@@ -555,9 +681,9 @@ impl<T: AstNode<Language = Asp>> Parse<T> {
     /// kind its `T` casts (§6.1), so this never fails.
     pub fn tree(&self) -> T;
     pub fn green(&self) -> &GreenNode;
-    /// In the order the parser produced them, which is source order by
-    /// primary span; a batch consumer sorts by base's `canonical_order`
-    /// after lowering if it wants the shared batch order.
+    /// In the order the parser produced them — one order, by law 4
+    /// (§5.4); a batch consumer that wants the shared batch order sorts
+    /// by base's `canonical_order` after lowering.
     pub fn diagnostics(&self) -> &[SyntaxError];
     /// Any diagnostic of `Severity::Error`. Membership in the language
     /// (grammar §2) is exactly `!has_errors()` (§6.5).
@@ -571,6 +697,12 @@ impl<T: AstNode<Language = Asp>> Parse<T> {
     /// The qualified location of an element of this tree (base §4.3):
     /// its range under this parse's source id. Total.
     pub fn location(&self, range: TextRange) -> Location;
+    /// The denoted text of a string literal, under this parse's dialect
+    /// — the door that cannot be handed the wrong one (§3). Refuses as
+    /// `StringLit::value` does (§8.3): a spelling that is not the
+    /// dialect's rule, which only a foreign token source can supply.
+    pub fn string_value(&self, literal: &StringLit)
+        -> Result<String, InvalidStringLiteral>;
 }
 ```
 
@@ -582,10 +714,10 @@ law 3.
 
 **Computational cost.** `syntax()` is O(1) (a root cursor); `tree()` is
 O(1) (a cast); `has_errors` and `is_incomplete` are O(diagnostics);
-`location` O(1); clone O(diagnostics) — the tree is shared. The tree's
-memory is O(tokens + nodes), with rowan's per-parse node cache sharing
-identical tokens and small identical subtrees — a per-builder cache,
-never a global one (spec §1.2).
+`location` O(1); `string_value` O(token); clone O(diagnostics) — the
+tree is shared. The tree's memory is O(tokens + nodes), with rowan's
+per-parse node cache sharing identical tokens and small identical
+subtrees — a per-builder cache, never a global one (spec §1.2).
 
 ## 6. The parser
 
@@ -593,13 +725,15 @@ never a global one (spec §1.2).
 
 ```rust
 /// What the parser is asked to read: a whole program, or one construct
-/// family with a named consumer — the statement (a REPL reads one at a
-/// time; the macro tier's statement macros), the term (the macro tier's
-/// term positions), and the term-value sublanguage (grammar §5.10: what
-/// a string parses to when a caller asks for a symbol — the REPL and
-/// the query surface). Closed; a family is admitted here when a
-/// consumer names it (spec §8's tiered vocabulary), and the addition is
-/// a breaking one, priced by the pre-1.0 posture.
+/// family with a named consumer — the statement (the macro tier's
+/// statement macros), the term (the macro tier's term positions), and
+/// the term-value sublanguage (grammar §5.10: what a string parses to
+/// when a caller asks for a symbol — the REPL and the query surface).
+/// The REPL is not the statement entry's consumer: it parses a growing
+/// buffer through the program entry and reads `is_incomplete` (§15).
+/// Closed; a family is admitted here when a consumer names it (spec
+/// §8's tiered vocabulary), and the addition is a breaking one, priced
+/// by the pre-1.0 posture.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum EntryPoint { Program, Statement, Term, TermValue }
 
@@ -608,30 +742,57 @@ pub fn parse(source: &Source, dialect: Dialect) -> Parse<ast::Program>;
 
 /// The general doors: any token source (§4.3). Total.
 pub fn parse_program(source: &impl TokenSource) -> Parse<ast::Program>;
-pub fn parse_statement(source: &impl TokenSource) -> Parse<ast::Fragment>;
-pub fn parse_term(source: &impl TokenSource) -> Parse<ast::Fragment>;
-pub fn parse_term_value(source: &impl TokenSource) -> Parse<ast::Fragment>;
+pub fn parse_statement(source: &impl TokenSource) -> Parse<ast::StatementFragment>;
+pub fn parse_term(source: &impl TokenSource) -> Parse<ast::TermFragment>;
+pub fn parse_term_value(source: &impl TokenSource) -> Parse<ast::TermFragment>;
 ```
 
 `parse` is `parse_program` over `Lexer::new(source, dialect)`; it exists
 so the common case names no lexer. **Every entry point yields a root of
 one fixed kind**, which is what makes `Parse::tree()` total (§5.5): the
-program entry's root is `PROGRAM`; every fragment entry's root is
-`FRAGMENT`, a container holding leading trivia, the fragment's node when
-the input held one, trailing trivia, and — when input remained after the
+program entry's root is `PROGRAM`; the statement entry's root is
+`STATEMENT_FRAGMENT` and the two term entries' root is `TERM_FRAGMENT`
+— each a container holding leading trivia, the fragment's node when the
+input held one, trailing trivia, and — when input remained after the
 fragment — an `ERROR` node with the diagnostic that end of input was
-expected. The alternative, a root of the fragment's own kind, would make
-the root's kind depend on the input (a term entry over an empty text has
-no term to be the root), and `tree()` would have to answer `Option<T>`
-for some entries and `T` for others; one container kind keeps one honest
-signature. The typed root for fragments:
+expected. The alternative, a root of the fragment's own kind, would
+make the root's kind depend on the input (a term entry over an empty
+text has no term to be the root), and `tree()` would have to answer
+`Option<T>` for some entries and `T` for others; one container kind per
+family keeps one honest signature — and one per *family* rather than
+one for all three, because a single fragment kind would answer `None`
+from its `statement()` for two unrelated reasons (no statement in the
+input; never a statement parse), an absence standing for two facts. The
+two term entries share a root because they share a shape: both read a
+term, and what differs is the restriction (§6.2), a fact of diagnostics
+that `Parse::entry()` names. The typed roots for fragments:
 
 ```rust
-impl ast::Fragment {
-    pub fn statement(&self) -> Option<ast::Statement>;   // Statement entry
-    pub fn term(&self) -> Option<ast::Term>;             // Term, TermValue
+impl ast::StatementFragment {
+    /// None when the input held no statement.
+    pub fn statement(&self) -> Option<ast::Statement>;
+}
+impl ast::TermFragment {
+    /// None when the input held no term; `Parse::entry()` says which
+    /// restriction (§6.2) the term was read under.
+    pub fn term(&self) -> Option<ast::Term>;
 }
 ```
+
+**What each entry admits, stated once.** The program entry admits
+grammar §5.11's `program` under the dialect — with the ASP-Core-2 query
+at its end under that dialect (grammar §6.1) — and the aspif dispatch
+(§6.3). The statement entry admits what one program position holds:
+leading `docs`, one statement with its annotation family after the dot
+where the grammar has one, and — under the ASP-Core-2 dialect — the
+query form, an atom and the `?` at the fragment's end; these are the
+shapes `Statement` enumerates (§8.2), which is why that enum holds
+`Query`. The term entry admits grammar §5.1's `term` (through a macro
+token source, the macro dialect's splice-bearing term), and the
+term-value entry `value-term` under the restriction of §6.2 — no docs,
+no dot, no annotation for either. Trailing trivia is admitted by every
+entry; anything else after the construct is the `ERROR` node above,
+with `SyntaxClass::EndOfInput` in its expected set (§7.1).
 
 ### 6.2 The parser's shape
 
@@ -659,20 +820,63 @@ splice-bearing term), `constant-term`, `value-term`, and
 `theory-term`/`theory-opterm` — are parsed by **one loop over an
 explicit frame stack**: a frame per open bracket context (a
 parenthesized pool or tuple, an argument list, an absolute-value pair,
-and for theory terms a set, list, tuple, or function's arguments), each
-frame holding its own operator stack for the precedence table of grammar
-§5.1 (interval loosest; the bitwise family; additive; multiplicative;
-`**` right-associative; unary tighter than `**`) or, for theory terms,
-the flat operator-and-term sequence grammar §5.8 admits without
-precedence. Input depth becomes frame count, never call depth. The
-constant-term and value-term forms are the same loop under a
-**restriction context** — variables, the anonymous variable, pools, and
-intervals excluded from `#const` bodies (grammar §5.9); those and
-`@`-calls and multi-term absolute values excluded from term values
-(grammar §5.10) — that builds the general shape and emits
-`form-not-allowed-here` (Appendix B) at each excluded form, so a
-consumer sees the structure the author wrote and a diagnostic naming
-what the position forbids, rather than an `ERROR` blob.
+and for theory terms a set, list, tuple, or function's arguments). Input
+depth becomes frame count, never call depth. Within a frame, operator
+structure is built **flat per precedence level**: a `BINARY_TERM` node
+holds one level's maximal chain — its operands interleaved with its
+operator tokens, so `1 + 2 - 3` is one node of three operands and two
+operators — and a tighter level is a child operand (`1 + 2 * 3` is an
+additive node whose second operand is a multiplicative node); a
+`UNARY_TERM` holds a whole run of prefix operators and its one operand
+(`- - x`); `**`, the one right-associative level, is a flat chain like
+the others, its associativity a fact the typed AST states rather than a
+shape the tree nests (§8.2). This is the lift `COMPARISON` and
+`THEORY_OPTERM` already are (Appendix A), applied to the term families'
+operators, and it is what bounds the tree's depth per frame (§5.4,
+law 3): the levels are the grammar's — interval loosest, then `^`, `?`,
+`&`, additive, multiplicative, `**`, with unary tighter than every
+binary (grammar §5.1) — so a frame nests at most that many operator
+layers however long its chains. Theory terms are simpler still: grammar
+§5.8 admits their operators without precedence, so a `THEORY_OPTERM` is
+one flat sequence per frame. The constant-term and value-term forms are
+the same loop under a **restriction context**, each a set stated
+exactly: `ConstantTerm` excludes the variable, the anonymous variable,
+the pool, the interval, and the pooled absolute value (grammar §5.9
+admits `"|" constant-term "|"` and nothing wider); `TermValue` excludes
+those and the `@`-call besides (grammar §5.10). The loop builds the
+general shape and emits `form-not-allowed-here` (Appendix B) at each
+excluded form, so a consumer sees the structure the author wrote and a
+diagnostic naming what the position forbids, rather than an `ERROR`
+blob.
+
+**The loop's invariant, stated so its correctness is on the page.** The
+frame stack mirrors the open bracket contexts of the text: one frame per
+unclosed opener, the innermost on top, each frame carrying its closer,
+its restriction context, and a *level stack*. A frame's level stack
+holds the precedence levels currently open in it, strictly tighter from
+bottom to top, each level with the builder checkpoint taken before its
+first operand; every operand parsed so far in the frame lies inside the
+topmost open level or inside a level already closed beneath it. Each
+operand is parsed behind a checkpoint of its own, and the last
+operand's checkpoint is kept, so a level can be opened around that
+operand retroactively. On a binary operator of level ℓ after an
+operand: the levels tighter than ℓ close, innermost first, each wrapped
+from its checkpoint into its `BINARY_TERM`, and the last closed level's
+checkpoint becomes the last operand's; if the top level is then ℓ, the
+operator joins it; otherwise ℓ is opened at the last operand's
+checkpoint. `**` is a level like the others — its chain stays flat and
+right-folds in the typed AST. A run of prefix operators opens one
+`UNARY_TERM` at the first of them and closes it after the one operand
+that follows, which is why unary binds tighter than `**` here as at the
+authority: `-2**2` is the `**` chain whose first operand is the unary
+node. A closer, a separator, or a token that begins no term closes every
+open level of the frame and then the frame; a missing operand or an
+unclosed bracket does the same after its diagnostic (§6.7), so recovery
+leaves every stack in the state this paragraph describes. The
+restriction context is read at one point — form emission — and never
+steers the parse. Termination and cost are §6.8's: each token advances
+the loop, and each level and each frame is opened at most once for the
+token that opens it and closed at most once.
 
 ### 6.3 The worded rules, realized
 
@@ -693,13 +897,37 @@ a fixed, bounded decision in the parser:
   its right operand — end of input where a term was expected — and the
   diagnostic carries a help naming the other dialect's reading, so the
   practitioner arriving from the standard is told, not puzzled.
-- **The theory regions** (grammar §4.7): the mode switches at the `{`
-  that opens a theory atom's elements, back to normal at each element's
-  condition colon at element depth and forward again at its `;` or the
-  closing `}`, on through the guard while a theory operator or theory
-  term extends it, and to normal at the first token that cannot; inside
-  a `#theory` definition, only the operator positions lex under theory
-  mode.
+- **The theory regions** (grammar §4.7): the mode switches to theory
+  after the `{` that opens a theory atom's elements (the `{` itself is
+  taken under normal mode); an element's condition colon at element
+  depth is taken under theory mode — a length-one structural run there —
+  and returns the mode to normal for the condition's literals *and for
+  the `;` or `}` that ends the condition*: that token ends a normal-mode
+  region, and a `;` taken under theory mode would fuse with an operator
+  character after it (`;-` is one THEORY_OP), which is why grammar
+  §4.7's letter reads the `;` as the condition's end; theory mode
+  resumes at the token after that `;`, and after a `}` continues into
+  the guard. **The guard-end rule, greedy:** after the `}` the parser
+  takes the next token under theory mode; if it is not a theory operator
+  there is no guard, and that token is re-lexed under normal mode
+  (§4.2); if it is, the guard opens and extends while the next token,
+  taken under theory mode, continues the opterm from where it stands —
+  an operator after a term, an operator or a term's first token after an
+  operator — and the first token that does not is re-lexed under normal
+  mode and the guard closes before it. On every member this coincides
+  with grammar §4.7's letter — a member's guard is a complete
+  theory-opterm, and the token after it can extend nothing; on a
+  non-member whose guard trails off in a run of operators
+  (`&a { x } > - not - , p.`) the two readings differ only in how that
+  run is tokenized: greedy holds the operators as theory-mode tokens
+  and diagnoses the missing term, where the letter, read literally,
+  would re-lex an unbounded run. That is this design's own recovery
+  choice (grammar §13 leaves recovery to it), named here so §6.2's
+  one-token lookahead and §4.2's twice-per-token bound are honest.
+  Inside a `#theory` definition, only the operator positions lex under
+  theory mode. The mode the parser requested for each token is what
+  `lex_mode_of` reconstructs (§10.2), and the law binding the two is
+  §10.2's.
 - **The script region** (grammar §4.8): after `#script ( IDENT )` the
   parser asks under `ScriptBody` and receives the body token, or `KW_END`
   directly when the region is empty (§4.4); after the body it asks for
@@ -723,8 +951,17 @@ every further error would be noise about a language this parser was
 told the input is not in. And **the annotations after the dot** (grammar
 §5.11): after a statement's `.`, a `[` opens the `ANNOTATION` for
 exactly the four families — required for weak constraints and
-`#heuristic`, optional for `#external` and `#const` — and for any other
-statement a `[` there is the next statement's unexpected token.
+`#heuristic`, optional for `#external` and `#const` — and its interior
+is parsed by the enclosing statement's production, arity and spelling
+included: a weight, an optional `@`-priority, and an optional term tuple
+for the weak constraint; a weight, an optional priority, and the
+modifier for `#heuristic`; exactly one term for `#external`; exactly the
+identifier `default` or `override` for `#const`. The node kind is one
+because the bracket shape is one; a violation is `unexpected-token` with
+the family's expected set, so `#external p. [a, b]` and
+`#const n = 1. [foo]` are the non-members the grammar makes them. For
+any other statement a `[` there is the next statement's unexpected
+token.
 
 ### 6.4 Trivia and docs, at parse time
 
@@ -759,14 +996,26 @@ Three predicates, each defined once:
   token boundary, the prefix's parse is either error-free or
   incomplete (§16).
 
-### 6.6 Bounded depth, the constant, and its two bounds
+### 6.6 Bounded depth, the constants, and the two bounds
 
 ```rust
-/// The deepest nesting of the self-recursive term families (§6.2) the
-/// parser will open — frames, one per bracket context. Named because
-/// it carries meaning (spec §5.2), and documented with the two bounds
-/// that fix its value.
+/// The deepest nesting of bracket contexts — frames, one per open
+/// bracket (§6.2) — the parser will open. Named because it carries
+/// meaning (spec §5.2), and documented with the two bounds that fix
+/// its value; no numeral stands here, and the plan records the
+/// measured value with both bounds beside it.
 pub const MAX_NESTING_DEPTH: u32 = /* fixed by measurement, see below */;
+
+/// The stack, in bytes, on which every operation this crate performs
+/// or hands out over the deepest tree it can build — dropping it,
+/// comparing two, rendering one, walking the typed AST, attaching,
+/// certifying — is proven to complete: the depth gate (§16) runs on a
+/// thread of exactly this size and passes with headroom. A consumer's
+/// thread that holds a tree needs at least this much, and a language
+/// server's worker or a WASM host reads it here rather than
+/// discovering it. Measured together with the constant above; a move
+/// of either re-measures the other.
+pub const REQUIRED_STACK_BYTES: usize = /* fixed by measurement, see below */;
 ```
 
 At the token that would open a frame beyond the constant, the parser
@@ -776,25 +1025,41 @@ statement — through its terminating dot, or to end of input — into one
 further and diagnosing nothing further within that statement (the open
 frames close over the `ERROR` node without missing-closer diagnostics of
 their own: one refusal, one diagnostic). The tree's depth is therefore
-at most the constant plus the grammar's fixed layer count (§5.4,
-law 3).
+at most the constant times the term families' per-frame layer count,
+plus the grammar's fixed layer count above them (§5.4, law 3) — both
+grammar constants, named beside `MAX_NESTING_DEPTH` in the plan and
+held by the depth gate, which measures the deepest tree it builds
+against the bound. Operator chains never reach the constant: they are
+flat (§6.2), so `1+1+…+1` of any length is a member here as it is under
+the authority, and only bracket nesting is refused.
+
 This is a refusal with a locus, not a repair: nothing is truncated,
 nothing is guessed, and the diagnostic says exactly what was refused and
-where.
+where. It is the specified behavior for absurdly deep input that spec
+§2 item 8 requires, and it applies under both dialects — a conformant
+ASP-Core-2 program nested past the constant included.
 
-**The value is measured, not guessed, against two bounds.** From below:
-no member of the corpus (§16) may reach it, and it must not fall short
-of what the authority itself accepts — clingo's parser refuses very deep
-nesting at its own parser-stack limit, and the differential (§16)
-measures that depth at the pin; a value below it would be a membership
-divergence, which the grammar's register would then have to carry with
-its argument, and a value at or above it is not. From above: the depth
-gate (§16) must pass with the constant in force — a thread of a small,
-named stack size parses inputs nested far beyond the constant, then
-walks, compares, and drops the tree — with headroom, because rowan's
+**The value is measured, not guessed, against two bounds — and the
+grammar's register carries the consequence.** From below: no member of
+the corpus (§16) may reach it, and it should not fall short of what the
+authority itself accepts — clingo's parser refuses very deep nesting at
+its own parser-stack ceiling, and the differential (§16) measures that
+depth per family at the pin. From above: the depth gate (§16) must pass
+with the constant in force — a thread of `REQUIRED_STACK_BYTES` parses
+inputs nested far beyond the constant in every family, then walks,
+compares, renders, and drops the trees — with headroom, because rowan's
 drop and equality recurse in tree depth (§14) and the constant is what
-bounds them. Both bounds are recorded beside the constant, and a move of
-either — a rowan upgrade, a clingo pin move — re-measures.
+bounds them. Wherever the constant sits relative to the authority's
+ceiling, the band between the two is a disagreement with the authority
+— inputs one admits and the other refuses — and grammar §11 records it
+as divergence D2, whose obligation is to hold both measured values
+beside the entry; §2's second failure condition pins to that entry.
+**When the two bounds conflict** — the authority's ceiling above what
+the gate's stack survives — the gate's bound governs: safety over
+parity, the constant stays where the gate proves it, and D2 widens
+rather than the stack requirement growing. Both bounds are recorded
+beside the constant, and a move of either — a rowan upgrade, a clingo
+pin move — re-measures.
 
 ### 6.7 Error recovery, per construct family
 
@@ -821,7 +1086,7 @@ recover at the statement boundary (grammar §4.7's own note on the lone
 | program level (no statement begins here) | `ERROR` through the next `.` — and an immediately following `[…]` group, since the four annotation families put one after the dot — or to end of input | the next statement start |
 | head, body, condition | wrap the token; if it is a body separator or the neck, continue at the next element | `,` `;` `:-` `.` |
 | literal, atom, comparison | missing-child diagnostics; the token stays for the enclosing family | the enclosing family's set |
-| terms and argument lists (the frame loop) | a missing operand or unclosed bracket: diagnose, close the frame; an unexpected token: wrap and continue in the frame | `,` `;` `)` `]` `}` `\|` (in an absolute-value frame) `.` |
+| terms and argument lists (the frame loop) | a missing operand or unclosed bracket: diagnose, close the open levels and the frame; an unexpected token: wrap and continue in the frame | `,` `;` `)` `]` `}` `\|` (in an absolute-value frame) `.` |
 | aggregates | an unclosed `{`: diagnose the missing `}` at the statement's end | `;` `}` `.` |
 | theory atoms and elements | as terms, under theory mode; an unclosed `{` recovers at the dot | `;` `}` at element depth, `.` |
 | directives (`#show`, `#const`, …) | missing-child diagnostics; wrong words where the grammar wants a spelling (`default`, `unary`, `left`, …) are `unexpected-token` with the words in the expected set | `.` |
@@ -841,8 +1106,9 @@ A parse is a pure function of the token source's text and dialect and
 the entry point (§5.4, law 4). Time is O(text): every token is requested
 at most twice (§4.2), consumed once, and lookahead is bounded by a
 constant; the frame loop does constant work per token; the builder's
-work is O(tokens + nodes). Memory is O(text) for the tree plus O(depth)
-for the frame stack, itself bounded by the constant. There is no
+work is O(tokens + nodes). Memory is O(text) for the tree plus
+O(frames × levels) for the frame and level stacks, themselves bounded
+by the constant and the grammar's level count. There is no
 backtracking: every decision above is a bounded peek.
 
 ## 7. Diagnostics
@@ -892,7 +1158,7 @@ pub enum SyntaxErrorKind {
     UnexpectedEndOfInput { expected: ExpectedSet, hint: Option<Hint> },
     NestingTooDeep { depth: u32 },
     AspifInput,
-    TokenSourceBreach { violation: TokenSourceLawViolation },
+    TokenSourceBreach { breach: SourceBreach },
     // restrictions (§6.2)
     FormNotAllowedHere { form: RestrictedForm, context: Restriction },
     // warnings
@@ -909,7 +1175,20 @@ pub enum RestrictedForm { Variable, AnonymousVariable, Pool, Interval,
 pub enum Restriction { ConstantTerm, TermValue }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum MisplacedDoc { NothingFollows, InsideStatement }
+pub enum MisplacedDoc { NoStatementFollows, InsideStatement }
+
+/// The two breaches of the token-source laws (§4.3) the parser can
+/// witness in one pass, both at an offset it reached by tiling:
+/// `Tiling` — an `EOF` before the text's end, or a token running past
+/// it, the kind and length saying which; `Refusal` — the door refused
+/// where it owed a token. The slice law is trusted and determinism
+/// unobservable in one pass, so neither appears here — the checker's
+/// `TokenSourceLawViolation` is the wider type.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum SourceBreach {
+    Tiling { at: ByteOffset, token: SyntaxKind, len: u32 },
+    Refusal { at: ByteOffset },
+}
 
 /// The characteristic mistakes the parser recognizes at an unexpected
 /// token — each a shape the grammar or the corpus names, each carrying
@@ -937,18 +1216,29 @@ pub enum Hint {
 ```rust
 /// What the parser would have accepted at a point: tokens by kind,
 /// identifiers by spelling where the grammar wants a word (`default`,
-/// `unary`, `left`, …), and grammar classes where listing tokens would
-/// mislead (a term can begin nine ways; "a term" is what the reader
-/// wants). A set — order carries no meaning, duplicates are defects, and
-/// rendering derives its order (kinds, then words, then classes).
+/// `unary`, `left`, … — a `GrammarWord`), and grammar classes where
+/// listing tokens would mislead (a term can begin nine ways; "a term"
+/// is what the reader wants). A set — order carries no meaning,
+/// duplicates are defects, and rendering derives its order (kinds, then
+/// words, then classes).
 pub type ExpectedSet = BTreeSet<Expected>;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Expected {
     Token(SyntaxKind),
-    Word(&'static str),
+    Word(GrammarWord),
     Class(SyntaxClass),
 }
+
+/// The words the grammar wants by spelling where it has no token for
+/// them (grammar §5.9): the ten identifiers matched by spelling in
+/// `#const` annotations and `#theory` definitions. Closed, so an
+/// expected set is matchable and a golden can enumerate it; `Display`
+/// is the spelling. `ConstPolicy` (§8.2) is the statement-level
+/// reading of the first two.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum GrammarWord { Default, Override, Unary, Binary, Left, Right,
+                       Head, Body, Any, Directive }
 
 /// The grammar's classes a consumer or a message names as one thing.
 /// Closed; each is a nonterminal or a family of the grammar of record.
@@ -1012,7 +1302,17 @@ cursors of §5.
   alternatives are node kinds — `Statement`, `Head`, `BodyElement`,
   `Literal`'s inner form, `Term`, `TheoryTerm`, `Aggregate`,
   `AggregateElement` — each implementing `AstNode` by casting on the
-  kind. `Fragment` (§6.1) and `Program` are the roots.
+  kind. `Program`, `StatementFragment`, and `TermFragment` (§6.1) are
+  the roots.
+- **When a production earns a node.** A production that is a pure
+  alternation — `head`, `body-element`, `theory-def-item` — earns no
+  node: its alternatives' kinds stand in its place. A production that
+  owns tokens beyond alternation earns a node (`LITERAL` owns its `not`
+  tokens) or hands them to the node it wraps — which is how
+  `body-element`'s negation is placed: inside the aggregate or
+  theory-atom node it signs (§8.2, Appendix A), the shape `LITERAL`
+  already has, so every element's range covers its sign and
+  `negation()` reads leading tokens the same way for every kind.
 - **Accessors mirror the production's slots, in the production's
   order.** A single child is `Option<Child>` — `Option` because a
   recovered tree may lack it (§6.7), never as an opinion; repetition is
@@ -1047,7 +1347,12 @@ pub enum Statement {
     Edge(EdgeStatement), Heuristic(HeuristicStatement),
     External(ExternalStatement), Const(ConstStatement), Script(ScriptStatement),
     Include(IncludeStatement), ProgramPart(ProgramStatement),   // `#program`: a part (spec §7.1); `Program` is the root
-    TheoryDefinition(TheoryDefinition), Query(Query),
+    TheoryDefinition(TheoryDefinition),
+    /// Grammar §6.1's query — outside the grammar's `statement` class,
+    /// inside this enum because the enum is the class of forms a
+    /// program position holds, and the query holds the last one under
+    /// the ASP-Core-2 dialect "like every statement" (§6.1).
+    Query(Query),
 }
 
 /// Every statement may be documented (grammar §5.11).
@@ -1075,9 +1380,11 @@ impl Body { pub fn elements(&self) -> AstChildren<BodyElement>; }
 pub enum BodyElement { Literal(Literal), ConditionalLiteral(ConditionalLiteral),
                        Aggregate(Aggregate), TheoryAtom(TheoryAtom) }
 impl BodyElement {
-    /// The default-negation prefix on aggregates and theory atoms in
-    /// body position (grammar §5.6); a literal carries its own (§8.2's
-    /// `Literal::negation`).
+    /// The element's default-negation prefix (grammar §5.6): the
+    /// literal's own for `Literal`; the conditional literal's literal's
+    /// for `ConditionalLiteral`; the aggregate's or theory atom's own for
+    /// the other two — every variant delegates to its node, whose
+    /// leading `not` tokens are inside it (§8.1).
     pub fn negation(&self) -> Negation;
 }
 
@@ -1123,6 +1430,9 @@ impl Guard {
 }
 pub struct FunctionAggregate(SyntaxNode);
 impl FunctionAggregate {
+    /// The leading `not` tokens in body position (grammar §5.6);
+    /// `Negation::None` in head position, where none can stand.
+    pub fn negation(&self) -> Negation;
     pub fn function(&self) -> Option<AggregateFunction>;
     pub fn elements(&self) -> AstChildren<AggregateElement>;
 }
@@ -1130,6 +1440,7 @@ impl FunctionAggregate {
 pub enum AggregateFunction { Count, Sum, SumPlus, Min, Max }
 pub struct SetAggregate(SyntaxNode);
 impl SetAggregate {
+    pub fn negation(&self) -> Negation;   // as FunctionAggregate's
     /// Elements are literals or conditional literals (grammar §5.3).
     pub fn elements(&self) -> impl Iterator<Item = SetElement>;
 }
@@ -1144,6 +1455,35 @@ pub enum Term {
     Binary(BinaryTerm), Unary(UnaryTerm), Pool(Pool), Function(FunctionTerm),
     External(ExternalTerm), Abs(AbsTerm), Constant(ConstantTerm),
     Variable(VariableTerm), Splice(SpliceTerm),
+}
+/// One precedence level's chain, flat (§6.2): `1 + 2 - 3` is one node
+/// of three operands and two operators; a tighter level is an operand.
+pub struct BinaryTerm(SyntaxNode);
+impl BinaryTerm {
+    /// The operands in source order — at least two when well formed;
+    /// under recovery one may be missing (§6.7).
+    pub fn operands(&self) -> AstChildren<Term>;
+    /// The operator tokens in source order — one fewer than the operands.
+    pub fn operators(&self) -> impl Iterator<Item = SyntaxToken>;
+    /// The chain's level, read from its first operator (grammar §5.1).
+    pub fn level(&self) -> Option<Precedence>;
+    /// Left at every level but exponentiation, right for `**` — the
+    /// grammar's fact, carried here so no consumer re-derives it.
+    pub fn associativity(&self) -> Option<Associativity>;
+}
+/// Grammar §5.1's levels, loosest first.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum Precedence { Interval, BitXor, BitOr, BitAnd, Additive,
+                      Multiplicative, Exponentiation }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Associativity { Left, Right }
+/// A run of prefix operators and its one operand, flat: `- - x` is one
+/// node; unary binds tighter than every binary level (grammar §5.1).
+pub struct UnaryTerm(SyntaxNode);
+impl UnaryTerm {
+    /// The prefix operators, outermost first.
+    pub fn operators(&self) -> impl Iterator<Item = SyntaxToken>;
+    pub fn operand(&self) -> Option<Term>;
 }
 pub struct Pool(SyntaxNode);   // `( … )`: tuples separated by `;`
 impl Pool {
@@ -1172,6 +1512,7 @@ impl ExternalTerm {
 
 pub struct TheoryAtom(SyntaxNode);
 impl TheoryAtom {
+    pub fn negation(&self) -> Negation;   // body position only (grammar §5.6)
     pub fn name(&self) -> Option<Ident>;
     pub fn arguments(&self) -> Option<Arguments>;
     pub fn elements(&self) -> Option<TheoryElements>;
@@ -1227,20 +1568,28 @@ impl ConstStatement {
 pub enum ConstPolicy { Default, Override }
 ```
 
-Two decisions in that shape deserve their reasons on the page. **One
-`ANNOTATION` kind serves the four bracket families**, and each
-statement's accessors read their meaning from it — weight, priority, and
-tuple for a weak constraint; weight, priority, and modifier for
-`#heuristic`; the value for `#external`; the policy word for `#const` —
-because the *shape* is one (a bracketed term list after the dot, grammar
-§5.11) while the *meaning* is the statement's; putting the meaning in
-the statement's accessors draws every distinction a consumer must make
-without four kinds that differ only in their parent. **`Pool` and
-`Tuple` are kept in the grammar's uniform shape** — `(a)` is a pool of
-one tuple of one term — because the grammar makes `(a)` and `(a,)`
-distinct and the shape is what carries that; `Pool::parenthesized`
-names the common case so a consumer that wants "the term inside the
-parentheses" never re-derives the condition.
+Three decisions in that shape deserve their reasons on the page. **A
+chain is one node, and the classic nested shape is a derivation.**
+`BinaryTerm` holds a level's whole chain flat because that is what
+bounds the tree's depth (§5.4, law 3; §6.2) and because it is the shape
+`Comparison` and `TheoryOpTerm` already have; the nested binary reading
+— `(1 + 2) - 3`, `2 ** (3 ** 4)` — is a fold a consumer performs over
+`operands()` and `operators()` in the direction `associativity()`
+states, a loop over the chain and never a recursion in its length, which
+is exactly how the program tier's lowering walks it. **One `ANNOTATION`
+kind serves the four bracket families**, and each statement's accessors
+read their meaning from it — weight, priority, and tuple for a weak
+constraint; weight, priority, and modifier for `#heuristic`; the value
+for `#external`; the policy word for `#const` — because the bracket
+*shape* is one (grammar §5.11) while the interior is parsed by each
+family's production (§6.3) and the *meaning* is the statement's; putting
+the meaning in the statement's accessors draws every distinction a
+consumer must make without four kinds that differ only in their parent.
+**`Pool` and `Tuple` are kept in the grammar's uniform shape** — `(a)`
+is a pool of one tuple of one term — because the grammar makes `(a)` and
+`(a,)` distinct and the shape is what carries that;
+`Pool::parenthesized` names the common case so a consumer that wants
+"the term inside the parentheses" never re-derives the condition.
 
 ### 8.3 Token wrappers and values
 
@@ -1250,8 +1599,10 @@ pub struct Ident(SyntaxToken);       // IDENT
 pub struct Variable(SyntaxToken);    // VARIABLE | ANONYMOUS
 pub struct NumberLit(SyntaxToken);   // NUMBER
 pub struct StringLit(SyntaxToken);   // STRING
-pub struct DocLine(SyntaxToken);     // DOC_COMMENT
-pub struct Comment(SyntaxToken);     // LINE_COMMENT | BLOCK_COMMENT | SHEBANG_COMMENT | DOC_COMMENT (as trivia)
+pub struct DocLine(SyntaxToken);     // DOC_COMMENT whose role is Documentation (§5.4)
+pub struct Comment(SyntaxToken);     // LINE_COMMENT | BLOCK_COMMENT | SHEBANG_COMMENT anywhere;
+                                     // DOC_COMMENT whose role is Trivia — the two casts read
+                                     // `role`, not the kind alone (§5.4)
 pub struct ScriptBody(SyntaxToken);  // SCRIPT_BODY
 
 impl NumberLit {
@@ -1263,12 +1614,16 @@ pub enum Radix { Decimal, Hexadecimal, Octal, Binary }
 
 impl StringLit {
     /// The denoted text with the dialect's escapes resolved (grammar
-    /// §4.4, §6.2). The dialect is the caller's to state — the same
-    /// checked-at-use posture base §5 takes for column encodings — and
-    /// the one refusal is a token whose spelling is not the dialect's
-    /// string rule, which a token source other than the file lexer can
-    /// supply (grammar §9's by-value literals); the file lexer's tokens
-    /// never refuse.
+    /// §4.4, §6.2). The dialect is the caller's to state, because the
+    /// tree does not carry it (§3) — and the caller must state it
+    /// right: `"a\nb"` denotes differently under the two rules and a
+    /// wrong dialect here yields a plausible wrong `String`, not a
+    /// refusal, so a consumer holding the `Parse` uses
+    /// `Parse::string_value` (§5.5) and takes the dialect from it. The
+    /// one refusal is a token whose spelling is not the dialect's string
+    /// rule, which a token source other than the file lexer can supply
+    /// (grammar §9's by-value literals); the file lexer's tokens never
+    /// refuse.
     pub fn value(&self, dialect: Dialect) -> Result<String, InvalidStringLiteral>;
 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1276,7 +1631,10 @@ pub struct InvalidStringLiteral { pub at: ByteOffset }
 
 impl DocLine {
     /// The text after the `%!` marker, untrimmed — comment text whose
-    /// meaning is a tool's (grammar §8).
+    /// meaning is a tool's (grammar §8), trailing whitespace included:
+    /// a documentation tool may read it (two trailing spaces are a hard
+    /// break in more than one markup), so it is content here and in the
+    /// certificates (§11.1), never layout.
     pub fn content(&self) -> &str;
 }
 impl ScriptBody {
@@ -1287,11 +1645,14 @@ impl ScriptBody {
     pub fn value(&self) -> &str;
 }
 impl Comment {
-    /// The comment's content: for the line forms (line, shebang, doc)
-    /// the text minus its trailing horizontal whitespace, since that
+    /// The comment's content: for the line comment and the shebang, the
+    /// text minus its trailing horizontal whitespace, since that
     /// whitespace is layout the rule swallowed on its way to the line
-    /// end; for a block comment, the whole token text. This is what the
-    /// certificates compare (§11).
+    /// end; for a doc comment in trivia position, the whole token text
+    /// — the doc form's trailing whitespace is content wherever the
+    /// token stands, for `DocLine::content`'s reason; for a block
+    /// comment, the whole token text. This is what the certificates
+    /// compare (§11).
     pub fn content(&self) -> &str;
     pub fn form(&self) -> CommentForm;
 }
@@ -1320,9 +1681,10 @@ function of exactly four facts, and shipped in two forms.
 
 ### 9.1 What attachment is
 
-A trivia comment — a `LINE_COMMENT`, `BLOCK_COMMENT`, or
-`SHEBANG_COMMENT` token, or a `DOC_COMMENT` token in trivia position
-(§5.4) — is attached to exactly one **anchor** in exactly one **slot**:
+A trivia comment — a token whose role is `Trivia` and whose kind is a
+comment (§5.4): a `LINE_COMMENT`, `BLOCK_COMMENT`, or `SHEBANG_COMMENT`
+anywhere, or a `DOC_COMMENT` outside docs position — is attached to
+exactly one **anchor** in exactly one **slot**:
 
 ```rust
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -1332,7 +1694,10 @@ pub enum Slot { Leading, Trailing, Dangling }
 /// anchor is a node or a significant token — a comment before `,` leads
 /// the comma, which is what keeps it before the comma when a consumer
 /// re-emits (kallos's transposition scar, spec §5.1); a comment on the
-/// line of a rule's dot trails the rule.
+/// line of a rule's dot trails the rule. A view, not data: the anchor
+/// is a cursor (§5.1), which is the shape a formatter holding the tree
+/// wants — it navigates from the anchor directly — and it lives no
+/// longer than the tree it reads.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Attachment { pub anchor: SyntaxElement, pub slot: Slot }
 ```
@@ -1343,15 +1708,24 @@ and asking its attachment is refused as such.
 
 ### 9.2 The policy, as a total function
 
+**The whitespace vocabulary, defined once.** A *line break* is `\n` —
+base §5's newline policy, under which a `\r` is content of its line;
+*horizontal whitespace* is the space, the tab, and `\r`; an *empty line*
+is a `WHITESPACE` token containing two line breaks with only horizontal
+whitespace between them (the token matches `\n[ \t\r]*\n`), so a CRLF
+file's `\r\n\r\n` is an empty line exactly as an LF file's `\n\n` is.
+The four facts below read these definitions and nothing else, and a
+CRLF golden holds them (§16).
+
 For a trivia comment `c` with parent node `P`, let `prev` be the nearest
-preceding sibling of `c` that is not trivia (a node or a significant
-token) and `next` the nearest following such sibling; both may be
-absent. Let a **closer** be a token of kind `R_PAREN`, `R_BRACKET`,
-`R_BRACE`, or `DOT`, or a `PIPE` whose parent is an `ABS_TERM` — the
-tokens that end a construct rather than begin an element (the `|` of a
-disjunction, by contrast, is a separator and an anchor like `;`; this is
-spec §6.4's dual-role-token carve-out, and the tree decides the role
-structurally rather than by glyph). Then:
+preceding sibling of `c` that is neither trivia nor an empty node (§5.4)
+— a non-empty node or a significant token — and `next` the nearest
+following such sibling; both may be absent. Let a **closer** be a token
+of kind `R_PAREN`, `R_BRACKET`, `R_BRACE`, or `DOT`, or a `PIPE` whose
+parent is an `ABS_TERM` — the tokens that end a construct rather than
+begin an element (the `|` of a disjunction, by contrast, is a separator
+and an anchor like `;`; this is spec §6.4's dual-role-token carve-out,
+and the tree decides the role structurally rather than by glyph). Then:
 
 1. **Trailing.** If `prev` exists and no line break stands in the text
    between `prev`'s end and `c`'s start — through any trivia between
@@ -1359,24 +1733,23 @@ structurally rather than by glyph). Then:
    `Trailing(prev)`.
 2. **Leading.** Otherwise, if `next` exists, is not a closer, and no
    *empty line* separates any two consecutive members of the run from
-   `c` through the trivia comments after it up to `next` — an empty
-   line being a `WHITESPACE` token holding a line break, horizontal
-   whitespace only, and a further line break — then `c` is
-   `Leading(next)`. A comment above a blank gap does not lead what lies
-   below the gap; the comments below the gap still do (the block-aware
-   detach: computed per adjacent pair along the run, so a contiguous
-   run shares one anchor and a gapped run splits at the gap).
+   `c` through the trivia comments after it up to `next` — an empty line
+   as defined above — then `c` is `Leading(next)`. A comment above a
+   blank gap does not lead what lies below the gap; the comments below
+   the gap still do (the block-aware detach: computed per adjacent pair
+   along the run, so a contiguous run shares one anchor and a gapped run
+   splits at the gap).
 3. **Dangling.** Otherwise `c` is `Dangling(P)`. Every comment has a
    parent, so this is total; `PROGRAM` is the bottom anchor.
 
 **The four facts, and the stability they buy.** The function reads only:
-(a) `c`'s parent and its non-trivia siblings; (b) whether a line break
-separates `prev`'s end from `c`'s start; (c) whether an empty line
-separates each adjacent pair along the run to `next`; (d) whether `next`
-is a closer. Nothing else — not indentation, not the number of spaces,
-not the position of anything outside `P`. So a transformation that
-preserves those four facts preserves every attachment, and that is the
-law a formatter needs: emit a trailing comment on its anchor's last
+(a) `c`'s parent and its non-trivia, non-empty siblings; (b) whether a
+line break separates `prev`'s end from `c`'s start; (c) whether an empty
+line separates each adjacent pair along the run to `next`; (d) whether
+`next` is a closer. Nothing else — not indentation, not the number of
+spaces, not the position of anything outside `P`. So a transformation
+that preserves those four facts preserves every attachment, and that is
+the law a formatter needs: emit a trailing comment on its anchor's last
 line, a leading run on its own lines directly above its anchor with no
 empty line inside the run or before the anchor, a dangling comment
 separated by an empty line or standing before a closer, and the reparse
@@ -1418,8 +1791,10 @@ consumer re-derives them otherwise:**
 ```rust
 /// No line break in the text between `a`'s end and `b`'s start.
 pub fn same_line(a: &SyntaxElement, b: &SyntaxElement) -> bool;
-/// An empty line in the whitespace directly between `a` and `b`
-/// (adjacent elements; a comment between them is not "whitespace").
+/// An empty line in the whitespace directly between `a` and `b`; false
+/// when anything but whitespace — a token, a node, a comment — stands
+/// between them, so a non-adjacent pair answers false rather than
+/// refusing.
 pub fn empty_line_between(a: &SyntaxElement, b: &SyntaxElement) -> bool;
 /// The count of line breaks in the trivia between `a`'s end and `b`'s
 /// start.
@@ -1428,11 +1803,14 @@ pub fn line_breaks_between(a: &SyntaxElement, b: &SyntaxElement) -> u32;
 
 **Computational cost.** `attachment(c)` is O(the trivia between `prev`
 and `next` around `c`) — local, allocation-free; `comments(anchor,
-slot)` is O(the trivia adjacent to the anchor); `attachments(node)` is
-O(subtree). A consumer that asks `attachment` for each comment of a run
-of *m* comments pays O(m²) across the run, which is why the bulk form
-exists: a formatter walks anchors or takes the bulk pass and pays O(n).
-The whitespace facts are O(the trivia between the two elements).
+slot)` is O(the trivia adjacent to the anchor) for `Leading` and
+`Trailing`, and O(the anchor's children) for `Dangling`, whose comments
+are scattered among them — for `PROGRAM`, the whole top level;
+`attachments(node)` is O(subtree). A consumer that asks `attachment` for
+each comment of a run of *m* comments pays O(m²) across the run, which
+is why the bulk form exists: a formatter walks anchors or takes the bulk
+pass and pays O(n). The whitespace facts are O(the trivia between the
+two elements).
 
 **Why a function and not a table.** kallos kept attachment in a side
 table keyed by node identity because its tree was not lossless and its
@@ -1483,10 +1861,13 @@ pub fn separator_between(left: &str, right: &str, context: LexContext) -> Separa
 /// (§10.2) and answers for the texts. Total.
 pub fn separator(left: &SyntaxToken, right: &SyntaxToken, dialect: Dialect) -> Separator;
 
-/// The mode in force at a token, read from the tree: `ScriptBody` for a
-/// script body, `Theory` inside a theory atom's elements or guard
-/// (outside their conditions) and at a `#theory` definition's operator
-/// positions, `Normal` elsewhere. Total.
+/// The mode the parser requested for `token`, reconstructed from the
+/// tree by §10.2's rule and bound to the parser's own choice by law
+/// (§10.2, §16): `ScriptBody` for a script body and for `KW_END`;
+/// `Theory` inside a theory atom's elements and guard — outside their
+/// conditions and outside the `;` or `}` that ends a condition — and at
+/// a `#theory` definition's operator positions; `Normal` elsewhere.
+/// Total.
 pub fn lex_mode_of(token: &SyntaxToken) -> LexMode;
 ```
 
@@ -1494,13 +1875,33 @@ pub fn lex_mode_of(token: &SyntaxToken) -> LexMode;
 
 Whether two tokens may abut is one question about the lexer: lexing
 `left ++ right` from `left`'s start under `left`'s mode, is the first
-token exactly `left`? If it is, `right` lexes as before — its own lexing
-starts at its own offset, looks only forward, and sees the same text it
-saw — so the answer is `Nothing`. If it is not, the pair needs a separator:
-`Whitespace` suffices for every token that does not run to end of line
-(a space begins no token's continuation, and no token but the line
-forms extends across it), and the line forms need `LineBreak`. That is
-the entire theory, and it is exact rather than *reachable-honest*: spec
+token exactly `left`? If it is, the answer is `Nothing`. If it is not,
+the pair needs a separator: `Whitespace` suffices for every token that
+does not run to end of line (a space begins no token's continuation,
+and no token but the line forms extends across it), and the line forms
+need `LineBreak`.
+
+**Why the pairwise answer settles a whole text — the induction, and
+the lemma it rests on.** A token's extent depends only on the text from
+its own start forward (the lexer looks ahead, never back), so a text
+every one of whose adjacent pairs answers `Nothing` lexes each token to
+itself: the first by the first pair; each next one because the pair
+before it fixed where its predecessor ends, hence where it starts, and
+its own pair fixes that it ends where it did. The step has one gap,
+named so it is not assumed: the pair `(left, right)` relexes only
+`left ++ right`, and a token whose recognizer is *alive but not
+accepting* after `left ++ right` could complete on characters of the
+token after `right`. In this token language that happens for exactly
+one shape — the numeral prefixes `0x`, `0o`, `0b`, where `0` then a
+name lexes as two tokens and a following digit would make one — and
+there the name's own rule closes the gap: any character that would
+complete the numeral also extends the name (grammar §4.2), so the pair
+`(right, next)` answers `Whitespace` and the abutment never happens.
+That is a lemma about the roster of §4, checked over it here and held
+by an instrument (§16: corpus texts re-spaced to abut every pair the
+oracle allows reparse to the same token stream), and the certificate
+(§11) is the check a formatter runs on the whole text regardless. That
+is the entire theory, and it is exact rather than *reachable-honest*: spec
 §6.2's "reachable-honest, defaulting to keep" names the properties a
 maintained classification table needs — kallos maintained one because
 its lexer was not its own (spec §5.1) — and an oracle that computes the
@@ -1514,12 +1915,24 @@ its definition (§16).
 
 An adjacency's mode is `left`'s: the parser lexed `left` under the mode
 in force at its start, and lexing `left ++ right` under that mode is
-what a reparse would do at that offset. `lex_mode_of` reads it from the
-tree structurally — the same regions §6.3 states, decided by ancestry:
-`SCRIPT_BODY` is its own mode; a token under `THEORY_ELEMENTS` or
-`THEORY_GUARD` is under `Theory` unless a `CONDITION` intervenes; a
+what a reparse would do at that offset. `lex_mode_of` reconstructs it
+from the tree structurally — the same regions §6.3 states, decided by
+ancestry and position: `SCRIPT_BODY` and `KW_END` are `ScriptBody`
+(both are formed only under it, §4.4); a token under `THEORY_ELEMENTS`
+or `THEORY_GUARD` is `Theory` — the condition-opening `:` included —
+unless it is inside a `CONDITION` or is the `;` or `}` that directly
+follows one, which are `Normal` (§6.3: they end a normal-mode region); a
 `THEORY_OP` or `KW_NOT` at an operator position of an `OP_DEFINITION` or
-`ATOM_DEFINITION` is under `Theory`; everything else is `Normal`.
+`ATOM_DEFINITION` is `Theory`; everything else is `Normal` — the `{`
+that opens the elements and the first token after a guard among them.
+**The law binding the two statements:** for every token of every tree,
+`lex_mode_of(token)` equals the mode the parser requested when it took
+that token — held by a parse-time recording of the requested modes,
+compared against the reconstruction over the whole corpus (§16). The
+parser's rule (§6.3) and this reconstruction are two statements of one
+fact, and the law is what keeps them from agreeing by luck; the
+grammar's named cases gain `;-` after a condition, `#end.`, and
+`#end .` (§16).
 
 **Computational cost.** `separator_between` is O(|left| + |right|):
 one relex of a two-token text. `separator` adds `lex_mode_of`, which is
@@ -1532,27 +1945,45 @@ total.
 Spec §6.7: structural token-stream equivalence plus comment-sequence
 comparison, native to the tier — the certificate a consumer claiming a
 layout-only or spelling-preserving transformation gets, with its
-witness. Two relations, one function.
+witness. Two certificates over one sequence, one function.
 
-### 11.1 The two streams
+### 11.1 The sequence and its two projections
 
-For a tree, the **token stream** is the sequence of its significant
-tokens — every token whose kind is not trivia in its position: all
-non-comment, non-whitespace tokens, plus `DOC_COMMENT` tokens in docs
-position — in source order, each as `(kind, content)`; the **comment
-sequence** is the sequence of its trivia comments in source order, each
-as `(kind, content)`; `content` is §8.3's: the token's text, save that a
-line-form comment contributes its text without trailing horizontal
-whitespace, which is layout. `ERROR` tokens are significant tokens; a
-transformation that changes one has changed the program's bytes where
-they were not understood, and the certificate says so.
+For a tree, the **non-whitespace sequence** is the sequence of every
+token whose kind is not `WHITESPACE`, in source order — significant
+tokens and trivia comments interleaved as they stand — each as
+`(kind, content)`. Its two projections are the **token stream**, the
+significant tokens (every token whose role is not `Trivia`, §5.4: all
+non-comment, non-whitespace tokens plus `DOC_COMMENT` tokens in docs
+position), and the **comment sequence**, the trivia comments (role
+`Trivia`, kind a comment). `content` is per kind: a `LINE_COMMENT` or
+`SHEBANG_COMMENT` contributes its text without trailing horizontal
+whitespace, which is layout (§8.3); a `DOC_COMMENT` contributes its
+whole text wherever it stands (§8.3: the doc form's trailing whitespace
+is content); a `SCRIPT_BODY` contributes its `value()` — the grammar's
+own trimming of the blanks before `#end` (grammar §4.8), layout by the
+same argument; every other token its text. `ERROR` tokens are
+significant tokens; a transformation that changes one has changed the
+program's bytes where they were not understood, and the certificate
+says so.
 
 ```rust
+/// Every non-whitespace token under `node`, in order — the sequence the
+/// certificates compare.
+pub fn non_whitespace_tokens(node: &SyntaxNode) -> impl Iterator<Item = SyntaxToken>;
 /// The significant tokens of the tree under `node`, in order.
 pub fn token_stream(node: &SyntaxNode) -> impl Iterator<Item = SyntaxToken>;
 /// The trivia comments under `node`, in order.
 pub fn comment_sequence(node: &SyntaxNode) -> impl Iterator<Item = SyntaxToken>;
 ```
+
+The certificates compare the one interleaved sequence and not the two
+projections each on its own, because the projections lose the fact a
+formatter must not change: where each comment stands among the tokens
+around it. Two texts whose token streams agree and whose comment
+sequences agree can still differ by a comment moved across a token —
+the transposition kallos recorded (spec §5.1) — and only the
+interleaved sequence sees it.
 
 ### 11.2 The certificate
 
@@ -1560,9 +1991,9 @@ pub fn comment_sequence(node: &SyntaxNode) -> impl Iterator<Item = SyntaxToken>;
 /// Which claim is being certified.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Certificate {
-    /// Layout only: token streams equal by kind and content, comment
-    /// sequences equal by kind and content. Nothing but whitespace
-    /// changed.
+    /// Layout only: the non-whitespace sequences equal by kind and
+    /// content. Nothing but whitespace changed — exactly that, since
+    /// whitespace is all the sequence leaves out.
     LayoutOnly,
     /// Up to spelling: as LayoutOnly, save that a token's content is
     /// compared after canonical respelling (§11.3) — the grammar's
@@ -1570,48 +2001,59 @@ pub enum Certificate {
     UpToSpelling,
 }
 
-/// The first divergence, as a witness: which stream, the index in it,
-/// and both sides — a side is `None` where its stream ended first. Each
+/// The first divergence, as a witness: the index in the sequence and
+/// both sides — a side is `None` where its sequence ended first. Each
 /// side carries the token's kind, its content, and its location in its
 /// own tree, so a formatter's `--safe` mode reports where in the input
-/// and where in the output the claim broke.
+/// and where in the output the claim broke; the kind says whether the
+/// element that diverged is a comment or a significant token.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Mismatch {
-    pub stream: Stream,
     pub index: usize,
     pub left: Option<Side>,
     pub right: Option<Side>,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Stream { Tokens, Comments }
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Side { pub kind: SyntaxKind, pub content: String, pub location: Location }
 
 /// The certificate: granted, or refused with the first divergence.
-/// Total; O(|left| + |right|); iterative walks.
+/// Compares the two sequences whatever the parses' dialects and entries
+/// — a lexical statement about two texts, meaningful across them; the
+/// corollary below is what needs them equal, and that is the caller's
+/// obligation. Total; O(|left| + |right|); iterative walks.
 pub fn equivalent<T: AstNode<Language = Asp>>(
     left: &Parse<T>, right: &Parse<T>, certificate: Certificate,
 ) -> Result<(), Mismatch>;
 ```
 
-The comparison is over token streams and not over tree shape, and that
-is deliberate: with one grammar and a deterministic parser (§5.4, law
-4), two texts with equal token streams under equal dialects parse to
-structurally equal trees — a corollary held as an instrument in its own
-right (§16, the arity-stream check kallos lifted into its certificate)
-rather than folded into the certificate, so the certificate stays the
-plain statement "the tokens are the same and the comments are the same"
-that a consumer can read off the definition. It also makes the
-certificate honest across recovery: two texts that differ only in
-layout parse to equal token streams even where `ERROR` boundaries
-would move under a shape comparison, and equal token streams is
-exactly the claim.
+The comparison is over the sequence and not over tree shape, and that
+is deliberate: it is what a consumer can read off the definition — the
+tokens are the same, the comments are the same, and each stands where
+it stood among the others — and it stays honest across recovery: two
+texts that differ only in layout have equal sequences even where
+`ERROR` boundaries would move under a shape comparison, and equal
+sequences is exactly the claim. **The corollary, named and scoped.**
+With one grammar and a deterministic parser (§5.4, law 4), two texts
+with equal non-whitespace sequences parse to equal *significant-token
+shapes* — the preorder over nodes and significant tokens, trivia
+dropped, which is neither §5.5's green equality (that includes every
+trivia token) nor the tree's text — provided they were parsed under
+equal dialect and entry (a `?`-final text parses to a `QUERY` under one
+dialect and to an error under the other with equal sequences; `p(1)`
+under the statement and term entries likewise), and outside the aspif
+dispatch, which reads whitespace (the one space grammar §4.9 names) and
+so can differ in shape between two texts of equal sequence. The
+corollary is held as an instrument in its own right (§16, the
+arity-stream check kallos lifted into its certificate) rather than
+folded into the certificate.
 
 Under `LayoutOnly` a formatter that strips trailing whitespace from a
-comment line still passes, because that whitespace is layout by
-definition (§8.3); a formatter that changes a doc comment's *content*
-fails, because docs are significant tokens; one that moves a comment
-across a token fails on the comment sequence's order.
+line comment still passes, because that whitespace is layout by
+definition (§8.3); one that strips it from a doc line fails, because a
+doc line's whitespace is content (§8.3); one that changes a doc
+comment's text fails; one that moves a comment across a token fails,
+because the sequence's order changed; one that trims the blanks before
+`#end` passes, because `SCRIPT_BODY` compares by its value.
 
 ### 11.3 Canonical spelling
 
@@ -1632,8 +2074,9 @@ table a spelling-normalizing formatter reads — which spellings are
 synonyms is language knowledge, and it lives here once.
 
 **Computational cost.** `equivalent` is O(|left| + |right|), a single
-zip over two lazy iterators; `token_stream` and `comment_sequence` are
-lazy preorder walks; `canonical_spelling` is O(1).
+zip over two lazy iterators; `non_whitespace_tokens`, `token_stream`,
+and `comment_sequence` are lazy preorder walks; `canonical_spelling` is
+O(1).
 
 ## 12. Posture
 
@@ -1655,9 +2098,10 @@ invisible at the surface (base §8.1).
 ### 12.2 The model is the green tree; cursors are views
 
 The one qualification of base §8.2, stated in §5.1: `Parse` is data,
-`Send + Sync`, and every red cursor and typed wrapper is a thread-local
-view minted from it. Every other public type — tokens, diagnostics,
-attachments, witnesses, the oracle's answers — is plain data.
+`Send + Sync`, and every red cursor, typed wrapper, and attachment —
+whose anchor is a cursor (§9.1) — is a thread-local view minted from
+it. Every other public type — tokens, diagnostics, witnesses, the
+oracle's answers — is plain data.
 
 ### 12.3 The recursion discipline and the depth bound
 
@@ -1702,6 +2146,7 @@ exactly the operation's error type (base §3.2's discipline).
 |---|---|---|
 | `TokenSource::token_at` (the file lexer's) | `PositionRefusal` (`OutOfBounds` \| `NotCharBoundary`) — base's condition, at the door where offset meets text | O(token) |
 | `StringLit::value` | `InvalidStringLiteral` — a spelling not the dialect's | O(token) |
+| `Parse::string_value` | `InvalidStringLiteral` — as above, under this parse's dialect | O(token) |
 | `attach::attachment` | `NotAttachable` (`NotAComment` \| `Documentation`) | O(neighborhood) |
 | `equiv::equivalent` | `Err(Mismatch)` — the answer, carrying its witness; not a refusal (§12.4) | O(left + right) |
 
@@ -1710,19 +2155,20 @@ Total (never refuse, never panic): `Lexer::new`; `check_token_source_laws`
 (every input yields a tree — aspif input, unlawful token sources, and
 nesting past the bound included, each with its typed diagnostic);
 `Parse`'s accessors, `has_errors`, `is_incomplete`, `location`; every
-tree operation of §5.2 within the depth bound; the coordinate
-conversions; every `ast` cast and accessor (`Option` is absence under
-recovery, never a refusal); `NumberLit::radix` and `digits`;
-`DocLine::content`, `Comment::content`; `attach::comments`,
-`attachments`, and the whitespace facts; `separator_between`,
-`separator`, `lex_mode_of`; `token_stream`, `comment_sequence`,
+tree operation of §5.2 within the depth bound, on a thread of at least
+`REQUIRED_STACK_BYTES` (§6.6); `role`; the coordinate conversions; every
+`ast` cast and accessor (`Option` is absence under recovery, never a
+refusal); `NumberLit::radix` and `digits`; `DocLine::content`,
+`Comment::content`; `attach::comments`, `attachments`, and the
+whitespace facts; `separator_between`, `separator`, `lex_mode_of`;
+`non_whitespace_tokens`, `token_stream`, `comment_sequence`,
 `canonical_spelling`; `SyntaxError`'s accessors and lowering.
 
 Costs, consolidated: lexing and parsing are O(text) in time and memory
 (§4.6, §6.8); tree navigation is O(1) per step and O(children) per
 accessor; attachment is O(neighborhood) per query and O(subtree) in
 bulk (§9.3); the oracle is O(the two tokens) (§10.2); the certificate is
-O(both streams) (§11.3); every walk is iterative or grammar-bounded, and
+O(both sequences) (§11.3); every walk is iterative or grammar-bounded, and
 tree depth is bounded by the named constant (§6.6). The scaling benches
 (§16) hold the shapes.
 
@@ -1752,24 +2198,35 @@ features off (the node cache's table — the implementation std's own
 `HashMap` is built on); `countme` (an object counter, a no-op unless
 its feature is enabled, which rowan does not); `memoffset` (an offset
 macro).
-`memoffset` carries a build script — a compiler-feature probe through
-`autocfg`, running no C and reaching no network — which is a closure fact
-the auditor should hold and the trust check names as the one build
-script in the pure closure, allowed by name; spec §12.3's "no build
-scripts outside the sys crates" binds this workspace's crates, and this
-crate has none. Its retiring condition is stated here: `core::mem::
-offset_of!` has been stable since Rust 1.77, rowan needs nothing
-`memoffset` provides beyond it, and an upstream change dropping the
-dependency retires the exception without a design change here. The
-unsafe inventory at the pin, by crate, so a rise is visible: rowan 44
-sites (its thin `Arc`, its cursors, its green nodes and tokens),
-hashbrown roughly 320 (the table), memoffset 23 (macro bodies), countme
-1, text-size 1, rustc-hash 0. The trust check (§16) reads Cargo's
-resolved graph — a subprocess over `cargo metadata`, the departure base's
-trust test announced for stage 2 — and asserts the closure equals that
-list, no crate links native code or is a `-sys` crate, no build script
-exists in the closure but the named one, and this crate has no build
-script of its own.
+
+**The one build script in the closure, admitted by name.** `memoffset`
+carries a build script — a compiler-feature probe through `autocfg`,
+running no C and reaching no network. Spec §12.3 states the rule in two
+scopes: no build script among the workspace's own crates outside the
+sys crates — this crate has none — and, inside a pure crate's
+dependency closure, a build script admitted only by name, argued in
+that crate's dependency audit note and allowed by name in the
+structural check. This paragraph is that argument, and the trust check
+(§16) is that allow-list, with `memoffset`'s script its one entry. Its
+retiring condition is stated here: `core::mem::offset_of!` has been
+stable since Rust 1.77, rowan needs nothing `memoffset` provides beyond
+it, and an upstream change dropping the dependency retires the entry
+without a design change here.
+
+**The unsafe inventory, a dated reading.** Read from the vendored
+sources at the pin when this design was drafted (2026-08-15) — a text
+count of `unsafe` occurrences per crate, `rg -c unsafe` being its
+reproduction: rowan 44 sites (its thin `Arc`, its cursors, its green
+nodes and tokens), hashbrown about 320 (the table), memoffset 23 (macro
+bodies), countme 1, text-size 1, rustc-hash 0. These numbers are an
+observation with its method and date, not a claim an instrument holds;
+what the trust check holds is the closure itself. A rowan upgrade
+re-reads this note and re-counts. The trust check (§16) reads Cargo's
+resolved graph — a subprocess over `cargo metadata`, the departure
+base's trust test announced for stage 2 — and asserts the closure equals
+the list above, no crate links native code or is a `-sys` crate, no
+build script exists in the closure but the named one, and this crate has
+no build script of its own.
 
 **Three facts about rowan's internals this design rests on,
 version-scoped (spec §5.2).** At 0.17.0, dropping a green node recurses
@@ -1778,10 +2235,16 @@ through its children — depth of the drop is depth of the tree;
 call site); and structural equality and the debug rendering of a green
 node recurse through the children too. All are why the tree's depth is
 bounded at construction (§5.4, law 3; §6.6); none is reachable by any
-work-list discipline of this crate. And at
-0.17.0 rowan carries no mutable-tree API — the release removed it — so
-the read-only posture of §5.1 is rowan's own, and the tree-editing seam
-(§17) will ride on green-level splicing if a consumer ever names it.
+work-list discipline of this crate — and the reason a crate-owned
+iterative drop, equality, or dump is not the guard belongs beside that
+claim: consumers hold rowan's own handles through the aliases of §5.2,
+so rowan's `Drop` runs on the last clone a consumer holds and is not
+this crate's to replace, and a consumer's own recursion over the typed
+AST is beyond any discipline here; only a depth bounded at construction
+reaches every holder of the tree. And at 0.17.0 rowan carries no
+mutable-tree API — the release removed it — so the read-only posture of
+§5.1 is rowan's own, and the tree-editing seam (§17) will ride on
+green-level splicing if a consumer ever names it.
 
 **The reserved fallback and its obligation.** Should the exception be
 withdrawn — a security finding, an abandoned upstream, a closure that
@@ -1801,30 +2264,32 @@ across the checkpoint** so that findings are findings about the tier's
 ergonomics and not about a moving target.
 
 **The surface, exactly:** `parse` and `Parse` (§5.5, §6.1); the tree
-under its aliases and the kind roster (§5.2, Appendix A); the typed AST
-and its token wrappers (§8), including `HasDocs`, `Comment::content`,
-and `ScriptStatement::body`; attachment in both forms with the whitespace
-facts (§9); the fusion oracle in both forms (§10); the two certificates,
-the two streams, and `canonical_spelling` (§11); `Dialect` (§3); the
-typed diagnostics with their lowering (§7); and from base, the line
-index and the diagnostic views. A formatter of the black class uses all
-of it: parse, walk the typed AST emitting tokens with the whitespace it
-chooses under the oracle's veto, carry comments to their anchors, keep
-docs and script bodies verbatim, normalize spellings through
-`canonical_spelling` if it chooses, and refuse to write until
+under its aliases, the kind roster, and `role` (§5.2, §5.4, Appendix A);
+the typed AST and its token wrappers (§8), including `HasDocs`,
+`Comment::content`, and `ScriptStatement::body`; attachment in both
+forms with the whitespace facts (§9); the fusion oracle in both forms
+(§10); the two certificates, the sequence and its two projections, and
+`canonical_spelling` (§11); `Dialect` (§3); the typed diagnostics with
+their lowering (§7); and, through this crate's re-export of base (§1),
+the line index and the diagnostic views. A formatter of the black class
+uses all of it: parse, walk the typed AST emitting tokens with the
+whitespace it chooses under the oracle's veto, carry comments to their
+anchors, keep docs and script bodies verbatim, normalize spellings
+through `canonical_spelling` if it chooses, and refuse to write until
 `equivalent(before, after, certificate)` grants the claim.
 
 **Held stable across the checkpoint:** the kind roster's names for
-grammar constructs; the tree laws of §5.4; the attachment policy's three
-slots and four facts (§9.2); the two certificates' definitions (§11);
-the oracle's exactness (§10.1); the diagnostic identities (Appendix B);
-the entry points (§6.1); the token-source door and its laws (§4.3).
-**Free to move on the checkpoint's findings:** accessor names and
-shapes in `ast`; the whitespace-fact helpers' names and set; message
-texts and helps; the exact `ERROR`-node shapes under recovery; the
-convenience of the two forms of attachment and oracle. A finding that
-one of the stable items is wrong is the checkpoint firing at the design,
-and this document reopens for it.
+grammar constructs; the tree laws of §5.4 and the role of a token; the
+attachment policy's three slots and four facts (§9.2); the two
+certificates' definitions (§11); the oracle's exactness (§10.1); the
+diagnostic identities (Appendix B); the entry points (§6.1); the
+token-source door and its laws (§4.3). **Free to move on the
+checkpoint's findings:** accessor names and shapes in `ast`; the
+whitespace-fact helpers' names and set; message texts and helps; the
+exact `ERROR`-node shapes under recovery; the convenience of the two
+forms of attachment and oracle. A finding that one of the stable items
+is wrong is the checkpoint firing at the design, and this document
+reopens for it.
 
 **The other consumers' surfaces, named so the checkpoint's residue is
 visible:** the language server takes `Parse`, the diagnostics and their
@@ -1849,7 +2314,8 @@ what it proves and what it cannot (spec §10.2).
   continuously: over arbitrary text under both dialects and every entry
   point — no panic, `text()` is the input, the parse terminates,
   `has_errors` and `is_incomplete` are consistent with the diagnostics,
-  every trivia comment attaches, `equivalent(p, p, ·)` holds, and the
+  every trivia comment attaches, `equivalent(p, p, ·)` holds,
+  `lex_mode_of` agrees with the mode the parser recorded, and the
   tree's depth respects the bound. What it cannot prove: membership
   agreement with the authority — that is the differential's.
 - **Property laws (proptest):** the token-source laws on the file lexer
@@ -1860,42 +2326,58 @@ what it proves and what it cannot (spec §10.2).
   incompleteness law over corpus prefixes (§6.5); the oracle: for
   adjacent token pairs drawn from parsed corpus trees, `Nothing` means
   the pair reparses to itself abutted and `Whitespace` means it does not,
-  and every grammar-named case answers as the grammar says; attachment
-  totality, single-valuedness, the inverse law between the two forms,
-  and stability under re-spacing that preserves the four facts (§9.2);
-  the certificates' reflexivity through reparse, symmetry, and the
-  arity-stream corollary (equal token streams, equal tree shapes);
-  `canonical_spelling` idempotent and closed over the synonym pairs; the
-  typed AST's completeness over the roster.
+  every grammar-named case answers as the grammar says (`;-` after a
+  condition, `#end.`, and `#end .` among them), and the whole-text lemma
+  (§10.1): a corpus text re-spaced to abut every pair the oracle allows
+  reparses to the same token stream; the mode law (§10.2): the parser's
+  recorded modes equal `lex_mode_of` over every corpus token;
+  attachment totality, single-valuedness, the inverse law between the
+  two forms, and stability under re-spacing that preserves the four
+  facts (§9.2); the certificates' reflexivity through reparse, symmetry,
+  and the corollary (equal non-whitespace sequences, equal
+  significant-token shapes, under equal dialect and entry and outside
+  the aspif dispatch); `canonical_spelling` idempotent and closed over
+  the synonym pairs; the typed AST's completeness over the roster;
+  `Parse<T>: Send + Sync` for every root, asserted at compile time
+  (§5.5).
 - **The differential** (feature-gated harness, out of band per
   milestone, clingo the authority — grammar §3): every corpus input and
   every §11 seed of the grammar parsed here and by the pinned clingo;
   agreement on membership (`!has_errors()` against the authority's
   acceptance) and on statement count and kinds; disagreements land in
   the grammar's divergence register with their argument. It also
-  measures the authority's own nesting limit for §6.6's lower bound and
-  checks the canonical spellings against the authority's printing. The
-  tree-sitter-clingo cross-check runs beside it at the tier's landing
-  and at every pin move (grammar §3).
+  measures the authority's own nesting ceiling, per family, for §6.6's
+  lower bound and grammar §11's D2, and checks the canonical spellings
+  against the authority's printing. The tree-sitter-clingo cross-check
+  runs beside it at the tier's landing and at every pin move (grammar
+  §3).
 - **Golden snapshots**, reviewed: the diagnostics corpus — the
   characteristic malformed programs of every family in §6.7 and every
   identity in Appendix B, rendered through base's human view (the
   *diagnostics-quality* witness, spec §3); tree dumps for the grammar's
-  corner seeds; attachment dumps for kallos's scar corpus (spec §5.1);
-  the recovery shape of each family's row.
+  corner seeds; attachment dumps for kallos's scar corpus (spec §5.1)
+  and for a CRLF-authored input (§9.2's empty line); the recovery shape
+  of each family's row.
 - **The corpus** (spec §10.3), vendored with provenance: textbook
   encodings; the formatter-inherited inputs (kallos's clingofmt-derived
   inputs, MIT, inputs only, with their notice); clingo's and clingcon's
   own examples and test programs at the pinned commits (MIT); the
-  grammar's §11 seeds as corner cases with stated expectations; every
-  input parsed under its stated dialect with the expected outcome
-  (member, or the diagnostic identities expected).
-- **The depth gate:** a thread of a small, named stack size
-  (`DEPTH_GATE_STACK_BYTES`) parses inputs nested far beyond
-  `MAX_NESTING_DEPTH` in every self-recursive family, then walks the
-  typed AST, runs attachment and both certificates, prints the tree,
-  compares two such trees, and drops them — no overflow, the depth
-  refusal reported, the constant's headroom measured (§6.6).
+  grammar's §11 seeds as corner cases with stated expectations, and
+  this design's own — `#const x = |1;2|.` with its
+  `form-not-allowed-here`, `#external p. [a, b]` and `#const n = 1. [foo]`
+  as non-members (§6.3); every input parsed under its stated dialect
+  with the expected outcome (member, or the diagnostic identities
+  expected).
+- **The depth gate:** a thread of exactly `REQUIRED_STACK_BYTES` (§6.6)
+  parses inputs nested far beyond `MAX_NESTING_DEPTH` in every
+  self-recursive family — bracket nesting in each of them, and beside it
+  the bracket-free shapes: additive, exponentiation, and unary chains of
+  a length far beyond the constant, which must *not* deepen the tree
+  (§6.2) — then walks the typed AST, runs attachment and both
+  certificates, prints the tree, compares two such trees, and drops them
+  — no overflow, the depth refusal reported for the bracketed inputs and
+  no refusal for the chains, the deepest tree measured against law 3's
+  bound, the constant's headroom measured (§6.6).
 - **Scaling shapes (criterion):** parse linear in text; the certificate
   linear in both texts; bulk attachment linear in the tree; the oracle
   constant per pair. Shape assertions in the gate; absolute numbers out
@@ -2004,7 +2486,8 @@ completeness test reads (§16).
 | kind | realizes |
 |---|---|
 | `PROGRAM` | `program`; the program entry's root |
-| `FRAGMENT` | the fragment entries' root (§6.1) |
+| `STATEMENT_FRAGMENT` | the statement entry's root (§6.1) |
+| `TERM_FRAGMENT` | the term and term-value entries' root (§6.1) |
 | — | `docs`: no node; a statement's leading `DOC_COMMENT` tokens (§5.4) |
 | `RULE` | `rule` (all five forms; a constraint has no head child) |
 | `WEAK_CONSTRAINT` | `weak-constraint` |
@@ -2032,26 +2515,26 @@ completeness test reads (§16).
 | — | `conditional-dot`: no node; an optional `COLON` and `BODY` in the statement |
 | `BODY` | `body-list`; also the empty body of `h :- .` and `: .` |
 | — | `head`: no node; the child is one of `LITERAL`, `DISJUNCTION`, an aggregate, `THEORY_ATOM` |
-| — | `body-element`: no node; the child is one of `LITERAL`, `CONDITIONAL_LITERAL`, an aggregate, `THEORY_ATOM`, with its negation tokens beside it in `BODY` |
+| — | `body-element`: no node; the child is one of `LITERAL`, `CONDITIONAL_LITERAL`, an aggregate, `THEORY_ATOM`, each holding its own negation tokens (§8.1) |
 | `LITERAL` | `literal`: negation tokens and one of `KW_TRUE`, `KW_FALSE`, `ATOM`, `COMPARISON` |
 | `ATOM` | `atom` |
 | `COMPARISON` | `comparison`, the whole chain |
 | `CONDITIONAL_LITERAL` | `conditional-literal`, and every `literal ":" [condition]` shape: set-aggregate elements, disjunction elements with a condition |
 | `CONDITION` | `condition`; present and empty when the colon is |
 | `DISJUNCTION` | `disjunction`; separators as tokens |
-| `FUNCTION_AGGREGATE` | `function-aggregate` with its guards as `GUARD` children |
-| `SET_AGGREGATE` | `set-aggregate` with its guards |
+| `FUNCTION_AGGREGATE` | `function-aggregate` with its guards as `GUARD` children, and in body position its leading negation tokens (§8.1) |
+| `SET_AGGREGATE` | `set-aggregate` with its guards, and in body position its leading negation tokens |
 | `GUARD` | `lguard` / `rguard` |
 | `BODY_AGGREGATE_ELEMENT` | `fn-element` in body position |
 | `HEAD_AGGREGATE_ELEMENT` | `fn-element` in head position |
-| `THEORY_ATOM` | `theory-atom` |
+| `THEORY_ATOM` | `theory-atom`, and in body position its leading negation tokens |
 | `THEORY_ELEMENTS` | `"{" [ theory-elements ] "}"` |
 | `THEORY_ELEMENT` | `theory-element` |
 | `THEORY_OPTERM` | `theory-opterm` (flat) |
 | `THEORY_GUARD` | `theory-op theory-opterm` after the elements |
 | `THEORY_SET` `THEORY_LIST` `THEORY_TUPLE` `THEORY_FUNCTION` | the bracketed and function theory terms; a theory term's constant, variable, or splice is `CONSTANT_TERM`, `VARIABLE_TERM`, `SPLICE_TERM` |
-| `BINARY_TERM` | `term BINOP term`, by the precedence table |
-| `UNARY_TERM` | `UNOP term` |
+| `BINARY_TERM` | one precedence level's maximal chain of `term BINOP term`, flat: operands interleaved with operator tokens (§6.2) |
+| `UNARY_TERM` | a maximal run of `UNOP` and its one operand, flat (§6.2) |
 | `POOL` | `"(" pool ")"` |
 | `TUPLE` | `tuple`, and each `[ terms ]` alternative of `arguments` |
 | `ARGUMENTS` | `"(" arguments ")"` of a function, an atom, or an external call |
