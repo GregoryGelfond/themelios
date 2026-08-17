@@ -1015,7 +1015,11 @@ Three redundant enforcement layers: workspace-level `unsafe_code =
 `forbid`/`allow` attributes; and a structural check asserting
 forbid-in-pure-crates, allow-only-in-the-named-TCB, FFI-free dependency
 closures for `-base`/`-syntax`/`-program`/`-solve`, and no build scripts
-outside the sys crates.
+among the workspace's own crates outside the sys crates. A build script
+inside a pure crate's dependency closure is admitted only by name —
+argued in that crate's dependency audit note (§12.5) and allowed by name
+in the structural check — so the closure's build scripts are an
+enumerated, closed list, never an open class.
 
 The design criteria for the trust architecture and for tier boundaries
 generally are the microkernel canon, translated to library terms:
