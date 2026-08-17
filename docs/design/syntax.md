@@ -428,11 +428,19 @@ grammar says *what* is a lexical error; this design says *how much* one
 
 - **A malformed string** — a raw line break, a backslash before a
   character the dialect's rule does not admit, or end of input before
-  the closing quote — is one `ERROR` token from the opening quote
-  through the character at which matching failed (the offending
-  character after a backslash is included; a line break is not, and
-  lexes as whitespace after it). Under the ASP-Core-2 dialect only the
-  end-of-input case exists (grammar §6.2).
+  the closing quote — is one `ERROR` token from the opening quote: for a
+  raw line break, through the character before the break (the break
+  lexes as whitespace after it); for end of input, to the end; for a bad
+  escape, *not* through the offending character alone — the token
+  continues under the dialect's string rule past it, through the closing
+  quote on that line or to the line break or end of input, whichever
+  comes first. So a typo in an escape is one token and one diagnostic
+  (its primary the escape, its related locus the literal's extent,
+  §7.1), never a literal fragmented into program text whose stray
+  closing quote opens a second string and carries the next statement
+  into the wreck; `p("a\qb").` followed by `q.` leaves `q.` intact, and
+  stands in the diagnostics corpus (§16). Under the ASP-Core-2 dialect
+  only the end-of-input case exists (grammar §6.2).
 - **An unknown `#`-word** is one `ERROR` token spanning the whole word
   by maximal munch (grammar §4.5).
 - **An unterminated block comment or script region** is one `ERROR`
@@ -569,16 +577,15 @@ empty node.
    programs, on garbage, on truncated input, under either dialect (spec
    §6.3). It holds because the tree is built from the tokens' texts and
    the tokens tile the text (§4.3); nothing is inserted, dropped, or
-   normalized. For the file
-   lexer, lawful by construction, that is every admitted text; for a
-   foreign source that breaches the tiling law the parser stops at the
-   breach with its diagnostic (§4.3), and the tree's text is the prefix
-   tiled — the one case the law does not cover, named here rather than
-   absorbed. Author whitespace is a `WHITESPACE` token in the tree; a
-   formatter chooses to replace it, and the tree carries no opinion.
-   This law is the tier's token-fidelity emit (spec §12.2): there is no
-   emitter — `text()` renders the tree byte for byte, and `Display` on a
-   node is that text.
+   normalized. For the file lexer, lawful by construction, that is every
+   admitted text; for a foreign source that breaches the tiling law the
+   parser stops at the breach with its diagnostic (§4.3), and the tree's
+   text is the prefix tiled — the one case the law does not cover, named
+   here rather than absorbed. Author whitespace is a `WHITESPACE` token
+   in the tree; a formatter chooses to replace it, and the tree carries
+   no opinion. This law is the tier's token-fidelity emit (spec §12.2):
+   there is no emitter — `text()` renders the tree byte for byte, and
+   `Display` on a node is that text.
 2. **Trivia placement.** The parser opens a node at its first
    significant token and closes it at its last, so every trivia token is
    a child of the node that was open where the trivia stood: trivia
@@ -595,24 +602,24 @@ empty node.
    is no `DOCS` node — the tokens' kind and position say what they are,
    and a wrapper would carry nothing they do not (Appendix A records the
    mapping).
-3. **Bounded depth.** No tree this crate produces is deeper than a
-   bound fixed by `MAX_NESTING_DEPTH` and two constants of the grammar
-   (§6.6): at most `MAX_NESTING_DEPTH` frames, each contributing at most
-   the term families' per-frame layer count, under the fixed layer count
-   of everything above the term families. Every axis along which the
-   roster's kinds can nest is accounted for. Bracket contexts — a pool,
-   an argument list, an absolute-value pair, a theory set, list, tuple,
-   or function's arguments — are frames, and the parser refuses to open
-   one past the constant, flattening the surplus losslessly under
-   `ERROR` with a diagnostic. Operator chains and unary runs are *flat*:
-   a `BINARY_TERM` holds one precedence level's whole chain and a
-   `UNARY_TERM` a whole run of prefix operators (§6.2, §8.2), so a chain
-   of any length deepens the tree by at most the number of precedence
-   levels. Everything else nests by iteration or by the grammar's fixed
-   layers (grammar §10). This is the law that makes the tree safe to
-   hold: rowan's own drop and one of its queries recurse in tree depth
-   (§14), a fact no work-list discipline in this crate can reach, so
-   the depth is bounded at construction.
+3. **Bounded depth.** No tree this crate produces is deeper than
+   `MAX_TREE_DEPTH` (§6.6), a bound derived from `MAX_NESTING_DEPTH` and
+   two constants of the grammar: at most `MAX_NESTING_DEPTH` frames,
+   each contributing at most the term families' per-frame layer count,
+   under the fixed layer count of everything above the term families.
+   Every axis along which the roster's kinds can nest is accounted for.
+   Bracket contexts — a pool, an argument list, an absolute-value pair,
+   a theory set, list, tuple, or function's arguments — are frames, and
+   the parser refuses to open one past the constant, flattening the
+   surplus losslessly under `ERROR` with a diagnostic. Operator chains
+   and unary runs are *flat*: a `BINARY_TERM` holds one precedence
+   level's whole chain and a `UNARY_TERM` a whole run of prefix
+   operators (§6.2, §8.2), so a chain of any length deepens the tree by
+   at most the number of precedence levels. Everything else nests by
+   iteration or by the grammar's fixed layers (grammar §10). This is the
+   law that makes the tree safe to hold: rowan's own drop and one of its
+   queries recurse in tree depth (§14), a fact no work-list discipline
+   in this crate can reach, so the depth is bounded at construction.
 4. **Determinism.** Same text, same dialect, same entry point — a
    structurally equal green tree and equal diagnostics (spec §6.8).
 
@@ -1016,22 +1023,35 @@ pub const MAX_NESTING_DEPTH: u32 = /* fixed by measurement, see below */;
 /// discovering it. Measured together with the constant above; a move
 /// of either re-measures the other.
 pub const REQUIRED_STACK_BYTES: usize = /* fixed by measurement, see below */;
+
+/// The bound on the tree's depth (§5.4, law 3), derived and carrying no
+/// numeral of its own: `MAX_NESTING_DEPTH` frames, each contributing at
+/// most the term families' per-frame layer count, under the fixed layer
+/// count of everything above the term families — the two grammar
+/// constants named in the crate beside this one, valued by inspection of
+/// Appendix A and documented there. Public because a consumer who
+/// recurses over the typed AST — the visitor a fluent reader will write
+/// — sizes its own stack from it; `REQUIRED_STACK_BYTES` covers this
+/// crate's and rowan's walks, not the consumer's.
+pub const MAX_TREE_DEPTH: u32 = MAX_NESTING_DEPTH * TERM_LAYERS_PER_FRAME + FIXED_LAYERS;
 ```
 
 At the token that would open a frame beyond the constant, the parser
 emits `nesting-too-deep` at that token and takes the rest of the
-statement — through its terminating dot, or to end of input — into one
-`ERROR` node under the innermost open frame, losslessly, opening nothing
-further and diagnosing nothing further within that statement (the open
-frames close over the `ERROR` node without missing-closer diagnostics of
-their own: one refusal, one diagnostic). The tree's depth is therefore
-at most the constant times the term families' per-frame layer count,
-plus the grammar's fixed layer count above them (§5.4, law 3) — both
-grammar constants, named beside `MAX_NESTING_DEPTH` in the plan and
-held by the depth gate, which measures the deepest tree it builds
-against the bound. Operator chains never reach the constant: they are
-flat (§6.2), so `1+1+…+1` of any length is a member here as it is under
-the authority, and only bracket nesting is refused.
+statement — through its terminating dot and, for the four families that
+carry one, the annotation group after it (grammar §5.11), or to end of
+input — into one `ERROR` node under the innermost open frame,
+losslessly, opening nothing further and diagnosing nothing further
+within that statement; the statement then closes (the open frames close
+over the `ERROR` node without missing-closer diagnostics of their own:
+one refusal, one diagnostic). The tree's depth is therefore at most the
+constant times the term families' per-frame layer count, plus the
+grammar's fixed layer count above them — `MAX_TREE_DEPTH` (§5.4, law 3),
+whose two grammar constants are named in the crate and valued by
+inspection of Appendix A, and which the depth gate holds by measuring
+the deepest tree it builds against it. Operator chains never reach the
+constant: they are flat (§6.2), so `1+1+…+1` of any length is a member
+here as it is under the authority, and only bracket nesting is refused.
 
 This is a refusal with a locus, not a repair: nothing is truncated,
 nothing is guessed, and the diagnostic says exactly what was refused and
@@ -1127,8 +1147,7 @@ that only render take `impl ToDiagnostic`.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct SyntaxError {
     /* private: kind: SyntaxErrorKind, primary: Location,
-       related: BTreeSet<Label> (secondary loci: "the statement began
-       here", "to close this `{`"), */
+       related: BTreeSet<Related> */
 }
 
 impl SyntaxError {
@@ -1136,7 +1155,24 @@ impl SyntaxError {
     pub fn id(&self) -> DiagnosticId;         // Appendix B; derived from kind
     pub fn severity(&self) -> Severity;       // likewise
     pub fn primary(&self) -> Location;
-    pub fn related(&self) -> &BTreeSet<Label>;
+    pub fn related(&self) -> &BTreeSet<Related>;
+}
+
+/// A secondary locus, typed: what the location is, so that its text is
+/// derived at lowering (§7.3) like every other text on the diagnostic
+/// and a wording change is never a parser change. Closed; a locus is
+/// admitted here when a golden shows a reader needs it, as a `Hint` is.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Related { pub locus: RelatedLocus, pub location: Location }
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum RelatedLocus {
+    /// "the statement began here"
+    StatementBegan,
+    /// "to close this `{`" — the opener a missing closer answers to.
+    ToClose(SyntaxKind),
+    /// "the literal, whole" — the string a bad escape sits in (§4.5).
+    LiteralExtent,
 }
 
 impl ToDiagnostic for SyntaxError { /* §7.3 */ }
@@ -1273,9 +1309,10 @@ inferred at rendering, so the view derives and never decides.
 ### 7.3 Lowering and the messages
 
 `ToDiagnostic` produces base's `Diagnostic` with the identity, the
-severity, a headline, the primary label, the related labels as
-secondaries, and the notes and helps the kind derives. The headline and
-helps are derived text — a pure function of the kind and its payload,
+severity, a headline, the primary label, the related loci as secondary
+labels with their text derived from the locus, and the notes and helps
+the kind derives. The headline, the secondary texts, and the helps are
+derived text — a pure function of the kind, the loci, and the payload,
 naming tokens in backticks and classes in words, at the rust-analyzer
 bar (spec §2 item 9) — and their quality is a reviewed artifact, not an
 accident: every kind and every characteristic help has a golden
@@ -1881,35 +1918,44 @@ does not run to end of line (a space begins no token's continuation,
 and no token but the line forms extends across it), and the line forms
 need `LineBreak`.
 
-**Why the pairwise answer settles a whole text — the induction, and
-the lemma it rests on.** A token's extent depends only on the text from
-its own start forward (the lexer looks ahead, never back), so a text
-every one of whose adjacent pairs answers `Nothing` lexes each token to
+**Why the pairwise answer settles a whole text — the induction, and the
+lemma it rests on.** A token's extent depends only on the text from its
+own start forward (the lexer looks ahead, never back), so a text every
+one of whose adjacent pairs answers `Nothing` lexes each token to
 itself: the first by the first pair; each next one because the pair
 before it fixed where its predecessor ends, hence where it starts, and
 its own pair fixes that it ends where it did. The step has one gap,
 named so it is not assumed: the pair `(left, right)` relexes only
 `left ++ right`, and a token whose recognizer is *alive but not
 accepting* after `left ++ right` could complete on characters of the
-token after `right`. In this token language that happens for exactly
-one shape — the numeral prefixes `0x`, `0o`, `0b`, where `0` then a
-name lexes as two tokens and a following digit would make one — and
-there the name's own rule closes the gap: any character that would
-complete the numeral also extends the name (grammar §4.2), so the pair
-`(right, next)` answers `Whitespace` and the abutment never happens.
-That is a lemma about the roster of §4, checked over it here and held
-by an instrument (§16: corpus texts re-spaced to abut every pair the
-oracle allows reparse to the same token stream), and the certificate
-(§11) is the check a formatter runs on the whole text regardless. That
-is the entire theory, and it is exact rather than *reachable-honest*: spec
-§6.2's "reachable-honest, defaulting to keep" names the properties a
-maintained classification table needs — kallos maintained one because
-its lexer was not its own (spec §5.1) — and an oracle that computes the
-answer has no default to fall back on and no reachability to hedge. The
-grammar's named cases — the greedy theory-operator munch, the rule-neck
-abutment `:` `-`, `#sum` `+`, `0` `x1`, `.` `.`, `*` `*`, `not` before a
-name, a line comment before anything — are its regression tests, not
-its definition (§16).
+token after `right`. So the lemma is stated for what the oracle is asked
+about — token sequences that arose from lexing a text — and not for
+arbitrary sequences of spellings, and over this token language two
+shapes have such a recognizer, each closed by its own argument. The
+numeral prefixes `0x`, `0o`, `0b`: `0` then a name lexes as two tokens
+and a following digit would make one, and the name's own rule closes the
+gap — any character that would complete the numeral also extends the
+name (grammar §4.2), so the pair `(right, next)` answers `Whitespace`
+and the abutment never happens. The ASP-Core-2 string that ends in an
+escaped-looking quote, `"a\"` (grammar §6.2): its recognizer, in the
+escape reading, is alive after the token and would complete on any later
+`"` — but that spelling lexes as a token only in a text where no `"`
+follows anywhere after it, since a later quote would already have made
+the longer string win at the original lexing, and re-spacing introduces
+no quote; so the `next` that would complete it cannot exist. Both are
+lemmas about the roster of §4 and §6, checked here and held by an
+instrument (§16: corpus texts re-spaced to abut every pair the oracle
+allows reparse to the same token stream, and the `"…\"`-final case among
+the grammar-named cases); the certificate (§11) is the check a formatter
+runs on the whole text regardless. That is the entire theory, and it is
+exact rather than *reachable-honest*: spec §6.2's "reachable-honest,
+defaulting to keep" names the properties a maintained classification
+table needs — kallos maintained one because its lexer was not its own
+(spec §5.1) — and an oracle that computes the answer has no default to
+fall back on and no reachability to hedge. The grammar's named cases —
+the greedy theory-operator munch, the rule-neck abutment `:` `-`, `#sum`
+`+`, `0` `x1`, `.` `.`, `*` `*`, `not` before a name, a line comment
+before anything — are its regression tests, not its definition (§16).
 
 ### 10.2 The mode of an adjacency
 
@@ -2017,30 +2063,33 @@ pub struct Mismatch {
 pub struct Side { pub kind: SyntaxKind, pub content: String, pub location: Location }
 
 /// The certificate: granted, or refused with the first divergence.
-/// Compares the two sequences whatever the parses' dialects and entries
-/// — a lexical statement about two texts, meaningful across them; the
-/// corollary below is what needs them equal, and that is the caller's
-/// obligation. Total; O(|left| + |right|); iterative walks.
+/// Compares the two sequences whatever the parses' dialects — a lexical
+/// statement about two texts, meaningful across them; both roots are of
+/// one family, as the one `T` fixes, and the two term entries build one
+/// shape (§6.1), so the corollary below needs only equal dialects, which
+/// is the caller's obligation. Total; O(|left| + |right|); iterative
+/// walks.
 pub fn equivalent<T: AstNode<Language = Asp>>(
     left: &Parse<T>, right: &Parse<T>, certificate: Certificate,
 ) -> Result<(), Mismatch>;
 ```
 
-The comparison is over the sequence and not over tree shape, and that
-is deliberate: it is what a consumer can read off the definition — the
-tokens are the same, the comments are the same, and each stands where
-it stood among the others — and it stays honest across recovery: two
-texts that differ only in layout have equal sequences even where
-`ERROR` boundaries would move under a shape comparison, and equal
-sequences is exactly the claim. **The corollary, named and scoped.**
-With one grammar and a deterministic parser (§5.4, law 4), two texts
-with equal non-whitespace sequences parse to equal *significant-token
-shapes* — the preorder over nodes and significant tokens, trivia
-dropped, which is neither §5.5's green equality (that includes every
-trivia token) nor the tree's text — provided they were parsed under
-equal dialect and entry (a `?`-final text parses to a `QUERY` under one
-dialect and to an error under the other with equal sequences; `p(1)`
-under the statement and term entries likewise), and outside the aspif
+The comparison is over the sequence and not over tree shape, and that is
+deliberate: it is what a consumer can read off the definition — the
+tokens are the same, the comments are the same, and each stands where it
+stood among the others — and it stays honest across recovery: two texts
+that differ only in layout have equal sequences even where `ERROR`
+boundaries would move under a shape comparison, and equal sequences is
+exactly the claim. **The corollary, named and scoped.** With one grammar
+and a deterministic parser (§5.4, law 4), two texts with equal
+non-whitespace sequences parse to equal *significant-token shapes* — the
+preorder over nodes and significant tokens, trivia dropped, which is
+neither §5.5's green equality (that includes every trivia token) nor the
+tree's text — provided they were parsed under equal dialects (a
+`?`-final text parses to a `QUERY` under one dialect and to an error
+under the other with equal sequences) — the root family is fixed by
+`equivalent`'s one `T`, and the two term entries build one shape (§6.1),
+so the entry needs no condition of its own — and outside the aspif
 dispatch, which reads whitespace (the one space grammar §4.9 names) and
 so can differ in shape between two texts of equal sequence. The
 corollary is held as an instrument in its own right (§16, the
@@ -2169,7 +2218,7 @@ Costs, consolidated: lexing and parsing are O(text) in time and memory
 accessor; attachment is O(neighborhood) per query and O(subtree) in
 bulk (§9.3); the oracle is O(the two tokens) (§10.2); the certificate is
 O(both sequences) (§11.3); every walk is iterative or grammar-bounded, and
-tree depth is bounded by the named constant (§6.6). The scaling benches
+tree depth is bounded by `MAX_TREE_DEPTH` (§6.6). The scaling benches
 (§16) hold the shapes.
 
 ## 14. The dependency: rowan, audited
@@ -2320,24 +2369,25 @@ what it proves and what it cannot (spec §10.2).
   agreement with the authority — that is the differential's.
 - **Property laws (proptest):** the token-source laws on the file lexer
   under every mode, and `check_token_source_laws` failing deliberately
-  breaching sources; lexer totality and tiling on generated text heavy in
-  multi-byte characters, `%`, `#`, and operator runs; parse determinism;
-  the four tree laws; dialect neutrality on the shared subset (§3); the
-  incompleteness law over corpus prefixes (§6.5); the oracle: for
-  adjacent token pairs drawn from parsed corpus trees, `Nothing` means
-  the pair reparses to itself abutted and `Whitespace` means it does not,
-  every grammar-named case answers as the grammar says (`;-` after a
-  condition, `#end.`, and `#end .` among them), and the whole-text lemma
-  (§10.1): a corpus text re-spaced to abut every pair the oracle allows
-  reparses to the same token stream; the mode law (§10.2): the parser's
-  recorded modes equal `lex_mode_of` over every corpus token;
-  attachment totality, single-valuedness, the inverse law between the
-  two forms, and stability under re-spacing that preserves the four
-  facts (§9.2); the certificates' reflexivity through reparse, symmetry,
-  and the corollary (equal non-whitespace sequences, equal
-  significant-token shapes, under equal dialect and entry and outside
-  the aspif dispatch); `canonical_spelling` idempotent and closed over
-  the synonym pairs; the typed AST's completeness over the roster;
+  breaching sources; lexer totality and tiling on generated text heavy
+  in multi-byte characters, `%`, `#`, and operator runs; parse
+  determinism; the four tree laws; dialect neutrality on the shared
+  subset (§3); the incompleteness law over corpus prefixes (§6.5); the
+  oracle: for adjacent token pairs drawn from parsed corpus trees,
+  `Nothing` means the pair reparses to itself abutted and `Whitespace`
+  means it does not, every grammar-named case answers as the grammar
+  says (`;-` after a condition, `#end.`, `#end .`, and the ASP-Core-2
+  `"…\"`-final string among them), and the whole-text lemma (§10.1): a
+  corpus text re-spaced to abut every pair the oracle allows reparses to
+  the same token stream; the mode law (§10.2): the parser's recorded
+  modes equal `lex_mode_of` over every corpus token; attachment
+  totality, single-valuedness, the inverse law between the two forms,
+  and stability under re-spacing that preserves the four facts (§9.2);
+  the certificates' reflexivity through reparse, symmetry, and the
+  corollary (equal non-whitespace sequences, equal significant-token
+  shapes, under equal dialects and one root family, outside the aspif
+  dispatch); `canonical_spelling` idempotent and closed over the synonym
+  pairs; the typed AST's completeness over the roster;
   `Parse<T>: Send + Sync` for every root, asserted at compile time
   (§5.5).
 - **The differential** (feature-gated harness, out of band per
@@ -2353,11 +2403,12 @@ what it proves and what it cannot (spec §10.2).
   §3).
 - **Golden snapshots**, reviewed: the diagnostics corpus — the
   characteristic malformed programs of every family in §6.7 and every
-  identity in Appendix B, rendered through base's human view (the
-  *diagnostics-quality* witness, spec §3); tree dumps for the grammar's
-  corner seeds; attachment dumps for kallos's scar corpus (spec §5.1)
-  and for a CRLF-authored input (§9.2's empty line); the recovery shape
-  of each family's row.
+  identity in Appendix B, the bad escape inside a literal (§4.5) and the
+  depth refusal on an annotated family (§6.6) among them, rendered
+  through base's human view (the *diagnostics-quality* witness, spec
+  §3); tree dumps for the grammar's corner seeds; attachment dumps for
+  kallos's scar corpus (spec §5.1) and for a CRLF-authored input (§9.2's
+  empty line); the recovery shape of each family's row.
 - **The corpus** (spec §10.3), vendored with provenance: textbook
   encodings; the formatter-inherited inputs (kallos's clingofmt-derived
   inputs, MIT, inputs only, with their notice); clingo's and clingcon's
