@@ -1,0 +1,13 @@
+syntax::unexpected-characters error
+syntax::unknown-hash-word error
+syntax::malformed-string error
+syntax::unterminated-block-comment error
+syntax::unterminated-script error
+syntax::anonymous-in-theory-expression error
+syntax::unexpected-token error
+syntax::unexpected-end-of-input error
+syntax::nesting-too-deep error
+syntax::aspif-input error
+syntax::token-source-breach error
+syntax::form-not-allowed-here error
+syntax::misplaced-doc-comment warning

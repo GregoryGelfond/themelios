@@ -24,4 +24,5 @@ pub mod dialect;
 pub mod tree;
 pub mod token;
 pub mod lexer;
+pub mod diagnostic;
 pub mod fusion;
