@@ -12,11 +12,21 @@
 > step that cannot run as written is a defect of this plan: repair it
 > mechanically where the intent is unambiguous, record the repair in
 > that task's commit message, and raise it at the next stop; never
-> absorb it silently. Where this plan and the design of record disagree,
+> absorb it silently. The code committed to the repository, not the
+> source embedded in this plan, is authoritative: the embedded source is
+> a complete, checked reference the executor commits and may repair as
+> above, and where a repair lands the committed code governs. Where this
+> plan and the design of record disagree,
 > the design governs, the disagreement is a defect here, and it is
 > raised at the next stop rather than resolved on the spot — an
 > amendment to the design, the grammar, or the specification is never
-> made from inside a task.
+> made from inside a task. Recording a measured value into a document's
+> own divergence register, where that document's obligation is to
+> receive it — the two depth values grammar §11 D2 is designed to hold
+> beside its entry (syntax.md §6.6) — is not such an amendment: it
+> discharges a standing obligation, changes no rule, and Task 18 does it
+> in-task by design; a *defect* in the design, grammar, or spec is still
+> raised, never resolved in-task.
 
 **Goal:** build `themelios-syntax` — the total lexer with its fusion
 oracle, the lossless error-resilient tree of the one grammar under a
@@ -43,7 +53,7 @@ pinned authority through a `pixi` environment at the repository root
 and `cargo-mutants` as externally installed tools that never enter a
 manifest.
 
-**Design of record:** `docs/design/syntax.md` at commit `6ebfa32` —
+**Design of record:** `docs/design/syntax.md` at commit `7430c32` —
 every task derives from it and cites the sections it implements. Held
 to `docs/grammar.md` at `7c03d23` (the letter the lexer and parser
 answer to; §11 is the seed corpus and the divergence register) and
@@ -59,12 +69,13 @@ disagreement is a defect there — raised, never absorbed.
 What this plan must be, stated so a review can check drift against it:
 
 > A faithful and complete derivation of `docs/design/syntax.md` at
-> `6ebfa32`: every task builds only what that document states — a
+> `7430c32`: every task builds only what that document states — a
 > surface, a law, or an instrument of stage 2 — every surface, law, and
 > instrument it states has a task, nothing reaches past it (no reserved
-> seam of syntax.md §17, no non-goal, no surface the design does not
-> state), and every step is executable from this repository alone by an
-> engineer holding nothing else.
+> seam of syntax.md §17, no non-goal, no public surface the design does
+> not state or, per §8 and §15, delegate to the mechanical `ast`
+> derivation from Appendix A), and every step is executable from this
+> repository alone by an engineer holding nothing else.
 
 This plan has failed when any of the following holds: a public item in
 any task departs from the design's signatures or stated semantics; a
@@ -108,11 +119,10 @@ argument lives.
   stack; every walk this crate performs iterative or grammar-bounded;
   the tree's depth bounded at construction by `MAX_NESTING_DEPTH`
   (syntax.md §6.2, §6.6, §12.3; grammar §10).
-- **`REQUIRED_STACK_BYTES` is 64 MiB** — `64 * 1024 * 1024`, ruled on
-  2026-08-17 as a product choice the design leaves to the plan: eight
-  times the 8 MiB main-thread default of the two supported operating
-  systems, a size a language server's worker can be given without
-  contortion. **`MAX_NESTING_DEPTH` is measured, not guessed** — Task 18
+- **`REQUIRED_STACK_BYTES` is 64 MiB** — `64 * 1024 * 1024`, the fixed
+  pole the design fixes (syntax.md §6.6): eight times the 8 MiB
+  main-thread default of the two supported operating systems, a size a
+  language server's worker can be given without contortion. **`MAX_NESTING_DEPTH` is measured, not guessed** — Task 18
   measures it as the largest frame depth at which every gate walk
   survives every family on a thread of *half* the required stack (the
   headroom factor two), rounded down to a multiple of 1,000, and records
@@ -8978,8 +8988,8 @@ Expected: about 500 `.lp` files (clingo 319, clingcon 10, kallos 17,
 kr-domains 155 at the pins; record the exact count in the commit
 message). The `-size -65k` filter excludes exactly the four clingo
 instances above 64 KiB — `examples/gringo/gbie/instances/{sat_02,sat_03,unsat_02}.lp`
-and one more the listing names — bytes, not syntax; name every excluded
-file in the provenance.
+and the fourth the `find` listing names — bytes, not syntax; write each
+excluded file's path into the provenance table from that listing.
 
 Write `crates/themelios-syntax/tests/corpus/PROVENANCE.md`:
 
@@ -8996,7 +9006,7 @@ it; nothing here is edited.
 
 | directory | source | pinned state | license | what |
 |---|---|---|---|---|
-| `clingo/` | github.com/potassco/clingo | tag `v5.8.2` = `a99ffb2a58293c68b28fcc283a1d1c9ccad900fe` | MIT (`clingo/LICENSE`) | every `.lp` under `examples/` and `app/clingo/tests/` at most 64 KiB, relative paths kept; excluded, being instance data of size and no syntax: `examples/gringo/gbie/instances/sat_02.lp`, `sat_03.lp`, `unsat_02.lp`, and `<the fourth, named here>` |
+| `clingo/` | github.com/potassco/clingo | tag `v5.8.2` = `a99ffb2a58293c68b28fcc283a1d1c9ccad900fe` | MIT (`clingo/LICENSE`) | every `.lp` under `examples/` and `app/clingo/tests/` at most 64 KiB, relative paths kept; excluded, being instance data of size and no syntax: `examples/gringo/gbie/instances/sat_02.lp`, `sat_03.lp`, `unsat_02.lp`, and the fourth the `find` listing names (recorded from the vendoring output) |
 | `clingcon/` | github.com/potassco/clingcon | tag `v5.2.1` = `8c476557facf9fc996ec67053a01b6273fd9baba` | MIT (`clingcon/LICENSE`) | `examples/*.lp` |
 | `kallos/` | github.com/GregoryGelfond/kallos | `7db302ce902cccd37050151636281fd5588d8448` | MIT (`kallos/LICENSE`); the inputs derive from github.com/potassco/clingofmt at `c52fba46c6f4b6b7d7dce27325fc8502b516498f`, MIT, Copyright (c) 2021 Sven Thiele / Potassco — see `kallos/NOTICE` | `crates/kallos/tests/corpus/clingofmt/*`: seventeen inputs and their notice |
 | `kr-domains/` | github.com/GregoryGelfond/kr-domains | `38f0660ded448ed268c5a68759ceb0e2840dd497` | MIT (`kr-domains/LICENSE`) | every `.lp` under `encodings/`, `scenarios/`, `standalone/` |
@@ -15591,9 +15601,10 @@ In `src/parse/mod.rs`, replace the provisional constant and its rustdoc:
 pub const MAX_NESTING_DEPTH: u32 = <constant>;
 ```
 
-and add to `REQUIRED_STACK_BYTES`'s rustdoc the sentence: "Measured
-together with `MAX_NESTING_DEPTH` (see its record); a move of either
-re-measures the other." Fill every `<…>` from the measurement.
+`REQUIRED_STACK_BYTES`'s rustdoc already states that `MAX_NESTING_DEPTH`
+is measured against this fixed stack and that a move of either
+re-measures the other (Task 8, matching design §6.6); leave it. Fill
+every `<…>` from the measurement.
 
 In `docs/grammar.md`, §11 D2, append to the entry (after "a pin move
 re-measures.") the record its obligation asks for:
