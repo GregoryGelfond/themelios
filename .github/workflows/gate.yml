@@ -60,4 +60,4 @@ jobs:
       # stage-1 landing: measured coverage rounded down to a multiple
       # of five, minus five — slack that absorbs toolchain and
       # coverage-tool measurement drift. One number on every machine.
-      - run: cargo llvm-cov --workspace --locked --fail-under-lines 90
+      - run: cargo llvm-cov --workspace --exclude themelios-syntax-fuzz --locked --fail-under-lines 90

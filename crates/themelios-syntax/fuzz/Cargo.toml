@@ -1,0 +1,33 @@
+[package]
+name = "themelios-syntax-fuzz"
+version = "0.0.0"
+publish = false
+description = "Fuzz targets over themelios-syntax: run out of band, corpus committed."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[package.metadata]
+cargo-fuzz = true
+
+# libfuzzer-sys carries libFuzzer's C++ runtime, compiled by its build
+# script: this crate is a test harness outside every shipped closure —
+# it is no dependency of themelios-syntax, and tests/trust.rs holds that
+# crate's closure over the resolved graph without it
+# (docs/specification.md §12.3; docs/design/syntax.md §14, §16).
+[dependencies]
+libfuzzer-sys = "0.4"
+themelios-base = { path = "../../themelios-base" }
+themelios-syntax = { path = ".." }
+
+# The targets are harness bodies under a generated entry point; the
+# workspace lint tables address the shipped crates and their tests. The
+# gate's clippy still runs over these targets with warnings denied.
+[lints]
+
+[[bin]]
+name = "lex"
+path = "fuzz_targets/lex.rs"
+test = false
+doc = false
+bench = false
