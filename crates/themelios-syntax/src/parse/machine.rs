@@ -23,6 +23,11 @@ use super::{EntryPoint, Parse};
 /// The parser over one token source: a cursor, a builder, and the
 /// diagnostics it accumulates. Constructed per parse and dropped with
 /// it — no state outlives a call (docs/design/syntax.md §12.1).
+// The four flags are distinct pieces of parser state — the witnessed
+// breach, the docs-are-trivia region, the silenced lexical diagnostics,
+// and the depth refusal (docs/design/syntax.md §4.2, §4.3, §4.5, §6.6);
+// folding them into one field would obscure, not clarify.
+#[allow(clippy::struct_excessive_bools)]
 pub(super) struct Parser<'s, S: TokenSource> {
     source: &'s S,
     text: &'s str,
@@ -52,6 +57,10 @@ pub(super) struct Parser<'s, S: TokenSource> {
     peeked: Option<Peeked>,
     /// The kind and end offset of the last token placed, trivia included.
     last_placed: Option<(SyntaxKind, u32)>,
+    /// The frame loop refused a frame past the constant: the rest of the
+    /// statement is already carried in an `ERROR` node, and the statement
+    /// closes without further diagnostics (docs/design/syntax.md §6.6).
+    depth_refused: bool,
 }
 
 /// One significant token found ahead of the cursor: where the trivia
@@ -66,10 +75,11 @@ struct Peeked {
     len: u32,
 }
 
-// The cursor, builder, and recovery methods the term, statement, and
-// theory families (docs/design/syntax.md §6.2, §6.3) consume in their
-// own files; those tasks remove this allowance as each method gains a
-// caller.
+// Six methods still await their callers: `set_mode`/`mode`/`peek_text`
+// the theory family (docs/design/syntax.md §6.3, theory mode), and
+// `skip_into_error`/`depth_refused`/`end_statement_after_refusal` the
+// statement loops (§6.3, §6.6, restoring after a refusal). The families
+// remove this allowance as each is consumed.
 #[allow(dead_code)]
 impl<'s, S: TokenSource> Parser<'s, S> {
     pub(super) fn new(source: &'s S) -> Parser<'s, S> {
@@ -87,6 +97,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
             lexical_diagnostics: true,
             peeked: None,
             last_placed: None,
+            depth_refused: false,
         }
     }
 
@@ -402,6 +413,110 @@ impl<'s, S: TokenSource> Parser<'s, S> {
         self.diagnostics.push(error);
     }
 
+    /// The dialect parsed under.
+    pub(super) fn dialect(&self) -> Dialect {
+        self.dialect
+    }
+
+    /// The length of the next significant token.
+    pub(super) fn peek_len(&mut self) -> u32 {
+        self.peek_token().len
+    }
+
+    /// The missing-child form with a related locus (a missing closer
+    /// names its opener). Two diagnostics at one position merge: a
+    /// second expectation at the token that already carries one extends
+    /// its expected set rather than repeating the report — one token, one
+    /// diagnostic, the whole of what was expected there. A numeral found
+    /// directly after a numeral carries the leading-zero hint (grammar
+    /// §4.3): `007` is three numerals, and the parser names the mistake.
+    pub(super) fn unexpected_related(
+        &mut self,
+        expected: ExpectedSet,
+        hint: Option<Hint>,
+        related: Option<Related>,
+    ) {
+        let peeked = self.peek_token();
+        if peeked.kind == SyntaxKind::ERROR {
+            return;
+        }
+        let hint = hint.or_else(|| {
+            (peeked.kind == SyntaxKind::NUMBER
+                && self.last_placed == Some((SyntaxKind::NUMBER, peeked.start)))
+            .then_some(Hint::LeadingZeroNumeral)
+        });
+        let location = self.location(peeked.start, peeked.start + peeked.len);
+        if let Some(last) = self.diagnostics.last_mut()
+            && last.primary() == location
+            && last.extend_expected(&expected, hint)
+        {
+            return;
+        }
+        let kind = match peeked.kind {
+            SyntaxKind::EOF => SyntaxErrorKind::UnexpectedEndOfInput { expected, hint },
+            found => SyntaxErrorKind::UnexpectedToken {
+                expected,
+                found,
+                hint,
+            },
+        };
+        let mut error = SyntaxError::new(kind, location);
+        if let Some(related) = related {
+            error = error.with_related(related);
+        }
+        self.diagnostics.push(error);
+    }
+
+    /// Consumes the rest of the statement into the open node: through the
+    /// terminating dot and an immediately following `[…]` group, or to end
+    /// of input (docs/design/syntax.md §6.6, §6.7).
+    pub(super) fn skip_statement_rest(&mut self) {
+        while !self.at_end() {
+            let kind = self.peek();
+            self.bump();
+            if kind == SyntaxKind::DOT {
+                if self.peek() == SyntaxKind::L_BRACKET {
+                    self.skip_bracket_group();
+                }
+                return;
+            }
+        }
+    }
+
+    /// Whether the frame loop refused a frame in this statement.
+    pub(super) fn depth_refused(&self) -> bool {
+        self.depth_refused
+    }
+
+    /// The refusal: its diagnostic at the opener, the lexical diagnostics
+    /// silenced, and the rest of the statement carried in one `ERROR`
+    /// node under the innermost open frame.
+    pub(super) fn refuse_depth(&mut self) {
+        let start = self.peek_start();
+        let end = start + self.peek_len();
+        let location = self.location(start, end);
+        self.diagnostics.push(SyntaxError::new(
+            SyntaxErrorKind::NestingTooDeep {
+                depth: super::MAX_NESTING_DEPTH,
+            },
+            location,
+        ));
+        self.lexical_diagnostics = false;
+        self.depth_refused = true;
+        self.start_node(SyntaxKind::ERROR);
+        self.skip_statement_rest();
+        self.finish_node();
+    }
+
+    /// Restores the parser after a refused statement closed: the lexical
+    /// diagnostics back on, and the mode back to normal, whatever region
+    /// the refusal fell in.
+    pub(super) fn end_statement_after_refusal(&mut self) {
+        self.lexical_diagnostics = true;
+        self.depth_refused = false;
+        self.set_mode(LexMode::Normal);
+    }
+
     /// The missing-child form (docs/design/syntax.md §6.7): a diagnostic
     /// at the next significant token — `unexpected-token` with what was
     /// expected and what was found, or `unexpected-end-of-input` — and
@@ -411,23 +526,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
     /// directly after a numeral carries the leading-zero hint (grammar
     /// §4.3): `007` is three numerals, and the parser names the mistake.
     pub(super) fn unexpected(&mut self, expected: ExpectedSet, hint: Option<Hint>) {
-        let peeked = self.peek_token();
-        let hint = hint.or_else(|| {
-            (peeked.kind == SyntaxKind::NUMBER
-                && self.last_placed == Some((SyntaxKind::NUMBER, peeked.start)))
-            .then_some(Hint::LeadingZeroNumeral)
-        });
-        let kind = match peeked.kind {
-            SyntaxKind::EOF => SyntaxErrorKind::UnexpectedEndOfInput { expected, hint },
-            SyntaxKind::ERROR => return,
-            found => SyntaxErrorKind::UnexpectedToken {
-                expected,
-                found,
-                hint,
-            },
-        };
-        let location = self.location(peeked.start, peeked.start + peeked.len);
-        self.diagnostics.push(SyntaxError::new(kind, location));
+        self.unexpected_related(expected, hint, None);
     }
 
     /// `unexpected` with one expected token.
@@ -493,16 +592,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
             None,
         );
         self.start_node(SyntaxKind::ERROR);
-        while !self.at_end() {
-            let kind = self.peek();
-            self.bump();
-            if kind == SyntaxKind::DOT {
-                if self.peek() == SyntaxKind::L_BRACKET {
-                    self.skip_bracket_group();
-                }
-                break;
-            }
-        }
+        self.skip_statement_rest();
         self.finish_node();
         self.skipping = was_skipping;
         self.peeked = None;
@@ -730,10 +820,14 @@ impl<'s, S: TokenSource> Parser<'s, S> {
         self.leave_statement();
     }
 
-    /// The term at a term entry, under the entry's restriction. Task 8
-    /// supplies it; until then no term is read and the fragment holds
-    /// its trailing check.
-    // Empty until the term families (§6.2) fill it, so self is unused here.
-    #[allow(clippy::unused_self)]
-    pub(super) fn term_at_entry(&mut self, _entry: EntryPoint) {}
+    /// The term at a term entry, under the entry's restriction.
+    pub(super) fn term_at_entry(&mut self, entry: EntryPoint) {
+        let context = match entry {
+            EntryPoint::TermValue => super::terms::TermContext::TermValue,
+            EntryPoint::Program | EntryPoint::Statement | EntryPoint::Term => {
+                super::terms::TermContext::Term
+            }
+        };
+        self.term(context);
+    }
 }

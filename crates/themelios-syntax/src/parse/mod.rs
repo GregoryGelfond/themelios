@@ -3,6 +3,7 @@
 //! diagnostics, and the facts a consumer needs to interpret both.
 
 mod machine;
+mod terms;
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -19,6 +20,51 @@ use crate::token::TokenSource;
 use crate::tree::{Asp, AstNode, GreenNode, SyntaxNode, TextRange, span_of};
 
 use self::machine::Parser;
+
+/// The deepest nesting of bracket contexts — frames, one per open
+/// bracket (docs/design/syntax.md §6.2) — the parser will open. Named
+/// because it carries meaning; its value is fixed by measurement between
+/// two bounds and recorded here with both. **Provisional:** this value
+/// stands until the depth gate measures the constant (the stage-2 plan's
+/// Task 18), which replaces it and records the two bounds beside it.
+pub const MAX_NESTING_DEPTH: u32 = 1_000;
+
+/// The stack, in bytes, on which every operation this crate performs or
+/// hands out over the deepest tree it can build — dropping it, comparing
+/// two, rendering one, walking the typed AST, attaching, certifying — is
+/// proven to complete: the depth gate runs on a thread of exactly this
+/// size and passes with headroom (docs/design/syntax.md §6.6). A
+/// consumer's thread that holds a tree needs at least this much. Sixty-
+/// four mebibytes: eight times the eight-mebibyte main-thread default of
+/// the two supported operating systems, a size a language server's
+/// worker can be given without contortion; `MAX_NESTING_DEPTH` is
+/// measured against it, and a move of either re-measures the other.
+pub const REQUIRED_STACK_BYTES: usize = 64 * 1024 * 1024;
+
+/// The most node layers one frame contributes to the tree's depth
+/// (docs/design/syntax.md §5.4, law 3), by inspection of Appendix A: a
+/// function or `@`-call frame is its node, `ARGUMENTS`, and `TUPLE`,
+/// then the seven binary levels and the unary run of the operand inside
+/// — eleven; a pool contributes ten, an absolute value nine, a theory
+/// frame two.
+pub const TERM_LAYERS_PER_FRAME: u32 = 11;
+
+/// The layers of the tree that do not depend on nesting: the deepest
+/// grammar-bounded path from the root to the first frame — `PROGRAM`,
+/// `RULE`, `BODY`, `THEORY_ATOM`, `THEORY_ELEMENTS`, `THEORY_ELEMENT`,
+/// `CONDITION`, `LITERAL`, `COMPARISON`, and the frame-free operator
+/// chain's eight layers — and the one leaf below the last frame: a
+/// constant, a variable, a splice, or the `ERROR` node of a refusal.
+/// By inspection of Appendix A (docs/design/syntax.md §5.4, §6.6).
+pub const FIXED_LAYERS: u32 = 18;
+
+/// The bound on the tree's depth (docs/design/syntax.md §5.4, law 3),
+/// derived and carrying no numeral of its own: `MAX_NESTING_DEPTH`
+/// frames, each contributing at most `TERM_LAYERS_PER_FRAME` layers,
+/// under `FIXED_LAYERS`. Public because a consumer who recurses over the
+/// typed AST sizes its own stack from it; `REQUIRED_STACK_BYTES` covers
+/// this crate's and rowan's walks, not the consumer's.
+pub const MAX_TREE_DEPTH: u32 = MAX_NESTING_DEPTH * TERM_LAYERS_PER_FRAME + FIXED_LAYERS;
 
 /// What the parser is asked to read: a whole program, or one construct
 /// family with a named consumer — the statement (the macro tier's

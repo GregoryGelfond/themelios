@@ -518,6 +518,34 @@ fn in_docs_position(token: &SyntaxToken) -> bool {
     true
 }
 
+/// The tree's shape as one line — `(KIND child …)` for nodes, the text
+/// for tokens that are not trivia — for the parser's own tests, which
+/// read shapes rather than dumps.
+#[cfg(test)]
+pub(crate) fn sexpr(node: &SyntaxNode) -> String {
+    let mut out = String::new();
+    for event in node.preorder_with_tokens() {
+        match event {
+            WalkEvent::Enter(NodeOrToken::Node(node)) => {
+                if !out.is_empty() {
+                    out.push(' ');
+                }
+                out.push('(');
+                out.push_str(&node.kind().to_string());
+            }
+            WalkEvent::Enter(NodeOrToken::Token(token)) => {
+                if !token.kind().is_trivia() {
+                    out.push(' ');
+                    out.push_str(token.text());
+                }
+            }
+            WalkEvent::Leave(NodeOrToken::Node(_)) => out.push(')'),
+            WalkEvent::Leave(NodeOrToken::Token(_)) => {}
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use rowan::{GreenNodeBuilder, Language};

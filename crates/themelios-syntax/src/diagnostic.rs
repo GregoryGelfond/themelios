@@ -64,6 +64,31 @@ impl SyntaxError {
     pub fn related(&self) -> &BTreeSet<Related> {
         &self.related
     }
+
+    /// Extends the expected set of an unexpected-token or
+    /// unexpected-end-of-input diagnostic — the merge of two expectations
+    /// at one position — and takes `hint` if none stands; false, and
+    /// nothing changed, for every other kind.
+    pub(crate) fn extend_expected(&mut self, more: &ExpectedSet, hint: Option<Hint>) -> bool {
+        match &mut self.kind {
+            SyntaxErrorKind::UnexpectedToken {
+                expected,
+                hint: mine,
+                ..
+            }
+            | SyntaxErrorKind::UnexpectedEndOfInput {
+                expected,
+                hint: mine,
+            } => {
+                expected.extend(more.iter().copied());
+                if mine.is_none() {
+                    *mine = hint;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 /// A secondary locus, typed: what the location is, so that its text is
