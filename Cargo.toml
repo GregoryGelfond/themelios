@@ -48,6 +48,13 @@ must_use_candidate = "allow"
 # `# Errors` heading would duplicate that sentence under a second
 # name.
 missing_errors_doc = "allow"
+# The parallel of the errors argument for panics: a total operation
+# whose body discharges an invariant with an expect states its
+# totality in prose — the base.md §9 / spec §10.4 discipline the
+# coordinate seam (syntax.md §5.3) and the parser follow; a mandatory
+# `# Panics` heading would either duplicate that sentence or advertise
+# a panic the invariant makes unreachable.
+missing_panics_doc = "allow"
 # Doc comments cite design sections as prose (base.md §5); ticking
 # every citation adds markup without information.
 doc_markdown = "allow"

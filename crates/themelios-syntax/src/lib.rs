@@ -19,3 +19,6 @@
 // line index, the views — is reachable through this crate alone
 // (docs/design/syntax.md §1).
 pub use themelios_base as base;
+
+pub mod dialect;
+pub mod tree;
