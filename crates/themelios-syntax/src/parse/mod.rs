@@ -3,6 +3,7 @@
 //! diagnostics, and the facts a consumer needs to interpret both.
 
 mod machine;
+mod statements;
 mod terms;
 
 use std::fmt;

@@ -235,9 +235,6 @@ impl<S: TokenSource> Parser<'_, S> {
     /// atom-shaped prefix the literal parser wraps into a term when an
     /// operator follows it (Task 9): `checkpoint` is that operand's, and
     /// the next token is read as what follows an operand.
-    // Consumed by the literal and comparison families (§6.3); unused until
-    // they land.
-    #[allow(dead_code)]
     pub(super) fn term_continue(&mut self, context: TermContext, checkpoint: Checkpoint) {
         let mut base = Frame::new(Shape::Base, None, NO_OPENER);
         base.operand = Some(checkpoint);
@@ -248,9 +245,6 @@ impl<S: TokenSource> Parser<'_, S> {
     /// frame — an atom's or a theory atom's arguments, whose enclosing
     /// node is not a term (Task 9, Task 10). Returns when the frame
     /// closes; nothing is read at the base after it.
-    // Consumed by the atom and theory-atom families (§6.3); unused until
-    // they land.
-    #[allow(dead_code)]
     pub(super) fn arguments(&mut self, context: TermContext) {
         let mut frames = vec![Frame::new(Shape::Base, None, NO_OPENER)];
         let next = self.open_frame(&mut frames, Shape::Arguments, None, None);

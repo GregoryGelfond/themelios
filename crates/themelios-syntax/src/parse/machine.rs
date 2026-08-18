@@ -75,11 +75,9 @@ struct Peeked {
     len: u32,
 }
 
-// Six methods still await their callers: `set_mode`/`mode`/`peek_text`
-// the theory family (docs/design/syntax.md §6.3, theory mode), and
-// `skip_into_error`/`depth_refused`/`end_statement_after_refusal` the
-// statement loops (§6.3, §6.6, restoring after a refusal). The families
-// remove this allowance as each is consumed.
+// Three methods still await their callers: `set_mode`/`mode`/`peek_text`,
+// the theory family (docs/design/syntax.md §6.3, theory mode). The theory
+// task removes this allowance as each is consumed.
 #[allow(dead_code)]
 impl<'s, S: TokenSource> Parser<'s, S> {
     pub(super) fn new(source: &'s S) -> Parser<'s, S> {
@@ -650,6 +648,9 @@ impl<'s, S: TokenSource> Parser<'s, S> {
         let checkpoint = self.docs_and_checkpoint();
         if self.statement_begins() {
             self.statement(checkpoint);
+            if self.depth_refused() {
+                self.end_statement_after_refusal();
+            }
         }
         self.expect_end_of_input();
         self.builder.finish_node();
@@ -728,6 +729,9 @@ impl<'s, S: TokenSource> Parser<'s, S> {
             }
             if self.statement_begins() {
                 self.statement(checkpoint);
+                if self.depth_refused() {
+                    self.end_statement_after_refusal();
+                }
             } else {
                 self.recover_program_level();
             }
@@ -808,16 +812,6 @@ impl<'s, S: TokenSource> Parser<'s, S> {
                 | SyntaxKind::KW_PROGRAM
                 | SyntaxKind::KW_THEORY
         )
-    }
-
-    /// One statement, its node opened at `checkpoint` (before its docs).
-    /// The families land in Tasks 9–11 and replace this dispatch arm by
-    /// arm; until a family lands, its statement start recovers at
-    /// program level, so every input still yields a tree.
-    pub(super) fn statement(&mut self, _checkpoint: Checkpoint) {
-        self.enter_statement();
-        self.recover_program_level();
-        self.leave_statement();
     }
 
     /// The term at a term entry, under the entry's restriction.
