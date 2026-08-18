@@ -10,6 +10,7 @@ use std::fmt;
 use themelios_base::diagnostic::{Diagnostic, DiagnosticId, Label, Severity, ToDiagnostic};
 use themelios_base::span::{ByteOffset, Location};
 
+use crate::dialect::Dialect;
 use crate::tree::SyntaxKind;
 
 /// One syntax diagnostic: what happened, where, and what would settle
@@ -22,12 +23,7 @@ pub struct SyntaxError {
 }
 
 impl SyntaxError {
-    // These crate-private doors are how the parser constructs and
-    // enriches a diagnostic (§6, §7, §4.5); until the parse module lands
-    // they have no caller outside this module's tests, so dead_code is
-    // allowed here meanwhile.
     /// A diagnostic of `kind` at `primary`, with no related loci yet.
-    #[allow(dead_code)]
     pub(crate) fn new(kind: SyntaxErrorKind, primary: Location) -> SyntaxError {
         SyntaxError {
             kind,
@@ -39,7 +35,6 @@ impl SyntaxError {
     /// The diagnostic with a related locus added; a locus already
     /// present stays once — set semantics.
     #[must_use]
-    #[allow(dead_code)]
     pub(crate) fn with_related(mut self, related: Related) -> SyntaxError {
         self.related.insert(related);
         self
@@ -381,6 +376,23 @@ impl SyntaxErrorKind {
         match self {
             SyntaxErrorKind::MisplacedDocComment { .. } => Severity::Warning,
             _ => Severity::Error,
+        }
+    }
+
+    /// Whether this kind is one of the incompleteness errors
+    /// (docs/design/syntax.md §6.5): end of input where more was
+    /// expected, an unterminated block comment, an unterminated script
+    /// region, or — under the ASP-Core-2 dialect only, where a string
+    /// may span lines — an unterminated string.
+    pub(crate) fn is_incompleteness(&self, dialect: Dialect) -> bool {
+        match self {
+            SyntaxErrorKind::UnexpectedEndOfInput { .. }
+            | SyntaxErrorKind::UnterminatedBlockComment
+            | SyntaxErrorKind::UnterminatedScript => true,
+            SyntaxErrorKind::MalformedString {
+                defect: StringDefect::Unterminated,
+            } => dialect == Dialect::AspCore2,
+            _ => false,
         }
     }
 

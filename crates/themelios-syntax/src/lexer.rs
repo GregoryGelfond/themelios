@@ -477,6 +477,125 @@ fn error_run(rest: &str, mode: LexMode) -> (SyntaxKind, usize) {
     (SyntaxKind::ERROR, len)
 }
 
+/// What a lexical `ERROR` token is, read from its text, the character
+/// after it, and the mode and dialect it was formed under
+/// (docs/design/syntax.md §4.5): the parser raises exactly this
+/// diagnostic when it places the token.
+pub(crate) struct LexicalDefect {
+    /// The diagnostic's kind.
+    pub(crate) kind: crate::diagnostic::SyntaxErrorKind,
+    /// The primary span, relative to the token's start.
+    pub(crate) primary: std::ops::Range<usize>,
+    /// Whether the literal's whole extent is a related locus (a bad
+    /// escape inside a string).
+    pub(crate) literal_extent: bool,
+}
+
+/// Classifies an `ERROR` token of `text`, followed in its source by
+/// `following` (`None` at end of input), formed under `mode` and
+/// `dialect`. Total.
+pub(crate) fn classify_error(
+    text: &str,
+    following: Option<char>,
+    mode: LexMode,
+    dialect: Dialect,
+) -> LexicalDefect {
+    use crate::diagnostic::SyntaxErrorKind;
+    let whole = 0..text.len();
+    if mode == LexMode::ScriptBody {
+        return LexicalDefect {
+            kind: SyntaxErrorKind::UnterminatedScript,
+            primary: whole,
+            literal_extent: false,
+        };
+    }
+    if text.starts_with("%*") {
+        return LexicalDefect {
+            kind: SyntaxErrorKind::UnterminatedBlockComment,
+            primary: 0..2,
+            literal_extent: false,
+        };
+    }
+    if text.starts_with('#') {
+        return LexicalDefect {
+            kind: SyntaxErrorKind::UnknownHashWord,
+            primary: whole,
+            literal_extent: false,
+        };
+    }
+    if text.starts_with('"') {
+        return string_defect(text, following, dialect);
+    }
+    if mode == LexMode::Theory && text.chars().all(|c| c == '_') {
+        return LexicalDefect {
+            kind: SyntaxErrorKind::AnonymousInTheoryExpression,
+            primary: whole,
+            literal_extent: false,
+        };
+    }
+    LexicalDefect {
+        kind: SyntaxErrorKind::UnexpectedCharacters,
+        primary: whole,
+        literal_extent: false,
+    }
+}
+
+/// The defect of a malformed string token: unterminated at end of
+/// input; broken by a raw line break (the clingo rule); or, when the
+/// token closed, the first bad escape, at the backslash.
+fn string_defect(text: &str, following: Option<char>, dialect: Dialect) -> LexicalDefect {
+    use crate::diagnostic::{StringDefect, SyntaxErrorKind};
+    let bytes = text.as_bytes();
+    let closed = bytes.len() > 1 && bytes[bytes.len() - 1] == b'"' && !text.ends_with("\\\"");
+    if dialect == Dialect::Clingo {
+        let mut i = 1;
+        while i < bytes.len() {
+            if bytes[i] == b'\\' {
+                match text[i + 1..].chars().next() {
+                    Some('"' | '\\' | 'n') => i += 2,
+                    Some(bad) => {
+                        return LexicalDefect {
+                            kind: SyntaxErrorKind::MalformedString {
+                                defect: StringDefect::InvalidEscape(bad),
+                            },
+                            primary: i..i + 1 + bad.len_utf8(),
+                            literal_extent: true,
+                        };
+                    }
+                    None => {
+                        let bad = following.unwrap_or('\n');
+                        return LexicalDefect {
+                            kind: SyntaxErrorKind::MalformedString {
+                                defect: StringDefect::InvalidEscape(bad),
+                            },
+                            primary: i..i + 1,
+                            literal_extent: true,
+                        };
+                    }
+                }
+            } else {
+                i += char_len(text, i);
+            }
+        }
+        if !closed && following == Some('\n') {
+            return LexicalDefect {
+                kind: SyntaxErrorKind::MalformedString {
+                    defect: StringDefect::RawLineBreak,
+                },
+                primary: 0..text.len(),
+                literal_extent: false,
+            };
+        }
+    }
+    LexicalDefect {
+        kind: SyntaxErrorKind::MalformedString {
+            defect: StringDefect::Unterminated,
+        },
+        primary: 0..1,
+        literal_extent: false,
+    }
+}
+
 // The roster's names read as the tokens they are; qualifying a hundred
 // of them in these tables adds noise, not information.
 #[cfg(test)]
