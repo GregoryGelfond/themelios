@@ -2115,12 +2115,19 @@ pub fn canonical_spelling(kind: SyntaxKind, content: &str) -> Cow<'_, str>;
 ```
 
 The canonical member of each pair is the spelling the authority itself
-renders when it prints its own syntax tree, so a formatter normalizing
-to canonical spellings converges on what clingo prints and a differential
-reader sees one form; the choice is checkable against the pinned binary
-(§16). Idempotent, and closed over each synonym pair (§16). This is the
-table a spelling-normalizing formatter reads — which spellings are
-synonyms is language knowledge, and it lives here once.
+renders when it prints its own syntax tree — `=`, `!=`, `#inf`, `#sup`
+— so a formatter normalizing to canonical spellings converges on what
+clingo prints and a differential reader sees one form; for those four
+pairs the choice is checkable against the pinned binary (§16). The
+optimize pair has no printed form to check: the authority's tree lowers
+an optimize statement to weak constraints and prints it so, `:~ … [w@p]`
+(`libclingo/src/astv2_str.cc:577` at the pin), so that pair's canonical
+member is the roster's own spelling — `#minimize` and `#maximize`, the
+spellings `KW_MINIMIZE` and `KW_MAXIMIZE` are named for (Appendix A) —
+fixed here and not measured. Idempotent, and closed over each synonym
+pair (§16). This is the table a spelling-normalizing formatter reads —
+which spellings are synonyms is language knowledge, and it lives here
+once.
 
 **Computational cost.** `equivalent` is O(|left| + |right|), a single
 zip over two lazy iterators; `non_whitespace_tokens`, `token_stream`,
@@ -2397,10 +2404,10 @@ what it proves and what it cannot (spec §10.2).
   acceptance) and on statement count and kinds; disagreements land in
   the grammar's divergence register with their argument. It also
   measures the authority's own nesting ceiling, per family, for §6.6's
-  lower bound and grammar §11's D2, and checks the canonical spellings
-  against the authority's printing. The tree-sitter-clingo cross-check
-  runs beside it at the tier's landing and at every pin move (grammar
-  §3).
+  lower bound and grammar §11's D2, and checks the four printable
+  canonical spellings (§11.3) against the authority's printing. The
+  tree-sitter-clingo cross-check runs beside it at the tier's landing
+  and at every pin move (grammar §3).
 - **Golden snapshots**, reviewed: the diagnostics corpus — the
   characteristic malformed programs of every family in §6.7 and every
   identity in Appendix B, the bad escape inside a literal (§4.5) and the
