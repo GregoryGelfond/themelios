@@ -22,3 +22,5 @@ pub use themelios_base as base;
 
 pub mod dialect;
 pub mod tree;
+pub mod token;
+pub mod lexer;
