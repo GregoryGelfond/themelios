@@ -1,0 +1,39 @@
+[package]
+name = "themelios-syntax"
+version = "0.1.0"
+description = "Lexer, lossless syntax tree, parser, typed AST, comment attachment, fusion oracle, and token-stream equivalence for the shared clingo/clingcon syntax and its ASP-Core-2 dialect."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The shipped closure: the base tier, and rowan with rowan's own closure
+# — the one named exception of docs/specification.md §12.5, pinned
+# exactly, its audit note docs/design/syntax.md §14. tests/trust.rs holds
+# the closure over Cargo's resolved graph. rowan's one feature (serde1)
+# stays off.
+[dependencies]
+themelios-base = { path = "../themelios-base" }
+rowan = "=0.17.0"
+
+# The stage-2 instruments (docs/design/syntax.md §16), outside the
+# shipped closure's claim: proptest and criterion as at stage 1, and
+# serde_json solely so tests/trust.rs reads `cargo metadata`'s JSON —
+# the resolved graph is the structural instrument the design names.
+[dev-dependencies]
+proptest = "1"
+criterion = "0.7"
+serde_json = "1"
+
+[features]
+# The out-of-band harnesses against the pinned authority — the clingo
+# differential and the tree-sitter cross-check (docs/design/syntax.md
+# §16) — which need the pixi environment at the repository root and
+# never run in the gate.
+differential = []
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "scaling"
+harness = false
