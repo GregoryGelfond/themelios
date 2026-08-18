@@ -215,6 +215,11 @@ impl SyntaxKind {
     pub const fn is_keyword(self) -> bool;
     pub const fn is_token(self) -> bool;
     pub const fn is_node(self) -> bool;
+    /// Every kind, in declaration order — the roster enumerated. Public
+    /// because the completeness test (§16) that reads it is an
+    /// integration test, and a consumer that walks the whole vocabulary
+    /// reads it too.
+    pub const ALL: &'static [SyntaxKind];
 }
 ```
 
@@ -1020,16 +1025,20 @@ pub const MAX_NESTING_DEPTH: u32 = /* fixed by measurement, see below */;
 /// thread of exactly this size and passes with headroom. A consumer's
 /// thread that holds a tree needs at least this much, and a language
 /// server's worker or a WASM host reads it here rather than
-/// discovering it. Measured together with the constant above; a move
-/// of either re-measures the other.
-pub const REQUIRED_STACK_BYTES: usize = /* fixed by measurement, see below */;
+/// discovering it. This is the fixed pole, a product choice — sixty-four
+/// mebibytes, eight times the eight-mebibyte main-thread default of the
+/// two supported operating systems, a size a language server's worker
+/// can be given without contortion — against which `MAX_NESTING_DEPTH`
+/// is measured (below); a move of either re-measures the other.
+pub const REQUIRED_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 /// The bound on the tree's depth (§5.4, law 3), derived and carrying no
 /// numeral of its own: `MAX_NESTING_DEPTH` frames, each contributing at
 /// most the term families' per-frame layer count, under the fixed layer
-/// count of everything above the term families — the two grammar
-/// constants named in the crate beside this one, valued by inspection of
-/// Appendix A and documented there. Public because a consumer who
+/// count of everything above the term families — `TERM_LAYERS_PER_FRAME`
+/// and `FIXED_LAYERS`, two public grammar constants named in the crate
+/// beside this one, valued by inspection of Appendix A and documented
+/// there and read by the depth instrument (§16). Public because a consumer who
 /// recurses over the typed AST — the visitor a fluent reader will write
 /// — sizes its own stack from it; `REQUIRED_STACK_BYTES` covers this
 /// crate's and rowan's walks, not the consumer's.
@@ -1482,6 +1491,13 @@ impl SetAggregate {
     pub fn elements(&self) -> impl Iterator<Item = SetElement>;
 }
 pub enum SetElement { Literal(Literal), ConditionalLiteral(ConditionalLiteral) }
+pub struct Disjunction(SyntaxNode);
+impl Disjunction { pub fn elements(&self) -> AstChildren<DisjunctionElement>; }
+/// A disjunction's element (grammar §5.5): structurally `SetElement`,
+/// named apart because a disjunction is not a set aggregate — a consumer
+/// walking a disjunction meets `DisjunctionElement`, not a set's type
+/// (least surprise; §15's accessor latitude).
+pub enum DisjunctionElement { Literal(Literal), ConditionalLiteral(ConditionalLiteral) }
 /// A function aggregate's element: body-position (terms with an optional
 /// condition) or head-position (terms, a literal, an optional
 /// condition) — the parser knows the position and builds the kind
@@ -1631,7 +1647,17 @@ is a pool of one tuple of one term — because the grammar makes `(a)` and
 ### 8.3 Token wrappers and values
 
 ```rust
-/// Typed tokens over the valued kinds — rowan's `AstToken` idiom.
+/// Typed tokens over the valued kinds — the crate's own `AstToken`
+/// trait (rowan exports `AstNode` but no token analogue; the idiom is
+/// hand-rolled, as in rust-analyzer): a wrapper casts on the kind — and,
+/// for the two comment wrappers, on the token's role (§5.4).
+pub trait AstToken: Sized {
+    fn can_cast(kind: SyntaxKind) -> bool;
+    fn cast(token: SyntaxToken) -> Option<Self>;
+    fn syntax(&self) -> &SyntaxToken;
+    fn text(&self) -> &str;          // the token's text
+}
+
 pub struct Ident(SyntaxToken);       // IDENT
 pub struct Variable(SyntaxToken);    // VARIABLE | ANONYMOUS
 pub struct NumberLit(SyntaxToken);   // NUMBER
@@ -2444,7 +2470,9 @@ what it proves and what it cannot (spec §10.2).
   table; a change is a visible diff.
 - **The trust checks:** the closure allow-list over Cargo's resolved
   graph, FFI-free, the one named build script, none of this crate's own,
-  `forbid(unsafe_code)` (§14).
+  `forbid(unsafe_code)` (§14). The check reads `cargo metadata`'s JSON
+  through `serde_json`, a dev-dependency outside the shipped closure — a
+  test instrument, not a shipped crate.
 - **Standing gates:** mutation per milestone; the workspace coverage
   floor; unused-code and unused-result warnings denied; documentation
   examples that run; the executable-claims standard for anything this
