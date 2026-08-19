@@ -29,3 +29,4 @@ pub mod diagnostic;
 pub mod ast;
 pub mod attach;
 pub mod fusion;
+pub mod equiv;

@@ -1,10 +1,10 @@
 //! Arbitrary bytes under both dialects and every entry point: no panic,
 //! the tree's text is the input, the parse terminates, `has_errors` and
 //! `is_incomplete` are consistent with the diagnostics, every trivia
-//! comment attaches, the tree's depth respects the bound, and
-//! `lex_mode_of` equals the region the parser stood in over the program
-//! entry's mode-sensitive tokens (docs/design/syntax.md §16). The
-//! certificate joins this target in Task 16.
+//! comment attaches, both certificates hold reflexively, the tree's
+//! depth respects the bound, and `lex_mode_of` equals the region the
+//! parser stood in over the program entry's mode-sensitive tokens
+//! (docs/design/syntax.md §16).
 #![no_main]
 
 use std::cell::RefCell;
@@ -117,6 +117,24 @@ fn holds<T: AstNode<Language = Asp>>(parse: &Parse<T>, text: &str) {
                 .any(|c| &c == comment)
         );
     }
+    // The certificate is reflexive: a parse certifies against itself under
+    // both certificates (docs/design/syntax.md §11.2, §16).
+    assert_eq!(
+        themelios_syntax::equiv::equivalent(
+            parse,
+            parse,
+            themelios_syntax::equiv::Certificate::LayoutOnly
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        themelios_syntax::equiv::equivalent(
+            parse,
+            parse,
+            themelios_syntax::equiv::Certificate::UpToSpelling
+        ),
+        Ok(())
+    );
 }
 
 fuzz_target!(|data: &[u8]| {
