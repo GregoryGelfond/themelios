@@ -1936,13 +1936,14 @@ pub fn separator_between(left: &str, right: &str, context: LexContext) -> Separa
 /// (§10.2) and answers for the texts. Total.
 pub fn separator(left: &SyntaxToken, right: &SyntaxToken, dialect: Dialect) -> Separator;
 
-/// The mode the parser requested for `token`, reconstructed from the
-/// tree by §10.2's rule and bound to the parser's own choice by law
-/// (§10.2, §16): `ScriptBody` for a script body and for `KW_END`;
-/// `Theory` inside a theory atom's elements and guard — outside their
-/// conditions and outside the `;` or `}` that ends a condition — and at
-/// a `#theory` definition's operator positions; `Normal` elsewhere.
-/// Total.
+/// The mode in force at `token`'s start — the parser's standpoint,
+/// reconstructed from the tree by §10.2's rule and bound to the parser's
+/// own choice by law (§10.2, §16): `ScriptBody` for a script body and
+/// for `KW_END`; `Theory` inside a theory atom's elements and guard —
+/// outside their conditions and outside the `;` or `}` that ends a
+/// condition — at a `#theory` definition's operator positions, and at
+/// the first token after a theory atom (the guard-end peek); `Normal`
+/// elsewhere. Total.
 pub fn lex_mode_of(token: &SyntaxToken) -> LexMode;
 ```
 
@@ -1999,24 +2000,46 @@ before anything — are its regression tests, not its definition (§16).
 
 An adjacency's mode is `left`'s: the parser lexed `left` under the mode
 in force at its start, and lexing `left ++ right` under that mode is
-what a reparse would do at that offset. `lex_mode_of` reconstructs it
-from the tree structurally — the same regions §6.3 states, decided by
+what a reparse would do at that offset. That mode is the parser's
+*standpoint* — the region it stands in as it begins to read the token —
+not where the token lands. The two part only at the greedy guard-end
+(§6.3): there the parser stands inside the theory region while it reads
+the first token after a theory atom, deciding under theory mode whether
+a guard opens or extends before committing that token under normal mode,
+and it is the standpoint, theory, that governs whether the next
+character fuses — `.` before `&` is one `THEORY_OP` under theory, two
+tokens under normal, so a formatter that read the committed `Normal`
+would wrongly abut them. `lex_mode_of` reconstructs the standpoint from
+the tree structurally — the same regions §6.3 states, decided by
 ancestry and position: `SCRIPT_BODY` and `KW_END` are `ScriptBody`
 (both are formed only under it, §4.4); a token under `THEORY_ELEMENTS`
 or `THEORY_GUARD` is `Theory` — the condition-opening `:` included —
 unless it is inside a `CONDITION` or is the `;` or `}` that directly
 follows one, which are `Normal` (§6.3: they end a normal-mode region); a
 `THEORY_OP` or `KW_NOT` at an operator position of an `OP_DEFINITION` or
-`ATOM_DEFINITION` is `Theory`; everything else is `Normal` — the `{`
-that opens the elements and the first token after a guard among them.
-**The law binding the two statements:** for every token of every tree,
-`lex_mode_of(token)` equals the mode the parser requested when it took
-that token — held by a parse-time recording of the requested modes,
-compared against the reconstruction over the whole corpus (§16). The
-parser's rule (§6.3) and this reconstruction are two statements of one
-fact, and the law is what keeps them from agreeing by luck; the
-grammar's named cases gain `;-` after a condition, `#end.`, and
-`#end .` (§16).
+`ATOM_DEFINITION` is `Theory`; the first token after a theory atom is
+`Theory`, the guard-end peek; everything else is `Normal`, the `{` that
+opens the elements among them (taken under normal mode, §6.3).
+**The law binding the two statements.** The mode is a fact only about a
+token whose lexing depends on it: whitespace and comments lex the same
+under `Normal` and `Theory` and never stand alone under `ScriptBody`, so
+their standpoint is a fact about nothing and the law says nothing of
+them. For every other token — every one that is not trivia and not a
+comment — `lex_mode_of(token)` equals the region the parser stood in at
+that token's start: the non-`Normal` mode if it ever requested the token
+inside a region there (the guard-end peek among those requests, before
+the normal-mode commit), else `Normal`. This holds for a member: its
+tree reflects the mode regions the parser walked. It need not hold under
+recovery, where the tree serves losslessness, not the modes — a
+malformed condition's contents land loose under `THEORY_ELEMENTS`, the
+aspif dispatch wraps the whole input as one raw-text `ERROR` (§4.9) — so
+the law, like the whole-text lemma, is a guarantee for members. Held by
+a parse-time recording of the requested modes, reduced to that region,
+compared against the reconstruction over the mode-sensitive tokens of
+every member of the corpus (§16). The parser's rule (§6.3) and this
+reconstruction are two statements of one fact, and the law is what keeps
+them from agreeing by luck; the grammar's named cases gain `;-` after a
+condition, `#end.`, and `#end .` (§16).
 
 **Computational cost.** `separator_between` is O(|left| + |right|):
 one relex of a two-token text. `separator` adds `lex_mode_of`, which is
@@ -2409,9 +2432,10 @@ what it proves and what it cannot (spec §10.2).
   point — no panic, `text()` is the input, the parse terminates,
   `has_errors` and `is_incomplete` are consistent with the diagnostics,
   every trivia comment attaches, `equivalent(p, p, ·)` holds,
-  `lex_mode_of` agrees with the mode the parser recorded, and the
-  tree's depth respects the bound. What it cannot prove: membership
-  agreement with the authority — that is the differential's.
+  `lex_mode_of` agrees — over a member's mode-sensitive tokens — with the
+  region the parser recorded, and the tree's depth respects the bound.
+  What it cannot prove: membership agreement with the authority — that is
+  the differential's.
 - **Property laws (proptest):** the token-source laws on the file lexer
   under every mode, and `check_token_source_laws` failing deliberately
   breaching sources; lexer totality and tiling on generated text heavy
@@ -2423,9 +2447,11 @@ what it proves and what it cannot (spec §10.2).
   means it does not, every grammar-named case answers as the grammar
   says (`;-` after a condition, `#end.`, `#end .`, and the ASP-Core-2
   `"…\"`-final string among them), and the whole-text lemma (§10.1): a
-  corpus text re-spaced to abut every pair the oracle allows reparses to
-  the same token stream; the mode law (§10.2): the parser's recorded
-  modes equal `lex_mode_of` over every corpus token; attachment
+  member's text re-spaced to abut every pair the oracle allows reparses
+  to the same token stream — a non-member's ERROR tokens do not compose,
+  so both this and the mode law are guarantees for members; the mode law
+  (§10.2): the parser's recorded region modes equal `lex_mode_of` over
+  every member's mode-sensitive tokens; attachment
   totality, single-valuedness, the inverse law between the two forms,
   and stability under re-spacing that preserves the four facts (§9.2);
   the certificates' reflexivity through reparse, symmetry, and the
@@ -2667,11 +2693,27 @@ the typed kind each lowers from (§7.1).
 
 ## Revisions
 
-Honesty-only refinements to this document's wording made after its gate,
-each alongside the build code that surfaced it and vetted by that task's
-reading — the amend-in-commit pattern the §6.3 query-mark precedent set.
-No behavior changed; each corrected a claim to match what the tier does.
+Refinements to this document made after its gate, each alongside the
+build code that surfaced it — the amend-in-commit pattern the §6.3
+query-mark precedent set. The §4.6 and §9.3 refinements are honesty-only,
+each correcting a claim to match what the tier does and vetted by its
+task's reading; the §10.2 amendment, approved by the principal during
+Task 15, corrects the document and the code together.
 
+- **§10.2** (2026-08-19): the mode of an adjacency, restated as the
+  parser's *standpoint* — the region in force as it begins reading a
+  token, not where the token lands. The prior wording assigned the first
+  token after a guard to `Normal`, its commit, contradicting the section's
+  own opening ("the mode in force at its start") and leaving the oracle
+  inexact: at the greedy guard-end the parser peeks that token under
+  theory, where a statement-terminating `.` fuses with a following `&`
+  into one `THEORY_OP`, so a formatter reading the committed `Normal`
+  would wrongly abut them. `lex_mode_of` now reconstructs the standpoint —
+  the first token after a theory atom is `Theory` — and the mode law is
+  stated over mode-sensitive tokens (whitespace and comments lex
+  mode-independently, so their mode is a fact about nothing) against the
+  region the parser stood in. This is the sole behavior change among the
+  revisions; it restores §10.1's exactness with no lemma caveat.
 - **§4.6** (2026-08-19): the ASP-Core-2 string cost line, corrected from
   a mistaken "quadratic" reading. It is O(token) except an ASP-Core-2
   string's maximal-munch fallback — a final `\"` that closes the string
