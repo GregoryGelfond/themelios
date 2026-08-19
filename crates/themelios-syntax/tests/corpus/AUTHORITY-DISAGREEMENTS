@@ -1,0 +1,2 @@
+# path  the reading against the authority that settled it
+seeds/clingo/aspif-dispatch.lp  the aspif dispatch (grammar §4.9, §11; syntax.md §4.9): the authority reads the `asp` magic as aspif ground-program format and accepts; this parser refuses aspif input as not-ASP (syntax::aspif-input). A grammar-recorded divergence, not a defect here.

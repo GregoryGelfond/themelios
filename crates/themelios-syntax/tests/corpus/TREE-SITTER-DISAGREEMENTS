@@ -1,0 +1,44 @@
+# path  the reading against the authority that settled it
+#
+# The tree-sitter-clingo grammar (pinned 58e062c1, grammar §3) is the
+# SECONDARY cross-check, not the authority. Every entry below was read
+# against clingo 5.8.2: in each, this parser's membership EQUALS the
+# authority's (the differential proves it over the whole corpus), and
+# tree-sitter is the outlier. tree-sitter is corroboration — a
+# disagreement it alone makes is recorded here and never repaired
+# against (spec §16; grammar §3, §11). "here" = this parser.
+#
+# --- here MEMBER, authority MEMBER; tree-sitter reports an ERROR ---
+# The `==` equality synonym (grammar §4.5, §4.6): the tree-sitter
+# grammar accepts only `=`; clingo and this parser read `==` as `=`.
+clingo/app/clingo/tests/lp/show.lp  == synonym at `k == 3`; here member, authority member, tree-sitter ERROR
+clingo/app/clingo/tests/lua/blocksworld1.lp  == synonym at `D == 1`; here member, authority member, tree-sitter ERROR
+clingo/app/clingo/tests/lua/icolor.lp  == synonym at `k == 0`; here member, authority member, tree-sitter ERROR
+clingo/app/clingo/tests/lua/queens.lp  == synonym at `k-Y == |X1-X2|`; here member, authority member, tree-sitter ERROR
+clingo/app/clingo/tests/lua/robots.lp  == synonym; here member, authority member, tree-sitter ERROR
+clingo/app/clingo/tests/lua/sokoban_para.lp  == synonym; here member, authority member, tree-sitter ERROR
+clingo/app/clingo/tests/lua/solitaire_para.lp  == synonym; here member, authority member, tree-sitter ERROR
+clingo/app/clingo/tests/lua/solitaire_sort.lp  == synonym; here member, authority member, tree-sitter ERROR
+clingo/app/clingo/tests/lua/toh.lp  == synonym at `k==5`; here member, authority member, tree-sitter ERROR
+clingo/app/clingo/tests/python/blocksworld1.lp  == synonym at `D == 1`; here member, authority member, tree-sitter ERROR
+clingo/app/clingo/tests/python/queens.lp  == synonym at `k-Y == |X1-X2|`; here member, authority member, tree-sitter ERROR
+clingo/examples/clingo/15puzzle/encoding.lp  == synonym at `consecutive == 1`; here member, authority member, tree-sitter ERROR
+clingo/examples/clingo/blocksworld/world.lp  == synonym at `D == 1`; here member, authority member, tree-sitter ERROR
+clingo/examples/clingo/consequences/brave-lua.lp  == synonym at `@is_brave(X) == 0`; here member, authority member, tree-sitter ERROR
+clingo/examples/clingo/consequences/brave-py.lp  == synonym at `@is_brave(X) == 0`; here member, authority member, tree-sitter ERROR
+clingo/examples/clingo/solitaire/solitaire.lp  == synonym at `X+DX == X'+DX'`; here member, authority member, tree-sitter ERROR
+clingo/examples/gringo/queens/queens2.lp  == synonym at `X-Y == U-V`; here member, authority member, tree-sitter ERROR
+# The `#!` shebang line (grammar §4.1): the tree-sitter grammar has no
+# shebang production.
+clingo/examples/clingo/pydoc/pydoc.lp  `#!/usr/bin/env clingo` shebang; here member, authority member, tree-sitter ERROR
+seeds/clingo/shebang-then-docs.lp  `#! shebang` line; here member, authority member, tree-sitter ERROR
+# Other constructs clingo and this parser accept, tree-sitter rejects.
+seeds/clingo/empty-bodies.lp  empty body `head :- .` / `:- .` (§5.7); here member, authority member, tree-sitter ERROR
+seeds/clingo/theory-operator-runs.lp  the `::` theory operator run (§4.7); here member, authority member, tree-sitter ERROR
+seeds/clingo/block-comment-silences-its-line.lp  a block comment's first-line closer silenced across lines (§4.1); here member, authority member, tree-sitter ERROR
+#
+# --- here NON-MEMBER, authority NON-MEMBER; tree-sitter accepts ---
+# tree-sitter is the lenient one: clingo and this parser refuse these.
+seeds/clingo/anonymous-in-theory.lp  `_` is an error byte in a theory expression at the pin (§4.7); here non-member, authority non-member, tree-sitter accepts
+seeds/clingo/doc-marker-inside-block-comment.lp  `%!` silences the line so the block comment's closer never fires — unterminated (§4.1); here non-member, authority non-member, tree-sitter accepts
+seeds/clingo/string-raw-line-break.lp  a raw newline inside a clingo string — malformed (§4.4); here non-member, authority non-member, tree-sitter accepts

@@ -1,0 +1,26 @@
+# The pinned authority and the secondary cross-check for the syntax
+# tier's out-of-band instruments (docs/design/syntax.md §16;
+# docs/grammar.md §3): clingo v5.8.2 as conda-forge ships it — the
+# binary and its Python module, one package — and the tree-sitter CLI
+# that runs the pinned tree-sitter-clingo grammar. Nothing here enters
+# any Rust manifest or any shipped closure.
+[workspace]
+name = "themelios"
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "osx-64", "linux-64"]
+
+[dependencies]
+clingo = "==5.8.2"
+python = ">=3.12"
+tree-sitter-cli = ">=0.26.12"
+
+[tasks]
+# The differential: membership, statement kinds, canonical spellings.
+differential = "cargo test -p themelios-syntax --features differential --test differential -- --nocapture --test-threads=1 differential"
+# The authority's nesting ceiling per family, for the depth constant's
+# lower bound and grammar §11 D2 (a bisection, one process per probe).
+measure-ceiling = "cargo test -p themelios-syntax --features differential --test differential -- --nocapture --ignored measure_the_authoritys_nesting_ceiling_per_family"
+# The pinned secondary grammar, fetched once into the ignored target directory.
+fetch-tree-sitter-clingo = "test -d target/tree-sitter-clingo || (git clone -q https://github.com/potassco/tree-sitter-clingo target/tree-sitter-clingo && git -C target/tree-sitter-clingo -c advice.detachedHead=false checkout -q 58e062c1c6c2ac0bad54fee054573c5a9e6dd759)"
+# The tree-sitter cross-check over the corpus.
+cross-check = { cmd = "cargo test -p themelios-syntax --features differential --test differential -- --nocapture --ignored the_pinned_tree_sitter_grammar_agrees_with_this_parser_on_the_corpus", depends-on = ["fetch-tree-sitter-clingo"] }
