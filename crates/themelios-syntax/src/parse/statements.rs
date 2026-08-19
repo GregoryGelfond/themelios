@@ -49,6 +49,8 @@ pub(super) enum Element {
     Literal { condition: bool, empty: bool },
     /// An aggregate.
     Aggregate,
+    /// A theory atom.
+    TheoryAtom,
     /// A bare atom in head position with the query mark after it — the
     /// ASP-Core-2 query's atom, not wrapped in a literal (grammar §6.1).
     QueryAtom,
@@ -130,8 +132,8 @@ impl<S: TokenSource> Parser<'_, S> {
             | SyntaxKind::KW_CONST
             | SyntaxKind::KW_SCRIPT
             | SyntaxKind::KW_INCLUDE
-            | SyntaxKind::KW_PROGRAM
-            | SyntaxKind::KW_THEORY => self.recover_program_level(),
+            | SyntaxKind::KW_PROGRAM => self.recover_program_level(),
+            SyntaxKind::KW_THEORY => self.theory_definition(checkpoint),
             _ => self.rule(checkpoint),
         }
         self.leave_statement();
@@ -190,15 +192,42 @@ impl<S: TokenSource> Parser<'_, S> {
             return;
         }
         self.start_node_at(checkpoint, SyntaxKind::RULE);
-        if !self.depth_refused() && self.eat(SyntaxKind::NECK) {
-            if self.peek() == SyntaxKind::DOT {
-                self.empty_node(SyntaxKind::BODY);
+        if !self.depth_refused() {
+            if self.eat(SyntaxKind::NECK) {
+                if self.peek() == SyntaxKind::DOT {
+                    self.empty_node(SyntaxKind::BODY);
+                } else {
+                    self.body();
+                }
+                self.statement_end();
             } else {
-                self.body();
+                self.head_end();
             }
         }
-        self.statement_end();
         self.finish_node();
+    }
+
+    /// The terminator after a head that took no neck: a `.` ends the rule
+    /// (a fact), and a `:-` would begin a body — the two ways to complete
+    /// it, both named when neither is found so a reader or a tool can act
+    /// (the authority names them too, more tersely). Recovers through to
+    /// the dot.
+    fn head_end(&mut self) {
+        if self.eat(SyntaxKind::DOT) {
+            return;
+        }
+        let wanted = || {
+            expected(&[
+                Expected::Token(SyntaxKind::DOT),
+                Expected::Token(SyntaxKind::NECK),
+            ])
+        };
+        if self.at_end() || self.statement_begins() {
+            self.unexpected(wanted(), None);
+            return;
+        }
+        self.skip_into_error(wanted(), None, &[SyntaxKind::DOT]);
+        self.eat(SyntaxKind::DOT);
     }
 
     /// The statement's terminating dot: consumed when next; a missing
@@ -222,10 +251,14 @@ impl<S: TokenSource> Parser<'_, S> {
         self.eat(SyntaxKind::DOT);
     }
 
-    /// Grammar §5.5's `head`: a literal, a disjunction, an aggregate, or a
-    /// theory atom. A conditioned literal or any separator after the
-    /// first element makes the head a `DISJUNCTION`. True when the head
-    /// is the query's atom (grammar §6.1), which the caller closes.
+    /// Grammar §5.5's `head`: a single literal, a disjunction of
+    /// literals, a single aggregate, or a single theory atom. Only a
+    /// literal first element continues into a `DISJUNCTION` — on a
+    /// conditioned literal or a following separator; an aggregate or a
+    /// theory atom is a complete head, and a separator after it is a
+    /// rule-level error, as under the authority (grammar §5.5: only
+    /// literals disjoin). True when the head is the query's atom (grammar
+    /// §6.1), which the caller closes.
     fn head(&mut self) -> bool {
         let checkpoint = self.checkpoint();
         let mut previous = match self.element(Position::Head) {
@@ -234,7 +267,7 @@ impl<S: TokenSource> Parser<'_, S> {
                 return false;
             }
             Element::QueryAtom => return true,
-            Element::Aggregate => return false,
+            Element::Aggregate | Element::TheoryAtom => return false,
             element @ Element::Literal { .. } => element,
         };
         let separator = |kind: SyntaxKind| {
@@ -366,6 +399,11 @@ impl<S: TokenSource> Parser<'_, S> {
     /// a literal, an aggregate, or a theory atom — then the element by
     /// its first token, and, where the position admits it, a condition
     /// after `:` wrapping the literal into a `CONDITIONAL_LITERAL`.
+    // One decision by first token, each arm a distinct element shape (a
+    // theory atom, an aggregate, a truth constant, a literal or guard),
+    // with the two disallowed-position arms beside their admitted twins;
+    // splitting it would scatter that single dispatch.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn element(&mut self, position: Position) -> Element {
         if !self.element_begins(position) {
             return Element::None;
@@ -377,15 +415,41 @@ impl<S: TokenSource> Parser<'_, S> {
             negation += 1;
         }
         match self.peek() {
-            SyntaxKind::AMPERSAND => {
-                // Task 10 reads the theory atom here.
-                self.wrap_unexpected(expected(&[Expected::Class(SyntaxClass::Literal)]), None);
-                Element::None
+            SyntaxKind::AMPERSAND if !position.admits_aggregates() => {
+                // A theory atom is not a literal; only a head or a body
+                // admits one (grammar §5.6). In a condition or a set
+                // element it is an error, carried whole without descending
+                // — the descent would recurse without bound on nested
+                // disallowed theory atoms, and the grammar admits no
+                // nesting to descend into (docs/design/syntax.md §6.6).
+                self.unexpected(expected(&[Expected::Class(SyntaxClass::Literal)]), None);
+                self.skip_disallowed_element(start);
+                Element::Literal {
+                    condition: false,
+                    empty: false,
+                }
             }
-            kind if aggregate_opener(kind) => {
-                if !position.admits_aggregates() {
+            SyntaxKind::AMPERSAND => {
+                if negation > 0 && position != Position::Body {
+                    // Only a body element signs a theory atom (grammar §5.6).
                     self.unexpected(expected(&[Expected::Class(SyntaxClass::Literal)]), None);
                 }
+                self.theory_atom(start);
+                Element::TheoryAtom
+            }
+            kind if aggregate_opener(kind) && !position.admits_aggregates() => {
+                // An aggregate is not a literal; only a head or a body
+                // admits one (grammar §5.6). Carried whole without
+                // descending — the same unbounded-recursion bound as the
+                // theory atom above (docs/design/syntax.md §6.6).
+                self.unexpected(expected(&[Expected::Class(SyntaxClass::Literal)]), None);
+                self.skip_disallowed_element(start);
+                Element::Literal {
+                    condition: false,
+                    empty: false,
+                }
+            }
+            kind if aggregate_opener(kind) => {
                 self.aggregate(start, position);
                 Element::Aggregate
             }
@@ -397,7 +461,12 @@ impl<S: TokenSource> Parser<'_, S> {
             }
             _ => match self.first() {
                 First::Missing => {
-                    self.start_node_at(start, SyntaxKind::LITERAL);
+                    // A negation run with no atom, `#true`, or `#false` after
+                    // it (a third `not`, or a bare `not` at a boundary): a
+                    // `LITERAL` holds one of those (tree.rs), so an atomless
+                    // one is no literal — the negation is carried in an
+                    // `ERROR` node instead (docs/design/syntax.md §6.7).
+                    self.start_node_at(start, SyntaxKind::ERROR);
                     self.unexpected(expected(&[Expected::Class(SyntaxClass::Literal)]), None);
                     self.finish_node();
                     Element::Literal {
@@ -469,6 +538,46 @@ impl<S: TokenSource> Parser<'_, S> {
     /// makes the whole a comparison — the token after the prefix
     /// decides). An operator directly after the prefix makes it a term
     /// at once, and the frame loop continues from it.
+    /// Carries a construct that opens like an element but is not admitted
+    /// where it stands — an aggregate or a theory atom in a condition or a
+    /// set element (grammar §5.3, §5.6) — from `start` (over the negation
+    /// already placed) into one `ERROR` node, its bracket groups balanced,
+    /// up to the boundary that ends the element. Lossless and iterative,
+    /// never a descent: the descent recurses without bound on nested
+    /// disallowed constructs, which the grammar never admits
+    /// (docs/design/syntax.md §6.6).
+    fn skip_disallowed_element(&mut self, start: Checkpoint) {
+        self.start_node_at(start, SyntaxKind::ERROR);
+        let mut depth = 0u32;
+        while !self.at_end() {
+            match self.peek() {
+                SyntaxKind::L_PAREN | SyntaxKind::L_BRACKET | SyntaxKind::L_BRACE => {
+                    depth += 1;
+                    self.bump();
+                }
+                SyntaxKind::R_PAREN | SyntaxKind::R_BRACKET | SyntaxKind::R_BRACE => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    self.bump();
+                }
+                SyntaxKind::DOT
+                | SyntaxKind::SEMICOLON
+                | SyntaxKind::COMMA
+                | SyntaxKind::COLON
+                | SyntaxKind::NECK
+                | SyntaxKind::WEAK_NECK
+                    if depth == 0 =>
+                {
+                    break;
+                }
+                _ => self.bump(),
+            }
+        }
+        self.finish_node();
+    }
+
     fn first(&mut self) -> First {
         let atom_shaped = self.peek() == SyntaxKind::IDENT
             || (self.peek() == SyntaxKind::MINUS && self.lookahead(1) == SyntaxKind::IDENT);
@@ -725,7 +834,7 @@ impl<S: TokenSource> Parser<'_, S> {
 
     /// After a colon: the condition, or the empty condition placed
     /// immediately after the colon.
-    fn condition_or_empty(&mut self) {
+    pub(super) fn condition_or_empty(&mut self) {
         if self.literal_begins() {
             self.condition();
         } else {
@@ -756,10 +865,10 @@ impl<S: TokenSource> Parser<'_, S> {
 mod tests {
     use themelios_base::source::{Source, SourceId};
 
-    use crate::diagnostic::{Hint, MisplacedDoc, SyntaxErrorKind};
+    use crate::diagnostic::{Expected, Hint, MisplacedDoc, SyntaxErrorKind};
     use crate::dialect::Dialect;
-    use crate::parse::parse;
-    use crate::tree::sexpr;
+    use crate::parse::{MAX_NESTING_DEPTH, parse};
+    use crate::tree::{SyntaxKind, sexpr};
 
     fn admitted(text: &str) -> Source {
         Source::new(SourceId::new(0), text.to_owned()).expect("test text admits")
@@ -1031,5 +1140,71 @@ mod tests {
             .map(|node| node.text().to_string())
             .collect();
         assert_eq!(statements, ["p.", "q :- p."]);
+    }
+
+    #[test]
+    fn an_aggregate_or_theory_atom_head_is_standalone_not_a_disjunction_element() {
+        // Only a literal disjoins in a head (grammar §5.5), as the
+        // authority has it: a separator after an aggregate or theory-atom
+        // head is a rule-level error, and the head names both ways to
+        // complete it — `.` or `:-` — so a reader or a tool can act.
+        assert!(!member("&a { x } ; p."));
+        assert!(!member("&a { x } , p."));
+        assert!(!member("1 { p } 1 ; q."));
+        assert!(!shape("&a { x } ; p.").contains("DISJUNCTION"));
+        assert!(kinds("&a { x } ; p.").iter().any(|k| matches!(
+            k,
+            SyntaxErrorKind::UnexpectedToken { expected, .. }
+                if expected.contains(&Expected::Token(SyntaxKind::DOT))
+                    && expected.contains(&Expected::Token(SyntaxKind::NECK))
+        )));
+    }
+
+    #[test]
+    fn a_negation_run_with_no_atom_is_an_error_not_a_childless_literal() {
+        // A `LITERAL` holds an atom, `#true`, or `#false` (tree.rs); a
+        // `not` with none after it — a bare `not`, or a third past the
+        // double-negation cap — is carried in an `ERROR` instead.
+        assert_eq!(shape(":- not."), "(RULE :- (BODY (ERROR not)) .)");
+        assert!(!member(":- not not not p."));
+        assert!(!shape(":- not not not p.").contains("(LITERAL not not)"));
+    }
+
+    #[test]
+    fn a_disallowed_aggregate_or_theory_atom_is_carried_whole_without_unbounded_recursion() {
+        // A leading `not` reaches the aggregate/theory-atom arm even where
+        // the position forbids one; the parser carries the construct in one
+        // error node rather than descending, so nesting is bounded by the
+        // grammar's constant path, not the input (docs/design/syntax.md
+        // §6.6). A tiny thread stack proves the recovery is iterative.
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let aggregates = format!(":- {}", "not { ".repeat(30_000));
+                assert!(!member(&aggregates));
+                let theory_atoms = format!(
+                    ":- &a{{ : {}x{} }}.",
+                    "not &b{ : ".repeat(15_000),
+                    " }".repeat(15_000)
+                );
+                assert!(!member(&theory_atoms));
+            })
+            .expect("thread spawns")
+            .join()
+            .expect("no stack overflow");
+    }
+
+    #[test]
+    fn a_theory_mode_depth_refusal_ends_at_the_dot_not_a_glued_operator() {
+        // The refusal skips to the terminating dot; inside a theory region
+        // the mode is `Theory`, where `=.` is one operator run and the dot
+        // is missed, swallowing the next statement — the skip reads in
+        // normal mode (docs/design/syntax.md §4.2, §6.6).
+        let refused = format!("&a {{ {}x=.q.", "(".repeat(MAX_NESTING_DEPTH as usize + 1));
+        let parse = parse(&admitted(&refused), Dialect::Clingo);
+        assert_eq!(parse.syntax().text(), refused.as_str(), "law 1");
+        // Two statements: the refused theory atom, then `q.` — not one that
+        // swallowed `q` past a glued dot.
+        assert_eq!(parse.syntax().children().count(), 2);
     }
 }

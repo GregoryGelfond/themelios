@@ -75,10 +75,6 @@ struct Peeked {
     len: u32,
 }
 
-// Three methods still await their callers: `set_mode`/`mode`/`peek_text`,
-// the theory family (docs/design/syntax.md §6.3, theory mode). The theory
-// task removes this allowance as each is consumed.
-#[allow(dead_code)]
 impl<'s, S: TokenSource> Parser<'s, S> {
     pub(super) fn new(source: &'s S) -> Parser<'s, S> {
         Parser {
@@ -256,7 +252,10 @@ impl<'s, S: TokenSource> Parser<'s, S> {
         self.peek() == SyntaxKind::EOF
     }
 
-    /// The mode the next token is requested under.
+    /// The mode the next token is requested under. The setter's query
+    /// twin; no reader consumes it yet (the theory family drives the mode
+    /// through `set_mode` alone), so the allowance stands until one does.
+    #[allow(dead_code)]
     pub(super) fn mode(&self) -> LexMode {
         self.mode
     }
@@ -501,6 +500,12 @@ impl<'s, S: TokenSource> Parser<'s, S> {
         ));
         self.lexical_diagnostics = false;
         self.depth_refused = true;
+        // The rest of the statement is skipped to its terminating dot; a
+        // refusal inside a theory region left the mode at `Theory`, where
+        // a dot glued to operator characters lexes as one `THEORY_OP` and
+        // the terminator is missed (docs/design/syntax.md §4.2, §6.6). The
+        // skip reads in normal mode; the loops' restore does the same.
+        self.set_mode(LexMode::Normal);
         self.start_node(SyntaxKind::ERROR);
         self.skip_statement_rest();
         self.finish_node();

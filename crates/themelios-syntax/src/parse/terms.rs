@@ -43,12 +43,15 @@ pub(super) enum TermContext {
     ConstantTerm,
     /// The constant term's exclusions and the `@`-call besides.
     TermValue,
+    /// Grammar §5.8's theory terms: no restriction, no precedence — one
+    /// flat sequence per frame.
+    Theory,
 }
 
 impl TermContext {
     fn restriction(self) -> Option<Restriction> {
         match self {
-            TermContext::Term => None,
+            TermContext::Term | TermContext::Theory => None,
             TermContext::ConstantTerm => Some(Restriction::ConstantTerm),
             TermContext::TermValue => Some(Restriction::TermValue),
         }
@@ -94,9 +97,23 @@ enum Shape {
     Arguments,
     /// `| … |` — the absolute value over a pooled argument.
     Abs,
+    /// `{ … }` — a theory set (grammar §5.8).
+    TheorySet,
+    /// `[ … ]` — a theory list.
+    TheoryList,
+    /// `( … )` — a theory tuple: `()`, `(a)`, `(a,)`, `(a, b)`.
+    TheoryTuple,
+    /// `IDENT ( … )` — a theory function's arguments; the frame's node
+    /// opens before the name.
+    TheoryFunction,
 }
 
 /// One open bracket context.
+// The four flags are distinct, independently-live pieces of frame state —
+// an open unary run, an open tuple, a trailing comma, an open theory
+// opterm (docs/design/syntax.md §6.2); folding them into one enum would
+// obscure the frame's shape, not clarify it.
+#[allow(clippy::struct_excessive_bools)]
 struct Frame {
     shape: Shape,
     /// The open precedence levels, tighter on top, each with the
@@ -113,6 +130,10 @@ struct Frame {
     tuple_terms: u32,
     /// The last token consumed in this frame was a `,`.
     after_comma: bool,
+    /// A `THEORY_OPTERM` is open in this frame — the theory family's
+    /// operand slot: an opterm per element, per set or list member, per
+    /// tuple member, per function argument.
+    opterm_open: bool,
     /// A `FUNCTION_TERM` or `EXTERNAL_TERM` node is open around this
     /// argument list, and closes with it.
     wrapper: Option<SyntaxKind>,
@@ -130,6 +151,7 @@ impl Frame {
             tuple_open: false,
             tuple_terms: 0,
             after_comma: false,
+            opterm_open: false,
             wrapper,
             opener,
         }
@@ -141,14 +163,22 @@ impl Frame {
             Shape::Pool => Some(SyntaxKind::POOL),
             Shape::Arguments => Some(SyntaxKind::ARGUMENTS),
             Shape::Abs => Some(SyntaxKind::ABS_TERM),
+            Shape::TheorySet => Some(SyntaxKind::THEORY_SET),
+            Shape::TheoryList => Some(SyntaxKind::THEORY_LIST),
+            Shape::TheoryTuple => Some(SyntaxKind::THEORY_TUPLE),
+            Shape::TheoryFunction => Some(SyntaxKind::THEORY_FUNCTION),
         }
     }
 
     fn closer(&self) -> Option<SyntaxKind> {
         match self.shape {
             Shape::Base => None,
-            Shape::Pool | Shape::Arguments => Some(SyntaxKind::R_PAREN),
+            Shape::Pool | Shape::Arguments | Shape::TheoryTuple | Shape::TheoryFunction => {
+                Some(SyntaxKind::R_PAREN)
+            }
             Shape::Abs => Some(SyntaxKind::PIPE),
+            Shape::TheorySet => Some(SyntaxKind::R_BRACE),
+            Shape::TheoryList => Some(SyntaxKind::R_BRACKET),
         }
     }
 }
@@ -265,14 +295,22 @@ impl<S: TokenSource> Parser<'_, S> {
     ) {
         let mut last_operator = None;
         while next != Next::Done {
-            next = match next {
-                Next::Operand => self.operand(&mut frames, context, last_operator),
-                Next::Operator => self.after_operand(&mut frames, context, &mut last_operator),
-                Next::Done => Next::Done,
+            next = match (next, context) {
+                (Next::Operand, TermContext::Theory) => self.theory_operand(&mut frames),
+                (Next::Operator, TermContext::Theory) => self.theory_after_term(&mut frames),
+                (Next::Operand, _) => self.operand(&mut frames, context, last_operator),
+                (Next::Operator, _) => self.after_operand(&mut frames, context, &mut last_operator),
+                (Next::Done, _) => Next::Done,
             };
             if stop_at_base && frames.len() == 1 {
                 return;
             }
+        }
+        if let Some(base) = frames.first_mut()
+            && base.opterm_open
+        {
+            self.finish_node();
+            base.opterm_open = false;
         }
     }
 
@@ -350,6 +388,10 @@ impl<S: TokenSource> Parser<'_, S> {
             Shape::Pool => SyntaxKind::POOL,
             Shape::Abs => SyntaxKind::ABS_TERM,
             Shape::Arguments => SyntaxKind::ARGUMENTS,
+            Shape::TheorySet => SyntaxKind::THEORY_SET,
+            Shape::TheoryList => SyntaxKind::THEORY_LIST,
+            Shape::TheoryTuple => SyntaxKind::THEORY_TUPLE,
+            Shape::TheoryFunction => SyntaxKind::THEORY_FUNCTION,
             Shape::Base => unreachable!("the base frame has no opener"),
         };
         match retroactive {
@@ -360,6 +402,13 @@ impl<S: TokenSource> Parser<'_, S> {
         let mut frame = Frame::new(shape, wrapper, opener);
         let next = match shape {
             Shape::Pool | Shape::Arguments => self.tuple_start(&mut frame),
+            Shape::TheorySet | Shape::TheoryList | Shape::TheoryTuple | Shape::TheoryFunction => {
+                if Some(self.peek()) == frame.closer() {
+                    Next::Operator
+                } else {
+                    Next::Operand
+                }
+            }
             Shape::Abs | Shape::Base => Next::Operand,
         };
         frames.push(frame);
@@ -373,6 +422,11 @@ impl<S: TokenSource> Parser<'_, S> {
     fn tuple_start(&mut self, frame: &mut Frame) -> Next {
         frame.tuple_terms = 0;
         frame.after_comma = false;
+        // A fresh tuple holds no operand yet: an operator before its first
+        // operand has nothing to bind, and the last tuple's operand
+        // checkpoint (now inside a finished node) must not leak into this
+        // one (docs/design/syntax.md §6.2, the frame invariant).
+        frame.operand = None;
         if matches!(self.peek(), SyntaxKind::R_PAREN | SyntaxKind::SEMICOLON) {
             self.empty_node(SyntaxKind::TUPLE);
             frame.tuple_open = false;
@@ -406,6 +460,9 @@ impl<S: TokenSource> Parser<'_, S> {
         if frame.tuple_open {
             self.finish_node();
         }
+        if frame.opterm_open {
+            self.finish_node();
+        }
         if frame.node().is_some() {
             self.finish_node();
         }
@@ -427,6 +484,9 @@ impl<S: TokenSource> Parser<'_, S> {
             }
             self.close_levels_tighter_than(&mut frame, None);
             if frame.tuple_open {
+                self.finish_node();
+            }
+            if frame.opterm_open {
                 self.finish_node();
             }
             if frame.node().is_some() {
@@ -593,7 +653,12 @@ impl<S: TokenSource> Parser<'_, S> {
         let query_mark = kind == SyntaxKind::QUESTION
             && self.dialect() == Dialect::AspCore2
             && self.lookahead(1) == SyntaxKind::EOF;
-        if let Some(level) = binary_level(kind).filter(|_| !query_mark) {
+        // A binary operator needs a left operand. The empty-element paths
+        // (`(,` and a `;` before its first operand) reach here with none;
+        // the operator is then an intruder the frame's arm wraps, not a
+        // level to open (docs/design/syntax.md §6.2).
+        let has_operand = frames[top].operand.is_some();
+        if let Some(level) = binary_level(kind).filter(|_| !query_mark && has_operand) {
             if level == Level::Interval {
                 self.restricted(RestrictedForm::Interval, context);
             }
@@ -672,6 +737,9 @@ impl<S: TokenSource> Parser<'_, S> {
                     Next::Operator
                 }
             },
+            Shape::TheorySet | Shape::TheoryList | Shape::TheoryTuple | Shape::TheoryFunction => {
+                unreachable!("theory frames run on theory_after_term, not after_operand")
+            }
         }
     }
 
@@ -686,6 +754,186 @@ impl<S: TokenSource> Parser<'_, S> {
         }
         self.bump();
         self.close_frame(frames)
+    }
+
+    /// Whether the next significant token begins a theory term (grammar §5.8).
+    fn theory_term_begins(&mut self) -> bool {
+        matches!(
+            self.peek(),
+            SyntaxKind::IDENT
+                | SyntaxKind::NUMBER
+                | SyntaxKind::STRING
+                | SyntaxKind::KW_INF
+                | SyntaxKind::KW_SUP
+                | SyntaxKind::VARIABLE
+                | SyntaxKind::SPLICE
+                | SyntaxKind::L_BRACE
+                | SyntaxKind::L_BRACKET
+                | SyntaxKind::L_PAREN
+        )
+    }
+
+    /// Whether the next significant token is a theory operator — a
+    /// `THEORY_OP` run or `not` (grammar §5.8), under theory mode.
+    pub(super) fn theory_operator_here(&mut self) -> bool {
+        matches!(self.peek(), SyntaxKind::THEORY_OP | SyntaxKind::KW_NOT)
+    }
+
+    /// One theory-opterm at the next significant token, under theory
+    /// mode: leading operators, a term, and operator runs and terms
+    /// after it, one flat `THEORY_OPTERM` node per frame; false, and
+    /// nothing consumed, when neither an operator nor a term begins
+    /// there. Ends at the first token that continues nothing — greedy,
+    /// which is the guard-end rule when the caller is the guard.
+    pub(super) fn theory_opterm(&mut self) -> bool {
+        if !self.theory_term_begins() && !self.theory_operator_here() {
+            return false;
+        }
+        self.run(
+            TermContext::Theory,
+            vec![Frame::new(Shape::Base, None, NO_OPENER)],
+            Next::Operand,
+            false,
+        );
+        true
+    }
+
+    fn open_opterm(&mut self, frame: &mut Frame) {
+        if !frame.opterm_open {
+            self.start_node(SyntaxKind::THEORY_OPTERM);
+            frame.opterm_open = true;
+        }
+    }
+
+    /// The tokens that end a theory opterm or a theory list where a term
+    /// or a closer was expected. At the base a colon ends the opterm (the
+    /// element's condition follows); inside a frame it is an intruder.
+    fn theory_synchronizes(kind: SyntaxKind, at_base: bool) -> bool {
+        matches!(
+            kind,
+            SyntaxKind::EOF
+                | SyntaxKind::DOT
+                | SyntaxKind::COMMA
+                | SyntaxKind::SEMICOLON
+                | SyntaxKind::R_PAREN
+                | SyntaxKind::R_BRACKET
+                | SyntaxKind::R_BRACE
+                | SyntaxKind::NECK
+                | SyntaxKind::WEAK_NECK
+        ) || (at_base && kind == SyntaxKind::COLON)
+    }
+
+    /// Expecting a theory term: an operator run first, then the term —
+    /// a bracketed shape, a function, a constant, a variable, a splice.
+    fn theory_operand(&mut self, frames: &mut Vec<Frame>) -> Next {
+        let top = frames.len() - 1;
+        let at_base = top == 0;
+        match self.peek() {
+            SyntaxKind::THEORY_OP | SyntaxKind::KW_NOT => {
+                self.open_opterm(&mut frames[top]);
+                self.bump();
+                Next::Operand
+            }
+            SyntaxKind::L_BRACE => self.theory_bracket(frames, Shape::TheorySet),
+            SyntaxKind::L_BRACKET => self.theory_bracket(frames, Shape::TheoryList),
+            SyntaxKind::L_PAREN => self.theory_bracket(frames, Shape::TheoryTuple),
+            SyntaxKind::IDENT if self.lookahead(1) == SyntaxKind::L_PAREN => {
+                self.open_opterm(&mut frames[top]);
+                let checkpoint = self.begin_operand(&mut frames[top]);
+                self.bump();
+                self.open_frame(frames, Shape::TheoryFunction, Some(checkpoint), None)
+            }
+            SyntaxKind::IDENT
+            | SyntaxKind::NUMBER
+            | SyntaxKind::STRING
+            | SyntaxKind::KW_INF
+            | SyntaxKind::KW_SUP => {
+                self.open_opterm(&mut frames[top]);
+                self.leaf(&mut frames[top], SyntaxKind::CONSTANT_TERM)
+            }
+            SyntaxKind::VARIABLE => {
+                self.open_opterm(&mut frames[top]);
+                self.leaf(&mut frames[top], SyntaxKind::VARIABLE_TERM)
+            }
+            SyntaxKind::SPLICE => {
+                self.open_opterm(&mut frames[top]);
+                self.leaf(&mut frames[top], SyntaxKind::SPLICE_TERM)
+            }
+            kind => {
+                if Self::theory_synchronizes(kind, at_base) {
+                    self.unexpected(expected(&[Expected::Class(SyntaxClass::TheoryTerm)]), None);
+                    Next::Operator
+                } else {
+                    self.wrap_unexpected(
+                        expected(&[Expected::Class(SyntaxClass::TheoryTerm)]),
+                        None,
+                    );
+                    Next::Operand
+                }
+            }
+        }
+    }
+
+    /// A bracketed theory term: the opterm opened, the frame opened at
+    /// the operand's checkpoint.
+    fn theory_bracket(&mut self, frames: &mut Vec<Frame>, shape: Shape) -> Next {
+        let top = frames.len() - 1;
+        self.open_opterm(&mut frames[top]);
+        let checkpoint = self.begin_operand(&mut frames[top]);
+        self.open_frame(frames, shape, Some(checkpoint), None)
+    }
+
+    /// After a theory term: an operator run continues the opterm; a
+    /// comma ends the opterm and begins the next in a bracketed frame,
+    /// or ends the opterm at the base; the closer closes the frame; at
+    /// the base anything else ends the opterm; inside a frame a
+    /// synchronizing token closes it as unclosed and anything else is an
+    /// intruder, wrapped.
+    fn theory_after_term(&mut self, frames: &mut Vec<Frame>) -> Next {
+        let top = frames.len() - 1;
+        let kind = self.peek();
+        if matches!(kind, SyntaxKind::THEORY_OP | SyntaxKind::KW_NOT) {
+            self.bump();
+            return Next::Operand;
+        }
+        let shape = frames[top].shape;
+        if shape == Shape::Base {
+            return Next::Done;
+        }
+        let closer = frames[top].closer();
+        if kind == SyntaxKind::COMMA {
+            self.close_opterm(&mut frames[top]);
+            self.bump();
+            if shape == Shape::TheoryTuple && Some(self.peek()) == closer {
+                return Next::Operator;
+            }
+            return Next::Operand;
+        }
+        if Some(kind) == closer {
+            self.close_opterm(&mut frames[top]);
+            self.bump();
+            return self.close_frame(frames);
+        }
+        if Self::theory_synchronizes(kind, false) {
+            self.close_opterm(&mut frames[top]);
+            return self.unclosed(frames);
+        }
+        let mut wanted = vec![
+            Expected::Token(SyntaxKind::COMMA),
+            Expected::Class(SyntaxClass::TheoryOperator),
+        ];
+        if let Some(closer) = closer {
+            wanted.push(Expected::Token(closer));
+        }
+        self.wrap_unexpected(wanted.into_iter().collect(), None);
+        Next::Operator
+    }
+
+    fn close_opterm(&mut self, frame: &mut Frame) {
+        if frame.opterm_open {
+            self.finish_node();
+            frame.opterm_open = false;
+        }
     }
 }
 
@@ -1099,5 +1347,30 @@ mod tests {
             "(POOL ( (TUPLE (UNARY_TERM -)) ; (TUPLE (CONSTANT_TERM a)) ))"
         );
         assert_eq!(term("-$"), "(UNARY_TERM - (ERROR $))");
+    }
+
+    #[test]
+    fn a_leading_comma_before_an_operator_is_carried_not_a_panic() {
+        // `(,` and a `;` before a tuple's first operand leave it empty; a
+        // binary operator then has no left operand and is wrapped where it
+        // stands, never unwrapped into a panic and never opening a level at
+        // a stale checkpoint (docs/design/syntax.md §6.2, the frame
+        // invariant).
+        assert_eq!(term("(,&)"), "(POOL ( (TUPLE , (ERROR &)) ))");
+        assert_eq!(
+            term("(1;,..)"),
+            "(POOL ( (TUPLE (CONSTANT_TERM 1)) ; (TUPLE , (ERROR ..)) ))"
+        );
+        for t in ["(,&)", "(,*)", "(1;,..)", "(a;,+)", "(,..1)"] {
+            let source = admitted(t);
+            // Total (no panic) and lossless.
+            assert_eq!(
+                parse_term(&Lexer::new(&source, Dialect::Clingo))
+                    .syntax()
+                    .text(),
+                t
+            );
+            assert!(!diagnostics(t).is_empty());
+        }
     }
 }

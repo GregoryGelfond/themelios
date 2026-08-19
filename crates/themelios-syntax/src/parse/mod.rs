@@ -4,6 +4,7 @@
 
 mod machine;
 mod statements;
+mod theory;
 mod terms;
 
 use std::fmt;
