@@ -61,23 +61,31 @@ fn holds<T: AstNode<Language = Asp>>(parse: &Parse<T>, text: &str) {
         }
     }
     assert!(depth(&parse.syntax()) <= MAX_TREE_DEPTH as usize);
+    // Every trivia comment attaches, the bulk form yields each exactly
+    // once, and — over arbitrary input — the forward form agrees with the
+    // bulk entry and the inverse form yields the comment back
+    // (docs/design/syntax.md §9.3, §16).
     let root = parse.syntax();
-    let mut trivia_comments = 0usize;
-    for token in root
+    let trivia_comments = root
         .descendants_with_tokens()
         .filter_map(NodeOrToken::into_token)
-    {
-        if token.kind().is_comment()
-            && themelios_syntax::tree::role(&token) == themelios_syntax::tree::TokenRole::Trivia
-        {
-            trivia_comments += 1;
-            assert!(themelios_syntax::attach::attachment(&token).is_ok());
-        }
+        .filter(|token| {
+            token.kind().is_comment()
+                && themelios_syntax::tree::role(token) == themelios_syntax::tree::TokenRole::Trivia
+        })
+        .count();
+    let attachments: Vec<_> = themelios_syntax::attach::attachments(&root).collect();
+    assert_eq!(attachments.len(), trivia_comments);
+    for (comment, attachment) in &attachments {
+        assert_eq!(
+            themelios_syntax::attach::attachment(comment).as_ref(),
+            Ok(attachment)
+        );
+        assert!(
+            themelios_syntax::attach::comments(&attachment.anchor, attachment.slot)
+                .any(|c| &c == comment)
+        );
     }
-    assert_eq!(
-        themelios_syntax::attach::attachments(&root).count(),
-        trivia_comments
-    );
 }
 
 fuzz_target!(|data: &[u8]| {

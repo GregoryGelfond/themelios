@@ -265,7 +265,7 @@ impl<S: TokenSource> Parser<'_, S> {
 
     /// The loop resumed after an operand already built at the base — the
     /// atom-shaped prefix the literal parser wraps into a term when an
-    /// operator follows it (Task 9): `checkpoint` is that operand's, and
+    /// operator follows it: `checkpoint` is that operand's, and
     /// the next token is read as what follows an operand.
     pub(super) fn term_continue(&mut self, context: TermContext, checkpoint: Checkpoint) {
         let mut base = Frame::new(Shape::Base, None, NO_OPENER);
@@ -275,7 +275,7 @@ impl<S: TokenSource> Parser<'_, S> {
 
     /// An argument list at the next significant token, `(`, on its own
     /// frame — an atom's or a theory atom's arguments, whose enclosing
-    /// node is not a term (Task 9, Task 10). Returns when the frame
+    /// node is not a term. Returns when the frame
     /// closes; nothing is read at the base after it.
     pub(super) fn arguments(&mut self, context: TermContext) {
         let mut frames = vec![Frame::new(Shape::Base, None, NO_OPENER)];
@@ -957,17 +957,13 @@ impl<S: TokenSource> Parser<'_, S> {
 
 #[cfg(test)]
 mod tests {
-    use themelios_base::source::{Source, SourceId};
-
     use crate::diagnostic::{Hint, RestrictedForm, Restriction, SyntaxErrorKind};
     use crate::dialect::Dialect;
     use crate::lexer::Lexer;
     use crate::parse::{MAX_NESTING_DEPTH, MAX_TREE_DEPTH, parse_term, parse_term_value};
     use crate::tree::{SyntaxKind, sexpr};
 
-    fn admitted(text: &str) -> Source {
-        Source::new(SourceId::new(0), text.to_owned()).expect("test text admits")
-    }
+    use crate::parse::test_util::admitted;
 
     /// The shape of the term the term entry reads from `text` under the
     /// clingo dialect, with the fragment root peeled.

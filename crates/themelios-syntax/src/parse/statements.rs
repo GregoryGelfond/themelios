@@ -3,8 +3,9 @@
 //! disjunctions, bodies, conditional literals, aggregates — each a
 //! function on the call stack, its depth bounded by the grammar and
 //! never by the input; the term families below them run on the frame
-//! loop. The directives, weak constraints, and optimize statements join
-//! the dispatch in Task 11, the theory atoms and definitions in Task 10.
+//! loop. The directives, weak constraints, and optimize statements, and
+//! the theory atoms and definitions, join the dispatch from their own
+//! modules.
 
 use rowan::Checkpoint;
 
@@ -868,42 +869,11 @@ impl<S: TokenSource> Parser<'_, S> {
 
 #[cfg(test)]
 mod tests {
-    use themelios_base::source::{Source, SourceId};
-
     use crate::diagnostic::{Expected, Hint, MisplacedDoc, SyntaxErrorKind};
     use crate::dialect::Dialect;
+    use crate::parse::test_util::{admitted, kinds, member, shape};
     use crate::parse::{MAX_NESTING_DEPTH, parse};
     use crate::tree::{SyntaxKind, sexpr};
-
-    fn admitted(text: &str) -> Source {
-        Source::new(SourceId::new(0), text.to_owned()).expect("test text admits")
-    }
-
-    /// The program's shape with the root peeled: one statement's shape.
-    fn shape(text: &str) -> String {
-        let source = admitted(text);
-        let parse = parse(&source, Dialect::Clingo);
-        assert_eq!(parse.syntax().text(), text, "law 1");
-        let shape = sexpr(&parse.syntax());
-        shape
-            .strip_prefix("(PROGRAM ")
-            .and_then(|rest| rest.strip_suffix(')'))
-            .map_or(shape.clone(), str::to_owned)
-    }
-
-    fn kinds(text: &str) -> Vec<SyntaxErrorKind> {
-        let source = admitted(text);
-        parse(&source, Dialect::Clingo)
-            .diagnostics()
-            .iter()
-            .map(|d| d.kind().clone())
-            .collect()
-    }
-
-    fn member(text: &str) -> bool {
-        let source = admitted(text);
-        !parse(&source, Dialect::Clingo).has_errors()
-    }
 
     #[test]
     fn facts_and_rules_take_the_five_forms() {

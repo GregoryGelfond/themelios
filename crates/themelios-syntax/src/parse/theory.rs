@@ -317,40 +317,9 @@ impl<S: TokenSource> Parser<'_, S> {
 
 #[cfg(test)]
 mod tests {
-    use themelios_base::source::{Source, SourceId};
-
     use crate::diagnostic::{Expected, GrammarWord, SyntaxErrorKind};
-    use crate::dialect::Dialect;
-    use crate::parse::parse;
-    use crate::tree::sexpr;
 
-    fn admitted(text: &str) -> Source {
-        Source::new(SourceId::new(0), text.to_owned()).expect("test text admits")
-    }
-
-    fn shape(text: &str) -> String {
-        let source = admitted(text);
-        let parse = parse(&source, Dialect::Clingo);
-        assert_eq!(parse.syntax().text(), text, "law 1");
-        let shape = sexpr(&parse.syntax());
-        shape
-            .strip_prefix("(PROGRAM ")
-            .and_then(|rest| rest.strip_suffix(')'))
-            .map_or(shape.clone(), str::to_owned)
-    }
-
-    fn kinds(text: &str) -> Vec<SyntaxErrorKind> {
-        let source = admitted(text);
-        parse(&source, Dialect::Clingo)
-            .diagnostics()
-            .iter()
-            .map(|d| d.kind().clone())
-            .collect()
-    }
-
-    fn member(text: &str) -> bool {
-        kinds(text).is_empty()
-    }
+    use crate::parse::test_util::{kinds, member, shape};
 
     #[test]
     fn theory_atoms_take_a_name_arguments_elements_and_one_guard() {

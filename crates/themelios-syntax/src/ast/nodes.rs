@@ -150,6 +150,13 @@ const RELATION_KINDS: [SyntaxKind; 6] = [
 const SEPARATOR_KINDS: [SyntaxKind; 3] =
     [SyntaxKind::COMMA, SyntaxKind::SEMICOLON, SyntaxKind::PIPE];
 const THEORY_OPERATOR_KINDS: [SyntaxKind; 2] = [SyntaxKind::THEORY_OP, SyntaxKind::KW_NOT];
+// The landmark tokens an atom-definition's accessors read its slots
+// between (grammar §5.9): the colon before the term type, the braces
+// around the guard, the commas between segments.
+const IDENT_WITH_COLON_COMMA: [SyntaxKind; 3] =
+    [SyntaxKind::IDENT, SyntaxKind::COLON, SyntaxKind::COMMA];
+const IDENT_WITH_BRACE_COMMA: [SyntaxKind; 3] =
+    [SyntaxKind::IDENT, SyntaxKind::R_BRACE, SyntaxKind::COMMA];
 
 /// The weight, the priority, and the tuple of a weighted term list —
 /// `term [ "@" term ] [ "," terms ]` — read from `node`'s children up
@@ -191,6 +198,25 @@ fn weighted(node: &SyntaxNode) -> Weighted {
         }
     }
     weighted
+}
+
+/// The trailing comma of a bracketed list — the last comma with no term
+/// after it, the pooling comma of an empty alternative (`f(a,)`, `[a,]`)
+/// — else `None`. Shared by the tuple forms (grammar §5.1, §5.9).
+fn trailing_comma(node: &SyntaxNode) -> Option<SyntaxToken> {
+    let mut last_comma = None;
+    let mut term_after = false;
+    for element in node.children_with_tokens() {
+        match element {
+            SyntaxElement::Token(token) if token.kind() == SyntaxKind::COMMA => {
+                last_comma = Some(token);
+                term_after = false;
+            }
+            SyntaxElement::Node(_) => term_after = true,
+            SyntaxElement::Token(_) => {}
+        }
+    }
+    if term_after { None } else { last_comma }
 }
 
 // ---- statements ---------------------------------------------------------
@@ -856,11 +882,15 @@ impl AtomDefinition {
         tokens(&self.0, &[SyntaxKind::NUMBER]).find_map(NumberLit::cast)
     }
 
-    /// The term type after the colon.
+    /// The term type after the colon — the ident in the colon's segment,
+    /// so a dropped term type reads as absent rather than the next slot's
+    /// ident miscounted into it under recovery (docs/design/syntax.md §8).
     pub fn type_name(&self) -> Option<Ident> {
-        tokens(&self.0, &[SyntaxKind::IDENT])
-            .filter_map(Ident::cast)
-            .nth(1)
+        tokens(&self.0, &IDENT_WITH_COLON_COMMA)
+            .skip_while(|t| t.kind() != SyntaxKind::COLON)
+            .skip(1)
+            .take_while(|t| t.kind() != SyntaxKind::COMMA)
+            .find_map(Ident::cast)
     }
 
     /// The guard operators between the braces, in order.
@@ -868,23 +898,39 @@ impl AtomDefinition {
         tokens(&self.0, &THEORY_OPERATOR_KINDS)
     }
 
-    /// The guard's term type, when the guard part is present.
+    /// The guard's term type, when the guard part is present — the ident
+    /// in the segment after the guard's closing brace, absent when there
+    /// is no brace (docs/design/syntax.md §8).
     pub fn guard_type_name(&self) -> Option<Ident> {
-        let words: Vec<Ident> = tokens(&self.0, &[SyntaxKind::IDENT])
-            .filter_map(Ident::cast)
-            .collect();
-        if words.len() >= 4 {
-            words.get(2).cloned()
-        } else {
-            None
-        }
+        tokens(&self.0, &IDENT_WITH_BRACE_COMMA)
+            .skip_while(|t| t.kind() != SyntaxKind::R_BRACE)
+            .skip(1)
+            .skip_while(|t| t.kind() != SyntaxKind::COMMA)
+            .skip(1)
+            .take_while(|t| t.kind() != SyntaxKind::COMMA)
+            .find_map(Ident::cast)
     }
 
-    /// The occurrence word: `head`, `body`, `any`, or `directive`.
+    /// The occurrence word: `head`, `body`, `any`, or `directive` — the
+    /// ident after the last comma, so a dropped occurrence reads as absent
+    /// rather than the term type `.last()` would land on
+    /// (docs/design/syntax.md §8).
     pub fn occurrence(&self) -> Option<Ident> {
-        tokens(&self.0, &[SyntaxKind::IDENT])
-            .filter_map(Ident::cast)
-            .last()
+        let mut occurrence = None;
+        let mut after_comma = false;
+        for token in tokens(&self.0, &[SyntaxKind::COMMA, SyntaxKind::IDENT]) {
+            match token.kind() {
+                SyntaxKind::COMMA => {
+                    after_comma = true;
+                    occurrence = None;
+                }
+                SyntaxKind::IDENT if after_comma && occurrence.is_none() => {
+                    occurrence = Ident::cast(token);
+                }
+                _ => {}
+            }
+        }
+        occurrence
     }
 }
 
@@ -1410,19 +1456,7 @@ impl TheoryTuple {
 
     /// The trailing comma of `(a,)`.
     pub fn trailing_comma_token(&self) -> Option<SyntaxToken> {
-        let mut last_comma = None;
-        let mut term_after = false;
-        for element in self.0.children_with_tokens() {
-            match element {
-                SyntaxElement::Token(token) if token.kind() == SyntaxKind::COMMA => {
-                    last_comma = Some(token);
-                    term_after = false;
-                }
-                SyntaxElement::Node(_) => term_after = true,
-                SyntaxElement::Token(_) => {}
-            }
-        }
-        if term_after { None } else { last_comma }
+        trailing_comma(&self.0)
     }
 }
 
@@ -1542,19 +1576,7 @@ impl Tuple {
 
     /// The trailing comma, when the tuple has one.
     pub fn trailing_comma_token(&self) -> Option<SyntaxToken> {
-        let mut last_comma = None;
-        let mut term_after = false;
-        for element in self.0.children_with_tokens() {
-            match element {
-                SyntaxElement::Token(token) if token.kind() == SyntaxKind::COMMA => {
-                    last_comma = Some(token);
-                    term_after = false;
-                }
-                SyntaxElement::Node(_) => term_after = true,
-                SyntaxElement::Token(_) => {}
-            }
-        }
-        if term_after { None } else { last_comma }
+        trailing_comma(&self.0)
     }
 }
 

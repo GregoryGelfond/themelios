@@ -1870,8 +1870,9 @@ pub fn same_line(a: &SyntaxElement, b: &SyntaxElement) -> bool;
 /// between them, so a non-adjacent pair answers false rather than
 /// refusing.
 pub fn empty_line_between(a: &SyntaxElement, b: &SyntaxElement) -> bool;
-/// The count of line breaks in the trivia between `a`'s end and `b`'s
-/// start.
+/// The count of line breaks in the text between `a`'s end and `b`'s
+/// start — all of it, as `same_line` reads, so a significant token
+/// between a non-adjacent pair counts.
 pub fn line_breaks_between(a: &SyntaxElement, b: &SyntaxElement) -> u32;
 ```
 
@@ -2663,3 +2664,22 @@ the typed kind each lowers from (§7.1).
 | `syntax::token-source-breach` | error | `TokenSourceBreach` |
 | `syntax::form-not-allowed-here` | error | `FormNotAllowedHere` |
 | `syntax::misplaced-doc-comment` | warning | `MisplacedDocComment` |
+
+## Revisions
+
+Honesty-only refinements to this document's wording made after its gate,
+each alongside the build code that surfaced it and vetted by that task's
+reading — the amend-in-commit pattern the §6.3 query-mark precedent set.
+No behavior changed; each corrected a claim to match what the tier does.
+
+- **§4.6** (2026-08-19): the ASP-Core-2 string cost line, corrected from
+  a mistaken "quadratic" reading. It is O(token) except an ASP-Core-2
+  string's maximal-munch fallback — a final `\"` that closes the string
+  only because no later quote exists — which may scan forward to the
+  next quote or end of input; strict O(token) is impossible under §6.2's
+  maximal munch, and tiling stays O(text).
+- **§9.3** (2026-08-19): `line_breaks_between`, described as counting the
+  line breaks "in the trivia between" two elements, refined to "in the
+  text between" — the reading its positional implementation gives, where
+  a significant token between a non-adjacent pair counts, as `same_line`
+  reads.

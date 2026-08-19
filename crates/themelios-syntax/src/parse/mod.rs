@@ -7,6 +7,8 @@ mod statements;
 mod theory;
 mod directives;
 mod terms;
+#[cfg(test)]
+mod test_util;
 
 use std::fmt;
 use std::marker::PhantomData;

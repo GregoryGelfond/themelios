@@ -914,4 +914,58 @@ mod tests {
             Some(Statement::Rule(_))
         ));
     }
+
+    #[test]
+    fn an_atom_definition_reads_its_structural_slots_not_a_count_of_idents() {
+        fn atom(text: &str) -> AtomDefinition {
+            let Statement::TheoryDefinition(definition) = first_statement(text) else {
+                panic!("a #theory definition")
+            };
+            match definition.items().next() {
+                Some(TheoryDefItem::Atom(atom)) => atom,
+                other => panic!("an atom-definition, got {other:?}"),
+            }
+        }
+        fn text_of(ident: Option<Ident>) -> Option<String> {
+            ident.map(|i| i.text().to_owned())
+        }
+
+        // Well-formed with a guard: every slot reads its own token.
+        let a = atom("#theory t { &a/0 : ty, {<=}, gt, head }.");
+        assert_eq!(text_of(a.name()), Some("a".to_owned()));
+        assert_eq!(text_of(a.type_name()), Some("ty".to_owned()));
+        assert_eq!(text_of(a.guard_type_name()), Some("gt".to_owned()));
+        assert_eq!(text_of(a.occurrence()), Some("head".to_owned()));
+
+        // No guard: the guard's term type is absent; the rest hold.
+        let a = atom("#theory t { &a/0 : ty, body }.");
+        assert_eq!(text_of(a.type_name()), Some("ty".to_owned()));
+        assert!(a.guard_type_name().is_none());
+        assert_eq!(text_of(a.occurrence()), Some("body".to_owned()));
+
+        // A dropped term type is absent — not the occurrence miscounted
+        // into its slot; the occurrence still reads from the last comma.
+        let a = atom("#theory t { &a/0 : , any }.");
+        assert!(
+            a.type_name().is_none(),
+            "a dropped term type is absent, not the occurrence"
+        );
+        assert_eq!(text_of(a.occurrence()), Some("any".to_owned()));
+
+        // A dropped occurrence is absent — not the term type `.last()` lands on.
+        let a = atom("#theory t { &a/0 : ty, }.");
+        assert_eq!(text_of(a.type_name()), Some("ty".to_owned()));
+        assert!(
+            a.occurrence().is_none(),
+            "a dropped occurrence is absent, not the term type"
+        );
+
+        // A dropped term type with the guard present: the guard's term
+        // type still reads from after the brace — a count of idents (only
+        // three) would report None for it and read it as the term type.
+        let a = atom("#theory t { &a/0 : , {<=}, gt, head }.");
+        assert!(a.type_name().is_none());
+        assert_eq!(text_of(a.guard_type_name()), Some("gt".to_owned()));
+        assert_eq!(text_of(a.occurrence()), Some("head".to_owned()));
+    }
 }

@@ -474,42 +474,13 @@ impl<S: TokenSource> Parser<'_, S> {
 
 #[cfg(test)]
 mod tests {
-    use themelios_base::source::{Source, SourceId};
-
     use crate::diagnostic::{
         Expected, GrammarWord, Hint, RestrictedForm, Restriction, SyntaxErrorKind,
     };
     use crate::dialect::Dialect;
     use crate::parse::parse;
-    use crate::tree::sexpr;
 
-    fn admitted(text: &str) -> Source {
-        Source::new(SourceId::new(0), text.to_owned()).expect("test text admits")
-    }
-
-    fn shape(text: &str) -> String {
-        let source = admitted(text);
-        let parse = parse(&source, Dialect::Clingo);
-        assert_eq!(parse.syntax().text(), text, "law 1");
-        let shape = sexpr(&parse.syntax());
-        shape
-            .strip_prefix("(PROGRAM ")
-            .and_then(|rest| rest.strip_suffix(')'))
-            .map_or(shape.clone(), str::to_owned)
-    }
-
-    fn kinds(text: &str) -> Vec<SyntaxErrorKind> {
-        let source = admitted(text);
-        parse(&source, Dialect::Clingo)
-            .diagnostics()
-            .iter()
-            .map(|d| d.kind().clone())
-            .collect()
-    }
-
-    fn member(text: &str) -> bool {
-        kinds(text).is_empty()
-    }
+    use crate::parse::test_util::{admitted, kinds, member, shape};
 
     #[test]
     fn weak_constraints_carry_their_annotation_after_the_dot() {

@@ -679,8 +679,8 @@ impl<'s, S: TokenSource> Parser<'s, S> {
 
     /// The two term entries: one term under the entry's restriction,
     /// then end of input. A term entry has no program position, so a
-    /// doc comment anywhere in it is trivia with its warning. Task 8
-    /// supplies the term itself.
+    /// doc comment anywhere in it is trivia with its warning; the frame
+    /// loop reads the term itself.
     pub(super) fn term_fragment(mut self, entry: EntryPoint) -> Parse<ast::TermFragment> {
         self.builder
             .start_node(Asp::kind_to_raw(SyntaxKind::TERM_FRAGMENT));
@@ -797,7 +797,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
 
     /// Whether the next significant token begins a statement of the
     /// dialect: a directive keyword, a neck, or anything a head begins
-    /// with — Tasks 9–11 realize each family.
+    /// with.
     pub(super) fn statement_begins(&mut self) -> bool {
         matches!(
             self.peek(),
