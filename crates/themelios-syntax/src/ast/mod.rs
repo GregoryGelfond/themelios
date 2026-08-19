@@ -32,6 +32,7 @@ pub use self::tokens::{
     AstToken, Comment, CommentForm, DocLine, Ident, InvalidStringLiteral, NumberLit, Radix,
     ScriptBody, StringLit, Variable,
 };
+pub(crate) use self::tokens::{line_or_shebang_content, script_body_value};
 
 /// Declares one wrapper over one node kind: a view (`!Send`) that casts
 /// on the kind, derives its equality and hash positionally through the

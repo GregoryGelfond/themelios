@@ -8,9 +8,6 @@
 //! members: a non-member's recovery tree need not reflect the modes.
 
 use std::cell::RefCell;
-use std::fs;
-use std::path::PathBuf;
-
 use themelios_base::line::PositionRefusal;
 use themelios_base::source::{Source, SourceId};
 use themelios_base::span::ByteOffset;
@@ -21,42 +18,8 @@ use themelios_syntax::parse::{parse, parse_program};
 use themelios_syntax::token::{LexMode, Token, TokenSource};
 use themelios_syntax::tree::{SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
-/// Every corpus input with its dialect: the sidecar's, else clingo.
-fn corpus() -> Vec<(String, String, Dialect)> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus");
-    let mut found = Vec::new();
-    let mut pending = vec![dir.clone()];
-    while let Some(current) = pending.pop() {
-        for entry in fs::read_dir(&current).expect("corpus reads") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.extension().is_some_and(|e| e == "lp") {
-                let text = fs::read_to_string(&path).expect("input reads");
-                let dialect = fs::read_to_string(path.with_extension("expect"))
-                    .ok()
-                    .and_then(|sidecar| sidecar.lines().next().map(str::to_owned))
-                    .map_or(Dialect::Clingo, |line| {
-                        if line == "asp-core-2" {
-                            Dialect::AspCore2
-                        } else {
-                            Dialect::Clingo
-                        }
-                    });
-                found.push((
-                    path.strip_prefix(&dir)
-                        .expect("under corpus")
-                        .display()
-                        .to_string(),
-                    text,
-                    dialect,
-                ));
-            }
-        }
-    }
-    found.sort_by(|a, b| a.0.cmp(&b.0));
-    found
-}
+mod common;
+use common::corpus;
 
 fn tokens_of(root: &SyntaxNode) -> Vec<SyntaxToken> {
     root.descendants_with_tokens()

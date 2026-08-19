@@ -16,13 +16,14 @@ use themelios_base::line::PositionRefusal;
 use themelios_base::source::{Source, SourceId};
 use themelios_base::span::ByteOffset;
 use themelios_syntax::dialect::Dialect;
-use themelios_syntax::fusion::lex_mode_of;
+use themelios_syntax::equiv::{Certificate, equivalent};
+use themelios_syntax::fusion::{Separator, lex_mode_of, separator};
 use themelios_syntax::lexer::Lexer;
 use themelios_syntax::parse::{
     MAX_TREE_DEPTH, Parse, parse_program, parse_statement, parse_term, parse_term_value,
 };
 use themelios_syntax::token::{LexMode, Token, TokenSource};
-use themelios_syntax::tree::{Asp, AstNode, NodeOrToken, SyntaxNode, WalkEvent};
+use themelios_syntax::tree::{Asp, AstNode, NodeOrToken, SyntaxKind, SyntaxNode, WalkEvent};
 
 /// A token source that records every mode the parser requests, so the
 /// mode law can be checked against the reconstruction (§10.2, §16).
@@ -176,6 +177,35 @@ fuzz_target!(|data: &[u8]| {
                 if let Some(region) = modes.get(&at) {
                     assert_eq!(lex_mode_of(&token), *region);
                 }
+            }
+            // The certificate under re-spacing (a member's whole-text lemma,
+            // §11.2, §16, §10.1): the program re-spaced to abut every pair the
+            // oracle allows reparses to the same non-whitespace sequence, so it
+            // certifies layout-only. Members only — a non-member's ERROR tokens
+            // do not compose under re-spacing.
+            let tokens: Vec<_> = program
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(NodeOrToken::into_token)
+                .filter(|t| t.kind() != SyntaxKind::WHITESPACE)
+                .collect();
+            let mut respaced = String::new();
+            for (index, token) in tokens.iter().enumerate() {
+                respaced.push_str(token.text());
+                if let Some(next) = tokens.get(index + 1) {
+                    match separator(token, next, dialect) {
+                        Separator::Nothing => {}
+                        Separator::Whitespace => respaced.push(' '),
+                        Separator::LineBreak => respaced.push('\n'),
+                    }
+                }
+            }
+            if let Ok(respaced_source) = Source::new(SourceId::new(1), respaced) {
+                let reparsed = parse_program(&Lexer::new(&respaced_source, dialect));
+                assert_eq!(
+                    equivalent(&program, &reparsed, Certificate::LayoutOnly),
+                    Ok(())
+                );
             }
         }
         holds(&parse_statement(&lexer), &text);

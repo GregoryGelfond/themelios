@@ -3,9 +3,6 @@
 //! facts (docs/design/syntax.md §9.2, §16), over the corpus and over
 //! generated re-spacings.
 
-use std::fs;
-use std::path::PathBuf;
-
 use proptest::prelude::*;
 use themelios_base::source::{Source, SourceId};
 use themelios_syntax::attach::{Slot, attachment, attachments, comments};
@@ -13,29 +10,13 @@ use themelios_syntax::dialect::Dialect;
 use themelios_syntax::parse::parse;
 use themelios_syntax::tree::{SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, TokenRole, role};
 
+mod common;
+
 fn corpus_texts() -> Vec<(String, String)> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus");
-    let mut found = Vec::new();
-    let mut pending = vec![dir.clone()];
-    while let Some(current) = pending.pop() {
-        for entry in fs::read_dir(&current).expect("corpus reads") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.extension().is_some_and(|e| e == "lp") {
-                let text = fs::read_to_string(&path).expect("input reads");
-                found.push((
-                    path.strip_prefix(&dir)
-                        .expect("under corpus")
-                        .display()
-                        .to_string(),
-                    text,
-                ));
-            }
-        }
-    }
-    found.sort();
-    found
+    common::corpus()
+        .into_iter()
+        .map(|(name, text, _)| (name, text))
+        .collect()
 }
 
 fn root(text: &str) -> SyntaxNode {

@@ -255,6 +255,22 @@ impl AstToken for Comment {
     }
 }
 
+/// A line comment or shebang's content: its text without the trailing
+/// horizontal whitespace the line rule swallowed on its way to the line
+/// end, which is layout (docs/design/syntax.md §8.3). The single home of
+/// this rule, shared by `Comment::content` and the certificate's own
+/// content (§11.1).
+pub(crate) fn line_or_shebang_content(text: &str) -> &str {
+    text.trim_end_matches([' ', '\t', '\r'])
+}
+
+/// A script body's value: its text with the blanks and tabs before
+/// `#end` trimmed (grammar §4.8). The single home of this rule, shared by
+/// `ScriptBody::value` and the certificate's content (§11.1).
+pub(crate) fn script_body_value(text: &str) -> &str {
+    text.trim_end_matches([' ', '\t'])
+}
+
 impl Comment {
     /// The comment's content: for the line comment and the shebang, the
     /// text minus its trailing horizontal whitespace, since that
@@ -265,9 +281,7 @@ impl Comment {
     /// the certificates compare.
     pub fn content(&self) -> &str {
         match self.form() {
-            CommentForm::Line | CommentForm::Shebang => {
-                self.0.text().trim_end_matches([' ', '\t', '\r'])
-            }
+            CommentForm::Line | CommentForm::Shebang => line_or_shebang_content(self.0.text()),
             CommentForm::Block | CommentForm::Doc => self.0.text(),
         }
     }
@@ -292,6 +306,6 @@ impl ScriptBody {
     /// The region's value per grammar §4.8: the raw text with trailing
     /// blanks and tabs trimmed before `#end`.
     pub fn value(&self) -> &str {
-        self.0.text().trim_end_matches([' ', '\t'])
+        script_body_value(self.0.text())
     }
 }

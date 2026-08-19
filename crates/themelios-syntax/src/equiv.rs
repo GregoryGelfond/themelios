@@ -8,6 +8,7 @@ use std::fmt;
 
 use themelios_base::span::Location;
 
+use crate::ast::{line_or_shebang_content, script_body_value};
 use crate::parse::Parse;
 use crate::tree::{
     Asp, AstNode, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, TokenRole, role,
@@ -44,9 +45,9 @@ pub fn comment_sequence(node: &SyntaxNode) -> impl Iterator<Item = SyntaxToken> 
 fn content(token: &SyntaxToken) -> &str {
     match token.kind() {
         SyntaxKind::LINE_COMMENT | SyntaxKind::SHEBANG_COMMENT => {
-            token.text().trim_end_matches([' ', '\t', '\r'])
+            line_or_shebang_content(token.text())
         }
-        SyntaxKind::SCRIPT_BODY => token.text().trim_end_matches([' ', '\t']),
+        SyntaxKind::SCRIPT_BODY => script_body_value(token.text()),
         _ => token.text(),
     }
 }

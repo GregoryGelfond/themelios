@@ -4,9 +4,6 @@
 //! dispatch — and `canonical_spelling` idempotent and closed over the
 //! synonym pairs (docs/design/syntax.md §11, §16).
 
-use std::fs;
-use std::path::PathBuf;
-
 use proptest::prelude::*;
 use themelios_base::source::{Source, SourceId};
 use themelios_syntax::dialect::Dialect;
@@ -17,41 +14,8 @@ use themelios_syntax::tree::{
     NodeOrToken, SyntaxElement, SyntaxKind, SyntaxNode, TokenRole, WalkEvent, role,
 };
 
-fn corpus() -> Vec<(String, String, Dialect)> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus");
-    let mut found = Vec::new();
-    let mut pending = vec![dir.clone()];
-    while let Some(current) = pending.pop() {
-        for entry in fs::read_dir(&current).expect("corpus reads") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.extension().is_some_and(|e| e == "lp") {
-                let text = fs::read_to_string(&path).expect("input reads");
-                let dialect = fs::read_to_string(path.with_extension("expect"))
-                    .ok()
-                    .and_then(|sidecar| sidecar.lines().next().map(str::to_owned))
-                    .map_or(Dialect::Clingo, |line| {
-                        if line == "asp-core-2" {
-                            Dialect::AspCore2
-                        } else {
-                            Dialect::Clingo
-                        }
-                    });
-                found.push((
-                    path.strip_prefix(&dir)
-                        .expect("under corpus")
-                        .display()
-                        .to_string(),
-                    text,
-                    dialect,
-                ));
-            }
-        }
-    }
-    found.sort_by(|a, b| a.0.cmp(&b.0));
-    found
-}
+mod common;
+use common::corpus;
 
 fn admitted(text: &str, id: u32) -> Source {
     Source::new(SourceId::new(id), text.to_owned()).expect("admits")
