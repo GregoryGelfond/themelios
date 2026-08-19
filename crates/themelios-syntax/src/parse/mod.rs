@@ -5,6 +5,7 @@
 mod machine;
 mod statements;
 mod theory;
+mod directives;
 mod terms;
 
 use std::fmt;

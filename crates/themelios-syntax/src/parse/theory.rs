@@ -326,17 +326,6 @@ impl<S: TokenSource> Parser<'_, S> {
         }
         self.set_mode(LexMode::Normal);
     }
-
-    /// An identifier the grammar wants by spelling (grammar §5.9):
-    /// consumed when next.
-    fn eat_word(&mut self, word: GrammarWord) -> bool {
-        if self.peek() == SyntaxKind::IDENT && self.peek_text() == word.spelling() {
-            self.bump();
-            true
-        } else {
-            false
-        }
-    }
 }
 
 #[cfg(test)]

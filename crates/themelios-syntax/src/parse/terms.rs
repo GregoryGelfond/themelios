@@ -545,7 +545,12 @@ impl<S: TokenSource> Parser<'_, S> {
                 self.open_frame(frames, Shape::Abs, Some(checkpoint), None)
             }
             SyntaxKind::AT => {
-                self.restricted(RestrictedForm::ExternalCall, context);
+                // The `@`-call is a `TermValue`-only exclusion; the constant
+                // term admits it (docs/design/syntax.md §6.2, grammar §5.9,
+                // §5.10).
+                if context == TermContext::TermValue {
+                    self.restricted(RestrictedForm::ExternalCall, context);
+                }
                 let checkpoint = self.begin_operand(&mut frames[top]);
                 self.start_node_at(checkpoint, SyntaxKind::EXTERNAL_TERM);
                 self.bump();

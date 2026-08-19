@@ -120,19 +120,18 @@ impl<S: TokenSource> Parser<'_, S> {
     pub(super) fn statement(&mut self, checkpoint: Checkpoint) {
         self.enter_statement();
         match self.peek() {
-            SyntaxKind::WEAK_NECK
-            | SyntaxKind::KW_MINIMIZE
-            | SyntaxKind::KW_MAXIMIZE
-            | SyntaxKind::KW_SHOW
-            | SyntaxKind::KW_PROJECT
-            | SyntaxKind::KW_DEFINED
-            | SyntaxKind::KW_EDGE
-            | SyntaxKind::KW_HEURISTIC
-            | SyntaxKind::KW_EXTERNAL
-            | SyntaxKind::KW_CONST
-            | SyntaxKind::KW_SCRIPT
-            | SyntaxKind::KW_INCLUDE
-            | SyntaxKind::KW_PROGRAM => self.recover_program_level(),
+            SyntaxKind::WEAK_NECK => self.weak_constraint(checkpoint),
+            SyntaxKind::KW_MINIMIZE | SyntaxKind::KW_MAXIMIZE => self.optimize(checkpoint),
+            SyntaxKind::KW_SHOW => self.show(checkpoint),
+            SyntaxKind::KW_PROJECT => self.project(checkpoint),
+            SyntaxKind::KW_DEFINED => self.defined(checkpoint),
+            SyntaxKind::KW_EDGE => self.edge(checkpoint),
+            SyntaxKind::KW_HEURISTIC => self.heuristic(checkpoint),
+            SyntaxKind::KW_EXTERNAL => self.external(checkpoint),
+            SyntaxKind::KW_CONST => self.constant(checkpoint),
+            SyntaxKind::KW_SCRIPT => self.script(checkpoint),
+            SyntaxKind::KW_INCLUDE => self.include(checkpoint),
+            SyntaxKind::KW_PROGRAM => self.program_statement(checkpoint),
             SyntaxKind::KW_THEORY => self.theory_definition(checkpoint),
             _ => self.rule(checkpoint),
         }
