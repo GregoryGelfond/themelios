@@ -191,6 +191,18 @@ impl<T: AstNode<Language = Asp>> Parse<T> {
             span: span_of(range),
         }
     }
+
+    /// The denoted text of a string literal, under this parse's dialect
+    /// — the door that cannot be handed the wrong one
+    /// (docs/design/syntax.md §3). Refuses as `StringLit::value` does: a
+    /// spelling that is not the dialect's rule, which only a foreign
+    /// token source can supply. O(token).
+    pub fn string_value(
+        &self,
+        literal: &ast::StringLit,
+    ) -> Result<String, ast::InvalidStringLiteral> {
+        literal.value(self.dialect)
+    }
 }
 
 impl<T: AstNode<Language = Asp>> Clone for Parse<T> {
