@@ -540,13 +540,13 @@ pub(crate) fn classify_error(
     }
 }
 
-/// The defect of a malformed string token: unterminated at end of
-/// input; broken by a raw line break (the clingo rule); or, when the
-/// token closed, the first bad escape, at the backslash.
+/// The defect of a malformed string token (grammar §4.4, §6.2): the
+/// first bad escape, at the backslash; a raw line break under the
+/// clingo rule; or unterminated at end of input — a lone trailing
+/// backslash among them, since it never closed (§4.5, §6.5).
 fn string_defect(text: &str, following: Option<char>, dialect: Dialect) -> LexicalDefect {
     use crate::diagnostic::{StringDefect, SyntaxErrorKind};
     let bytes = text.as_bytes();
-    let closed = bytes.len() > 1 && bytes[bytes.len() - 1] == b'"' && !text.ends_with("\\\"");
     if dialect == Dialect::Clingo {
         let mut i = 1;
         while i < bytes.len() {
@@ -563,21 +563,29 @@ fn string_defect(text: &str, following: Option<char>, dialect: Dialect) -> Lexic
                         };
                     }
                     None => {
-                        let bad = following.unwrap_or('\n');
-                        return LexicalDefect {
-                            kind: SyntaxErrorKind::MalformedString {
-                                defect: StringDefect::InvalidEscape(bad),
-                            },
-                            primary: i..i + 1,
-                            literal_extent: true,
-                        };
+                        // The backslash is the token's last byte. When a real
+                        // character follows it — a raw line break, `\` at the
+                        // end of its line — that character is the bad escape.
+                        // At true end of input none does: the string simply
+                        // never closed (the authority reads it so too), so it
+                        // falls through to `Unterminated` below.
+                        if let Some(bad) = following {
+                            return LexicalDefect {
+                                kind: SyntaxErrorKind::MalformedString {
+                                    defect: StringDefect::InvalidEscape(bad),
+                                },
+                                primary: i..i + 1,
+                                literal_extent: true,
+                            };
+                        }
+                        break;
                     }
                 }
             } else {
                 i += char_len(text, i);
             }
         }
-        if !closed && following == Some('\n') {
+        if following == Some('\n') {
             return LexicalDefect {
                 kind: SyntaxErrorKind::MalformedString {
                     defect: StringDefect::RawLineBreak,
@@ -762,6 +770,30 @@ mod tests {
         );
         assert_eq!(kinds(&normal("\"abc")), [ERROR]);
         assert_eq!(texts(&normal("\"a\\\nb\"")), ["\"a\\", "\n", "b", "\""]);
+    }
+
+    #[test]
+    fn a_trailing_backslash_classifies_by_what_follows_it() {
+        use crate::diagnostic::{StringDefect, SyntaxErrorKind::MalformedString};
+        // clingo `"abc\` at true end of input: no line ends it, so the
+        // string simply never closed — Unterminated, as the authority reads
+        // it, not a fabricated "backslash at the end of its line"
+        // (docs/design/syntax.md §4.5, §6.5).
+        let defect = classify_error("\"abc\\", None, LexMode::Normal, Dialect::Clingo);
+        assert!(matches!(
+            defect.kind,
+            MalformedString {
+                defect: StringDefect::Unterminated
+            }
+        ));
+        // A real line break after the backslash is the bad escape it names.
+        let defect = classify_error("\"abc\\", Some('\n'), LexMode::Normal, Dialect::Clingo);
+        assert!(matches!(
+            defect.kind,
+            MalformedString {
+                defect: StringDefect::InvalidEscape('\n')
+            }
+        ));
     }
 
     #[test]

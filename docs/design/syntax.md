@@ -469,9 +469,15 @@ certificates (§11): a formatter carries them verbatim.
 
 ### 4.6 Computational cost
 
-`Lexer::new` is O(1). `token_at` is O(length of the token it returns);
-tiling a text is O(text). The lexer allocates nothing: a `Token` borrows
-the source. Memory is O(1) beyond the source it borrows.
+`Lexer::new` is O(1). `token_at` is O(length of the token it returns),
+with one dialect-inherent exception: an ASP-Core-2 string that closes by
+maximal munch — a `\"` taken as the closing quote because no later quote
+exists to escape it (grammar §6.2) — is decided by a scan ahead to that
+next quote or to end of input, an added cost linear in the text from the
+`\"` onward. A trailing `\"` cannot be judged escape-or-closer without
+it. The scans do not compound: tiling a text is still O(text). The lexer
+allocates nothing: a `Token` borrows the source. Memory is O(1) beyond
+the source it borrows.
 
 ## 5. The tree
 

@@ -17,8 +17,8 @@
 use rowan::Checkpoint;
 
 use crate::diagnostic::{
-    Expected, ExpectedSet, Hint, Related, RelatedLocus, RestrictedForm, Restriction, SyntaxClass,
-    SyntaxError, SyntaxErrorKind,
+    Expected, Hint, Related, RelatedLocus, RestrictedForm, Restriction, SyntaxClass, SyntaxError,
+    SyntaxErrorKind,
 };
 use crate::dialect::Dialect;
 use crate::token::TokenSource;
@@ -36,10 +36,8 @@ pub(super) enum TermContext {
     /// Grammar §5.1's `term`: every form.
     Term,
     /// No variable, no anonymous variable, no pool, no interval, no
-    /// pooled absolute value.
-    // Emitted by the `#const` statement (grammar §5.9), which lands with
-    // the directive family; unconstructed until then.
-    #[allow(dead_code)]
+    /// pooled absolute value: the `#const` statement's value term
+    /// (grammar §5.9, §6.2), which the directive family constructs.
     ConstantTerm,
     /// The constant term's exclusions and the `@`-call besides.
     TermValue,
@@ -194,11 +192,10 @@ enum Next {
     Done,
 }
 
-/// The tokens that end a term or a list where an operand or a closer was
-/// expected — the loop's synchronization set (docs/design/syntax.md §6.7):
-/// nothing is consumed at them; a token outside this set is an intruder,
-/// wrapped, and the frame continues.
-fn synchronizes(kind: SyntaxKind) -> bool {
+/// The synchronizers common to the term loop and the theory loop: end of
+/// input, the statement and list separators, the three closers, and the
+/// necks. Each loop adds its own to these (docs/design/syntax.md §6.7).
+fn core_synchronizes(kind: SyntaxKind) -> bool {
     matches!(
         kind,
         SyntaxKind::EOF
@@ -208,16 +205,21 @@ fn synchronizes(kind: SyntaxKind) -> bool {
             | SyntaxKind::R_PAREN
             | SyntaxKind::R_BRACKET
             | SyntaxKind::R_BRACE
-            | SyntaxKind::PIPE
-            | SyntaxKind::COLON
             | SyntaxKind::NECK
             | SyntaxKind::WEAK_NECK
     )
 }
 
-fn expected(items: &[Expected]) -> ExpectedSet {
-    items.iter().copied().collect()
+/// The tokens that end a term or a list where an operand or a closer was
+/// expected — the loop's synchronization set (docs/design/syntax.md §6.7):
+/// nothing is consumed at them; a token outside this set is an intruder,
+/// wrapped, and the frame continues. The absolute-value pipe and the
+/// condition colon end a term besides the core set.
+fn synchronizes(kind: SyntaxKind) -> bool {
+    core_synchronizes(kind) || matches!(kind, SyntaxKind::PIPE | SyntaxKind::COLON)
 }
+
+use super::machine::expected;
 
 /// The base frame's opener: it has none.
 const NO_OPENER: (SyntaxKind, u32, u32) = (SyntaxKind::EOF, 0, 0);
@@ -303,6 +305,15 @@ impl<S: TokenSource> Parser<'_, S> {
                 (Next::Done, _) => Next::Done,
             };
             if stop_at_base && frames.len() == 1 {
+                // The early return bypasses the base-opterm close below. That
+                // is sound only while no `stop_at_base` caller opens a base
+                // opterm — an opterm opens under `Theory` alone, and the sole
+                // `stop_at_base` caller (`arguments`) is never `Theory`. The
+                // assert pins the pairing so a future caller cannot break it.
+                debug_assert!(
+                    !frames[0].opterm_open,
+                    "a stop_at_base run must not leave the base opterm open",
+                );
                 return;
             }
         }
@@ -384,22 +395,15 @@ impl<S: TokenSource> Parser<'_, S> {
             self.peek_start(),
             self.peek_start() + self.peek_len(),
         );
-        let node = match shape {
-            Shape::Pool => SyntaxKind::POOL,
-            Shape::Abs => SyntaxKind::ABS_TERM,
-            Shape::Arguments => SyntaxKind::ARGUMENTS,
-            Shape::TheorySet => SyntaxKind::THEORY_SET,
-            Shape::TheoryList => SyntaxKind::THEORY_LIST,
-            Shape::TheoryTuple => SyntaxKind::THEORY_TUPLE,
-            Shape::TheoryFunction => SyntaxKind::THEORY_FUNCTION,
-            Shape::Base => unreachable!("the base frame has no opener"),
-        };
+        let mut frame = Frame::new(shape, wrapper, opener);
+        // The node kind is the frame's own (`Frame::node`); `open_frame`
+        // never opens the base, whose node is `None`.
+        let node = frame.node().expect("an opened bracket frame has a node");
         match retroactive {
             Some(checkpoint) => self.start_node_at(checkpoint, node),
             None => self.start_node(node),
         }
         self.bump();
-        let mut frame = Frame::new(shape, wrapper, opener);
         let next = match shape {
             Shape::Pool | Shape::Arguments => self.tuple_start(&mut frame),
             Shape::TheorySet | Shape::TheoryList | Shape::TheoryTuple | Shape::TheoryFunction => {
@@ -452,11 +456,12 @@ impl<S: TokenSource> Parser<'_, S> {
         }
     }
 
-    /// Closes the top frame's levels, tuple, node, and wrapper, and pops
-    /// it; the enclosing frame's operand is then complete.
-    fn close_frame(&mut self, frames: &mut Vec<Frame>) -> Next {
-        let mut frame = frames.pop().expect("a bracket frame is open");
-        self.close_levels_tighter_than(&mut frame, None);
+    /// Closes a popped frame's open nodes, innermost first: its open
+    /// precedence levels, its tuple, its opterm, its own node, and its
+    /// wrapper. A dangling unary run is the caller's to close — only the
+    /// refusal `unwind` meets one.
+    fn finish_frame(&mut self, frame: &mut Frame) {
+        self.close_levels_tighter_than(frame, None);
         if frame.tuple_open {
             self.finish_node();
         }
@@ -469,6 +474,13 @@ impl<S: TokenSource> Parser<'_, S> {
         if frame.wrapper.is_some() {
             self.finish_node();
         }
+    }
+
+    /// Closes the top frame's levels, tuple, node, and wrapper, and pops
+    /// it; the enclosing frame's operand is then complete.
+    fn close_frame(&mut self, frames: &mut Vec<Frame>) -> Next {
+        let mut frame = frames.pop().expect("a bracket frame is open");
+        self.finish_frame(&mut frame);
         let enclosing = frames.last_mut().expect("the base frame stays");
         self.complete_operand(enclosing);
         Next::Operator
@@ -482,19 +494,7 @@ impl<S: TokenSource> Parser<'_, S> {
             if frame.unary_open {
                 self.finish_node();
             }
-            self.close_levels_tighter_than(&mut frame, None);
-            if frame.tuple_open {
-                self.finish_node();
-            }
-            if frame.opterm_open {
-                self.finish_node();
-            }
-            if frame.node().is_some() {
-                self.finish_node();
-            }
-            if frame.wrapper.is_some() {
-                self.finish_node();
-            }
+            self.finish_frame(&mut frame);
         }
     }
 
@@ -786,7 +786,7 @@ impl<S: TokenSource> Parser<'_, S> {
     }
 
     /// Whether the next significant token begins a theory term (grammar §5.8).
-    fn theory_term_begins(&mut self) -> bool {
+    pub(super) fn theory_term_begins(&mut self) -> bool {
         matches!(
             self.peek(),
             SyntaxKind::IDENT
@@ -838,18 +838,7 @@ impl<S: TokenSource> Parser<'_, S> {
     /// or a closer was expected. At the base a colon ends the opterm (the
     /// element's condition follows); inside a frame it is an intruder.
     fn theory_synchronizes(kind: SyntaxKind, at_base: bool) -> bool {
-        matches!(
-            kind,
-            SyntaxKind::EOF
-                | SyntaxKind::DOT
-                | SyntaxKind::COMMA
-                | SyntaxKind::SEMICOLON
-                | SyntaxKind::R_PAREN
-                | SyntaxKind::R_BRACKET
-                | SyntaxKind::R_BRACE
-                | SyntaxKind::NECK
-                | SyntaxKind::WEAK_NECK
-        ) || (at_base && kind == SyntaxKind::COLON)
+        core_synchronizes(kind) || (at_base && kind == SyntaxKind::COLON)
     }
 
     /// Expecting a theory term: an operator run first, then the term —
@@ -1000,6 +989,26 @@ mod tests {
             .iter()
             .map(|d| d.kind().clone())
             .collect()
+    }
+
+    #[test]
+    fn a_merged_missing_operand_and_missing_closer_keeps_the_opener_locus() {
+        use crate::diagnostic::RelatedLocus;
+        // `f(a,` at end of input: the missing operand after `,` and the
+        // missing `)` land at the same position and merge; the merge keeps
+        // the "to close (" locus the unclosed frame carries, which a bare
+        // `f(a` also keeps (docs/design/syntax.md §6.7).
+        let source = admitted("f(a,");
+        let parse = parse_term(&Lexer::new(&source, Dialect::Clingo));
+        let loci: Vec<RelatedLocus> = parse
+            .diagnostics()
+            .iter()
+            .flat_map(|d| d.related().iter().map(|related| related.locus))
+            .collect();
+        assert!(
+            loci.contains(&RelatedLocus::ToClose(SyntaxKind::L_PAREN)),
+            "the merged diagnostic keeps the opener locus; got {loci:?}"
+        );
     }
 
     #[test]

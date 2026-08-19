@@ -445,6 +445,50 @@ mod tests {
     }
 
     #[test]
+    fn an_unlawful_token_length_landing_mid_character_does_not_panic() {
+        // The slice law is trusted, not checked (§4.3); a foreign source may
+        // return a token whose byte length lands inside a character. Every
+        // entry point stays total on any input, unlawful sources included
+        // (§13): the diagnostic site reads the following character by `get`,
+        // so the parse yields a tree rather than panicking.
+        struct MidChar<'a>(Lexer<'a>);
+        impl TokenSource for MidChar<'_> {
+            fn id(&self) -> SourceId {
+                self.0.id()
+            }
+            fn dialect(&self) -> Dialect {
+                Dialect::Clingo
+            }
+            fn text(&self) -> &str {
+                self.0.text()
+            }
+            fn token_at(
+                &self,
+                at: ByteOffset,
+                _mode: LexMode,
+            ) -> Result<Token<'_>, PositionRefusal> {
+                if at.get() == 0 {
+                    // Length one over "é" (two bytes): `at + len` is byte 1,
+                    // inside the character — within tiling bounds, but a
+                    // slice-law violation the parser does not check.
+                    Ok(Token {
+                        kind: SyntaxKind::ERROR,
+                        text: "x",
+                    })
+                } else {
+                    Ok(Token {
+                        kind: SyntaxKind::EOF,
+                        text: "",
+                    })
+                }
+            }
+        }
+        let source = admitted("é");
+        let parse = parse_program(&MidChar(Lexer::new(&source, Dialect::Clingo)));
+        assert_eq!(parse.syntax().kind(), SyntaxKind::PROGRAM);
+    }
+
+    #[test]
     fn the_fragment_entries_yield_their_container_roots_on_empty_input() {
         let source = admitted("  ");
         let statement = parse_statement(&Lexer::new(&source, Dialect::Clingo));

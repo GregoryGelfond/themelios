@@ -20,6 +20,12 @@ use crate::tree::{Asp, SyntaxKind};
 
 use super::{EntryPoint, Parse};
 
+/// An expected set from a slice of what may stand — the parser families'
+/// one adapter for the recurring `expected(&[…])` at a diagnostic site.
+pub(super) fn expected(items: &[Expected]) -> ExpectedSet {
+    items.iter().copied().collect()
+}
+
 /// The parser over one token source: a cursor, a builder, and the
 /// diagnostics it accumulates. Constructed per parse and dropped with
 /// it — no state outlives a call (docs/design/syntax.md §12.1).
@@ -214,7 +220,14 @@ impl<'s, S: TokenSource> Parser<'s, S> {
     pub(super) fn peek_text(&mut self) -> &'s str {
         let peeked = self.peek_token();
         let start = peeked.start as usize;
-        &self.text[start..start + peeked.len as usize]
+        // Slice by `get`, not by index: a lawful source lands `start + len`
+        // on a char boundary of the text, but the slice law is trusted, not
+        // checked (§4.3), and every entry point stays total on any input,
+        // unlawful token sources included (§13). An unlawful span reads as
+        // the empty string.
+        self.text
+            .get(start..start + peeked.len as usize)
+            .unwrap_or("")
     }
 
     /// The kind of the `n`th significant token ahead (`lookahead(0)` is
@@ -250,14 +263,6 @@ impl<'s, S: TokenSource> Parser<'s, S> {
 
     pub(super) fn at_end(&mut self) -> bool {
         self.peek() == SyntaxKind::EOF
-    }
-
-    /// The mode the next token is requested under. The setter's query
-    /// twin; no reader consumes it yet (the theory family drives the mode
-    /// through `set_mode` alone), so the allowance stands until one does.
-    #[allow(dead_code)]
-    pub(super) fn mode(&self) -> LexMode {
-        self.mode
     }
 
     /// Sets the mode for the tokens that follow. A token peeked under
@@ -324,7 +329,10 @@ impl<'s, S: TokenSource> Parser<'s, S> {
 
     fn lexical_diagnostic(&mut self, text: &str, start: u32) {
         let end = start as usize + text.len();
-        let following = self.text[end..].chars().next();
+        // `get`, not index: an unlawful foreign source (§4.3) can place `end`
+        // mid-character; the crate stays total on any input (§13), and the
+        // following character is simply unknown across such a break.
+        let following = self.text.get(end..).and_then(|rest| rest.chars().next());
         let defect = classify_error(text, following, self.mode, self.dialect);
         let from = start + u32::try_from(defect.primary.start).unwrap_or(0);
         let to = start + u32::try_from(defect.primary.end).unwrap_or(0);
@@ -447,6 +455,13 @@ impl<'s, S: TokenSource> Parser<'s, S> {
             && last.primary() == location
             && last.extend_expected(&expected, hint)
         {
+            // The merge folds this call's expectations into the diagnostic
+            // already standing at this position; its related locus merges
+            // too, so a missing closer merged with a missing operand keeps
+            // the "to close (" locus it carries (docs/design/syntax.md §6.7).
+            if let Some(related) = related {
+                last.add_related(related);
+            }
             return;
         }
         let kind = match peeked.kind {
@@ -672,6 +687,13 @@ impl<'s, S: TokenSource> Parser<'s, S> {
         self.skipping = true;
         self.eat_trivia();
         self.term_at_entry(entry);
+        // A depth refusal silenced the lexical diagnostics and left the mode
+        // where the refusal fell; restore both before the trailing check, as
+        // the statement loops do, so a trailing lexical `ERROR` is still
+        // diagnosed (docs/design/syntax.md §6.6).
+        if self.depth_refused() {
+            self.end_statement_after_refusal();
+        }
         self.expect_end_of_input();
         self.builder.finish_node();
         self.finish(entry)

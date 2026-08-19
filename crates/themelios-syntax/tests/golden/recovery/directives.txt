@@ -21,17 +21,14 @@ PROGRAM@0..48
     KW_INCLUDE@23..31 "#include"
     DOT@31..32 "."
   WHITESPACE@32..33 " "
-  PROGRAM_STATEMENT@33..44
+  PROGRAM_STATEMENT@33..47
     KW_PROGRAM@33..41 "#program"
     WHITESPACE@41..42 " "
     IDENT@42..43 "p"
-    PARAMETERS@43..44
+    PARAMETERS@43..46
       L_PAREN@43..44 "("
-  RULE@44..47
-    LITERAL@44..45
-      CONSTANT_TERM@44..45
+      ERROR@44..45
         NUMBER@44..45 "1"
-    ERROR@45..46
       R_PAREN@45..46 ")"
     DOT@46..47 "."
   WHITESPACE@47..48 "\n"
@@ -39,5 +36,4 @@ PROGRAM@0..48
 syntax::unexpected-token: UnexpectedToken { expected: {Class(Term)}, found: DOT, hint: None }
 syntax::unexpected-token: UnexpectedToken { expected: {Class(Term)}, found: DOT, hint: None }
 syntax::unexpected-token: UnexpectedToken { expected: {Token(STRING), Token(LT)}, found: DOT, hint: None }
-syntax::unexpected-token: UnexpectedToken { expected: {Token(DOT), Token(R_PAREN)}, found: NUMBER, hint: None }
-syntax::unexpected-token: UnexpectedToken { expected: {Token(DOT), Token(NECK), Token(EQ), Token(NEQ), Token(LT), Token(LE), Token(GT), Token(GE)}, found: R_PAREN, hint: None }
+syntax::unexpected-token: UnexpectedToken { expected: {Token(R_PAREN)}, found: NUMBER, hint: None }

@@ -8,16 +8,14 @@
 
 use rowan::Checkpoint;
 
-use crate::diagnostic::{Expected, ExpectedSet, GrammarWord, SyntaxClass};
+use crate::diagnostic::{Expected, GrammarWord, SyntaxClass};
 use crate::token::{LexMode, TokenSource};
 use crate::tree::SyntaxKind;
 
 use super::machine::Parser;
 use super::terms::TermContext;
 
-fn expected(items: &[Expected]) -> ExpectedSet {
-    items.iter().copied().collect()
-}
+use super::machine::expected;
 
 impl<S: TokenSource> Parser<'_, S> {
     /// Grammar §5.8's `theory-atom`, its node opened at `start` (around
@@ -132,21 +130,10 @@ impl<S: TokenSource> Parser<'_, S> {
         true
     }
 
+    /// Whether an opterm begins here — a theory term, or a leading theory
+    /// operator run (grammar §5.8).
     fn theory_opterm_begins(&mut self) -> bool {
-        self.theory_operator_here()
-            || matches!(
-                self.peek(),
-                SyntaxKind::IDENT
-                    | SyntaxKind::NUMBER
-                    | SyntaxKind::STRING
-                    | SyntaxKind::KW_INF
-                    | SyntaxKind::KW_SUP
-                    | SyntaxKind::VARIABLE
-                    | SyntaxKind::SPLICE
-                    | SyntaxKind::L_BRACE
-                    | SyntaxKind::L_BRACKET
-                    | SyntaxKind::L_PAREN
-            )
+        self.theory_term_begins() || self.theory_operator_here()
     }
 
     /// The guard after the elements, greedy (docs/design/syntax.md §6.3):

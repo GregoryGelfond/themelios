@@ -4,16 +4,14 @@
 
 use rowan::Checkpoint;
 
-use crate::diagnostic::{Expected, ExpectedSet, GrammarWord, Hint, SyntaxClass};
+use crate::diagnostic::{Expected, GrammarWord, Hint, SyntaxClass};
 use crate::token::{LexMode, TokenSource};
 use crate::tree::SyntaxKind;
 
 use super::machine::Parser;
 use super::terms::TermContext;
 
-fn expected(items: &[Expected]) -> ExpectedSet {
-    items.iter().copied().collect()
-}
+use super::machine::expected;
 
 /// The four families whose dot is followed by a bracketed annotation
 /// (grammar §5.11), each with its own interior (docs/design/syntax.md
@@ -388,6 +386,9 @@ impl<S: TokenSource> Parser<'_, S> {
     pub(super) fn script(&mut self, checkpoint: Checkpoint) {
         self.start_node_at(checkpoint, SyntaxKind::SCRIPT_STATEMENT);
         self.bump();
+        // `&`, not `&&`: run all three `expect`s even when an earlier one
+        // fails, so a malformed header still places each token it does have
+        // and reports every miss (docs/design/syntax.md §6.7).
         let header = self.expect(SyntaxKind::L_PAREN)
             & self.expect(SyntaxKind::IDENT)
             & self.expect(SyntaxKind::R_PAREN);
@@ -446,7 +447,23 @@ impl<S: TokenSource> Parser<'_, S> {
                 }
             }
             if !self.eat(SyntaxKind::R_PAREN) {
-                self.expected_token(SyntaxKind::R_PAREN);
+                if self.at_end() || self.peek() == SyntaxKind::DOT {
+                    self.expected_token(SyntaxKind::R_PAREN);
+                } else {
+                    // A token that is neither a parameter nor the closer —
+                    // `#program p(1)`, the numeral where an identifier is
+                    // wanted: skip it and any that follow into one `ERROR`,
+                    // up to the closer or the statement's own dot, so the
+                    // directive owns its extent and synchronizes at its dot
+                    // instead of spilling the tail into a following rule
+                    // (docs/design/syntax.md §6.7).
+                    self.skip_into_error(
+                        expected(&[Expected::Token(SyntaxKind::R_PAREN)]),
+                        None,
+                        &[SyntaxKind::R_PAREN, SyntaxKind::DOT],
+                    );
+                    self.eat(SyntaxKind::R_PAREN);
+                }
             }
             self.finish_node();
         }

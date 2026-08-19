@@ -8,7 +8,7 @@
 
 use rowan::Checkpoint;
 
-use crate::diagnostic::{Expected, ExpectedSet, Hint, SyntaxClass};
+use crate::diagnostic::{Expected, Hint, SyntaxClass};
 use crate::dialect::Dialect;
 use crate::token::TokenSource;
 use crate::tree::SyntaxKind;
@@ -100,9 +100,7 @@ fn aggregate_opener(kind: SyntaxKind) -> bool {
     )
 }
 
-fn expected(items: &[Expected]) -> ExpectedSet {
-    items.iter().copied().collect()
-}
+use super::machine::expected;
 
 const RELATIONS: [Expected; 6] = [
     Expected::Token(SyntaxKind::LT),
@@ -114,9 +112,9 @@ const RELATIONS: [Expected; 6] = [
 ];
 
 impl<S: TokenSource> Parser<'_, S> {
-    /// One statement, its node opened at `checkpoint` (before its docs).
-    /// The families of Tasks 10–11 replace their arms; until then their
-    /// statement starts recover at program level.
+    /// One statement, its node opened at `checkpoint` (before its docs):
+    /// dispatched to its family by the first significant token, or a rule
+    /// when no directive keyword stands there (grammar §5.7, §5.9).
     pub(super) fn statement(&mut self, checkpoint: Checkpoint) {
         self.enter_statement();
         match self.peek() {
@@ -376,6 +374,14 @@ impl<S: TokenSource> Parser<'_, S> {
                         continue;
                     }
                 }
+            }
+            // A depth refusal inside the element consumed the rest of the
+            // statement, its dot included; the separator check below must not
+            // run on the next statement's first token, or it reports a
+            // spurious missing separator there — one refusal, one diagnostic
+            // (docs/design/syntax.md §6.6, §4.5), as the sibling loops hold.
+            if self.depth_refused() {
+                break;
             }
             match self.peek() {
                 SyntaxKind::COMMA | SyntaxKind::SEMICOLON => self.bump(),

@@ -40,6 +40,12 @@ impl SyntaxError {
         self
     }
 
+    /// Adds a related locus in place — for a diagnostic already pushed that
+    /// a merge extends. Set semantics, as `with_related`.
+    pub(crate) fn add_related(&mut self, related: Related) {
+        self.related.insert(related);
+    }
+
     /// What happened, typed. Total, O(1).
     pub fn kind(&self) -> &SyntaxErrorKind {
         &self.kind
