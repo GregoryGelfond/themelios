@@ -1,0 +1,2 @@
+0..5 "% bla" -> Dangling PROGRAM@0..12 "% bla\n% blub"
+6..12 "% blub" -> Dangling PROGRAM@0..12 "% bla\n% blub"

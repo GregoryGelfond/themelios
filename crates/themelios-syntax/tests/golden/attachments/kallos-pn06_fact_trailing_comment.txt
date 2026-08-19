@@ -1,0 +1,1 @@
+22..27 "% bla" -> Trailing RULE@1..17 "pred(something)."

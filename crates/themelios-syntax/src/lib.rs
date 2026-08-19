@@ -27,4 +27,5 @@ pub mod lexer;
 pub mod parse;
 pub mod diagnostic;
 pub mod ast;
+pub mod attach;
 pub mod fusion;

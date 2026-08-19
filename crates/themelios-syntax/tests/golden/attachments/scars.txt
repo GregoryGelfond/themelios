@@ -1,0 +1,7 @@
+5..18 "% after comma" -> Trailing COMMA@3..4 ","
+22..34 "% before two" -> Leading CONSTANT_TERM@36..37 "2"
+40..50 "% trailing" -> Trailing RULE@0..39 "p(1, % after comma\n   % before two\n 2)."
+52..63 "% above gap" -> Dangling PROGRAM@0..133 "p(1, % after comma\n   % before two\n 2). % trailing\n\n% above gap\n\n% leads q\nq :- a\n  % leads pipe\n  | b. r(|X\n % dangling in abs\n |).\n"
+65..74 "% leads q" -> Leading RULE@75..103 "q :- a\n  % leads pipe\n  | b."
+84..96 "% leads pipe" -> Leading LITERAL@99..102 "| b"
+110..127 "% dangling in abs" -> Dangling ABS_TERM@106..130 "|X\n % dangling in abs\n |"

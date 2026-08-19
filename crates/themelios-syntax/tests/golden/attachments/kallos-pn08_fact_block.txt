@@ -1,0 +1,1 @@
+0..12 "% fact block" -> Leading RULE@14..19 "a(1)."

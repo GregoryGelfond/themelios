@@ -1,8 +1,9 @@
 //! Arbitrary bytes under both dialects and every entry point: no panic,
 //! the tree's text is the input, the parse terminates, `has_errors` and
-//! `is_incomplete` are consistent with the diagnostics, and the tree's
-//! depth respects the bound (docs/design/syntax.md §16). Attachment,
-//! the certificate, and the mode law join this target in Tasks 14–16.
+//! `is_incomplete` are consistent with the diagnostics, every trivia
+//! comment attaches, and the tree's depth respects the bound
+//! (docs/design/syntax.md §16). The certificate and the mode law join
+//! this target in Tasks 15–16.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -60,6 +61,23 @@ fn holds<T: AstNode<Language = Asp>>(parse: &Parse<T>, text: &str) {
         }
     }
     assert!(depth(&parse.syntax()) <= MAX_TREE_DEPTH as usize);
+    let root = parse.syntax();
+    let mut trivia_comments = 0usize;
+    for token in root
+        .descendants_with_tokens()
+        .filter_map(NodeOrToken::into_token)
+    {
+        if token.kind().is_comment()
+            && themelios_syntax::tree::role(&token) == themelios_syntax::tree::TokenRole::Trivia
+        {
+            trivia_comments += 1;
+            assert!(themelios_syntax::attach::attachment(&token).is_ok());
+        }
+    }
+    assert_eq!(
+        themelios_syntax::attach::attachments(&root).count(),
+        trivia_comments
+    );
 }
 
 fuzz_target!(|data: &[u8]| {

@@ -1,0 +1,1 @@
+0..33 "%* multi\n    line\n    comment  *%" -> Dangling PROGRAM@0..33 "%* multi\n    line\n    comment  *%"

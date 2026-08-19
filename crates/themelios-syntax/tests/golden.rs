@@ -1,11 +1,13 @@
 //! The reviewed goldens (docs/design/syntax.md §16): the diagnostics
 //! corpus — the characteristic malformed programs of every family in
 //! §6.7 and every identity in Appendix B, rendered through base's human
-//! view (the diagnostics-quality witness) — and the recovery shape of
-//! each family's row as a tree dump. Bless with
+//! view (the diagnostics-quality witness); the recovery shape of each
+//! family's row as a tree dump; and the attachment dumps of kallos's
+//! scar corpus (spec §5.1) and a CRLF-authored input (§9.2's empty
+//! line), each comment resolved to its slot and anchor (§9). Bless with
 //! `GOLDEN_BLESS=1 cargo test -p themelios-syntax --test golden`, then
 //! review the diff before committing: these files are reviewed
-//! artifacts, not incidental output. Attachment dumps join in Task 14.
+//! artifacts, not incidental output.
 
 use std::fmt::Write;
 use std::fs;
@@ -381,5 +383,70 @@ fn tree_documented_statement_and_script() {
     dump(
         "docs-and-script",
         "%! doc\n%! more\np.\n#script (lua)\nreturn 1\n#end.\n",
+    );
+}
+
+// ---- attachment dumps: kallos's scars and the CRLF input --------------
+
+fn attachment_dump(text: &str) -> String {
+    let source = Source::new(SourceId::new(0), text.to_owned()).expect("admits");
+    let parse = parse(&source, Dialect::Clingo);
+    let mut out = String::new();
+    for (comment, attachment) in themelios_syntax::attach::attachments(&parse.syntax()) {
+        let _ = writeln!(
+            out,
+            "{:?} {:?} -> {:?} {}@{:?} {:?}",
+            comment.text_range(),
+            comment.text(),
+            attachment.slot,
+            attachment.anchor.kind(),
+            attachment.anchor.text_range(),
+            attachment.anchor.to_string(),
+        );
+    }
+    out
+}
+
+#[test]
+fn attachments_kallos_scar_corpus() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/kallos");
+    let mut names: Vec<PathBuf> = fs::read_dir(&dir)
+        .expect("the kallos corpus")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.extension().is_some_and(|e| e == "lp"))
+        .collect();
+    names.sort();
+    for path in names {
+        let text = fs::read_to_string(&path).expect("input reads");
+        let stem = path
+            .file_stem()
+            .expect("a name")
+            .to_string_lossy()
+            .into_owned();
+        check(
+            "attachments",
+            &format!("kallos-{stem}"),
+            &attachment_dump(&text),
+        );
+    }
+}
+
+#[test]
+fn attachments_transposition_dual_role_and_blank_line_detach() {
+    check(
+        "attachments",
+        "scars",
+        &attachment_dump(
+            "p(1, % after comma\n   % before two\n 2). % trailing\n\n% above gap\n\n% leads q\nq :- a\n  % leads pipe\n  | b. r(|X\n % dangling in abs\n |).\n",
+        ),
+    );
+}
+
+#[test]
+fn attachments_crlf() {
+    check(
+        "attachments",
+        "crlf",
+        &attachment_dump("% a\r\n\r\n% b\r\np. % t\r\nq :- % in body\r\n  r.\r\n"),
     );
 }

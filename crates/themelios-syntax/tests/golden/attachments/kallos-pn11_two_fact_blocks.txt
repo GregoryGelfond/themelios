@@ -1,0 +1,4 @@
+0..13 "% fact block1" -> Leading RULE@16..31 "a(1%*bla*%   )."
+19..26 "%*bla*%" -> Trailing TUPLE@18..19 "1"
+43..60 "%* fact block2 *%" -> Trailing RULE@38..43 "a(3)."
+65..72 "%*bla*%" -> Trailing TUPLE@64..65 "1"
