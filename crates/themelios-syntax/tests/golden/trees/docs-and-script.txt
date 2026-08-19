@@ -1,0 +1,21 @@
+PROGRAM@0..47
+  RULE@0..17
+    DOC_COMMENT@0..6 "%! doc"
+    WHITESPACE@6..7 "\n"
+    DOC_COMMENT@7..14 "%! more"
+    WHITESPACE@14..15 "\n"
+    LITERAL@15..16
+      ATOM@15..16
+        IDENT@15..16 "p"
+    DOT@16..17 "."
+  WHITESPACE@17..18 "\n"
+  SCRIPT_STATEMENT@18..46
+    KW_SCRIPT@18..25 "#script"
+    WHITESPACE@25..26 " "
+    L_PAREN@26..27 "("
+    IDENT@27..30 "lua"
+    R_PAREN@30..31 ")"
+    SCRIPT_BODY@31..41 "\nreturn 1\n"
+    KW_END@41..45 "#end"
+    DOT@45..46 "."
+  WHITESPACE@46..47 "\n"

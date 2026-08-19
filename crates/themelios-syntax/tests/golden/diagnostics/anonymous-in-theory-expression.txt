@@ -1,0 +1,6 @@
+error[syntax::anonymous-in-theory-expression]: anonymous variable inside a theory expression
+ --> input.lp:1:8
+  |
+1 | &sum { _ } <= 1.
+  |        ^ `_` is not admitted here
+

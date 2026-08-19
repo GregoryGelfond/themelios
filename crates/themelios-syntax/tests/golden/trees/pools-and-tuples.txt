@@ -1,0 +1,60 @@
+PROGRAM@0..35
+  RULE@0..34
+    LITERAL@0..33
+      ATOM@0..33
+        IDENT@0..1 "p"
+        ARGUMENTS@1..33
+          L_PAREN@1..2 "("
+          TUPLE@2..32
+            FUNCTION_TERM@2..10
+              IDENT@2..3 "f"
+              ARGUMENTS@3..10
+                L_PAREN@3..4 "("
+                TUPLE@4..7
+                  CONSTANT_TERM@4..5
+                    IDENT@4..5 "a"
+                  COMMA@5..6 ","
+                  CONSTANT_TERM@6..7
+                    IDENT@6..7 "b"
+                SEMICOLON@7..8 ";"
+                TUPLE@8..9
+                  CONSTANT_TERM@8..9
+                    IDENT@8..9 "c"
+                R_PAREN@9..10 ")"
+            COMMA@10..11 ","
+            WHITESPACE@11..12 " "
+            POOL@12..14
+              L_PAREN@12..13 "("
+              TUPLE@13..13
+              R_PAREN@13..14 ")"
+            COMMA@14..15 ","
+            WHITESPACE@15..16 " "
+            POOL@16..20
+              L_PAREN@16..17 "("
+              TUPLE@17..19
+                CONSTANT_TERM@17..18
+                  IDENT@17..18 "a"
+                COMMA@18..19 ","
+              R_PAREN@19..20 ")"
+            COMMA@20..21 ","
+            WHITESPACE@21..22 " "
+            POOL@22..25
+              L_PAREN@22..23 "("
+              TUPLE@23..24
+                COMMA@23..24 ","
+              R_PAREN@24..25 ")"
+            COMMA@25..26 ","
+            WHITESPACE@26..27 " "
+            POOL@27..32
+              L_PAREN@27..28 "("
+              TUPLE@28..29
+                CONSTANT_TERM@28..29
+                  IDENT@28..29 "a"
+              SEMICOLON@29..30 ";"
+              TUPLE@30..31
+                CONSTANT_TERM@30..31
+                  IDENT@30..31 "b"
+              R_PAREN@31..32 ")"
+          R_PAREN@32..33 ")"
+    DOT@33..34 "."
+  WHITESPACE@34..35 "\n"

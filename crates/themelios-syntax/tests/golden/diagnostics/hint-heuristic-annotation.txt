@@ -1,0 +1,7 @@
+error[syntax::unexpected-end-of-input]: expected an annotation, found end of input
+ --> input.lp:2:1
+  |
+2 | 
+  | ^ the input ends here
+  = help: `#heuristic` takes its bracket after the dot: `[weight@priority, modifier]`
+

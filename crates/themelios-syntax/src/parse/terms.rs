@@ -516,6 +516,10 @@ impl<S: TokenSource> Parser<'_, S> {
     /// a variable, a splice — or nothing that begins a term, which is a
     /// missing operand at a synchronizing token and an intruder anywhere
     /// else.
+    // One dispatch by the operand's first token — a prefix run, an opener,
+    // a leaf, a leading comma, an error standing for the operand, or an
+    // intruder; splitting it would scatter that single decision.
+    #[allow(clippy::too_many_lines)]
     fn operand(
         &mut self,
         frames: &mut Vec<Frame>,
@@ -601,6 +605,18 @@ impl<S: TokenSource> Parser<'_, S> {
                 frames[top].after_comma = true;
                 Next::Operator
             }
+            // A lexical `ERROR` token (a malformed string, unexpected
+            // characters) standing where an operand would, with a
+            // synchronizing token right after it, is itself the operand: it
+            // carries its own lexical diagnostic — the one report of that
+            // mistake (docs/design/syntax.md §6.7) — so the closer or
+            // separator that follows acts on a complete frame and raises no
+            // missing-operand diagnostic. A recoverable token after the error
+            // instead leaves it an intruder the catch-all wraps, so the term
+            // that follows recovers as the operand.
+            SyntaxKind::ERROR if synchronizes(self.lookahead(1)) => {
+                self.leaf(&mut frames[top], SyntaxKind::ERROR)
+            }
             kind => {
                 let frame = &frames[top];
                 let hint = if kind == SyntaxKind::EOF
@@ -655,7 +671,14 @@ impl<S: TokenSource> Parser<'_, S> {
     ) -> Next {
         let top = frames.len() - 1;
         let kind = self.peek();
-        let query_mark = kind == SyntaxKind::QUESTION
+        // The query reading (docs/design/syntax.md §6.1) bites only at the
+        // base frame, where the `?` can reach the statement parser and a
+        // bare atom before it closes a `QUERY`. Inside an open bracket the
+        // `?` is a term still unfinished: it stays the operator, so at end
+        // of input its missing operand is an incompleteness (§6.5), and a
+        // member's prefix cut there is unfinished, never wrong.
+        let query_mark = top == 0
+            && kind == SyntaxKind::QUESTION
             && self.dialect() == Dialect::AspCore2
             && self.lookahead(1) == SyntaxKind::EOF;
         // A binary operator needs a left operand. The empty-element paths

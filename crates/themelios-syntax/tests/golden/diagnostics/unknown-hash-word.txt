@@ -1,0 +1,7 @@
+error[syntax::unknown-hash-word]: unknown `#`-word
+ --> input.lp:1:1
+  |
+1 | #sums { X : p(X) } > 1.
+  | ^^^^^ not a keyword of the language
+  = note: `#`-words are recognized whole: a keyword extended by name characters is one unknown word
+

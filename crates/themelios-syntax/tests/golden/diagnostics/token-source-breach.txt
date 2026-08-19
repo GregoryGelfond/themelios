@@ -1,0 +1,6 @@
+error[syntax::token-source-breach]: the token source breached its tiling law
+ --> input.lp:1:6
+  |
+1 | p(X). q(X).
+  |      ^ here
+

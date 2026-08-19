@@ -1,0 +1,33 @@
+PROGRAM@0..31
+  ERROR@0..8
+    R_PAREN@0..1 ")"
+    WHITESPACE@1..2 " "
+    IDENT@2..7 "stray"
+    DOT@7..8 "."
+  WHITESPACE@8..9 " "
+  RULE@9..11
+    LITERAL@9..10
+      ATOM@9..10
+        IDENT@9..10 "p"
+    DOT@10..11 "."
+  WHITESPACE@11..12 "\n"
+  HEURISTIC_STATEMENT@12..27
+    KW_HEURISTIC@12..22 "#heuristic"
+    DOT@22..23 "."
+    WHITESPACE@23..24 " "
+    ANNOTATION@24..27
+      L_BRACKET@24..25 "["
+      CONSTANT_TERM@25..26
+        NUMBER@25..26 "1"
+      R_BRACKET@26..27 "]"
+  WHITESPACE@27..28 " "
+  RULE@28..30
+    LITERAL@28..29
+      ATOM@28..29
+        IDENT@28..29 "q"
+    DOT@29..30 "."
+  WHITESPACE@30..31 "\n"
+
+syntax::unexpected-token: UnexpectedToken { expected: {Class(Statement)}, found: R_PAREN, hint: None }
+syntax::unexpected-token: UnexpectedToken { expected: {Class(Atom)}, found: DOT, hint: None }
+syntax::unexpected-token: UnexpectedToken { expected: {Token(COMMA)}, found: R_BRACKET, hint: None }

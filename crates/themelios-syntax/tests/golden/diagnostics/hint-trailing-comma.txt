@@ -1,0 +1,7 @@
+error[syntax::unexpected-token]: expected a term, found `)`
+ --> input.lp:1:8
+  |
+1 | p(a, b,).
+  |        ^
+  = help: remove the trailing comma: an argument list takes no trailing comma
+

@@ -1,0 +1,7 @@
+error[syntax::malformed-string]: invalid escape `\q` in string literal
+ --> input.lp:1:5
+  |
+1 | p("a\qb"). q.
+  |   ------ the literal, whole
+  |     ^^ not one of the escapes `\"`, `\\`, `\n`
+

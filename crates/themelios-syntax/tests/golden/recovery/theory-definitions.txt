@@ -1,0 +1,57 @@
+PROGRAM@0..56
+  THEORY_DEFINITION@0..55
+    KW_THEORY@0..7 "#theory"
+    WHITESPACE@7..8 " "
+    IDENT@8..9 "t"
+    WHITESPACE@9..10 " "
+    L_BRACE@10..11 "{"
+    WHITESPACE@11..12 " "
+    TERM_DEFINITION@12..37
+      IDENT@12..13 "x"
+      WHITESPACE@13..14 " "
+      L_BRACE@14..15 "{"
+      WHITESPACE@15..16 " "
+      OP_DEFINITION@16..22
+        THEORY_OP@16..17 "+"
+        WHITESPACE@17..18 " "
+        COLON@18..19 ":"
+        WHITESPACE@19..20 " "
+        NUMBER@20..21 "1"
+        COMMA@21..22 ","
+      WHITESPACE@22..23 " "
+      ERROR@23..30
+        IDENT@23..30 "ternary"
+      OP_DEFINITION@30..30
+      SEMICOLON@30..31 ";"
+      WHITESPACE@31..32 " "
+      OP_DEFINITION@32..35
+        THEORY_OP@32..33 "-"
+        WHITESPACE@33..34 " "
+        COLON@34..35 ":"
+      WHITESPACE@35..36 " "
+      R_BRACE@36..37 "}"
+    SEMICOLON@37..38 ";"
+    WHITESPACE@38..39 " "
+    ATOM_DEFINITION@39..48
+      AMPERSAND@39..40 "&"
+      IDENT@40..41 "a"
+      SLASH@41..42 "/"
+      NUMBER@42..43 "1"
+      WHITESPACE@43..44 " "
+      COLON@44..45 ":"
+      WHITESPACE@45..46 " "
+      IDENT@46..47 "x"
+      COMMA@47..48 ","
+    WHITESPACE@48..49 " "
+    TERM_DEFINITION@49..52
+      IDENT@49..52 "foo"
+    WHITESPACE@52..53 " "
+    R_BRACE@53..54 "}"
+    DOT@54..55 "."
+  WHITESPACE@55..56 "\n"
+
+syntax::unexpected-token: UnexpectedToken { expected: {Token(SEMICOLON), Token(R_BRACE), Word(Unary), Word(Binary)}, found: IDENT, hint: None }
+syntax::unexpected-token: UnexpectedToken { expected: {Token(NUMBER), Token(COMMA), Token(COLON), Word(Unary), Word(Binary), Class(TheoryOperator)}, found: SEMICOLON, hint: None }
+syntax::unexpected-token: UnexpectedToken { expected: {Token(NUMBER), Token(COMMA), Word(Unary), Word(Binary)}, found: R_BRACE, hint: None }
+syntax::unexpected-token: UnexpectedToken { expected: {Token(SEMICOLON), Word(Head), Word(Body), Word(Any), Word(Directive)}, found: IDENT, hint: None }
+syntax::unexpected-token: UnexpectedToken { expected: {Token(L_BRACE)}, found: R_BRACE, hint: None }

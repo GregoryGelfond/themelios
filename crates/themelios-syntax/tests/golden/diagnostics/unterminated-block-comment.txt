@@ -1,0 +1,7 @@
+error[syntax::unterminated-block-comment]: unterminated block comment
+ --> input.lp:1:1
+  |
+1 | %* a % *% b *%
+  | ^^ opened here and never closed
+  = note: under the clingo dialect a `%` inside a block comment silences the rest of its line, closers included
+

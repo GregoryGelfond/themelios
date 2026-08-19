@@ -1,0 +1,7 @@
+error[syntax::unexpected-end-of-input]: expected `.`, `:-`, `=`, `!=`, `<`, `<=`, `>`, `>=`, or a term, found end of input
+ --> input.lp:1:6
+  |
+1 | p(1)?
+  |      ^ the input ends here
+  = help: a final `?` is the ASP-Core-2 query mark; parse under the ASP-Core-2 dialect to read it as a query
+

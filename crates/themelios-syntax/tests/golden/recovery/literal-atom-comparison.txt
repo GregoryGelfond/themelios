@@ -1,0 +1,29 @@
+PROGRAM@0..16
+  RULE@0..15
+    LITERAL@0..1
+      ATOM@0..1
+        IDENT@0..1 "p"
+    WHITESPACE@1..2 " "
+    NECK@2..4 ":-"
+    WHITESPACE@4..5 " "
+    BODY@5..13
+      LITERAL@5..8
+        COMPARISON@5..8
+          CONSTANT_TERM@5..6
+            NUMBER@5..6 "1"
+          WHITESPACE@6..7 " "
+          LT@7..8 "<"
+      COMMA@8..9 ","
+      WHITESPACE@9..10 " "
+      LITERAL@10..13
+        COMPARISON@10..13
+          VARIABLE_TERM@10..11
+            VARIABLE@10..11 "X"
+          WHITESPACE@11..12 " "
+          EQ@12..13 "="
+    WHITESPACE@13..14 " "
+    DOT@14..15 "."
+  WHITESPACE@15..16 "\n"
+
+syntax::unexpected-token: UnexpectedToken { expected: {Class(Term)}, found: COMMA, hint: None }
+syntax::unexpected-token: UnexpectedToken { expected: {Class(Term)}, found: DOT, hint: None }

@@ -1,0 +1,49 @@
+PROGRAM@0..26
+  RULE@0..25
+    LITERAL@0..24
+      ATOM@0..24
+        IDENT@0..1 "p"
+        ARGUMENTS@1..24
+          L_PAREN@1..2 "("
+          TUPLE@2..23
+            FUNCTION_TERM@2..8
+              IDENT@2..3 "f"
+              ARGUMENTS@3..8
+                L_PAREN@3..4 "("
+                TUPLE@4..7
+                  CONSTANT_TERM@4..5
+                    IDENT@4..5 "a"
+                  WHITESPACE@5..6 " "
+                  ERROR@6..7
+                    IDENT@6..7 "b"
+                R_PAREN@7..8 ")"
+            COMMA@8..9 ","
+            WHITESPACE@9..10 " "
+            POOL@10..14
+              L_PAREN@10..11 "("
+              TUPLE@11..12
+                CONSTANT_TERM@11..12
+                  IDENT@11..12 "c"
+              SEMICOLON@12..13 ";"
+              TUPLE@13..13
+              R_PAREN@13..14 ")"
+            COMMA@14..15 ","
+            WHITESPACE@15..16 " "
+            ABS_TERM@16..18
+              PIPE@16..17 "|"
+              CONSTANT_TERM@17..18
+                IDENT@17..18 "d"
+            COMMA@18..19 ","
+            WHITESPACE@19..20 " "
+            BINARY_TERM@20..23
+              CONSTANT_TERM@20..21
+                NUMBER@20..21 "1"
+              WHITESPACE@21..22 " "
+              PLUS@22..23 "+"
+          R_PAREN@23..24 ")"
+    DOT@24..25 "."
+  WHITESPACE@25..26 "\n"
+
+syntax::unexpected-token: UnexpectedToken { expected: {Token(COMMA), Token(SEMICOLON), Token(R_PAREN)}, found: IDENT, hint: None }
+syntax::unexpected-token: UnexpectedToken { expected: {Token(PIPE)}, found: COMMA, hint: None }
+syntax::unexpected-token: UnexpectedToken { expected: {Class(Term)}, found: R_PAREN, hint: None }

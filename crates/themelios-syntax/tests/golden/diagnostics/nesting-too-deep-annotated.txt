@@ -1,0 +1,12 @@
+error[syntax::nesting-too-deep]: brackets nested deeper than 1000 levels
+ --> input.lp:1000:2
+     |
+1000 | f(
+     |  ^ this bracket would open one level too many; the rest of the statement is carried unparsed
+
+error[syntax::unexpected-token]: expected `.`, `,`, or `;`, found an identifier
+ --> input.lp:1003:1
+     |
+1003 | q.
+     | ^
+

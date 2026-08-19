@@ -1,0 +1,79 @@
+PROGRAM@0..54
+  RULE@0..53
+    NECK@0..2 ":-"
+    WHITESPACE@2..3 " "
+    BODY@3..52
+      THEORY_ATOM@3..52
+        AMPERSAND@3..4 "&"
+        IDENT@4..7 "sum"
+        WHITESPACE@7..8 " "
+        THEORY_ELEMENTS@8..41
+          L_BRACE@8..9 "{"
+          WHITESPACE@9..10 " "
+          THEORY_ELEMENT@10..19
+            THEORY_OPTERM@10..11
+              CONSTANT_TERM@10..11
+                IDENT@10..11 "x"
+            COMMA@11..12 ","
+            WHITESPACE@12..13 " "
+            THEORY_OPTERM@13..15
+              THEORY_OP@13..14 "-"
+              CONSTANT_TERM@14..15
+                IDENT@14..15 "y"
+            WHITESPACE@15..16 " "
+            COLON@16..17 ":"
+            WHITESPACE@17..18 " "
+            CONDITION@18..19
+              LITERAL@18..19
+                ATOM@18..19
+                  IDENT@18..19 "p"
+          WHITESPACE@19..20 " "
+          SEMICOLON@20..21 ";"
+          WHITESPACE@21..22 " "
+          THEORY_ELEMENT@22..39
+            THEORY_OPTERM@22..28
+              THEORY_SET@22..28
+                L_BRACE@22..23 "{"
+                THEORY_OPTERM@23..24
+                  CONSTANT_TERM@23..24
+                    IDENT@23..24 "a"
+                COMMA@24..25 ","
+                WHITESPACE@25..26 " "
+                THEORY_OPTERM@26..27
+                  CONSTANT_TERM@26..27
+                    IDENT@26..27 "b"
+                R_BRACE@27..28 "}"
+            COMMA@28..29 ","
+            WHITESPACE@29..30 " "
+            THEORY_OPTERM@30..33
+              THEORY_LIST@30..33
+                L_BRACKET@30..31 "["
+                THEORY_OPTERM@31..32
+                  CONSTANT_TERM@31..32
+                    NUMBER@31..32 "1"
+                R_BRACKET@32..33 "]"
+            COMMA@33..34 ","
+            WHITESPACE@34..35 " "
+            THEORY_OPTERM@35..39
+              THEORY_FUNCTION@35..39
+                IDENT@35..36 "f"
+                L_PAREN@36..37 "("
+                THEORY_OPTERM@37..38
+                  CONSTANT_TERM@37..38
+                    IDENT@37..38 "g"
+                R_PAREN@38..39 ")"
+          WHITESPACE@39..40 " "
+          R_BRACE@40..41 "}"
+        WHITESPACE@41..42 " "
+        THEORY_GUARD@42..52
+          THEORY_OP@42..44 "<="
+          WHITESPACE@44..45 " "
+          THEORY_OPTERM@45..52
+            THEORY_OP@45..46 "-"
+            WHITESPACE@46..47 " "
+            KW_NOT@47..50 "not"
+            WHITESPACE@50..51 " "
+            CONSTANT_TERM@51..52
+              NUMBER@51..52 "3"
+    DOT@52..53 "."
+  WHITESPACE@53..54 "\n"

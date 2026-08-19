@@ -1,0 +1,11 @@
+PROGRAM@0..23
+  SCRIPT_STATEMENT@0..23
+    KW_SCRIPT@0..7 "#script"
+    WHITESPACE@7..8 " "
+    L_PAREN@8..9 "("
+    IDENT@9..15 "python"
+    R_PAREN@15..16 ")"
+    ERROR@16..23 "\nx = 1\n"
+
+syntax::unterminated-script: UnterminatedScript
+syntax::unexpected-end-of-input: UnexpectedEndOfInput { expected: {Token(KW_END), Token(DOT)}, hint: None }

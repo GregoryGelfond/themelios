@@ -1,0 +1,38 @@
+PROGRAM@0..25
+  RULE@0..25
+    NECK@0..2 ":-"
+    WHITESPACE@2..3 " "
+    BODY@3..25
+      LITERAL@3..7
+        ATOM@3..7
+          IDENT@3..4 "p"
+          ARGUMENTS@4..7
+            L_PAREN@4..5 "("
+            TUPLE@5..6
+              VARIABLE_TERM@5..6
+                VARIABLE@5..6 "X"
+            R_PAREN@6..7 ")"
+      COMMA@7..8 ","
+      WHITESPACE@8..9 " "
+      FUNCTION_AGGREGATE@9..25
+        KW_COUNT@9..15 "#count"
+        WHITESPACE@15..16 " "
+        L_BRACE@16..17 "{"
+        WHITESPACE@17..18 " "
+        BODY_AGGREGATE_ELEMENT@18..25
+          VARIABLE_TERM@18..19
+            VARIABLE@18..19 "X"
+          WHITESPACE@19..20 " "
+          COLON@20..21 ":"
+          WHITESPACE@21..22 " "
+          CONDITION@22..25
+            LITERAL@22..25
+              ATOM@22..25
+                IDENT@22..23 "q"
+                ARGUMENTS@23..25
+                  L_PAREN@23..24 "("
+                  TUPLE@24..25
+                    VARIABLE_TERM@24..25
+                      VARIABLE@24..25 "X"
+
+syntax::unexpected-end-of-input: UnexpectedEndOfInput { expected: {Token(DOT), Token(R_PAREN), Token(R_BRACE)}, hint: None }

@@ -1,0 +1,6 @@
+error[syntax::unexpected-token]: expected `.`, `,`, or `;`, found an identifier
+ --> input.lp:1:14
+  |
+1 | p(X) :- q(X) r(X).
+  |              ^
+

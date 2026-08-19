@@ -1,0 +1,29 @@
+PROGRAM@0..22
+  RULE@0..18
+    NECK@0..2 ":-"
+    WHITESPACE@2..3 " "
+    BODY@3..16
+      FUNCTION_AGGREGATE@3..16
+        KW_COUNT@3..9 "#count"
+        WHITESPACE@9..10 " "
+        L_BRACE@10..11 "{"
+        WHITESPACE@11..12 " "
+        BODY_AGGREGATE_ELEMENT@12..13
+          CONSTANT_TERM@12..13
+            IDENT@12..13 "a"
+        SEMICOLON@13..14 ";"
+        WHITESPACE@14..15 " "
+        BODY_AGGREGATE_ELEMENT@15..16
+          CONSTANT_TERM@15..16
+            IDENT@15..16 "b"
+    WHITESPACE@16..17 " "
+    DOT@17..18 "."
+  WHITESPACE@18..19 " "
+  RULE@19..21
+    LITERAL@19..20
+      ATOM@19..20
+        IDENT@19..20 "q"
+    DOT@20..21 "."
+  WHITESPACE@21..22 "\n"
+
+syntax::unexpected-token: UnexpectedToken { expected: {Token(R_BRACE)}, found: DOT, hint: None }

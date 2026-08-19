@@ -1,0 +1,6 @@
+error[syntax::unexpected-end-of-input]: expected `.` or a body element, found end of input
+ --> input.lp:1:14
+  |
+1 | p(X) :- q(X),
+  |              ^ the input ends here
+

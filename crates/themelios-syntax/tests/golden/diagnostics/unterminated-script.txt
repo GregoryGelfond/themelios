@@ -1,0 +1,14 @@
+error[syntax::unterminated-script]: unterminated `#script` region
+ --> input.lp:1:14
+  |
+1 | #script (lua)
+  |              ^
+2 | x = 1
+  | ^^^^^ the region begins here and no `#end` follows
+
+error[syntax::unexpected-end-of-input]: expected `#end` or `.`, found end of input
+ --> input.lp:3:1
+  |
+3 | 
+  | ^ the input ends here
+

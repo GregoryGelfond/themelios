@@ -1,0 +1,21 @@
+error[syntax::malformed-string]: string literal broken by a line break
+ --> input.lp:1:3
+  |
+1 | p("a
+  |   ^^ the literal ends at the line break without its closing quote
+
+error[syntax::malformed-string]: string literal broken by a line break
+ --> input.lp:2:2
+  |
+2 | b").
+  |  ^^^ the literal ends at the line break without its closing quote
+
+error[syntax::unexpected-end-of-input]: expected `.`, `:-`, or `)`, found end of input
+ --> input.lp:3:1
+  |
+1 | p("a
+  |  - to close this `(`
+ ..
+3 | 
+  | ^ the input ends here
+

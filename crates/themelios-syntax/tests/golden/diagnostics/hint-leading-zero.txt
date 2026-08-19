@@ -1,0 +1,14 @@
+error[syntax::unexpected-token]: expected `,`, `;`, or `)`, found a number
+ --> input.lp:1:4
+  |
+1 | p(007).
+  |    ^
+  = help: decimal numerals take no leading zero: `007` is three numerals
+
+error[syntax::unexpected-token]: expected `,`, `;`, or `)`, found a number
+ --> input.lp:1:5
+  |
+1 | p(007).
+  |     ^
+  = help: decimal numerals take no leading zero: `007` is three numerals
+

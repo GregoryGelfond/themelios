@@ -1,0 +1,7 @@
+error[syntax::aspif-input]: aspif input, not a program
+ --> input.lp:1:1
+  |
+1 | asp 1 0 0
+  | ^^^^^ the aspif header
+  = note: the input is in the intermediate format a solver reads; the syntax tier does not parse it
+

@@ -1,0 +1,69 @@
+PROGRAM@0..47
+  RULE@0..46
+    LITERAL@0..45
+      ATOM@0..45
+        IDENT@0..1 "p"
+        ARGUMENTS@1..45
+          L_PAREN@1..2 "("
+          TUPLE@2..44
+            BINARY_TERM@2..26
+              CONSTANT_TERM@2..3
+                NUMBER@2..3 "1"
+              WHITESPACE@3..4 " "
+              PLUS@4..5 "+"
+              WHITESPACE@5..6 " "
+              BINARY_TERM@6..11
+                CONSTANT_TERM@6..7
+                  NUMBER@6..7 "2"
+                WHITESPACE@7..8 " "
+                STAR@8..9 "*"
+                WHITESPACE@9..10 " "
+                CONSTANT_TERM@10..11
+                  NUMBER@10..11 "3"
+              WHITESPACE@11..12 " "
+              MINUS@12..13 "-"
+              WHITESPACE@13..14 " "
+              BINARY_TERM@14..26
+                UNARY_TERM@14..16
+                  MINUS@14..15 "-"
+                  CONSTANT_TERM@15..16
+                    NUMBER@15..16 "4"
+                WHITESPACE@16..17 " "
+                STAR_STAR@17..19 "**"
+                WHITESPACE@19..20 " "
+                CONSTANT_TERM@20..21
+                  NUMBER@20..21 "2"
+                WHITESPACE@21..22 " "
+                STAR_STAR@22..24 "**"
+                WHITESPACE@24..25 " "
+                CONSTANT_TERM@25..26
+                  NUMBER@25..26 "3"
+            COMMA@26..27 ","
+            WHITESPACE@27..28 " "
+            BINARY_TERM@28..44
+              CONSTANT_TERM@28..29
+                NUMBER@28..29 "1"
+              DOTDOT@29..31 ".."
+              BINARY_TERM@31..44
+                CONSTANT_TERM@31..32
+                  NUMBER@31..32 "3"
+                WHITESPACE@32..33 " "
+                CARET@33..34 "^"
+                WHITESPACE@34..35 " "
+                BINARY_TERM@35..44
+                  CONSTANT_TERM@35..36
+                    NUMBER@35..36 "2"
+                  WHITESPACE@36..37 " "
+                  QUESTION@37..38 "?"
+                  WHITESPACE@38..39 " "
+                  BINARY_TERM@39..44
+                    CONSTANT_TERM@39..40
+                      NUMBER@39..40 "4"
+                    WHITESPACE@40..41 " "
+                    AMPERSAND@41..42 "&"
+                    WHITESPACE@42..43 " "
+                    CONSTANT_TERM@43..44
+                      NUMBER@43..44 "5"
+          R_PAREN@44..45 ")"
+    DOT@45..46 "."
+  WHITESPACE@46..47 "\n"
