@@ -952,8 +952,11 @@ program (ASP-Core-2 dialect) ::= { [ docs ] statement } [ [ docs ] query ]
 query ::= atom "?"
 
 query-reading : the query reading applies exactly when the "?" is the
-                program's final token, trivia aside; a "?" anywhere
-                else is the bitwise-or operator.
+                program's final token, trivia aside, and stands at the
+                top level, enclosed by no open bracket; a "?" anywhere
+                else — earlier in the program, or nested within an open
+                bracket even as the final token — is the bitwise-or
+                operator.
 ```
 
 The standard's one construct with no clingo counterpart

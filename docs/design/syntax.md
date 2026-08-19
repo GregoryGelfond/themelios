@@ -900,15 +900,20 @@ a fixed, bounded decision in the parser:
   between — the statement is the signature form; anything else is the
   term form. Five tokens of lookahead, the parser's maximum.
 - **The query reading** (grammar §6.1): under the ASP-Core-2 dialect
-  only, a `?` whose next significant token is end of input is the query
-  mark. The term loop does not take such a `?` as the bitwise-or
-  operator (one-token peek), and the statement parser, holding a bare
-  atom in head position with nothing before it, closes a `QUERY`; a
-  statement that is not a bare atom meets an ordinary unexpected token
-  there. Under the clingo dialect the same `?` is the operator missing
-  its right operand — end of input where a term was expected — and the
-  diagnostic carries a help naming the other dialect's reading, so the
-  practitioner arriving from the standard is told, not puzzled.
+  only, a `?` that is the final significant token and stands at the top
+  level — enclosed by no open bracket — is the query mark. There the
+  term loop does not take the `?` as the bitwise-or operator (one-token
+  peek), and the statement parser, holding a bare atom in head position
+  with nothing before it, closes a `QUERY`; a top-level `?` after
+  something that is not a bare atom meets an ordinary unexpected token
+  there. A `?` at end of input nested within an open bracket is instead
+  a term still unfinished — the operator whose right operand has not
+  arrived — so the parse is incomplete, not in error, and a member's
+  prefix cut there is unfinished, never wrong (§6.5). Under the clingo
+  dialect the same final `?` is the operator missing its right operand —
+  end of input where a term was expected — and the diagnostic carries a
+  help naming the other dialect's reading, so the practitioner arriving
+  from the standard is told, not puzzled.
 - **The theory regions** (grammar §4.7): the mode switches to theory
   after the `{` that opens a theory atom's elements (the `{` itself is
   taken under normal mode); an element's condition colon at element

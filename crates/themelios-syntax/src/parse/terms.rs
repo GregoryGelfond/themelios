@@ -671,12 +671,13 @@ impl<S: TokenSource> Parser<'_, S> {
     ) -> Next {
         let top = frames.len() - 1;
         let kind = self.peek();
-        // The query reading (docs/design/syntax.md §6.1) bites only at the
-        // base frame, where the `?` can reach the statement parser and a
-        // bare atom before it closes a `QUERY`. Inside an open bracket the
-        // `?` is a term still unfinished: it stays the operator, so at end
-        // of input its missing operand is an incompleteness (§6.5), and a
-        // member's prefix cut there is unfinished, never wrong.
+        // The query reading (grammar §6.1; docs/design/syntax.md §6.3)
+        // bites only at the base frame, where the `?` can reach the
+        // statement parser and a bare atom before it closes a `QUERY`.
+        // Inside an open bracket the `?` is a term still unfinished: it
+        // stays the operator, so at end of input its missing operand is an
+        // incompleteness (docs/design/syntax.md §6.5), and a member's
+        // prefix cut there is unfinished, never wrong.
         let query_mark = top == 0
             && kind == SyntaxKind::QUESTION
             && self.dialect() == Dialect::AspCore2
