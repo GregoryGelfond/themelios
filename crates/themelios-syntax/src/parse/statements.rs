@@ -872,8 +872,7 @@ mod tests {
     use crate::diagnostic::{Expected, Hint, MisplacedDoc, SyntaxErrorKind};
     use crate::dialect::Dialect;
     use crate::parse::test_util::{admitted, kinds, member, shape};
-    use crate::parse::with_required_stack;
-    use crate::parse::{MAX_NESTING_DEPTH, parse};
+    use crate::parse::{NestingLimit, parse};
     use crate::tree::{SyntaxKind, sexpr};
 
     #[test]
@@ -1175,16 +1174,18 @@ mod tests {
         // The refusal skips to the terminating dot; inside a theory region
         // the mode is `Theory`, where `=.` is one operator run and the dot
         // is missed, swallowing the next statement — the skip reads in
-        // normal mode (docs/design/syntax.md §4.2, §6.6). The refused tree
-        // is `MAX_NESTING_DEPTH` frames deep, so holding it needs
-        // `REQUIRED_STACK_BYTES` (§6.6).
-        with_required_stack(|| {
-            let refused = format!("&a {{ {}x=.q.", "(".repeat(MAX_NESTING_DEPTH as usize + 1));
+        // normal mode (docs/design/syntax.md §4.2, §6.6). `parse` refuses
+        // at `NestingLimit::DEFAULT`, shallow enough to hold on a modest stack.
+        {
+            let refused = format!(
+                "&a {{ {}x=.q.",
+                "(".repeat(NestingLimit::DEFAULT.frames() as usize + 1)
+            );
             let parse = parse(&admitted(&refused), Dialect::Clingo);
             assert_eq!(parse.syntax().text(), refused.as_str(), "law 1");
             // Two statements: the refused theory atom, then `q.` — not one
             // that swallowed `q` past a glued dot.
             assert_eq!(parse.syntax().children().count(), 2);
-        });
+        }
     }
 }

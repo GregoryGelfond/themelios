@@ -896,22 +896,31 @@ mod tests {
         let source = Source::new(SourceId::new(0), "  ".to_owned()).expect("admits");
         let lexer = crate::lexer::Lexer::new(&source, Dialect::Clingo);
         assert!(
-            crate::parse::parse_statement(&lexer)
+            crate::parse::parse_statement(&lexer, crate::parse::NestingLimit::DEFAULT)
                 .tree()
                 .statement()
                 .is_none()
         );
-        assert!(crate::parse::parse_term(&lexer).tree().term().is_none());
+        assert!(
+            crate::parse::parse_term(&lexer, crate::parse::NestingLimit::DEFAULT)
+                .tree()
+                .term()
+                .is_none()
+        );
         let source = Source::new(SourceId::new(0), "f(1) + 2".to_owned()).expect("admits");
         let lexer = crate::lexer::Lexer::new(&source, Dialect::Clingo);
         assert!(matches!(
-            crate::parse::parse_term(&lexer).tree().term(),
+            crate::parse::parse_term(&lexer, crate::parse::NestingLimit::DEFAULT)
+                .tree()
+                .term(),
             Some(Term::Binary(_))
         ));
         let source = Source::new(SourceId::new(0), "p :- q.".to_owned()).expect("admits");
         let lexer = crate::lexer::Lexer::new(&source, Dialect::Clingo);
         assert!(matches!(
-            crate::parse::parse_statement(&lexer).tree().statement(),
+            crate::parse::parse_statement(&lexer, crate::parse::NestingLimit::DEFAULT)
+                .tree()
+                .statement(),
             Some(Statement::Rule(_))
         ));
     }

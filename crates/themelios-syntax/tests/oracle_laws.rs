@@ -14,7 +14,7 @@ use themelios_base::span::ByteOffset;
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::fusion::{Separator, lex_mode_of, separator};
 use themelios_syntax::lexer::Lexer;
-use themelios_syntax::parse::{parse, parse_program};
+use themelios_syntax::parse::{NestingLimit, parse, parse_program};
 use themelios_syntax::token::{LexMode, Token, TokenSource};
 use themelios_syntax::tree::{SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
@@ -180,7 +180,7 @@ fn the_parsers_recorded_modes_equal_the_reconstruction_over_every_member() {
             lexer: Lexer::new(&source, dialect),
             requests: RefCell::new(Vec::new()),
         };
-        let parsed = parse_program(&recording);
+        let parsed = parse_program(&recording, NestingLimit::DEFAULT);
         // The law holds for members. Recovery deliberately breaks the
         // structural correspondence the reconstruction reads — a malformed
         // condition's contents land loose under THEORY_ELEMENTS, and the
@@ -223,7 +223,7 @@ fn the_named_cases_hold_under_the_recording() {
             lexer: Lexer::new(&source, Dialect::Clingo),
             requests: RefCell::new(Vec::new()),
         };
-        let root = parse_program(&recording).syntax();
+        let root = parse_program(&recording, NestingLimit::DEFAULT).syntax();
         let modes = region_modes(&recording.requests.borrow());
         for token in tokens_of(&root)
             .into_iter()

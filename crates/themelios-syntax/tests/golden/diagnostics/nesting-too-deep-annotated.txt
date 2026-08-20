@@ -1,6 +1,6 @@
-error[syntax::nesting-too-deep]: brackets nested deeper than 5000 levels
- --> input.lp:5000:2
-     |
-5000 | f(
-     |  ^ this bracket would open one level too many; the rest of the statement is carried unparsed
+error[syntax::nesting-too-deep]: brackets nested deeper than 128 levels
+ --> input.lp:128:2
+    |
+128 | f(
+    |  ^ this bracket would open one level too many; the rest of the statement is carried unparsed
 

@@ -1317,11 +1317,16 @@ recorded exception with its argument.
   ceiling widens the band rather than moving the constant; the shared
   corpus holds no input inside the band; a pin move re-measures.
 
-  Recorded 2026-08-19: the syntax tier's constant is **5000 frames**
-  (`themelios-syntax`'s `MAX_NESTING_DEPTH`, set by its depth instrument
-  on half its required stack of 64 MiB — every walk survives 5154 frames
-  of the deepest shape and fails at 5155, and 5000 is the largest
-  granule below). The authority at v5.8.2, per bracket family — last
+  Recorded 2026-08-19 (the two-limit split 2026-08-19): the syntax
+  tier's deepest honored nesting is **5000 frames**
+  (`themelios-syntax`'s `NestingLimit::CEILING`, set by its depth
+  instrument on half its required stack of 64 MiB — every walk survives
+  5154 frames of the deepest shape and fails at 5155, and 5000 is the
+  largest granule below). This is the D2-relevant limit — the deepest a
+  general door honors, held under `with_required_stack`; the tier's file
+  door refuses at the lower `NestingLimit::DEFAULT` (128 frames), a
+  crash-averse floor sized to a naive consumer's stack, not a parity
+  limit, so it sits far inside the band and no corpus member reaches it. The authority at v5.8.2, per bracket family — last
   depth accepted / first depth failing: term function arguments
   61624/61625, term pool 61623/61624, constant-term function arguments
   61626/61627, theory set 61624/61625, theory list 61624/61625, theory

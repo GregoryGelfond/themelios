@@ -20,8 +20,8 @@ use themelios_syntax::equiv::{Certificate, equivalent};
 use themelios_syntax::fusion::{Separator, lex_mode_of, separator};
 use themelios_syntax::lexer::Lexer;
 use themelios_syntax::parse::{
-    MAX_TREE_DEPTH, Parse, parse_program, parse_statement, parse_term, parse_term_value,
-    with_required_stack,
+    MAX_TREE_DEPTH, NestingLimit, Parse, parse_program, parse_statement, parse_term,
+    parse_term_value, with_required_stack,
 };
 use themelios_syntax::token::{LexMode, Token, TokenSource};
 use themelios_syntax::tree::{Asp, AstNode, NodeOrToken, SyntaxKind, SyntaxNode, WalkEvent};
@@ -169,7 +169,7 @@ fn run(source: Source) {
             lexer: Lexer::new(&source, dialect),
             requests: RefCell::new(Vec::new()),
         };
-        let program = parse_program(&recording);
+        let program = parse_program(&recording, NestingLimit::DEFAULT);
         holds(&program, &text);
         if !program.has_errors() {
             let mut modes: HashMap<u32, LexMode> = HashMap::new();
@@ -215,15 +215,18 @@ fn run(source: Source) {
                 }
             }
             if let Ok(respaced_source) = Source::new(SourceId::new(1), respaced) {
-                let reparsed = parse_program(&Lexer::new(&respaced_source, dialect));
+                let reparsed = parse_program(
+                    &Lexer::new(&respaced_source, dialect),
+                    NestingLimit::DEFAULT,
+                );
                 assert_eq!(
                     equivalent(&program, &reparsed, Certificate::LayoutOnly),
                     Ok(())
                 );
             }
         }
-        holds(&parse_statement(&lexer), &text);
-        holds(&parse_term(&lexer), &text);
-        holds(&parse_term_value(&lexer), &text);
+        holds(&parse_statement(&lexer, NestingLimit::DEFAULT), &text);
+        holds(&parse_term(&lexer, NestingLimit::DEFAULT), &text);
+        holds(&parse_term_value(&lexer, NestingLimit::DEFAULT), &text);
     }
 }

@@ -24,7 +24,6 @@ use crate::dialect::Dialect;
 use crate::token::TokenSource;
 use crate::tree::SyntaxKind;
 
-use super::MAX_NESTING_DEPTH;
 use super::machine::Parser;
 
 /// The restriction the loop emits forms under (docs/design/syntax.md
@@ -380,7 +379,7 @@ impl<S: TokenSource> Parser<'_, S> {
         wrapper: Option<SyntaxKind>,
     ) -> Next {
         let nesting = u32::try_from(frames.len() - 1).unwrap_or(u32::MAX);
-        if nesting >= MAX_NESTING_DEPTH {
+        if nesting >= self.nesting_limit() {
             self.refuse_depth();
             if wrapper.is_some() {
                 // The wrapper opened before its frame could: it closes over
@@ -960,17 +959,16 @@ mod tests {
     use crate::diagnostic::{Hint, RestrictedForm, Restriction, SyntaxErrorKind};
     use crate::dialect::Dialect;
     use crate::lexer::Lexer;
-    use crate::parse::{MAX_NESTING_DEPTH, MAX_TREE_DEPTH, parse_term, parse_term_value};
+    use crate::parse::{MAX_TREE_DEPTH, NestingLimit, parse_term, parse_term_value};
     use crate::tree::{SyntaxKind, sexpr};
 
     use crate::parse::test_util::admitted;
-    use crate::parse::with_required_stack;
 
     /// The shape of the term the term entry reads from `text` under the
     /// clingo dialect, with the fragment root peeled.
     fn term(text: &str) -> String {
         let source = admitted(text);
-        let parse = parse_term(&Lexer::new(&source, Dialect::Clingo));
+        let parse = parse_term(&Lexer::new(&source, Dialect::Clingo), NestingLimit::DEFAULT);
         assert_eq!(parse.syntax().text(), text, "law 1");
         let shape = sexpr(&parse.syntax());
         shape
@@ -981,7 +979,7 @@ mod tests {
 
     fn diagnostics(text: &str) -> Vec<SyntaxErrorKind> {
         let source = admitted(text);
-        parse_term(&Lexer::new(&source, Dialect::Clingo))
+        parse_term(&Lexer::new(&source, Dialect::Clingo), NestingLimit::DEFAULT)
             .diagnostics()
             .iter()
             .map(|d| d.kind().clone())
@@ -996,7 +994,7 @@ mod tests {
         // the "to close (" locus the unclosed frame carries, which a bare
         // `f(a` also keeps (docs/design/syntax.md §6.7).
         let source = admitted("f(a,");
-        let parse = parse_term(&Lexer::new(&source, Dialect::Clingo));
+        let parse = parse_term(&Lexer::new(&source, Dialect::Clingo), NestingLimit::DEFAULT);
         let loci: Vec<RelatedLocus> = parse
             .diagnostics()
             .iter()
@@ -1115,7 +1113,7 @@ mod tests {
     #[test]
     fn trivia_inside_a_frame_belongs_to_the_frames_node_not_the_tuple() {
         let source = admitted("f( a )");
-        let parse = parse_term(&Lexer::new(&source, Dialect::Clingo));
+        let parse = parse_term(&Lexer::new(&source, Dialect::Clingo), NestingLimit::DEFAULT);
         let tuple = parse
             .syntax()
             .descendants()
@@ -1170,7 +1168,7 @@ mod tests {
             "(FUNCTION_TERM f (ARGUMENTS ( (TUPLE (CONSTANT_TERM a))))"
         );
         let source = admitted("f(a");
-        let parse = parse_term(&Lexer::new(&source, Dialect::Clingo));
+        let parse = parse_term(&Lexer::new(&source, Dialect::Clingo), NestingLimit::DEFAULT);
         assert!(parse.is_incomplete());
         assert_eq!(parse.diagnostics().len(), 1);
         assert_eq!(parse.diagnostics()[0].related().len(), 1);
@@ -1236,7 +1234,7 @@ mod tests {
     #[test]
     fn the_query_mark_is_read_by_dialect() {
         let source = admitted("p ?");
-        let clingo = parse_term(&Lexer::new(&source, Dialect::Clingo));
+        let clingo = parse_term(&Lexer::new(&source, Dialect::Clingo), NestingLimit::DEFAULT);
         assert_eq!(
             sexpr(&clingo.syntax()),
             "(TERM_FRAGMENT (BINARY_TERM (CONSTANT_TERM p) ?))"
@@ -1248,13 +1246,19 @@ mod tests {
                 ..
             }
         ));
-        let core = parse_term(&Lexer::new(&source, Dialect::AspCore2));
+        let core = parse_term(
+            &Lexer::new(&source, Dialect::AspCore2),
+            NestingLimit::DEFAULT,
+        );
         assert_eq!(
             sexpr(&core.syntax()),
             "(TERM_FRAGMENT (CONSTANT_TERM p) (ERROR ?))"
         );
         let source = admitted("p ? q");
-        let core = parse_term(&Lexer::new(&source, Dialect::AspCore2));
+        let core = parse_term(
+            &Lexer::new(&source, Dialect::AspCore2),
+            NestingLimit::DEFAULT,
+        );
         assert_eq!(
             sexpr(&core.syntax()),
             "(TERM_FRAGMENT (BINARY_TERM (CONSTANT_TERM p) ? (CONSTANT_TERM q)))"
@@ -1265,7 +1269,8 @@ mod tests {
     fn the_term_value_restriction_diagnoses_each_excluded_form_and_builds_the_structure() {
         let value = |text: &str| {
             let source = admitted(text);
-            let parse = parse_term_value(&Lexer::new(&source, Dialect::Clingo));
+            let parse =
+                parse_term_value(&Lexer::new(&source, Dialect::Clingo), NestingLimit::DEFAULT);
             assert_eq!(parse.syntax().text(), text);
             let forms: Vec<RestrictedForm> = parse
                 .diagnostics()
@@ -1304,62 +1309,64 @@ mod tests {
     }
 
     #[test]
-    fn nesting_past_the_constant_is_refused_once_and_carried_losslessly() {
-        // The refused tree is `MAX_NESTING_DEPTH` frames deep; holding it
-        // needs `REQUIRED_STACK_BYTES` (§6.6).
-        with_required_stack(|| {
-            let depth = MAX_NESTING_DEPTH as usize;
-            let admitted_text = format!("{}x{}", "f(".repeat(depth), ")".repeat(depth));
-            assert!(
-                diagnostics(&admitted_text).is_empty(),
-                "the constant itself is admitted"
-            );
-            let refused_text = format!("{}x{} $", "f(".repeat(depth + 1), ")".repeat(depth + 1));
-            let source = admitted(&refused_text);
-            let parse = parse_term(&Lexer::new(&source, Dialect::Clingo));
-            assert_eq!(
-                parse.syntax().text(),
-                refused_text.as_str(),
-                "law 1 under refusal"
-            );
-            assert_eq!(
-                parse.diagnostics().len(),
-                1,
-                "one refusal, one diagnostic; the `$` inside is silent"
-            );
-            assert!(matches!(
-                parse.diagnostics()[0].kind(),
-                SyntaxErrorKind::NestingTooDeep { depth } if *depth == MAX_NESTING_DEPTH
-            ));
-            let deepest = parse
+    fn nesting_past_the_default_limit_is_refused_once_and_carried_losslessly() {
+        // At `NestingLimit::DEFAULT` the refused tree is shallow enough to
+        // hold on a modest stack, so no `with_required_stack` is needed; the
+        // deep tier is exercised at the ceiling by `tests/depth_gate.rs`.
+        let depth = NestingLimit::DEFAULT.frames() as usize;
+        let admitted_text = format!("{}x{}", "f(".repeat(depth), ")".repeat(depth));
+        assert!(
+            diagnostics(&admitted_text).is_empty(),
+            "the limit itself is admitted"
+        );
+        let refused_text = format!("{}x{} $", "f(".repeat(depth + 1), ")".repeat(depth + 1));
+        let source = admitted(&refused_text);
+        let parse = parse_term(&Lexer::new(&source, Dialect::Clingo), NestingLimit::DEFAULT);
+        assert_eq!(
+            parse.syntax().text(),
+            refused_text.as_str(),
+            "law 1 under refusal"
+        );
+        assert_eq!(
+            parse.diagnostics().len(),
+            1,
+            "one refusal, one diagnostic; the `$` inside is silent"
+        );
+        assert!(matches!(
+            parse.diagnostics()[0].kind(),
+            SyntaxErrorKind::NestingTooDeep { depth } if *depth == NestingLimit::DEFAULT.frames()
+        ));
+        let deepest = parse
+            .syntax()
+            .descendants()
+            .map(|node| node.ancestors().count())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            deepest <= MAX_TREE_DEPTH as usize,
+            "law 3: {deepest} <= {MAX_TREE_DEPTH}"
+        );
+        assert!(
+            parse
                 .syntax()
                 .descendants()
-                .map(|node| node.ancestors().count())
-                .max()
-                .unwrap_or(0);
-            assert!(
-                deepest <= MAX_TREE_DEPTH as usize,
-                "law 3: {deepest} <= {MAX_TREE_DEPTH}"
-            );
-            assert!(
-                parse
-                    .syntax()
-                    .descendants()
-                    .any(|node| node.kind() == SyntaxKind::ERROR)
-            );
-        });
+                .any(|node| node.kind() == SyntaxKind::ERROR)
+        );
     }
 
     #[test]
     fn a_frame_free_chain_of_any_length_never_reaches_the_constant() {
-        let long = (0..(MAX_NESTING_DEPTH as usize * 4))
+        let long = (0..(NestingLimit::DEFAULT.frames() as usize * 4))
             .map(|_| "1")
             .collect::<Vec<_>>()
             .join("+");
         assert!(diagnostics(&long).is_empty());
-        let unary = format!("{}1", "-".repeat(MAX_NESTING_DEPTH as usize * 4));
+        let unary = format!(
+            "{}1",
+            "-".repeat(NestingLimit::DEFAULT.frames() as usize * 4)
+        );
         assert!(diagnostics(&unary).is_empty());
-        let power = (0..(MAX_NESTING_DEPTH as usize * 4))
+        let power = (0..(NestingLimit::DEFAULT.frames() as usize * 4))
             .map(|_| "2")
             .collect::<Vec<_>>()
             .join("**");
@@ -1404,7 +1411,7 @@ mod tests {
             let source = admitted(t);
             // Total (no panic) and lossless.
             assert_eq!(
-                parse_term(&Lexer::new(&source, Dialect::Clingo))
+                parse_term(&Lexer::new(&source, Dialect::Clingo), NestingLimit::DEFAULT)
                     .syntax()
                     .text(),
                 t

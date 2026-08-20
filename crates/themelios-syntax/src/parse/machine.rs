@@ -40,6 +40,9 @@ pub(super) struct Parser<'s, S: TokenSource> {
     source: &'s S,
     text: &'s str,
     dialect: Dialect,
+    /// The frame count past which the loop refuses (docs/design/syntax.md
+    /// §6.6): `NestingLimit::DEFAULT`'s or `CEILING`'s, per the entry.
+    nesting_limit: u32,
     builder: GreenBuilder,
     diagnostics: Vec<SyntaxError>,
     /// The offset of the first byte not yet placed in the tree.
@@ -84,11 +87,12 @@ struct Peeked {
 }
 
 impl<'s, S: TokenSource> Parser<'s, S> {
-    pub(super) fn new(source: &'s S) -> Parser<'s, S> {
+    pub(super) fn new(source: &'s S, limit: super::NestingLimit) -> Parser<'s, S> {
         Parser {
             source,
             text: source.text(),
             dialect: source.dialect(),
+            nesting_limit: limit.frames(),
             builder: GreenBuilder::new(),
             diagnostics: Vec::new(),
             at: 0,
@@ -101,6 +105,12 @@ impl<'s, S: TokenSource> Parser<'s, S> {
             last_placed: None,
             depth_refused: false,
         }
+    }
+
+    /// The frame count past which the frame loop refuses (the entry's
+    /// `NestingLimit`, docs/design/syntax.md §6.6).
+    pub(super) fn nesting_limit(&self) -> u32 {
+        self.nesting_limit
     }
 
     // ---- the cursor -------------------------------------------------
@@ -511,7 +521,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
         let location = self.location(start, end);
         self.diagnostics.push(SyntaxError::new(
             SyntaxErrorKind::NestingTooDeep {
-                depth: super::MAX_NESTING_DEPTH,
+                depth: self.nesting_limit,
             },
             location,
         ));

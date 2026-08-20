@@ -156,10 +156,10 @@ pub enum SyntaxErrorKind {
         /// A characteristic mistake recognized here, if any.
         hint: Option<Hint>,
     },
-    /// A bracket that would open a frame past `MAX_NESTING_DEPTH`
+    /// A bracket that would open a frame past the entry's `NestingLimit`
     /// (syntax.md §6.6).
     NestingTooDeep {
-        /// The bound that was reached.
+        /// The frame count the parse refused beyond — its `NestingLimit`.
         depth: u32,
     },
     /// The input is aspif, not a program (grammar §4.9).

@@ -19,7 +19,7 @@ use themelios_base::source::{Source, SourceId, SourceSet};
 use themelios_base::span::ByteOffset;
 use themelios_base::view::human;
 use themelios_syntax::dialect::Dialect;
-use themelios_syntax::parse::{MAX_NESTING_DEPTH, parse, parse_program, with_required_stack};
+use themelios_syntax::parse::{NestingLimit, parse, parse_program};
 use themelios_syntax::token::{LexMode, Token, TokenSource};
 use themelios_syntax::tree::SyntaxKind;
 
@@ -133,17 +133,15 @@ fn unexpected_end_of_input() {
 #[test]
 fn nesting_too_deep_on_an_annotated_family() {
     // One opener per line, so the rendering's window around the refused
-    // bracket stays legible whatever the constant's value.
-    let depth = MAX_NESTING_DEPTH as usize + 1;
+    // bracket stays legible whatever the limit's value. `parse` refuses at
+    // `NestingLimit::DEFAULT`, shallow enough to hold on a modest stack.
+    let depth = NestingLimit::DEFAULT.frames() as usize + 1;
     let text = format!(
         ":~ p({}x{}). [1@2]\nq.\n",
         "f(\n".repeat(depth),
         ")".repeat(depth)
     );
-    // The refused tree is `MAX_NESTING_DEPTH` frames deep; holding it needs
-    // `REQUIRED_STACK_BYTES` (docs/design/syntax.md §6.6), so parse and
-    // render it there — as any consumer holding the tree must.
-    with_required_stack(|| diag("nesting-too-deep-annotated", &text));
+    diag("nesting-too-deep-annotated", &text);
 }
 
 #[test]
@@ -180,10 +178,13 @@ fn token_source_breach() {
         .add("input.lp".to_owned(), text.to_owned())
         .expect("admits");
     let source = Source::new(file, text.to_owned()).expect("admits");
-    let parse = parse_program(&EarlyEnd(themelios_syntax::lexer::Lexer::new(
-        &source,
-        Dialect::Clingo,
-    )));
+    let parse = parse_program(
+        &EarlyEnd(themelios_syntax::lexer::Lexer::new(
+            &source,
+            Dialect::Clingo,
+        )),
+        NestingLimit::DEFAULT,
+    );
     let mut out = String::new();
     for diagnostic in parse.diagnostics() {
         out.push_str(&human(&diagnostic.to_diagnostic(), &catalog));

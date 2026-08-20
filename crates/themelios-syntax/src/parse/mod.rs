@@ -27,29 +27,62 @@ use crate::tree::{Asp, AstNode, GreenNode, SyntaxNode, TextRange, span_of};
 
 use self::machine::Parser;
 
-/// The deepest nesting of bracket contexts — frames, one per open
-/// bracket (docs/design/syntax.md §6.2) — the parser will open. Named
-/// because it carries meaning; its value is fixed by measurement between
-/// two bounds and recorded here with both (docs/design/syntax.md §6.6).
-///
-/// **From above (the gate's bound, which governs):** on a thread of half
-/// `REQUIRED_STACK_BYTES`, every walk this crate performs or hands out —
-/// dropping, comparing, rendering through `Display`, navigating by
-/// offset, walking the typed AST, attaching, certifying — survives trees
-/// of the deepest per-frame shape to 5,154 frames and fails at 5,155
-/// (rowan 0.17.0, measured 2026-08-19 by `tests/depth_gate.rs`); the
-/// constant is the largest multiple of 1,000 not above 5,154.
-///
-/// **From below (the authority's ceiling, docs/grammar.md §11 D2):**
-/// clingo v5.8.2 accepts nesting into the tens of thousands per family —
-/// about 61,623 in the tightest (a term's function arguments and its
-/// pool), higher elsewhere — and its process then *ends* (a stack
-/// overflow, not a graceful refusal); the corpus reaches no depth near
-/// the constant. The ceiling lies far above the constant, so the inputs
-/// between — `MAX_NESTING_DEPTH + 1` up to each family's ceiling — are
-/// D2's band, admitted by the authority and refused here, recorded
-/// beside that entry; safety over parity.
-pub const MAX_NESTING_DEPTH: u32 = 5_000;
+/// How deep a parse may nest bracket contexts — frames, one per open
+/// bracket (docs/design/syntax.md §6.2) — before it refuses. The grammar
+/// nests without bound (grammar §11 D2), so this limit is the
+/// implementation's, not the language's; it never crashes, it *refuses*,
+/// with a locus. Two named points span the trade (docs/design/syntax.md
+/// §6.6): [`DEFAULT`](NestingLimit::DEFAULT), what a bare [`parse`] uses,
+/// the crash-averse floor a naive consumer holds on a modest stack; and
+/// [`CEILING`](NestingLimit::CEILING), passed to a general door
+/// ([`parse_program`] and its siblings), the definition's unbounded
+/// nesting honored as far as the crate can prove safe — held under
+/// [`with_required_stack`]. A consumer chooses where on that span it
+/// parses; it never has to choose a crash.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct NestingLimit(u32);
+
+impl NestingLimit {
+    /// The default limit — the crash-averse floor. The deepest tree it
+    /// builds is safe to *hold* — drop, render, compare, navigate — on a
+    /// modest two-mebibyte stack (a quarter of the eight-mebibyte
+    /// main-thread default of the two supported operating systems, where a
+    /// naive consumer's code runs), so [`parse`] does not overflow there.
+    /// Every real program nests far below it — the deepest in the whole
+    /// vendored corpus, clingo's own tests included, nests twenty-three
+    /// (docs/design/syntax.md §6.6) — and deeper input is *refused*, not
+    /// crashed. Set well below what the modest stack survives (the depth
+    /// gate measures ~323 frames of the deepest shape there, 2026-08-19,
+    /// rowan 0.17.0): 128 — echoing serde_json's recursion floor — leaves
+    /// better than twofold margin and clears the corpus more than fivefold.
+    /// A consumer parsing on a thread it sized smaller manages that stack
+    /// itself, as it must for any deep tree; a consumer wanting the full
+    /// range reaches for a general door at [`CEILING`](NestingLimit::CEILING).
+    pub const DEFAULT: NestingLimit = NestingLimit(128);
+
+    /// The ceiling: the deepest [`REQUIRED_STACK_BYTES`] is proven to hold
+    /// (the depth gate, docs/design/syntax.md §16) — the language's
+    /// unbounded nesting honored as far as safety allows, no lower. A
+    /// consumer that raises a general door ([`parse_program`] and its
+    /// siblings) to it holds the result under [`with_required_stack`]. It
+    /// grows with the pole: a larger [`REQUIRED_STACK_BYTES`], re-measured,
+    /// raises it. Measured 2026-08-19: the walks survive 5,154 frames on
+    /// half the 64 MiB pole; 5,000 is the largest granule below.
+    pub const CEILING: NestingLimit = NestingLimit(5_000);
+
+    /// The frame count this limit refuses beyond.
+    #[must_use]
+    pub const fn frames(self) -> u32 {
+        self.0
+    }
+}
+
+impl Default for NestingLimit {
+    /// [`DEFAULT`](NestingLimit::DEFAULT).
+    fn default() -> NestingLimit {
+        NestingLimit::DEFAULT
+    }
+}
 
 /// The stack, in bytes, on which every operation this crate performs or
 /// hands out over the deepest tree it can build — dropping it, comparing
@@ -59,7 +92,7 @@ pub const MAX_NESTING_DEPTH: u32 = 5_000;
 /// consumer's thread that holds a tree needs at least this much. Sixty-
 /// four mebibytes: eight times the eight-mebibyte main-thread default of
 /// the two supported operating systems, a size a language server's
-/// worker can be given without contortion; `MAX_NESTING_DEPTH` is
+/// worker can be given without contortion; [`NestingLimit::CEILING`] is
 /// measured against it, and a move of either re-measures the other.
 pub const REQUIRED_STACK_BYTES: usize = 64 * 1024 * 1024;
 
@@ -81,12 +114,14 @@ pub const TERM_LAYERS_PER_FRAME: u32 = 11;
 pub const FIXED_LAYERS: u32 = 18;
 
 /// The bound on the tree's depth (docs/design/syntax.md §5.4, law 3),
-/// derived and carrying no numeral of its own: `MAX_NESTING_DEPTH`
-/// frames, each contributing at most `TERM_LAYERS_PER_FRAME` layers,
-/// under `FIXED_LAYERS`. Public because a consumer who recurses over the
-/// typed AST sizes its own stack from it; `REQUIRED_STACK_BYTES` covers
-/// this crate's and rowan's walks, not the consumer's.
-pub const MAX_TREE_DEPTH: u32 = MAX_NESTING_DEPTH * TERM_LAYERS_PER_FRAME + FIXED_LAYERS;
+/// derived and carrying no numeral of its own: [`NestingLimit::CEILING`]
+/// frames — the deepest tree the crate can build — each contributing at
+/// most `TERM_LAYERS_PER_FRAME` layers, under `FIXED_LAYERS`. Public
+/// because a consumer who recurses over the typed AST sizes its own stack
+/// from it; `REQUIRED_STACK_BYTES` covers this crate's and rowan's walks,
+/// not the consumer's.
+pub const MAX_TREE_DEPTH: u32 =
+    NestingLimit::CEILING.frames() * TERM_LAYERS_PER_FRAME + FIXED_LAYERS;
 
 /// What the parser is asked to read: a whole program, or one construct
 /// family with a named consumer — the statement (the macro tier's
@@ -264,29 +299,44 @@ impl<T: AstNode<Language = Asp>> fmt::Debug for Parse<T> {
     }
 }
 
-/// The file door: an admitted source under a dialect. Total; O(text).
+/// The file door: an admitted source under a dialect, at
+/// [`NestingLimit::DEFAULT`] — the crash-averse floor, safe to hold on a
+/// modest stack. For the deeper [`NestingLimit::CEILING`], reach for
+/// [`parse_program`] under [`with_required_stack`]. Total; O(text).
 pub fn parse(source: &Source, dialect: Dialect) -> Parse<ast::Program> {
-    parse_program(&Lexer::new(source, dialect))
+    parse_program(&Lexer::new(source, dialect), NestingLimit::DEFAULT)
 }
 
-/// The general door for a program: any token source. Total; O(text).
-pub fn parse_program(source: &impl TokenSource) -> Parse<ast::Program> {
-    Parser::new(source).program()
+/// The general door for a program: any token source, at `limit`
+/// (docs/design/syntax.md §6.6 — [`NestingLimit::DEFAULT`] holds on a
+/// modest stack; [`NestingLimit::CEILING`] wants [`with_required_stack`]).
+/// Total; O(text).
+pub fn parse_program(source: &impl TokenSource, limit: NestingLimit) -> Parse<ast::Program> {
+    Parser::new(source, limit).program()
 }
 
-/// The statement door: one program position. Total; O(text).
-pub fn parse_statement(source: &impl TokenSource) -> Parse<ast::StatementFragment> {
-    Parser::new(source).statement_fragment()
+/// The statement door: one program position, at `limit` (see
+/// [`parse_program`]). Total; O(text).
+pub fn parse_statement(
+    source: &impl TokenSource,
+    limit: NestingLimit,
+) -> Parse<ast::StatementFragment> {
+    Parser::new(source, limit).statement_fragment()
 }
 
-/// The term door: grammar §5.1's `term`. Total; O(text).
-pub fn parse_term(source: &impl TokenSource) -> Parse<ast::TermFragment> {
-    Parser::new(source).term_fragment(EntryPoint::Term)
+/// The term door: grammar §5.1's `term`, at `limit` (see
+/// [`parse_program`]). Total; O(text).
+pub fn parse_term(source: &impl TokenSource, limit: NestingLimit) -> Parse<ast::TermFragment> {
+    Parser::new(source, limit).term_fragment(EntryPoint::Term)
 }
 
-/// The term-value door: grammar §5.10's `value-term`. Total; O(text).
-pub fn parse_term_value(source: &impl TokenSource) -> Parse<ast::TermFragment> {
-    Parser::new(source).term_fragment(EntryPoint::TermValue)
+/// The term-value door: grammar §5.10's `value-term`, at `limit` (see
+/// [`parse_program`]). Total; O(text).
+pub fn parse_term_value(
+    source: &impl TokenSource,
+    limit: NestingLimit,
+) -> Parse<ast::TermFragment> {
+    Parser::new(source, limit).term_fragment(EntryPoint::TermValue)
 }
 
 /// Run `work` on a fresh thread of `REQUIRED_STACK_BYTES` and return what
@@ -462,7 +512,10 @@ mod tests {
             }
         }
         let source = admitted("$$$ more");
-        let parse = parse_program(&EarlyEnd(Lexer::new(&source, Dialect::Clingo)));
+        let parse = parse_program(
+            &EarlyEnd(Lexer::new(&source, Dialect::Clingo)),
+            NestingLimit::DEFAULT,
+        );
         assert_eq!(parse.syntax().text(), "$$$", "the prefix tiled");
         assert!(parse.diagnostics().iter().any(|d| matches!(
             d.kind(),
@@ -498,7 +551,10 @@ mod tests {
             }
         }
         let source = admitted("$$$ more");
-        let parse = parse_program(&Refusing(Lexer::new(&source, Dialect::Clingo)));
+        let parse = parse_program(
+            &Refusing(Lexer::new(&source, Dialect::Clingo)),
+            NestingLimit::DEFAULT,
+        );
         assert_eq!(parse.syntax().text(), "$$$");
         assert!(parse.diagnostics().iter().any(|d| matches!(
             d.kind(),
@@ -546,22 +602,26 @@ mod tests {
             }
         }
         let source = admitted("é");
-        let parse = parse_program(&MidChar(Lexer::new(&source, Dialect::Clingo)));
+        let parse = parse_program(
+            &MidChar(Lexer::new(&source, Dialect::Clingo)),
+            NestingLimit::DEFAULT,
+        );
         assert_eq!(parse.syntax().kind(), SyntaxKind::PROGRAM);
     }
 
     #[test]
     fn the_fragment_entries_yield_their_container_roots_on_empty_input() {
         let source = admitted("  ");
-        let statement = parse_statement(&Lexer::new(&source, Dialect::Clingo));
+        let statement =
+            parse_statement(&Lexer::new(&source, Dialect::Clingo), NestingLimit::DEFAULT);
         assert_eq!(statement.syntax().kind(), SyntaxKind::STATEMENT_FRAGMENT);
         assert_eq!(statement.syntax().text(), "  ");
         assert!(!statement.has_errors());
         assert_eq!(statement.entry(), EntryPoint::Statement);
-        let term = parse_term(&Lexer::new(&source, Dialect::Clingo));
+        let term = parse_term(&Lexer::new(&source, Dialect::Clingo), NestingLimit::DEFAULT);
         assert_eq!(term.syntax().kind(), SyntaxKind::TERM_FRAGMENT);
         assert_eq!(term.entry(), EntryPoint::Term);
-        let value = parse_term_value(&Lexer::new(&source, Dialect::Clingo));
+        let value = parse_term_value(&Lexer::new(&source, Dialect::Clingo), NestingLimit::DEFAULT);
         assert_eq!(value.syntax().kind(), SyntaxKind::TERM_FRAGMENT);
         assert_eq!(value.entry(), EntryPoint::TermValue);
     }
@@ -569,7 +629,7 @@ mod tests {
     #[test]
     fn input_after_a_fragment_is_an_error_node_expecting_end_of_input() {
         let source = admitted("p q");
-        let fragment = parse_term(&Lexer::new(&source, Dialect::Clingo));
+        let fragment = parse_term(&Lexer::new(&source, Dialect::Clingo), NestingLimit::DEFAULT);
         assert_eq!(fragment.syntax().text(), "p q");
         assert!(fragment.has_errors());
         assert!(fragment.diagnostics().iter().any(|d| matches!(

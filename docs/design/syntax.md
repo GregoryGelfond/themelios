@@ -614,15 +614,17 @@ empty node.
    and a wrapper would carry nothing they do not (Appendix A records the
    mapping).
 3. **Bounded depth.** No tree this crate produces is deeper than
-   `MAX_TREE_DEPTH` (§6.6), a bound derived from `MAX_NESTING_DEPTH` and
-   two constants of the grammar: at most `MAX_NESTING_DEPTH` frames,
-   each contributing at most the term families' per-frame layer count,
-   under the fixed layer count of everything above the term families.
-   Every axis along which the roster's kinds can nest is accounted for.
-   Bracket contexts — a pool, an argument list, an absolute-value pair,
-   a theory set, list, tuple, or function's arguments — are frames, and
-   the parser refuses to open one past the constant, flattening the
-   surplus losslessly under `ERROR` with a diagnostic. Operator chains
+   `MAX_TREE_DEPTH` (§6.6), a bound derived from `NestingLimit::CEILING`
+   — the deepest the crate builds — and two constants of the grammar: at
+   most `CEILING` frames, each contributing at most the term families'
+   per-frame layer count, under the fixed layer count of everything above
+   the term families. Every axis along which the roster's kinds can nest
+   is accounted for. Bracket contexts — a pool, an argument list, an
+   absolute-value pair, a theory set, list, tuple, or function's
+   arguments — are frames, and the parser refuses to open one past the
+   limit in force (`NestingLimit::DEFAULT` at the file door, `CEILING`
+   the deepest a general door allows), flattening the surplus losslessly
+   under `ERROR` with a diagnostic. Operator chains
    and unary runs are *flat*: a `BINARY_TERM` holds one precedence
    level's whole chain and a `UNARY_TERM` a whole run of prefix
    operators (§6.2, §8.2), so a chain of any length deepens the tree by
@@ -1019,45 +1021,82 @@ Three predicates, each defined once:
   token boundary, the prefix's parse is either error-free or
   incomplete (§16).
 
-### 6.6 Bounded depth, the constants, and the two bounds
+### 6.6 Bounded depth, the two limits, and the pole
+
+The grammar nests bracket contexts without bound (grammar §11 D2), so
+any limit on nesting is the implementation's, not the language's. The
+implementation never *crashes* on deep input — it *refuses*, with a
+locus — and it exposes the trade between a limit that holds on a modest
+stack and one that honors the definition as far as safety allows as two
+named points a consumer chooses between, never a crash.
 
 ```rust
-/// The deepest nesting of bracket contexts — frames, one per open
-/// bracket (§6.2) — the parser will open. Named because it carries
-/// meaning (spec §5.2), and documented with the two bounds that fix
-/// its value; no numeral stands here, and the plan records the
-/// measured value with both bounds beside it.
-pub const MAX_NESTING_DEPTH: u32 = /* fixed by measurement, see below */;
+/// How deep a parse may nest bracket contexts — frames, one per open
+/// bracket (§6.2) — before it refuses. Not the language's bound (the
+/// grammar nests without limit, grammar §11 D2) but the
+/// implementation's, and never a crash: past it the parser refuses with
+/// a locus. Two named points span the trade, each measured (below):
+/// `DEFAULT`, the crash-averse floor; `CEILING`, the definition honored
+/// as far as the pole proves safe.
+pub struct NestingLimit(u32);
+
+impl NestingLimit {
+    /// The crash-averse floor, and what a bare `parse` (the file door)
+    /// uses. The deepest tree it builds is safe to *hold* — drop,
+    /// render, compare, navigate — on a modest two-mebibyte stack (a
+    /// quarter of the eight-mebibyte main-thread default of the two
+    /// supported operating systems, where a naive consumer's code runs),
+    /// so `parse` does not overflow there. Every real program nests far
+    /// below it — the deepest in the whole vendored corpus, clingo's own
+    /// tests included, nests twenty-three — and deeper input is refused,
+    /// not crashed. Set well below what the modest stack survives (the
+    /// depth gate measures ~323 frames of the deepest shape there): 128,
+    /// echoing serde_json's recursion floor, leaves better than twofold
+    /// margin and clears the corpus more than fivefold.
+    pub const DEFAULT: NestingLimit = NestingLimit(128);
+
+    /// The definition's unbounded nesting honored as far as the crate
+    /// proves safe — the deepest `REQUIRED_STACK_BYTES` is shown to hold
+    /// (the depth gate, §16), no lower. A consumer raises a general door
+    /// (`parse_program` and its siblings) to it and holds the result
+    /// under `with_required_stack`. It grows with the pole: a larger
+    /// `REQUIRED_STACK_BYTES`, re-measured, raises it.
+    pub const CEILING: NestingLimit = NestingLimit(5_000);
+
+    /// The frame count this limit refuses beyond.
+    pub const fn frames(self) -> u32 { self.0 }
+}
 
 /// The stack, in bytes, on which every operation this crate performs
-/// or hands out over the deepest tree it can build — dropping it,
-/// comparing two, rendering one, walking the typed AST, attaching,
-/// certifying — is proven to complete: the depth gate (§16) runs on a
-/// thread of exactly this size and passes with headroom. A consumer's
-/// thread that holds a tree needs at least this much, and a language
-/// server's worker or a WASM host reads it here rather than
-/// discovering it. This is the fixed pole, a product choice — sixty-four
-/// mebibytes, eight times the eight-mebibyte main-thread default of the
-/// two supported operating systems, a size a language server's worker
-/// can be given without contortion — against which `MAX_NESTING_DEPTH`
-/// is measured (below); a move of either re-measures the other.
+/// or hands out over the deepest tree it can build at `CEILING` —
+/// dropping it, comparing two, rendering one, walking the typed AST,
+/// attaching, certifying — is proven to complete: the depth gate (§16)
+/// runs on a thread of exactly this size and passes with headroom. A
+/// consumer's thread that holds such a tree needs at least this much,
+/// and a language server's worker or a WASM host reads it here rather
+/// than discovering it. This is the fixed pole, a product choice —
+/// sixty-four mebibytes, eight times the eight-mebibyte main-thread
+/// default of the two supported operating systems, a size a language
+/// server's worker can be given without contortion — against which
+/// `CEILING` is measured (below); a move of either re-measures it.
 pub const REQUIRED_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 /// The bound on the tree's depth (§5.4, law 3), derived and carrying no
-/// numeral of its own: `MAX_NESTING_DEPTH` frames, each contributing at
-/// most the term families' per-frame layer count, under the fixed layer
-/// count of everything above the term families — `TERM_LAYERS_PER_FRAME`
-/// and `FIXED_LAYERS`, two public grammar constants named in the crate
-/// beside this one, valued by inspection of Appendix A and documented
-/// there and read by the depth instrument (§16). Public because a consumer who
-/// recurses over the typed AST — the visitor a fluent reader will write
-/// — sizes its own stack from it; `REQUIRED_STACK_BYTES` covers this
-/// crate's and rowan's walks, not the consumer's.
-pub const MAX_TREE_DEPTH: u32 = MAX_NESTING_DEPTH * TERM_LAYERS_PER_FRAME + FIXED_LAYERS;
+/// numeral of its own: `CEILING` frames — the deepest tree the crate
+/// can build — each contributing at most the term families' per-frame
+/// layer count, under the fixed layer count of everything above the
+/// term families — `TERM_LAYERS_PER_FRAME` and `FIXED_LAYERS`, two
+/// public grammar constants named in the crate beside this one, valued
+/// by inspection of Appendix A and documented there and read by the
+/// depth instrument (§16). Public because a consumer who recurses over
+/// the typed AST — the visitor a fluent reader will write — sizes its
+/// own stack from it; `REQUIRED_STACK_BYTES` covers this crate's and
+/// rowan's walks, not the consumer's.
+pub const MAX_TREE_DEPTH: u32 = NestingLimit::CEILING.frames() * TERM_LAYERS_PER_FRAME + FIXED_LAYERS;
 ```
 
-At the token that would open a frame beyond the constant, the parser
-emits `nesting-too-deep` at that token and takes the rest of the
+At the token that would open a frame beyond the limit in force, the
+parser emits `nesting-too-deep` at that token and takes the rest of the
 statement — through its terminating dot and, for the four families that
 carry one, the annotation group after it (grammar §5.11), or to end of
 input — into one `ERROR` node under the innermost open frame,
@@ -1065,41 +1104,72 @@ losslessly, opening nothing further and diagnosing nothing further
 within that statement; the statement then closes (the open frames close
 over the `ERROR` node without missing-closer diagnostics of their own:
 one refusal, one diagnostic). The tree's depth is therefore at most the
-constant times the term families' per-frame layer count, plus the
-grammar's fixed layer count above them — `MAX_TREE_DEPTH` (§5.4, law 3),
-whose two grammar constants are named in the crate and valued by
-inspection of Appendix A, and which the depth gate holds by measuring
-the deepest tree it builds against it. Operator chains never reach the
-constant: they are flat (§6.2), so `1+1+…+1` of any length is a member
-here as it is under the authority, and only bracket nesting is refused.
+limit times the term families' per-frame layer count, plus the
+grammar's fixed layer count above them; taken at `CEILING`, the deepest
+the crate builds, that is `MAX_TREE_DEPTH` (§5.4, law 3), whose two
+grammar constants are named in the crate and valued by inspection of
+Appendix A, and which the depth gate holds by measuring the deepest tree
+it builds against it. Operator chains never reach either limit: they are
+flat (§6.2), so `1+1+…+1` of any length is a member here as it is under
+the authority, and only bracket nesting is refused.
 
 This is a refusal with a locus, not a repair: nothing is truncated,
 nothing is guessed, and the diagnostic says exactly what was refused and
 where. It is the specified behavior for absurdly deep input that spec
 §2 item 8 requires, and it applies under both dialects — a conformant
-ASP-Core-2 program nested past the constant included.
+ASP-Core-2 program nested past the limit included.
 
-**The value is measured, not guessed, against two bounds — and the
-grammar's register carries the consequence.** From below: no member of
-the corpus (§16) may reach it, and it should not fall short of what the
-authority itself accepts — clingo's parser refuses very deep nesting at
-its own parser-stack ceiling, and the differential (§16) measures that
-depth per family at the pin. From above: the depth gate (§16) must pass
-with the constant in force — a thread of `REQUIRED_STACK_BYTES` parses
-inputs nested far beyond the constant in every family, then walks,
-compares, renders, and drops the trees — with headroom, because rowan's
-drop and equality recurse in tree depth (§14) and the constant is what
-bounds them. Wherever the constant sits relative to the authority's
-ceiling, the band between the two is a disagreement with the authority
-— inputs one admits and the other refuses — and grammar §11 records it
-as divergence D2, whose obligation is to hold both measured values
-beside the entry; §2's second failure condition pins to that entry.
-**When the two bounds conflict** — the authority's ceiling above what
-the gate's stack survives — the gate's bound governs: safety over
-parity, the constant stays where the gate proves it, and D2 widens
-rather than the stack requirement growing. Both bounds are recorded
-beside the constant, and a move of either — a rowan upgrade, a clingo
-pin move — re-measures.
+**The two limits, and why two.** The file door `parse` is the naive
+consumer's door — read a file, get a tree, on whatever thread the caller
+already holds. Its limit, `DEFAULT`, is set so the deepest tree it
+builds is safe to hold on a modest stack, with margin to spare: the
+crash-averse floor. It is not the language's ceiling, and it is not
+meant to be reached — every real program clears it many times over. The
+general doors (`parse_program` and its siblings, §6.5) take the limit as
+an argument, so a consumer who *does* mean to honor the definition's
+unbounded nesting raises them to `CEILING` and holds the result on a
+`with_required_stack` thread. Two doors, one crash-free promise at both:
+the span from floor to ceiling is a product choice about *how much
+stack the caller will provide*, never a choice to crash. This is the
+serde_json shape — a safe default recursion limit, and an explicit
+opt-in (`disable_recursion_limit`) for the caller who takes on the
+stack — named for this estate's registers.
+
+**Each limit is measured, not guessed.** `DEFAULT` is measured against
+the modest stack it promises: the depth gate (§16) parses the deepest
+per-frame shape of every family at it, on a two-mebibyte thread, and
+walks, compares, renders, and drops the trees — no overflow, with the
+value sitting well below the stack's edge (the margin is the point, so
+the full modest stack, not half, is where it shows). `CEILING` is
+measured to the edge of the pole: the same families on a thread of
+`REQUIRED_STACK_BYTES`, refused far beyond it and admitted at it on half
+the pole — the headroom — because rowan's drop, equality, and `Display`
+recurse in tree depth (§14) and the limit is what bounds them. From
+below, no member of the corpus (§16) may reach `DEFAULT`, let alone
+`CEILING`.
+
+**The authority crashes where the crate refuses — and the register
+carries the consequence.** The authority (clingo 5.8.2) refuses very
+deep nesting not with a diagnostic but with a *stack overflow*: its
+recursive-descent parser dies, per family, at its own stack ceiling —
+the differential (§16, grammar §11 D2) measured the lowest family at
+~61,623 frames at the pin, some families not until a 2²¹ cap. This crate
+never dies: it refuses gracefully at whichever limit is in force.
+Between `CEILING` and the authority's crash point is a band the
+authority *accepts* and this crate *refuses* — inputs nested past 5,000
+the authority parses and we decline — and grammar §11 records it as
+divergence D2, whose obligation is to hold both measured values beside
+the entry; §2's second failure condition pins there. **Safety governs
+that band, deliberately.** Matching the authority would mean building
+trees the pole cannot hold — or matching its *crash*, which the goals of
+this project forbid — so `CEILING` stays where the gate proves it and D2
+widens rather than the stack requirement growing. `with_required_stack`
+and the raisable `CEILING` are the forward-thinking hedge: the pinned
+authority's stack limit is a defect of *its* parser, not the language,
+and a future clingo that parses deeper (the wip-20 branch reworks this)
+narrows D2 without a change here — a larger pole, re-measured, raises
+`CEILING` toward it. Both values are recorded beside the limits, and a
+move of either — a rowan upgrade, a clingo pin move — re-measures.
 
 ### 6.7 Error recovery, per construct family
 
@@ -2511,18 +2581,21 @@ what it proves and what it cannot (spec §10.2).
   as non-members (§6.3); every input parsed under its stated dialect
   with the expected outcome (member, or the diagnostic identities
   expected).
-- **The depth gate:** a thread of exactly `REQUIRED_STACK_BYTES` (§6.6)
-  parses inputs nested far beyond `MAX_NESTING_DEPTH` in every
-  self-recursive family — bracket nesting in each of them, and beside it
-  the bracket-free shapes: additive, exponentiation, and unary chains of
-  a length far beyond the constant, which must *not* deepen the tree
-  (§6.2) — then walks the typed AST, runs attachment and both
+- **The depth gate:** at each of the two limits (§6.6). At `CEILING`, a
+  thread of exactly `REQUIRED_STACK_BYTES` parses inputs nested far beyond
+  it in every self-recursive family — bracket nesting in each of them, and
+  beside it the bracket-free shapes: additive, exponentiation, and unary
+  chains of a length far beyond the limit, which must *not* deepen the
+  tree (§6.2) — then walks the typed AST, runs attachment and both
   certificates, renders it through `Display` and navigates it by offset —
   the depth-recursions §14 names, where the alternate `Debug` dump is
   iterative — compares two such trees, and drops them — no overflow, the
   depth refusal reported for the bracketed inputs and no refusal for the
-  chains, the deepest tree measured against law 3's bound, the constant's
-  headroom measured (§6.6).
+  chains, the deepest tree measured against law 3's bound, `CEILING`'s
+  headroom measured on half the pole. At `DEFAULT`, the same families and
+  walks on a modest two-mebibyte thread — the crash-averse floor a naive
+  consumer holds — refused far beyond it and admitted at it with margin to
+  spare, and the file door `parse` itself refused and held there.
 - **Scaling shapes (criterion):** parse linear in text; the certificate
   linear in both texts; bulk attachment linear in the tree; the oracle
   constant per pair. Shape assertions in the gate; absolute numbers out
@@ -2721,8 +2794,9 @@ build code that surfaced it — the amend-in-commit pattern the §6.3
 query-mark precedent set. The §4.6 and §9.3 refinements are honesty-only,
 each correcting a claim to match what the tier does and vetted by its
 task's reading; the §10.2 amendment, approved by the principal during
-Task 15, and the §6.8/§14/§16 correction, approved during Task 18, each
-correct the document and the code together.
+Task 15, the §6.8/§14/§16 correction, and the §6.6 two-limit design,
+both approved during Task 18, each change the document and the code
+together.
 
 - **§10.2** (2026-08-19): the mode of an adjacency, restated as the
   parser's *standpoint* — the region in force as it begins reading a
@@ -2765,3 +2839,23 @@ correct the document and the code together.
   O(text); interning only shared memory, and the tree the parser hands out
   is byte-for-byte the same, so this changes cost, not the parse. The
   depth gate's constant is measured against this restored O(text) parser.
+- **§6.6** (2026-08-19): the single `MAX_NESTING_DEPTH` constant, replaced
+  by a two-limit `NestingLimit` — `DEFAULT` (128) and `CEILING` (5,000) —
+  approved by the principal during Task 18. The prior design set one
+  measured constant against two bounds and, when they conflicted, let the
+  gate's stack govern; measurement then showed the pole holds ~10,000
+  frames while the authority nests to ~61,623 before *crashing*, so one
+  constant had to be either high (unsafe to hold on a normal thread) or
+  low (an artificial ceiling below the definition). The two limits
+  dissolve the conflict: `DEFAULT`, what the file door `parse` uses, is
+  the crash-averse floor safe to hold on a modest stack (every real
+  program clears it manyfold); `CEILING`, which a general door is raised
+  to and held under `with_required_stack`, honors the definition's
+  unbounded nesting as far as the pole proves safe. The general doors
+  (`parse_program` and its siblings) now take a `NestingLimit` argument;
+  `parse` is unchanged in signature and passes `DEFAULT`. Both limits are
+  measured (§6.6, §16), the crate refuses — never crashes — at both, and
+  the authority's stack-overflow ceiling is recorded as the far side of
+  D2, not chased. The naming follows serde_json's safe-default /
+  explicit-opt-in shape, resolved to this estate's rustc/rust-analyzer
+  register (`with_required_stack` after rust-analyzer's `with_extra_thread`).
