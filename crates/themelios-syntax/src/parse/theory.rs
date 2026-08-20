@@ -322,6 +322,31 @@ mod tests {
     use crate::parse::test_util::{kinds, member, shape};
 
     #[test]
+    fn an_empty_theory_set_holds_no_opterm_and_is_a_member() {
+        // No opterm begins at the closing brace, so the elements are empty and
+        // `&a { }.` is a member — the witness that `theory_opterm_begins`
+        // answers by the tokens, not always yes.
+        assert!(member("&a { }."));
+        assert_eq!(
+            shape("&a { }."),
+            "(RULE (THEORY_ATOM & a (THEORY_ELEMENTS { })) .)"
+        );
+    }
+
+    #[test]
+    fn a_leading_semicolon_in_theory_elements_is_the_empty_first_element() {
+        // A `;` where an element was promised is diagnosed in place, not
+        // wrapped as unexpected input: the loop reads it as the separator
+        // after an empty element. Holds the `!= SEMICOLON` branch against its
+        // inverse.
+        assert_eq!(
+            shape("&a { ; }."),
+            "(RULE (THEORY_ATOM & a (THEORY_ELEMENTS { ; })) .)"
+        );
+        assert_eq!(kinds("&a { ; }.").len(), 2);
+    }
+
+    #[test]
     fn theory_atoms_take_a_name_arguments_elements_and_one_guard() {
         assert_eq!(shape("&a."), "(RULE (THEORY_ATOM & a) .)");
         assert_eq!(

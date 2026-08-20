@@ -404,6 +404,41 @@ mod tests {
     }
 
     #[test]
+    fn a_theory_set_brace_inside_theory_elements_lexes_in_theory_mode() {
+        // The `{` that opens the theory elements is Normal (the special arm),
+        // but a `{` that opens a theory *set* inside them is Theory — the arm's
+        // guard is a THEORY_ELEMENTS parent, not any brace.
+        assert_eq!(mode_of("&a { {x} }.", "{", 0), LexMode::Normal);
+        assert_eq!(mode_of("&a { {x} }.", "{", 1), LexMode::Theory);
+    }
+
+    #[test]
+    fn an_unterminated_script_bodys_error_token_lexes_in_script_body_mode() {
+        // The ERROR token after a `#script(…)` with no `#end` stands in script
+        // position — a child of the script statement, after its `)` — so it
+        // lexes as a script body. Holds `in_script_body_position` whole.
+        assert_eq!(mode_of("#script (lua) x", " x", 0), LexMode::ScriptBody);
+        // A bare ERROR that is not in a script statement is not script body.
+        assert_eq!(mode_of("$$$", "$$$", 0), LexMode::Normal);
+    }
+
+    #[test]
+    fn a_semicolon_or_brace_after_a_condition_is_normal_and_after_a_bare_element_is_theory() {
+        // A theory element that ended in a condition returns the following `;`
+        // or `}` to normal; one that did not keeps theory mode. Holds
+        // `follows_a_condition`'s condition detection.
+        assert_eq!(mode_of("&a { x : p ; y }.", ";", 0), LexMode::Normal);
+        assert_eq!(mode_of("&a { x : p, q }.", "}", 0), LexMode::Normal);
+        assert_eq!(mode_of("&a { x ; y }.", ";", 0), LexMode::Theory);
+        assert_eq!(mode_of("&a { x }.", "}", 0), LexMode::Theory);
+        // A separator whose nearest element before it is itself a separator (an
+        // empty element between `;`s) does not follow a condition — the
+        // walk-back stops at the `;`, it does not read through to the earlier
+        // conditioned element.
+        assert_eq!(mode_of("&a { x : p ; ; z }.", ";", 1), LexMode::Theory);
+    }
+
+    #[test]
     fn a_closing_brace_after_a_condition_is_normal_and_the_named_cases_answer() {
         assert_eq!(mode_of("&a { x : p }.", "}", 0), LexMode::Normal);
         let tokens = token_vec("&a { x : p ; -y }.");

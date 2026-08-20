@@ -246,3 +246,54 @@ fn rust_version_floor_is_declared() {
         "docs/specification.md §10.1: every manifest carries the floor"
     );
 }
+
+/// docs/design/syntax.md §5.1, §5.5, §12.2: every public value type is
+/// plain data — `Send`, `Sync`, owned — and `Parse<T>` is for every root,
+/// its `T` a view carried as a phantom. Compiles only while every listed
+/// type is `Send + Sync`; the cursors, the typed wrappers, and
+/// `Attachment` are the stated exception and are not listed.
+#[test]
+fn every_public_value_type_is_plain_data() {
+    fn plain_data<T: Send + Sync>() {}
+    plain_data::<themelios_syntax::parse::Parse<themelios_syntax::ast::Program>>();
+    plain_data::<themelios_syntax::parse::Parse<themelios_syntax::ast::StatementFragment>>();
+    plain_data::<themelios_syntax::parse::Parse<themelios_syntax::ast::TermFragment>>();
+    plain_data::<themelios_syntax::parse::EntryPoint>();
+    plain_data::<themelios_syntax::dialect::Dialect>();
+    plain_data::<themelios_syntax::tree::SyntaxKind>();
+    plain_data::<themelios_syntax::tree::TokenRole>();
+    plain_data::<themelios_syntax::tree::GreenNode>();
+    plain_data::<themelios_syntax::token::Token<'static>>();
+    plain_data::<themelios_syntax::token::LexMode>();
+    plain_data::<themelios_syntax::token::TokenSourceLawViolation>();
+    plain_data::<themelios_syntax::lexer::Lexer<'static>>();
+    plain_data::<themelios_syntax::diagnostic::SyntaxError>();
+    plain_data::<themelios_syntax::diagnostic::SyntaxErrorKind>();
+    plain_data::<themelios_syntax::diagnostic::Related>();
+    plain_data::<themelios_syntax::diagnostic::RelatedLocus>();
+    plain_data::<themelios_syntax::diagnostic::StringDefect>();
+    plain_data::<themelios_syntax::diagnostic::RestrictedForm>();
+    plain_data::<themelios_syntax::diagnostic::Restriction>();
+    plain_data::<themelios_syntax::diagnostic::MisplacedDoc>();
+    plain_data::<themelios_syntax::diagnostic::SourceBreach>();
+    plain_data::<themelios_syntax::diagnostic::Hint>();
+    plain_data::<themelios_syntax::diagnostic::Expected>();
+    plain_data::<themelios_syntax::diagnostic::GrammarWord>();
+    plain_data::<themelios_syntax::diagnostic::SyntaxClass>();
+    plain_data::<themelios_syntax::ast::Negation>();
+    plain_data::<themelios_syntax::ast::Relation>();
+    plain_data::<themelios_syntax::ast::Precedence>();
+    plain_data::<themelios_syntax::ast::Associativity>();
+    plain_data::<themelios_syntax::ast::AggregateFunction>();
+    plain_data::<themelios_syntax::ast::ConstPolicy>();
+    plain_data::<themelios_syntax::ast::Radix>();
+    plain_data::<themelios_syntax::ast::CommentForm>();
+    plain_data::<themelios_syntax::ast::InvalidStringLiteral>();
+    plain_data::<themelios_syntax::attach::Slot>();
+    plain_data::<themelios_syntax::attach::NotAttachable>();
+    plain_data::<themelios_syntax::fusion::Separator>();
+    plain_data::<themelios_syntax::fusion::LexContext>();
+    plain_data::<themelios_syntax::equiv::Certificate>();
+    plain_data::<themelios_syntax::equiv::Mismatch>();
+    plain_data::<themelios_syntax::equiv::Side>();
+}

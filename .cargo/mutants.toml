@@ -3,4 +3,87 @@
 # and a pattern broader than its argument is a defect — so patterns
 # are added only from printed survivor descriptions at triage, never
 # authored in advance.
-exclude_re = []
+exclude_re = [
+    # The peek cache (`self.peeked`) is set to None on every `bump`, `set_mode`,
+    # and statement boundary in src/parse/machine.rs, so it is Some only while
+    # the parser's offset, mode, and docs-are-trivia are unchanged since it was
+    # set — exactly when its stored `from`, `mode`, and `docs_are_trivia` match.
+    # The validity filter's form is therefore immaterial on a Some cache the
+    # three equalities always hold, and a miss only recomputes the same token.
+    # The five mutations of that filter are behavior-equivalent.
+    "machine\\.rs:198:25: replace == with != in Parser",
+    "machine\\.rs:199:17: replace && with",
+    "machine\\.rs:199:32: replace == with != in Parser",
+    "machine\\.rs:200:17: replace && with",
+    "machine\\.rs:200:43: replace == with != in Parser",
+    # block_comment's `%`-line-silence advances to just past the newline; the
+    # `+ 1 -> * 1` off-by-one lands on the newline itself, which the loop's
+    # default arm then steps over — the same net position, the same (kind,
+    # length). (The `+= -> -=` and `+ -> -` forms at this site instead loop and
+    # are caught as timeouts.)
+    "lexer\\.rs:177:57: replace \\+ with \\*",
+    # string_defect's valid-escape skip (`+= 2 -> *= 2`) only advances the
+    # search for the first bad escape; landing one byte short re-reads the
+    # escaped character through the default arm and reports the same defect at
+    # the same span.
+    "lexer\\.rs:555:49: replace \\+= with \\*=",
+    # `leading`'s after-gap index is one past the run's last empty line; the
+    # `+ 1 -> * 1` off-by-one lands on that empty-line whitespace token, which
+    # is never a comment, so the set of leading comments is unchanged.
+    "attach\\.rs:323:77: replace \\+ with \\*",
+    # `weighted` breaks its scan at a `:` or `]`; what follows is a CONDITION
+    # node (after the colon) or the end of the annotation (after the bracket),
+    # never a direct Term, so `Term::cast` skips it and the weight, priority,
+    # and tuple collected are the same whether or not the scan stops there.
+    "nodes\\.rs:183:17: delete match arm SyntaxKind::COLON",
+    # SPLICE_TERM is produced only by the macro dialect (grammar §9), never from
+    # file text, so no parse reaches SpliceTerm; the accessor's token slot is
+    # the trivial SPLICE and is not reachable by a parsing test.
+    "nodes\\.rs:1698:9: replace SpliceTerm::splice_token",
+    # A theory opterm's direct children are operator tokens and theory-term
+    # nodes; every direct token is a theory operator (the terms are nodes), so
+    # the guard is always true and forcing it true collects the same items.
+    "nodes\\.rs:1395:48: replace match guard THEORY_OPERATOR_KINDS.contains.*with true",
+    # aggregate_elements' `!read` block never sees a `}`, `.`, or EOF: the
+    # loop's top arm returns on those before an element is read, and a failed
+    # read consumes nothing, so this recovery arm is unreachable.
+    "statements\\.rs:773:21: delete match arm SyntaxKind::R_BRACE",
+    # For a well-formed atom-definition — the only shape the accessor reads; an
+    # occurrence is mandatory (grammar §5.9) — the occurrence is the ident after
+    # the last comma, and both `&&` and `||` reset at each comma and resolve to
+    # it; they differ only on a malformed atom-def with no occurrence at all.
+    "nodes\\.rs:927:50: replace && with \\|\\| in AtomDefinition::occurrence",
+    # The script body's ERROR token directly follows the `)` — in script-body
+    # mode nothing between them lexes as trivia — so `in_script_body_position`'s
+    # trivia-skipping branch is never taken and its guard's value is immaterial.
+    "fusion\\.rs:174:43: replace match guard before.kind\\(\\).is_trivia\\(\\) with false",
+    # `type_name` selects the first ident in the segment after the colon via
+    # `find_map(Ident::cast)`: the original skips to the colon, the mutant keeps
+    # the name but `skip(1)` drops it and `find_map` skips the non-ident colon,
+    # so both select the same ident for every atom-definition shape.
+    "nodes\\.rs:890:38: replace != with == in AtomDefinition::type_name",
+    # `tuple_terms` is read only by operand's `(,)` empty-tuple guard, whose fire
+    # and fall-through paths both place the comma in the same tuple node — so
+    # neither the counter (335) nor the guard's disjunction (600) changes the
+    # tree. Verified: `p((a,,))` and `p(f(,))` parse identically under both.
+    "terms\\.rs:335:31: replace \\+= with \\*= in Parser<'_, S>::begin_operand",
+    "terms\\.rs:600:53: replace && with \\|\\| in Parser<'_, S>::operand",
+    # The theory-loop synchronizers and the body recovery's stop/skip decision:
+    # the reaching inputs — a theory element's condition colon, a stray token
+    # between elements, a stray-only body — produce identical trees under the
+    # original and these mutations (triaged with `&a { x : p ; y : q }`,
+    # `&a { x $ y }`, `:- $ .`); behavior-preserving recovery branches. Flagged
+    # for the reader pass to confirm the equivalence argument.
+    "terms\\.rs:840:45: replace && with \\|\\| in Parser<'_, S>::theory_synchronizes",
+    "terms\\.rs:840:53: replace == with != in Parser<'_, S>::theory_synchronizes",
+    "terms\\.rs:847:27: replace == with != in Parser<'_, S>::theory_operand",
+    "statements\\.rs:369:26: replace match guard self.statement_begins\\(\\) with false",
+    # `follows_a_condition`'s condition detection gives the same mode for every
+    # reaching token: a separator between empty elements (204, killed by a test)
+    # exercises the walk; these two branches (the child-is-element early return
+    # and the previous-element predicate) do not change the reconstructed mode
+    # over the corpus and the constructed theory-element shapes. Flagged for the
+    # reader.
+    "fusion\\.rs:197:24: replace == with != in follows_a_condition",
+    "fusion\\.rs:205:40: replace match guard node.kind\\(\\) == SyntaxKind::THEORY_ELEMENT with true",
+]

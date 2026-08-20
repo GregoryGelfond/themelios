@@ -876,6 +876,60 @@ mod tests {
     use crate::tree::{SyntaxKind, sexpr};
 
     #[test]
+    fn a_disallowed_negated_aggregate_is_skipped_whole_with_its_brackets_balanced() {
+        // `not #count{…}` in a set element is disallowed (an aggregate is not a
+        // literal), so it is carried into one `ERROR` node with its `{…}`
+        // balanced: the inner `;` does not end the skip (it stands at depth
+        // one), and the following `}` and a depth-zero `;` do. This pins every
+        // step of the balanced walk — the `at_end` guard, the open/close arms,
+        // the depth counter, and the depth-zero terminator.
+        assert_eq!(
+            shape(":- 1 { not #count{a; b} } 2."),
+            "(RULE :- (BODY (SET_AGGREGATE (GUARD (CONSTANT_TERM 1)) { (ERROR not #count { a ; b }) } (GUARD (CONSTANT_TERM 2)))) .)"
+        );
+        assert_eq!(
+            shape(":- 1 { not #count{a(1,2); c} ; e } 2."),
+            "(RULE :- (BODY (SET_AGGREGATE (GUARD (CONSTANT_TERM 1)) { (ERROR not #count { a ( 1 , 2 ) ; c }) ; (LITERAL (ATOM e)) } (GUARD (CONSTANT_TERM 2)))) .)"
+        );
+    }
+
+    #[test]
+    fn a_body_aggregate_takes_semicolon_separated_elements_up_to_its_brace() {
+        // The element loop separates on `;` and stops at `}` — the two
+        // terminator arms. A two-element body aggregate with a guard is a
+        // member, and its shape names both elements.
+        assert!(member(":- #count { X : p(X) ; Y : q } >= 1."));
+        assert_eq!(
+            shape(":- #count { X : p(X) ; Y : q } >= 1."),
+            "(RULE :- (BODY (FUNCTION_AGGREGATE #count { (BODY_AGGREGATE_ELEMENT (VARIABLE_TERM X) : (CONDITION (LITERAL (ATOM p (ARGUMENTS ( (TUPLE (VARIABLE_TERM X)) )))))) ; (BODY_AGGREGATE_ELEMENT (VARIABLE_TERM Y) : (CONDITION (LITERAL (ATOM q)))) } (GUARD >= (CONSTANT_TERM 1)))) .)"
+        );
+    }
+
+    #[test]
+    fn a_missing_aggregate_element_before_a_separator_or_brace_is_diagnosed_in_place() {
+        // The `!read` recovery's two terminator arms: a `;` where an element
+        // was promised is diagnosed in place, kept as the separator (not
+        // wrapped as unexpected input); and a `}` after a trailing `;` ends the
+        // element loop rather than being wrapped and looped on. The first is a
+        // non-member with the `;` still a bare separator; the second is a
+        // member.
+        assert_eq!(
+            shape(":- #count { ; } >= 1."),
+            "(RULE :- (BODY (FUNCTION_AGGREGATE #count { ; } (GUARD >= (CONSTANT_TERM 1)))) .)"
+        );
+        assert_eq!(kinds(":- #count { ; } >= 1.").len(), 1);
+        assert!(member(":- #count { x ; } >= 1."));
+    }
+
+    #[test]
+    fn a_body_of_only_stray_input_is_one_error_node() {
+        // A body that begins no element and is not a statement boundary is
+        // carried into one ERROR node — the `body` recovery's `statement_begins`
+        // guard deciding to stop rather than to skip.
+        assert_eq!(shape(":- $ ."), "(RULE :- (BODY (ERROR $)) .)");
+    }
+
+    #[test]
     fn facts_and_rules_take_the_five_forms() {
         assert_eq!(shape("p."), "(RULE (LITERAL (ATOM p)) .)");
         assert_eq!(shape("h :- ."), "(RULE (LITERAL (ATOM h)) :- (BODY) .)");

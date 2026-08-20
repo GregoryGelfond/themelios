@@ -231,3 +231,55 @@ pub fn check_token_source_laws(source: &impl TokenSource) -> Vec<TokenSourceLawV
     }
     violations
 }
+
+#[cfg(test)]
+mod tests {
+    use themelios_base::source::{Source, SourceId};
+
+    use super::*;
+
+    /// A source over `é` that answers a position inside that one multi-byte
+    /// character instead of refusing it — the refusal-law breach the checker
+    /// catches by probing one byte into each multi-byte token.
+    struct AnswersInsideChar(Source);
+
+    impl TokenSource for AnswersInsideChar {
+        fn id(&self) -> SourceId {
+            self.0.id()
+        }
+        fn dialect(&self) -> Dialect {
+            Dialect::Clingo
+        }
+        fn text(&self) -> &str {
+            self.0.text()
+        }
+        fn token_at(&self, at: ByteOffset, _mode: LexMode) -> Result<Token<'_>, PositionRefusal> {
+            match at.get() {
+                0 => Ok(Token {
+                    kind: SyntaxKind::IDENT,
+                    text: self.0.text(),
+                }),
+                _ => Ok(Token {
+                    kind: SyntaxKind::EOF,
+                    text: "",
+                }),
+            }
+        }
+    }
+
+    #[test]
+    fn the_checker_probes_one_byte_into_each_multi_byte_character() {
+        // `é` is two bytes; byte one is not a position, so a source that
+        // answers there breaches the refusal law. The checker must probe
+        // inside the character to see it.
+        let source = Source::new(SourceId::new(0), "é".to_owned()).expect("admits");
+        let violations = check_token_source_laws(&AnswersInsideChar(source));
+        assert!(
+            violations.iter().any(|v| matches!(
+                v,
+                TokenSourceLawViolation::Refusal { at, refused: false } if *at == ByteOffset::new(1)
+            )),
+            "the inside-character probe is missing: {violations:?}"
+        );
+    }
+}

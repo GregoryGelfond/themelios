@@ -309,3 +309,44 @@ impl ScriptBody {
         script_body_value(self.0.text())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use themelios_base::source::{Source, SourceId};
+
+    use super::*;
+    use crate::dialect::Dialect;
+    use crate::parse::parse;
+    use crate::tree::SyntaxElement;
+
+    fn comment_form(text: &str, needle: &str) -> CommentForm {
+        let source = Source::new(SourceId::new(0), text.to_owned()).expect("admits");
+        let root = parse(&source, Dialect::Clingo).syntax();
+        let token = root
+            .descendants_with_tokens()
+            .filter_map(SyntaxElement::into_token)
+            .find(|t| t.text() == needle)
+            .expect("the comment token");
+        Comment::cast(token).expect("a trivia comment").form()
+    }
+
+    #[test]
+    fn comment_form_names_each_of_the_four_kinds() {
+        // Each comment kind maps to its form; a deleted arm would fall through
+        // to `Doc`, so every kind is pinned.
+        assert!(matches!(comment_form("% a\np.", "% a"), CommentForm::Line));
+        assert!(matches!(
+            comment_form("%* a *%\np.", "%* a *%"),
+            CommentForm::Block
+        ));
+        assert!(matches!(
+            comment_form("#! a\np.", "#! a"),
+            CommentForm::Shebang
+        ));
+        // A `%!` after a statement is a trivia doc comment.
+        assert!(matches!(
+            comment_form("p. %! stray\n", "%! stray"),
+            CommentForm::Doc
+        ));
+    }
+}

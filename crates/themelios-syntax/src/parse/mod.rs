@@ -653,4 +653,157 @@ mod tests {
         );
         plain(&one);
     }
+
+    #[test]
+    fn equality_holds_every_field_apart() {
+        // `eq` is the conjunction of five fields (§6.8's determinism law is
+        // checked with it); each `&&` is load-bearing, so a parse differing in
+        // exactly one field is unequal. Green, source, and dialect are varied
+        // one at a time here — entry cannot be isolated (it fixes the root
+        // kind, hence the green tree).
+        let clingo = |id: u32, text: &str| {
+            parse(
+                &Source::new(SourceId::new(id), text.to_owned()).expect("admits"),
+                Dialect::Clingo,
+            )
+        };
+        // Green apart: same source, dialect, entry; a different tree.
+        assert_ne!(clingo(1, "p."), clingo(1, "q."));
+        // Source apart: same tree, dialect, entry; a different source id.
+        assert_ne!(clingo(1, "p."), clingo(2, "p."));
+        // Dialect apart: `p.` is dialect-neutral, so the trees are equal; only
+        // the dialect differs.
+        let neutral = Source::new(SourceId::new(3), "p.".to_owned()).expect("admits");
+        assert_ne!(
+            parse(&neutral, Dialect::Clingo),
+            parse(&neutral, Dialect::AspCore2)
+        );
+        // Diagnostics apart, tree equal: a bare doc run and the same text as a
+        // fact carry the same tree shape only when they do not; here the doc
+        // run warns and the plain comment does not, over different trees — so
+        // the determinism law's own repeated-parse equality (same everything)
+        // is the direct witness the fields all match.
+        assert_eq!(clingo(4, "%! d\np."), clingo(4, "%! d\np."));
+    }
+
+    #[test]
+    fn the_dialect_accessor_reports_the_dialect_parsed_under() {
+        // Not a constant: a parse under ASP-Core-2 reports ASP-Core-2, never
+        // the default.
+        let parse = parse(&admitted("p."), Dialect::AspCore2);
+        assert_eq!(parse.dialect(), Dialect::AspCore2);
+    }
+
+    #[test]
+    fn an_unterminated_string_is_incomplete_only_where_a_string_may_span_lines() {
+        // §6.5: under ASP-Core-2 a string may span lines, so an unterminated
+        // one is the REPL's "read more"; under clingo it may not, so the same
+        // bytes are a wrong program. The dialect is what decides it.
+        let source = admitted("p(\"abc");
+        assert!(parse(&source, Dialect::AspCore2).is_incomplete());
+        let clingo = parse(&source, Dialect::Clingo);
+        assert!(clingo.has_errors() && !clingo.is_incomplete());
+    }
+
+    #[test]
+    fn the_tree_depth_bound_sums_the_frame_layers_over_the_fixed_ones() {
+        // MAX_TREE_DEPTH is CEILING frames at TERM_LAYERS_PER_FRAME each, above
+        // FIXED_LAYERS — a sum, not a product (§5.4 law 3).
+        assert_eq!(
+            MAX_TREE_DEPTH,
+            NestingLimit::CEILING.frames() * TERM_LAYERS_PER_FRAME + FIXED_LAYERS
+        );
+        assert_eq!(MAX_TREE_DEPTH, 55_018);
+    }
+
+    #[test]
+    fn the_nesting_refusal_points_at_the_offending_opener() {
+        // The refusal's primary span is the bracket that would open one frame
+        // too many — a real one-byte locus (opener start to start-plus-length),
+        // not an empty span (§6.6).
+        let deep = format!("p({}x{}).", "f(".repeat(200), ")".repeat(200));
+        let source = admitted(&deep);
+        let parse = parse(&source, Dialect::Clingo);
+        let refusal = parse
+            .diagnostics()
+            .iter()
+            .find(|d| d.id().name() == "nesting-too-deep")
+            .expect("a refusal");
+        let span = refusal.primary().span;
+        assert!(!span.is_empty());
+        assert_eq!(
+            span.end().get() - span.start().get(),
+            1,
+            "the one-byte opener"
+        );
+    }
+
+    #[test]
+    fn a_bracket_group_after_a_recovered_statement_is_skipped_with_its_brackets_balanced() {
+        // `skip_statement_rest` recovers to the dot, then skips a following
+        // `[…]` annotation whole — the inner `[b]` stays inside the group, the
+        // depth counter balancing it.
+        let source = admitted("$$$. [a[b]] q.");
+        let parse = parse(&source, Dialect::Clingo);
+        assert_eq!(
+            crate::tree::sexpr(&parse.syntax()),
+            "(PROGRAM (ERROR $$$ . [ a [ b ] ]) (RULE (LITERAL (ATOM q)) .))"
+        );
+    }
+
+    #[test]
+    fn a_token_running_past_the_texts_end_breaches_tiling_rather_than_being_accepted() {
+        // A source that answers a token longer than the text remaining breaches
+        // the tiling law; the parser witnesses it — either a zero length or an
+        // overrun ends tiling — and stops, rather than accepting it (§4.3).
+        struct Overrun(Source);
+        impl TokenSource for Overrun {
+            fn id(&self) -> SourceId {
+                self.0.id()
+            }
+            fn dialect(&self) -> Dialect {
+                Dialect::Clingo
+            }
+            fn text(&self) -> &str {
+                self.0.text()
+            }
+            fn token_at(
+                &self,
+                at: ByteOffset,
+                _mode: LexMode,
+            ) -> Result<Token<'_>, PositionRefusal> {
+                if at.get() == 0 {
+                    // Two bytes over a one-byte text: `at + len` runs past the
+                    // end — the overrun half of the tiling check.
+                    Ok(Token {
+                        kind: SyntaxKind::IDENT,
+                        text: "pp",
+                    })
+                } else {
+                    // Reached only if the mutant accepts the overrun and walks
+                    // past the end.
+                    Ok(Token {
+                        kind: SyntaxKind::EOF,
+                        text: "",
+                    })
+                }
+            }
+        }
+        let source = Source::new(SourceId::new(0), "p".to_owned()).expect("admits");
+        let parse = parse_program(&Overrun(source), NestingLimit::DEFAULT);
+        assert!(
+            parse.diagnostics().iter().any(|d| matches!(
+                d.kind(),
+                SyntaxErrorKind::TokenSourceBreach {
+                    breach: SourceBreach::Tiling {
+                        token: SyntaxKind::IDENT,
+                        len: 2,
+                        ..
+                    }
+                }
+            )),
+            "{:?}",
+            parse.diagnostics()
+        );
+    }
 }

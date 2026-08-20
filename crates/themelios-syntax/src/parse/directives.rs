@@ -655,6 +655,17 @@ mod tests {
     }
 
     #[test]
+    fn a_malformed_script_header_does_not_swallow_what_follows_as_a_body() {
+        // The header is `expect(L_PAREN) & expect(IDENT) & expect(R_PAREN)` —
+        // the bitwise AND runs every `expect` yet reads the body only when all
+        // three held. A header missing its `)` leaves `x = 1` to parse as its
+        // own rule: two statements, not one script statement swallowing it.
+        let source = admitted("#script (lua x = 1");
+        let root = parse(&source, Dialect::Clingo).syntax();
+        assert_eq!(root.children().count(), 2, "a script statement and a rule");
+    }
+
+    #[test]
     fn include_and_program_take_their_forms() {
         assert_eq!(
             shape("#include \"a.lp\"."),

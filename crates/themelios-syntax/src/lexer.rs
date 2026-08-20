@@ -929,4 +929,107 @@ mod tests {
         assert_eq!(end.kind, EOF);
         assert_eq!(end.text, "");
     }
+
+    #[test]
+    fn a_nested_block_comment_opener_past_the_second_byte_advances_by_two_not_by_doubling() {
+        // The inner `%*` sits at byte four, where `i += 2` (byte six) and
+        // `i *= 2` (byte eight, a `%` that would silence the line) part ways:
+        // the doubling misreads the comment as an unterminated ERROR.
+        assert_eq!(
+            lex("%*aa%*b*%c*%", 0, LexMode::Normal, Dialect::Clingo),
+            (BLOCK_COMMENT, 12)
+        );
+    }
+
+    #[test]
+    fn a_clingo_escaped_quote_is_read_whole_not_closed_at_its_quote() {
+        // `\"` at byte one: `i += 2` steps past the escaped quote; `i *= 2`
+        // (byte two) lands on that quote and would close the string one byte
+        // in. The maximal-munch length is the witness.
+        assert_eq!(
+            lex(r#""\"a""#, 0, LexMode::Normal, Dialect::Clingo),
+            (STRING, 5)
+        );
+    }
+
+    #[test]
+    fn an_error_run_ends_where_an_underscore_begins_a_token() {
+        // `_` begins a token (the anonymous variable), so an error run before
+        // it stops there; the `b'_' | b'\''` arm and both its predicates are
+        // what `begins_token` answers `true` with.
+        assert_eq!(kinds(&normal("$_")), [ERROR, ANONYMOUS]);
+    }
+
+    #[test]
+    fn a_theory_mode_error_that_is_not_all_underscores_is_unexpected_characters() {
+        // The anonymous-in-theory classification is theory mode AND an
+        // all-underscore token; a lone `$` in theory mode is neither past the
+        // first conjunct, so it is plain unexpected characters.
+        assert!(matches!(
+            classify_error("$", None, LexMode::Theory, Dialect::Clingo).kind,
+            crate::diagnostic::SyntaxErrorKind::UnexpectedCharacters
+        ));
+        // ...while an all-underscore theory token is the anonymous defect,
+        // holding the `&&` against the always-true reading.
+        assert!(matches!(
+            classify_error("__", None, LexMode::Theory, Dialect::Clingo).kind,
+            crate::diagnostic::SyntaxErrorKind::AnonymousInTheoryExpression
+        ));
+    }
+
+    #[test]
+    fn a_trailing_backslash_before_a_line_break_is_flagged_at_the_backslash_alone() {
+        // The bad escape is the line break the backslash precedes; the primary
+        // span is the backslash itself — one byte wide, `i..i + 1`.
+        let defect = string_defect("\"ab\\", Some('\n'), Dialect::Clingo);
+        assert!(matches!(
+            defect.kind,
+            crate::diagnostic::SyntaxErrorKind::MalformedString {
+                defect: crate::diagnostic::StringDefect::InvalidEscape('\n')
+            }
+        ));
+        assert_eq!(defect.primary, 3..4, "the backslash alone, one byte wide");
+    }
+
+    #[test]
+    fn asp_core_2_strings_read_escaped_quotes_by_maximal_munch() {
+        let core = |text: &str| tile(text, LexMode::Normal, Dialect::AspCore2);
+        // `\"` closes nothing while a later quote can: the whole `"a\"b"` is
+        // one string. `bytes.get(i + 1)`, the `i += 2` skip, and the guard all
+        // hold here.
+        assert_eq!(kinds(&core(r#""a\"b""#)), [STRING]);
+        assert_eq!(
+            lex(r#""a\"b""#, 0, LexMode::Normal, Dialect::AspCore2),
+            (STRING, 6)
+        );
+        // With no later quote the `\"` is the close: `"a\"` is `"a\"`, length
+        // four — the `return (STRING, i + 2)` branch, its length the witness.
+        assert_eq!(
+            lex(r#""a\""#, 0, LexMode::Normal, Dialect::AspCore2),
+            (STRING, 4)
+        );
+        // A backslash before a non-quote is literal, not an escaped quote.
+        assert_eq!(
+            lex(r#""a\b""#, 0, LexMode::Normal, Dialect::AspCore2),
+            (STRING, 5)
+        );
+        // The escaped quote at a byte past two, where the index arithmetic
+        // (`i + 2` for the later-quote check, the skip, and the closing return)
+        // parts from its doubling: `"ab\""` closes after both quotes (len six),
+        // `"ab\"` closes at the escaped quote (len five), and `"abcd\"e"` runs
+        // to its final quote (len nine) — the skip that steps by two, not to
+        // double.
+        assert_eq!(
+            lex(r#""ab\"""#, 0, LexMode::Normal, Dialect::AspCore2),
+            (STRING, 6)
+        );
+        assert_eq!(
+            lex(r#""ab\""#, 0, LexMode::Normal, Dialect::AspCore2),
+            (STRING, 5)
+        );
+        assert_eq!(
+            lex(r#""abcd\"e""#, 0, LexMode::Normal, Dialect::AspCore2),
+            (STRING, 9)
+        );
+    }
 }

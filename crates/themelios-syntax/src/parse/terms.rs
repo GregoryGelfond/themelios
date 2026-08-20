@@ -987,6 +987,7 @@ mod tests {
     }
 
     #[test]
+
     fn a_merged_missing_operand_and_missing_closer_keeps_the_opener_locus() {
         use crate::diagnostic::RelatedLocus;
         // `f(a,` at end of input: the missing operand after `,` and the
@@ -1003,6 +1004,42 @@ mod tests {
         assert!(
             loci.contains(&RelatedLocus::ToClose(SyntaxKind::L_PAREN)),
             "the merged diagnostic keeps the opener locus; got {loci:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_tuple_comma_is_the_pool_frames_alone() {
+        // The `(,)` empty-tuple case is a pool-frame comma with no term counted
+        // yet: the second comma of `(a,,)` (a term already counted, so
+        // `tuple_terms` is one, not zero) is not it, and the comma of `f(,)`
+        // (an argument frame, not a pool) is not it either. Both hold the
+        // `shape == Pool && tuple_terms == 0` guard and the `tuple_terms`
+        // counter against their mutations.
+        let sx = |t: &str| sexpr(&crate::parse::parse(&admitted(t), Dialect::Clingo).syntax());
+        assert_eq!(
+            sx("p((a,,))."),
+            "(PROGRAM (RULE (LITERAL (ATOM p (ARGUMENTS ( (TUPLE (POOL ( (TUPLE (CONSTANT_TERM a) , ,) ))) )))) .))"
+        );
+        assert_eq!(
+            sx("p(f(,))."),
+            "(PROGRAM (RULE (LITERAL (ATOM p (ARGUMENTS ( (TUPLE (FUNCTION_TERM f (ARGUMENTS ( (TUPLE ,) )))) )))) .))"
+        );
+    }
+
+    #[test]
+    fn a_theory_opterm_ends_at_its_condition_colon_and_recovers_over_stray_input() {
+        // The colon that opens a theory element's condition ends the opterm
+        // before it (the base-frame `kind == COLON` synchronizer); and a stray
+        // `$` between elements is carried into one ERROR node, the elements
+        // around it whole — the theory recovery's synchronization.
+        let sx = |t: &str| sexpr(&crate::parse::parse(&admitted(t), Dialect::Clingo).syntax());
+        assert_eq!(
+            sx("&a { x : p ; y : q }."),
+            "(PROGRAM (RULE (THEORY_ATOM & a (THEORY_ELEMENTS { (THEORY_ELEMENT (THEORY_OPTERM (CONSTANT_TERM x)) : (CONDITION (LITERAL (ATOM p)))) ; (THEORY_ELEMENT (THEORY_OPTERM (CONSTANT_TERM y)) : (CONDITION (LITERAL (ATOM q)))) })) .))"
+        );
+        assert_eq!(
+            sx("&a { x $ y }."),
+            "(PROGRAM (RULE (THEORY_ATOM & a (THEORY_ELEMENTS { (THEORY_ELEMENT (THEORY_OPTERM (CONSTANT_TERM x))) (ERROR $) (THEORY_ELEMENT (THEORY_OPTERM (CONSTANT_TERM y))) })) .))"
         );
     }
 

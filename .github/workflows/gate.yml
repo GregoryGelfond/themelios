@@ -35,6 +35,12 @@ jobs:
       # --locked: the committed Cargo.lock is certified, never re-resolved.
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      # The witnesses this tier seeds (docs/design/syntax.md §16): executed,
+      # not merely compiled (docs/specification.md §10.1).
+      - run: |
+          for example in comments_as_data diagnostics_quality hostile_input asp_core_2; do
+            cargo run -p themelios-syntax --example "$example" --locked
+          done
       - run: cargo doc --workspace --no-deps --locked
         env:
           RUSTDOCFLAGS: -D warnings
@@ -56,8 +62,10 @@ jobs:
       # The floor is a per-change tripwire for the wholly untested
       # module, never a target: raising it is not a goal, gaming it
       # is a defect, and mutation remains the auditor of whether the
-      # tests ask anything (docs/specification.md §10.1). Set at the
-      # stage-1 landing: measured coverage rounded down to a multiple
-      # of five, minus five — slack that absorbs toolchain and
-      # coverage-tool measurement drift. One number on every machine.
+      # tests ask anything (docs/specification.md §10.1). Re-derived at
+      # the stage-2 close, after the typed-AST accessor tests the
+      # mutation audit prompted: measured line coverage (95.21%) rounded
+      # down to a multiple of five, minus five — slack that absorbs
+      # toolchain and coverage-tool measurement drift. One number on
+      # every machine.
       - run: cargo llvm-cov --workspace --exclude themelios-syntax-fuzz --locked --fail-under-lines 90
