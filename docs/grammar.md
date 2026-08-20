@@ -1297,15 +1297,16 @@ recorded exception with its argument.
 - **D2 — nesting depth** (recorded 2026-08-17). The four term families
   of §10 nest without bound in this grammar's productions (§5.1, §5.8,
   §5.9, §5.10) and in the standard's, and no production limits them.
-  The authority is a generated parser with a stack: at the pin it
-  refuses input nested past its parser-stack ceiling — a limit of the
-  implementation, not a rule of the language, and one this document
-  does not state because it is measured, not read. The syntax tier,
-  for its part, bounds nesting at construction by a named constant of
-  its own — a frame count, refused with a diagnostic and nothing
-  truncated (its design §6.6) — so that no tree it hands out has depth
-  proportional to the input; that is a refusal this grammar does not
-  make, and it applies under both dialects. Wherever the tier's
+  The authority is a generated parser with a stack: at the pin, on
+  input nested past its parser-stack ceiling, that stack overflows and
+  the process ends — a stack overflow, not a diagnostic (measured per
+  family below) — a limit of the implementation, not a rule of the
+  language, and one this document does not state because it is measured,
+  not read. The syntax tier, for its part, bounds nesting at
+  construction by a named constant of its own — a frame count, refused
+  with a diagnostic and nothing truncated (its design §6.6) — so that no
+  tree it hands out has depth proportional to the input; that is a
+  refusal this grammar does not make, and it applies under both dialects. Wherever the tier's
   constant and the authority's ceiling differ, the inputs nested
   between them are a disagreement with the authority — admitted by one
   and refused by the other, whichever side the constant sits. Operator
@@ -1337,12 +1338,16 @@ recorded exception with its argument.
   (the ceiling lies below in none). Operator chains stay outside the
   entry as its prose says: the tier refuses no chain length, and the
   authority's own chains die at 80585/80586, so there the tier is the
-  more permissive of the two. **The authority's failure mode is measured
-  as its process *ending* — a stack overflow — not the graceful refusal
-  this entry's prose above ("refuses input nested past its parser-stack
-  ceiling") describes; that wording is a grammar defect flagged for the
-  stage close under the where-documents-disagree rule, the measured mode
-  recorded here regardless.**
+  more permissive of the two. The authority's failure mode, stated once
+  more where the numbers sit, is its process *ending* — a stack overflow
+  — not a graceful refusal; this crate refuses with a diagnostic at
+  whichever limit is in force and never dies, which is why the band is
+  the tier's deliberate divergence (safety over parity, its design §6.6),
+  recorded here rather than chased. (Recorded 2026-08-20, the stage-2
+  close: the 2026-08-17 opening prose above was reworded from its earlier
+  "refuses" language to this stack-overflow mode — measured 2026-08-19 —
+  retiring the where-documents-disagree flag the entry had carried for the
+  close.)
 
 **Lexical seeds.**
 

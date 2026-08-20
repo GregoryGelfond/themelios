@@ -230,6 +230,11 @@ fn hint_empty_condition_before_pipe() {
 }
 
 #[test]
+fn hint_empty_condition_before_comma() {
+    diag("hint-empty-condition-comma", "p(X) : , q(X).\n");
+}
+
+#[test]
 fn hint_heuristic_needs_annotation() {
     diag("hint-heuristic-annotation", "#heuristic a : b.\n");
 }

@@ -760,15 +760,18 @@ pub enum EntryPoint { Program, Statement, Term, TermValue }
 /// The file door: an admitted source under a dialect. Total.
 pub fn parse(source: &Source, dialect: Dialect) -> Parse<ast::Program>;
 
-/// The general doors: any token source (§4.3). Total.
-pub fn parse_program(source: &impl TokenSource) -> Parse<ast::Program>;
-pub fn parse_statement(source: &impl TokenSource) -> Parse<ast::StatementFragment>;
-pub fn parse_term(source: &impl TokenSource) -> Parse<ast::TermFragment>;
-pub fn parse_term_value(source: &impl TokenSource) -> Parse<ast::TermFragment>;
+/// The general doors: any token source (§4.3), at a nesting limit
+/// (§6.6 — `DEFAULT` holds on a modest stack, `CEILING` wants
+/// `with_required_stack`). Total.
+pub fn parse_program(source: &impl TokenSource, limit: NestingLimit) -> Parse<ast::Program>;
+pub fn parse_statement(source: &impl TokenSource, limit: NestingLimit) -> Parse<ast::StatementFragment>;
+pub fn parse_term(source: &impl TokenSource, limit: NestingLimit) -> Parse<ast::TermFragment>;
+pub fn parse_term_value(source: &impl TokenSource, limit: NestingLimit) -> Parse<ast::TermFragment>;
 ```
 
-`parse` is `parse_program` over `Lexer::new(source, dialect)`; it exists
-so the common case names no lexer. **Every entry point yields a root of
+`parse` is `parse_program` over `Lexer::new(source, dialect)` at
+`NestingLimit::DEFAULT` (§6.6); it exists so the common case names no
+lexer and no limit. **Every entry point yields a root of
 one fixed kind**, which is what makes `Parse::tree()` total (§5.5): the
 program entry's root is `PROGRAM`; the statement entry's root is
 `STATEMENT_FRAGMENT` and the two term entries' root is `TERM_FRAGMENT`
@@ -1336,6 +1339,10 @@ pub enum Hint {
     /// `p(X) : | q(X)` — the empty-conditioned element before `|`
     /// (grammar §5.5); write `;`.
     EmptyConditionBeforePipe,
+    /// `a : , b` — a `,` after the colon extends the condition (grammar
+    /// §5.4), so an empty condition before it has no first literal, and a
+    /// `,` may not follow a conditioned element (grammar §5.5); write `;`.
+    EmptyConditionBeforeComma,
     /// `#heuristic … .` without its bracket (grammar §5.9).
     HeuristicNeedsAnnotation,
 }
@@ -2796,7 +2803,24 @@ each correcting a claim to match what the tier does and vetted by its
 task's reading; the §10.2 amendment, approved by the principal during
 Task 15, the §6.8/§14/§16 correction, and the §6.6 two-limit design,
 both approved during Task 18, each change the document and the code
-together.
+together; the §6.1 and §7.1 amendments below, approved at the Task-20
+stage close, likewise.
+
+- **§6.1, §7.1** (2026-08-20, the stage-2 close): two amendments the
+  Task-20 blind readings surfaced. §6.1's general-door signatures
+  (`parse_program` and its siblings) gained the `limit: NestingLimit`
+  argument the §6.6 two-limit revision and the code already carried and
+  the block had been left without, so the block now reads consistently
+  with §6.6 and the code. §7.1 gained the `EmptyConditionBeforeComma`
+  hint: a reader's differential seed found `a : , b.` and `:- a : , b.`
+  accepted here, though grammar §5.5 refuses a `,` after a conditioned
+  element and §5.4 makes a `,` after the colon extend the condition (so an
+  empty condition before it has no first literal). The parser now refuses
+  both — reading the `,` into the condition, where its missing first
+  literal is diagnosed with the new hint — the empty-conditioned-before-`|`
+  precedent (`EmptyConditionBeforePipe`) extended to `,`. A membership
+  correction toward the grammar of record and the pinned authority, and
+  its hint, approved by the principal at the stage close.
 
 - **§10.2** (2026-08-19): the mode of an adjacency, restated as the
   parser's *standpoint* — the region in force as it begins reading a

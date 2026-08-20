@@ -34,6 +34,14 @@ jobs:
       - run: cargo fmt --all --check
       # --locked: the committed Cargo.lock is certified, never re-resolved.
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # Not memory-capped here. docs/specification.md §5.2/§10.2 commit a
+      # memory-capped gate "where the platform allows" against the work-list
+      # memory bomb; at this tier that boundary is held by construction —
+      # every walk is iterative or grammar-bounded and tree depth is bounded
+      # (docs/design/syntax.md §5.4 law 3, §6.6), the fuzz would surface an
+      # OOM, and §16's stage-2 instrument list names no capping instrument.
+      # The cap's locus is the out-of-band fuzz under a cgroup limit; it is
+      # base.md's workspace-CI commitment, carried there.
       - run: cargo test --workspace --locked
       # The witnesses this tier seeds (docs/design/syntax.md §16): executed,
       # not merely compiled (docs/specification.md §10.1).

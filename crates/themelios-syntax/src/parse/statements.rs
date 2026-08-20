@@ -307,6 +307,25 @@ impl<S: TokenSource> Parser<'_, S> {
                         expected(&[Expected::Class(SyntaxClass::Condition)]),
                         Some(Hint::EmptyConditionBeforePipe),
                     );
+                } else if kind == SyntaxKind::COMMA
+                    && matches!(
+                        previous,
+                        Element::Literal {
+                            condition: true,
+                            ..
+                        }
+                    )
+                {
+                    // Grammar §5.5: a `,` may follow only an unconditioned
+                    // element; §5.4 makes a `,` after the colon extend the
+                    // condition, so an empty one has no first literal. A `,`
+                    // reaches here only after an empty condition — a non-empty
+                    // one absorbs it (§5.4) — so name it and read on as if `;`
+                    // stood there, as before `|`.
+                    self.unexpected(
+                        expected(&[Expected::Class(SyntaxClass::Condition)]),
+                        Some(Hint::EmptyConditionBeforeComma),
+                    );
                 }
                 self.bump();
             } else if self.element_begins(Position::SetElement) {
@@ -352,7 +371,8 @@ impl<S: TokenSource> Parser<'_, S> {
             if self.depth_refused() {
                 break;
             }
-            if self.element(Position::Body) == Element::None {
+            let element = self.element(Position::Body);
+            if element == Element::None {
                 self.unexpected(expected(&[Expected::Class(SyntaxClass::BodyElement)]), None);
                 match self.peek() {
                     SyntaxKind::COMMA | SyntaxKind::SEMICOLON => {
@@ -385,6 +405,24 @@ impl<S: TokenSource> Parser<'_, S> {
                 break;
             }
             match self.peek() {
+                // Grammar §5.4/§5.5: a `,` after a conditioned element extends
+                // its condition, so an empty one has no first literal; name it
+                // and read on, as the head loop does before `|`.
+                SyntaxKind::COMMA
+                    if matches!(
+                        element,
+                        Element::Literal {
+                            condition: true,
+                            ..
+                        }
+                    ) =>
+                {
+                    self.unexpected(
+                        expected(&[Expected::Class(SyntaxClass::Condition)]),
+                        Some(Hint::EmptyConditionBeforeComma),
+                    );
+                    self.bump();
+                }
                 SyntaxKind::COMMA | SyntaxKind::SEMICOLON => self.bump(),
                 _ if self.element_begins(Position::Body) => self.unexpected(
                     expected(&[
@@ -1002,6 +1040,48 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn an_empty_condition_before_a_comma_is_refused() {
+        // Grammar §5.5: a `,` may follow only an unconditioned element;
+        // §5.4: a `,` after the colon extends the condition, so an empty
+        // one has no first literal. clingo 5.8.2 refuses both a head and a
+        // body form; so do we, with the EmptyConditionBeforeComma hint —
+        // the empty-conditioned-before-`|` precedent extended to `,`.
+        for input in ["a : , b.", ":- a : , b."] {
+            assert!(!member(input), "{input} should be a non-member");
+            assert!(
+                kinds(input).iter().any(|kind| matches!(
+                    kind,
+                    SyntaxErrorKind::UnexpectedToken {
+                        hint: Some(Hint::EmptyConditionBeforeComma),
+                        ..
+                    }
+                )),
+                "{input} should carry the EmptyConditionBeforeComma hint"
+            );
+        }
+        // A `;` after a conditioned element, a `,` after an unconditioned
+        // one, a `,` that extends a non-empty condition, and `|` after a
+        // non-empty condition all stay members.
+        assert!(member("a : ; b."));
+        assert!(member("a, b."));
+        assert!(member("a : b, c."));
+        assert!(member("a : b | c."));
+        assert!(member(":- p : q, r, s."));
+    }
+
+    #[test]
+    fn a_directive_after_a_broken_body_ends_the_body() {
+        // A directive keyword begins a statement but no body element, so
+        // after a failed body element `statement_begins()` ends the body
+        // and the directive parses as its own statement — not swallowed
+        // into the constraint (docs/design/syntax.md §6.7).
+        assert_eq!(
+            shape(":- #show a."),
+            "(RULE :- (BODY)) (SHOW_STATEMENT #show (CONSTANT_TERM a) .)"
+        );
     }
 
     #[test]

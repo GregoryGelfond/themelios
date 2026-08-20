@@ -1,0 +1,7 @@
+error[syntax::unexpected-token]: expected a condition, found `,`
+ --> input.lp:1:8
+  |
+1 | p(X) : , q(X).
+  |        ^
+  = help: write `;` here: a `,` continues the condition, so an empty condition before it is missing its first literal
+

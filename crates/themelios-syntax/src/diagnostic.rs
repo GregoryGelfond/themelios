@@ -272,6 +272,10 @@ pub enum Hint {
     /// `p(X) : | q(X)` — the empty-conditioned element before `|`
     /// (grammar §5.5); write `;`.
     EmptyConditionBeforePipe,
+    /// `a : , b` — a `,` after the colon extends the condition (grammar
+    /// §5.4), so an empty condition before it has no first literal, and a
+    /// `,` may not follow a conditioned element (grammar §5.5); write `;`.
+    EmptyConditionBeforeComma,
     /// `#heuristic … .` without its bracket (grammar §5.9).
     HeuristicNeedsAnnotation,
 }
@@ -567,6 +571,9 @@ fn help_text(hint: Hint) -> String {
         }
         Hint::EmptyConditionBeforePipe => {
             "write `;` here: an empty condition directly before `|` does not parse".to_owned()
+        }
+        Hint::EmptyConditionBeforeComma => {
+            "write `;` here: a `,` continues the condition, so an empty condition before it is missing its first literal".to_owned()
         }
         Hint::HeuristicNeedsAnnotation => {
             "`#heuristic` takes its bracket after the dot: `[weight@priority, modifier]`".to_owned()
