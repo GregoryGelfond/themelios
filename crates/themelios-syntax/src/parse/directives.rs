@@ -2,7 +2,7 @@
 //! annotations after the dot, and the script region
 //! (docs/design/syntax.md §6.3, §6.7; grammar §5.7, §5.9, §5.11, §4.8).
 
-use rowan::Checkpoint;
+use super::builder::Checkpoint;
 
 use crate::diagnostic::{Expected, GrammarWord, Hint, SyntaxClass};
 use crate::token::{LexMode, TokenSource};

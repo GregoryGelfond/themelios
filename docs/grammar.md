@@ -1317,6 +1317,28 @@ recorded exception with its argument.
   ceiling widens the band rather than moving the constant; the shared
   corpus holds no input inside the band; a pin move re-measures.
 
+  Recorded 2026-08-19: the syntax tier's constant is **5000 frames**
+  (`themelios-syntax`'s `MAX_NESTING_DEPTH`, set by its depth instrument
+  on half its required stack of 64 MiB — every walk survives 5154 frames
+  of the deepest shape and fails at 5155, and 5000 is the largest
+  granule below). The authority at v5.8.2, per bracket family — last
+  depth accepted / first depth failing: term function arguments
+  61624/61625, term pool 61623/61624, constant-term function arguments
+  61626/61627, theory set 61624/61625, theory list 61624/61625, theory
+  function arguments 61624/61625, absolute value 80585/80586; parentheses
+  and theory tuples accept to the instrument's 2^21 probe cap (2097152)
+  and are not seen to fail. So the band — admitted by the authority,
+  refused here — is 5001 up to each family's ceiling, in every family
+  (the ceiling lies below in none). Operator chains stay outside the
+  entry as its prose says: the tier refuses no chain length, and the
+  authority's own chains die at 80585/80586, so there the tier is the
+  more permissive of the two. **The authority's failure mode is measured
+  as its process *ending* — a stack overflow — not the graceful refusal
+  this entry's prose above ("refuses input nested past its parser-stack
+  ceiling") describes; that wording is a grammar defect flagged for the
+  stage close under the where-documents-disagree rule, the measured mode
+  recorded here regardless.**
+
 **Lexical seeds.**
 
 - `0o10` — expected: NUMBER `0o1` then NUMBER `0`, a syntax error

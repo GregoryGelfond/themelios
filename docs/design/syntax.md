@@ -1146,7 +1146,11 @@ A parse is a pure function of the token source's text and dialect and
 the entry point (§5.4, law 4). Time is O(text): every token is requested
 at most twice (§4.2), consumed once, and lookahead is bounded by a
 constant; the frame loop does constant work per token; the builder's
-work is O(tokens + nodes). Memory is O(text) for the tree plus
+work is O(tokens + nodes) — the parser's own, cache-free builder (§14;
+crates/themelios-syntax/src/parse/builder.rs), since rowan's interning
+`GreenNodeBuilder` is O(depth²) on the deep, narrow trees this bound
+admits, which would make a nested-bracket input's parse quadratic.
+Memory is O(text) for the tree plus
 O(frames × levels) for the frame and level stacks, themselves bounded
 by the constant and the grammar's level count. There is no
 backtracking: every decision above is a bounded peek.
@@ -2345,20 +2349,37 @@ the list above, no crate links native code or is a `-sys` crate, no
 build script exists in the closure but the named one, and this crate has
 no build script of its own.
 
-**Three facts about rowan's internals this design rests on,
-version-scoped (spec §5.2).** At 0.17.0, dropping a green node recurses
-through its children — depth of the drop is depth of the tree;
-`token_at_offset` recurses likewise (rowan's own source says so at the
-call site); and structural equality and the debug rendering of a green
-node recurse through the children too. All are why the tree's depth is
-bounded at construction (§5.4, law 3; §6.6); none is reachable by any
-work-list discipline of this crate — and the reason a crate-owned
-iterative drop, equality, or dump is not the guard belongs beside that
-claim: consumers hold rowan's own handles through the aliases of §5.2,
-so rowan's `Drop` runs on the last clone a consumer holds and is not
-this crate's to replace, and a consumer's own recursion over the typed
-AST is beyond any discipline here; only a depth bounded at construction
-reaches every holder of the tree. And at 0.17.0 rowan carries no
+**Facts about rowan's internals this design rests on, version-scoped
+(spec §5.2).** At 0.17.0, dropping a green node recurses through its
+children — depth of the drop is depth of the tree; `token_at_offset`
+recurses likewise (rowan's own source says so at the call site); and
+structural equality and `Display` — a node's text, the walk a
+consumer's `to_string()` runs (§5.4, law 1) — recurse through the
+children too. (The design does not rest on the alternate `Debug` dump
+`{:#?}`: at 0.17.0 its source walks `preorder_with_tokens` iteratively —
+constant stack — but its per-node indentation is quadratic in depth, in
+both time and output, a reviewer's tool for a small tree rather than a
+walk for the deepest one, which is why the gate (§16) renders through
+`Display`, not it. Nothing here depends on `Debug`'s strategy — the gate
+exercises the recursions above, not the dump — so an upgrade that changed
+it costs nothing but a re-reading, which every pin move already does.) The
+recursions are why the tree's depth is bounded at construction (§5.4,
+law 3; §6.6); none is reachable by any work-list discipline of this
+crate — and the reason a crate-owned iterative drop, equality, or render
+is not the guard belongs beside that claim: consumers hold rowan's own
+handles through the aliases of §5.2, so rowan's `Drop` runs on the last
+clone a consumer holds and is not this crate's to replace, and a
+consumer's own recursion over the typed AST is beyond any discipline
+here; only a depth bounded at construction reaches every holder of the
+tree. One rowan internal this design does *not* rest on is
+`GreenNodeBuilder`'s intern-cache: it rehashes over each node's whole
+subtree as the cache grows, so for a deep, narrow tree — every node at
+most three children, hence every node cached — building is O(depth²)
+(the cache saves memory on a wide tree and costs quadratic time on a
+narrow one). Interning only shares memory, and every relation this tier
+reads is structural, so the parser builds through its own cache-free
+builder (§6.8; crates/themelios-syntax/src/parse/builder.rs), keeping
+the O(text) cost §6.8 states; the depth gate surfaced the quadratic. And at 0.17.0 rowan carries no
 mutable-tree API — the release removed it — so the read-only posture of
 §5.1 is rowan's own, and the tree-editing seam (§17) will ride on
 green-level splicing if a consumer ever names it.
@@ -2496,10 +2517,12 @@ what it proves and what it cannot (spec §10.2).
   the bracket-free shapes: additive, exponentiation, and unary chains of
   a length far beyond the constant, which must *not* deepen the tree
   (§6.2) — then walks the typed AST, runs attachment and both
-  certificates, prints the tree, compares two such trees, and drops them
-  — no overflow, the depth refusal reported for the bracketed inputs and
-  no refusal for the chains, the deepest tree measured against law 3's
-  bound, the constant's headroom measured (§6.6).
+  certificates, renders it through `Display` and navigates it by offset —
+  the depth-recursions §14 names, where the alternate `Debug` dump is
+  iterative — compares two such trees, and drops them — no overflow, the
+  depth refusal reported for the bracketed inputs and no refusal for the
+  chains, the deepest tree measured against law 3's bound, the constant's
+  headroom measured (§6.6).
 - **Scaling shapes (criterion):** parse linear in text; the certificate
   linear in both texts; bulk attachment linear in the tree; the oracle
   constant per pair. Shape assertions in the gate; absolute numbers out
@@ -2698,7 +2721,8 @@ build code that surfaced it — the amend-in-commit pattern the §6.3
 query-mark precedent set. The §4.6 and §9.3 refinements are honesty-only,
 each correcting a claim to match what the tier does and vetted by its
 task's reading; the §10.2 amendment, approved by the principal during
-Task 15, corrects the document and the code together.
+Task 15, and the §6.8/§14/§16 correction, approved during Task 18, each
+correct the document and the code together.
 
 - **§10.2** (2026-08-19): the mode of an adjacency, restated as the
   parser's *standpoint* — the region in force as it begins reading a
@@ -2725,3 +2749,19 @@ Task 15, corrects the document and the code together.
   text between" — the reading its positional implementation gives, where
   a significant token between a non-adjacent pair counts, as `same_line`
   reads.
+- **§6.8, §14, §16** (2026-08-19): the depth gate's build (plan Task 18)
+  surfaced rowan-internals facts §14 had stated imprecisely. The alternate
+  `Debug` dump `{:#?}` does *not* recurse in tree depth at 0.17.0 — it
+  walks `preorder_with_tokens` iteratively — and its per-node indentation
+  is quadratic in depth; so §14's recursion fact is corrected (the
+  depth-recursions are drop, structural equality, `token_at_offset`, and
+  `Display`, not the debug dump) and §16's gate renders through `Display`,
+  the walk a consumer's `to_string()` runs. Separately, rowan's
+  `GreenNodeBuilder` interns through a cache whose rehash walks each node's
+  whole subtree, so building a deep, narrow tree is O(depth²) — a
+  quadratic parse of nested brackets, breaking §6.8's O(text) and a
+  hostile-input cost (§3). The parser now builds through its own
+  cache-free builder (§6.8, §14; src/parse/builder.rs), which restores
+  O(text); interning only shared memory, and the tree the parser hands out
+  is byte-for-byte the same, so this changes cost, not the parse. The
+  depth gate's constant is measured against this restored O(text) parser.

@@ -2,6 +2,7 @@
 //! entry points, `EntryPoint`, and `Parse` — the green tree, the
 //! diagnostics, and the facts a consumer needs to interpret both.
 
+mod builder;
 mod machine;
 mod statements;
 mod theory;
@@ -29,10 +30,26 @@ use self::machine::Parser;
 /// The deepest nesting of bracket contexts — frames, one per open
 /// bracket (docs/design/syntax.md §6.2) — the parser will open. Named
 /// because it carries meaning; its value is fixed by measurement between
-/// two bounds and recorded here with both. **Provisional:** this value
-/// stands until the depth gate measures the constant (the stage-2 plan's
-/// Task 18), which replaces it and records the two bounds beside it.
-pub const MAX_NESTING_DEPTH: u32 = 1_000;
+/// two bounds and recorded here with both (docs/design/syntax.md §6.6).
+///
+/// **From above (the gate's bound, which governs):** on a thread of half
+/// `REQUIRED_STACK_BYTES`, every walk this crate performs or hands out —
+/// dropping, comparing, rendering through `Display`, navigating by
+/// offset, walking the typed AST, attaching, certifying — survives trees
+/// of the deepest per-frame shape to 5,154 frames and fails at 5,155
+/// (rowan 0.17.0, measured 2026-08-19 by `tests/depth_gate.rs`); the
+/// constant is the largest multiple of 1,000 not above 5,154.
+///
+/// **From below (the authority's ceiling, docs/grammar.md §11 D2):**
+/// clingo v5.8.2 accepts nesting into the tens of thousands per family —
+/// about 61,623 in the tightest (a term's function arguments and its
+/// pool), higher elsewhere — and its process then *ends* (a stack
+/// overflow, not a graceful refusal); the corpus reaches no depth near
+/// the constant. The ceiling lies far above the constant, so the inputs
+/// between — `MAX_NESTING_DEPTH + 1` up to each family's ceiling — are
+/// D2's band, admitted by the authority and refused here, recorded
+/// beside that entry; safety over parity.
+pub const MAX_NESTING_DEPTH: u32 = 5_000;
 
 /// The stack, in bytes, on which every operation this crate performs or
 /// hands out over the deepest tree it can build — dropping it, comparing
@@ -270,6 +287,37 @@ pub fn parse_term(source: &impl TokenSource) -> Parse<ast::TermFragment> {
 /// The term-value door: grammar §5.10's `value-term`. Total; O(text).
 pub fn parse_term_value(source: &impl TokenSource) -> Parse<ast::TermFragment> {
     Parser::new(source).term_fragment(EntryPoint::TermValue)
+}
+
+/// Run `work` on a fresh thread of `REQUIRED_STACK_BYTES` and return what
+/// it produces. Parsing never needs this — the parser is iterative — but
+/// every operation on the *result* that recurses in the tree's depth does:
+/// dropping the tree, rendering it through `Display`, comparing two, or
+/// navigating one by offset (docs/design/syntax.md §6.6, §14). A consumer
+/// that holds a deeply nested parse runs that work here rather than on a
+/// thread whose stack the tree's depth can exhaust — the ergonomic form of
+/// the requirement `REQUIRED_STACK_BYTES` states, so a language server's
+/// worker or a WASM host need not hand-roll the thread. `work` may borrow
+/// from its caller; the thread joins before this returns.
+///
+/// ```
+/// use themelios_syntax::base::source::{Source, SourceId};
+/// use themelios_syntax::dialect::Dialect;
+/// use themelios_syntax::parse::{parse, with_required_stack};
+///
+/// let source = Source::new(SourceId::new(0), "p(f(g(1))).".to_owned()).unwrap();
+/// let member = with_required_stack(|| !parse(&source, Dialect::Clingo).has_errors());
+/// assert!(member);
+/// ```
+pub fn with_required_stack<R: Send>(work: impl FnOnce() -> R + Send) -> R {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(REQUIRED_STACK_BYTES)
+            .spawn_scoped(scope, work)
+            .expect("a thread of the required stack spawns")
+            .join()
+            .expect("the work on the required stack completes")
+    })
 }
 
 #[cfg(test)]

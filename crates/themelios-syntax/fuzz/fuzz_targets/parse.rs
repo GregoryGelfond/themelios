@@ -21,6 +21,7 @@ use themelios_syntax::fusion::{Separator, lex_mode_of, separator};
 use themelios_syntax::lexer::Lexer;
 use themelios_syntax::parse::{
     MAX_TREE_DEPTH, Parse, parse_program, parse_statement, parse_term, parse_term_value,
+    with_required_stack,
 };
 use themelios_syntax::token::{LexMode, Token, TokenSource};
 use themelios_syntax::tree::{Asp, AstNode, NodeOrToken, SyntaxKind, SyntaxNode, WalkEvent};
@@ -142,6 +143,19 @@ fuzz_target!(|data: &[u8]| {
     let Ok(source) = Source::from_bytes(SourceId::new(0), data.to_vec()) else {
         return;
     };
+    // A deeply nested input builds a tree that recurses in depth on drop
+    // and on the walks below (§6.6, §14); a large enough input reaches a
+    // depth the fuzzer's own thread cannot hold. A large input — rare, and
+    // never at the default corpus size — runs on `REQUIRED_STACK_BYTES`, as
+    // a consumer holding such a tree must; the rest run in place, no spawn.
+    if source.text().len() > 4096 {
+        with_required_stack(move || run(source));
+    } else {
+        run(source);
+    }
+});
+
+fn run(source: Source) {
     let text = source.text().to_owned();
     for dialect in [Dialect::Clingo, Dialect::AspCore2] {
         let lexer = Lexer::new(&source, dialect);
@@ -212,4 +226,4 @@ fuzz_target!(|data: &[u8]| {
         holds(&parse_term(&lexer), &text);
         holds(&parse_term_value(&lexer), &text);
     }
-});
+}

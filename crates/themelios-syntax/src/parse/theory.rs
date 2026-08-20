@@ -6,7 +6,7 @@
 //! at the operator positions of a definition — the greedy guard end, and
 //! the definitions item by item.
 
-use rowan::Checkpoint;
+use super::builder::Checkpoint;
 
 use crate::diagnostic::{Expected, GrammarWord, SyntaxClass};
 use crate::token::{LexMode, TokenSource};

@@ -19,7 +19,7 @@ use themelios_base::source::{Source, SourceId, SourceSet};
 use themelios_base::span::ByteOffset;
 use themelios_base::view::human;
 use themelios_syntax::dialect::Dialect;
-use themelios_syntax::parse::{MAX_NESTING_DEPTH, parse, parse_program};
+use themelios_syntax::parse::{MAX_NESTING_DEPTH, parse, parse_program, with_required_stack};
 use themelios_syntax::token::{LexMode, Token, TokenSource};
 use themelios_syntax::tree::SyntaxKind;
 
@@ -140,7 +140,10 @@ fn nesting_too_deep_on_an_annotated_family() {
         "f(\n".repeat(depth),
         ")".repeat(depth)
     );
-    diag("nesting-too-deep-annotated", &text);
+    // The refused tree is `MAX_NESTING_DEPTH` frames deep; holding it needs
+    // `REQUIRED_STACK_BYTES` (docs/design/syntax.md §6.6), so parse and
+    // render it there — as any consumer holding the tree must.
+    with_required_stack(|| diag("nesting-too-deep-annotated", &text));
 }
 
 #[test]

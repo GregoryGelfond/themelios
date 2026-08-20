@@ -14,7 +14,7 @@
 //! beneath it; the last operand's checkpoint is kept, so a level can open
 //! around it retroactively.
 
-use rowan::Checkpoint;
+use super::builder::Checkpoint;
 
 use crate::diagnostic::{
     Expected, Hint, Related, RelatedLocus, RestrictedForm, Restriction, SyntaxClass, SyntaxError,
@@ -964,6 +964,7 @@ mod tests {
     use crate::tree::{SyntaxKind, sexpr};
 
     use crate::parse::test_util::admitted;
+    use crate::parse::with_required_stack;
 
     /// The shape of the term the term entry reads from `text` under the
     /// clingo dialect, with the fragment root peeled.
@@ -1304,45 +1305,49 @@ mod tests {
 
     #[test]
     fn nesting_past_the_constant_is_refused_once_and_carried_losslessly() {
-        let depth = MAX_NESTING_DEPTH as usize;
-        let admitted_text = format!("{}x{}", "f(".repeat(depth), ")".repeat(depth));
-        assert!(
-            diagnostics(&admitted_text).is_empty(),
-            "the constant itself is admitted"
-        );
-        let refused_text = format!("{}x{} $", "f(".repeat(depth + 1), ")".repeat(depth + 1));
-        let source = admitted(&refused_text);
-        let parse = parse_term(&Lexer::new(&source, Dialect::Clingo));
-        assert_eq!(
-            parse.syntax().text(),
-            refused_text.as_str(),
-            "law 1 under refusal"
-        );
-        assert_eq!(
-            parse.diagnostics().len(),
-            1,
-            "one refusal, one diagnostic; the `$` inside is silent"
-        );
-        assert!(matches!(
-            parse.diagnostics()[0].kind(),
-            SyntaxErrorKind::NestingTooDeep { depth } if *depth == MAX_NESTING_DEPTH
-        ));
-        let deepest = parse
-            .syntax()
-            .descendants()
-            .map(|node| node.ancestors().count())
-            .max()
-            .unwrap_or(0);
-        assert!(
-            deepest <= MAX_TREE_DEPTH as usize,
-            "law 3: {deepest} <= {MAX_TREE_DEPTH}"
-        );
-        assert!(
-            parse
+        // The refused tree is `MAX_NESTING_DEPTH` frames deep; holding it
+        // needs `REQUIRED_STACK_BYTES` (§6.6).
+        with_required_stack(|| {
+            let depth = MAX_NESTING_DEPTH as usize;
+            let admitted_text = format!("{}x{}", "f(".repeat(depth), ")".repeat(depth));
+            assert!(
+                diagnostics(&admitted_text).is_empty(),
+                "the constant itself is admitted"
+            );
+            let refused_text = format!("{}x{} $", "f(".repeat(depth + 1), ")".repeat(depth + 1));
+            let source = admitted(&refused_text);
+            let parse = parse_term(&Lexer::new(&source, Dialect::Clingo));
+            assert_eq!(
+                parse.syntax().text(),
+                refused_text.as_str(),
+                "law 1 under refusal"
+            );
+            assert_eq!(
+                parse.diagnostics().len(),
+                1,
+                "one refusal, one diagnostic; the `$` inside is silent"
+            );
+            assert!(matches!(
+                parse.diagnostics()[0].kind(),
+                SyntaxErrorKind::NestingTooDeep { depth } if *depth == MAX_NESTING_DEPTH
+            ));
+            let deepest = parse
                 .syntax()
                 .descendants()
-                .any(|node| node.kind() == SyntaxKind::ERROR)
-        );
+                .map(|node| node.ancestors().count())
+                .max()
+                .unwrap_or(0);
+            assert!(
+                deepest <= MAX_TREE_DEPTH as usize,
+                "law 3: {deepest} <= {MAX_TREE_DEPTH}"
+            );
+            assert!(
+                parse
+                    .syntax()
+                    .descendants()
+                    .any(|node| node.kind() == SyntaxKind::ERROR)
+            );
+        });
     }
 
     #[test]

@@ -5,7 +5,9 @@
 //! loops. The families — terms, statements, theory — extend this type
 //! in their own files.
 
-use rowan::{Checkpoint, GreenNodeBuilder, Language};
+use rowan::Language;
+
+use super::builder::{Checkpoint, GreenBuilder};
 use themelios_base::span::{ByteOffset, Location, Span};
 
 use crate::ast;
@@ -38,7 +40,7 @@ pub(super) struct Parser<'s, S: TokenSource> {
     source: &'s S,
     text: &'s str,
     dialect: Dialect,
-    builder: GreenNodeBuilder<'static>,
+    builder: GreenBuilder,
     diagnostics: Vec<SyntaxError>,
     /// The offset of the first byte not yet placed in the tree.
     at: u32,
@@ -87,7 +89,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
             source,
             text: source.text(),
             dialect: source.dialect(),
-            builder: GreenNodeBuilder::new(),
+            builder: GreenBuilder::new(),
             diagnostics: Vec::new(),
             at: 0,
             mode: LexMode::Normal,
