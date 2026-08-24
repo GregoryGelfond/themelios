@@ -16,12 +16,12 @@
 use std::time::Instant;
 
 use themelios_base::source::{Source, SourceId};
-use themelios_syntax::attach::attachments;
+use themelios_syntax::attach::{attachments, empty_line_between};
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::equiv::{Certificate, equivalent};
 use themelios_syntax::fusion::separator;
 use themelios_syntax::parse::parse;
-use themelios_syntax::tree::{SyntaxElement, SyntaxKind, SyntaxToken};
+use themelios_syntax::tree::{SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
 /// One rule with a comment run and a theory atom, so every size
 /// exercises the parser's families, the comment run, and the modes.
@@ -193,5 +193,53 @@ fn the_oracle_is_constant_per_pair() {
     assert!(
         ratio < CONSTANT_CEILING * RATIO_SCALE,
         "the oracle's per-pair cost ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} pairs; constant per pair allows at most x{CONSTANT_CEILING}"
+    );
+}
+
+/// The first two top-level statements of `root`, as elements — the pair the
+/// whitespace-fact shape is measured over.
+fn first_pair(root: &SyntaxNode) -> (SyntaxElement, SyntaxElement) {
+    let mut nodes = root.children();
+    let first = nodes.next().expect("the fixture has a first statement");
+    let second = nodes.next().expect("the fixture has a second statement");
+    (first.into(), second.into())
+}
+
+#[test]
+fn the_whitespace_facts_are_constant_in_the_tree() {
+    // A whitespace fact reads only the trivia between its two elements, so its
+    // cost is independent of the tree's size (docs/design/syntax.md §9.3): the
+    // fact between the first two statements of a program and of one SIZE_RATIO
+    // larger costs the same. A regression to reading the whole tree —
+    // materializing `root.text()` and slicing, whose fold visits every token —
+    // shows here as a ratio near SIZE_RATIO, well past the constant ceiling.
+    const REPEAT: usize = 512;
+    let small_root = parse(&admitted(64), Dialect::Clingo).syntax();
+    let big_root = parse(&admitted(64 * SIZE_RATIO), Dialect::Clingo).syntax();
+    let (small_a, small_b) = first_pair(&small_root);
+    let (big_a, big_b) = first_pair(&big_root);
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                for _ in 0..REPEAT {
+                    std::hint::black_box(empty_line_between(
+                        std::hint::black_box(&small_a),
+                        &small_b,
+                    ));
+                }
+            })
+        },
+        || {
+            time_once(|| {
+                for _ in 0..REPEAT {
+                    std::hint::black_box(empty_line_between(std::hint::black_box(&big_a), &big_b));
+                }
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < CONSTANT_CEILING * RATIO_SCALE,
+        "the whitespace fact's cost ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} tree; a tree-size-independent fact allows at most x{CONSTANT_CEILING}"
     );
 }

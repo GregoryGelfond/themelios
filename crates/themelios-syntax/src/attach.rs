@@ -383,7 +383,7 @@ fn root_of(element: &SyntaxElement) -> SyntaxNode {
 /// stands there, trivia or a significant token between two non-adjacent
 /// elements. Empty when the two abut, when `b` starts before `a` ends,
 /// or when the offsets fall outside the tree (a pair from two trees) —
-/// so the facts are total and never panic on the slice.
+/// so the facts are total and the walk never panics.
 fn text_between(a: &SyntaxElement, b: &SyntaxElement) -> String {
     let root = root_of(a);
     let bound = root.text_range().end();
@@ -392,7 +392,32 @@ fn text_between(a: &SyntaxElement, b: &SyntaxElement) -> String {
     if start >= end {
         return String::new();
     }
-    root.text().slice(start..end).to_string()
+    // Concatenate the tokens spanning `[start, end)` — O(the tokens there), not
+    // the O(subtree) of `root.text().slice(..).to_string()`, whose fold visits
+    // every token of the root (rowan's `SyntaxText`). The walk steps forward from
+    // `a` by `next_token`, a local navigation that never scans the root's child
+    // list; `start`/`end` fall on token boundaries — an element ends and begins
+    // on one — so the span is a whole run of tokens, none to clip.
+    let mut text = String::new();
+    let mut next = token_after(a);
+    while let Some(token) = next {
+        if token.text_range().start() >= end {
+            break;
+        }
+        text.push_str(token.text());
+        next = token.next_token();
+    }
+    text
+}
+
+/// The token immediately after `element` in document order, or `None` at the
+/// end of the tree (or when `element` is an empty node, holding no token to step
+/// from — a degenerate left element for which the between-text reads empty).
+fn token_after(element: &SyntaxElement) -> Option<SyntaxToken> {
+    match element {
+        NodeOrToken::Node(node) => node.last_token()?.next_token(),
+        NodeOrToken::Token(token) => token.next_token(),
+    }
 }
 
 /// No line break in the text between `a`'s end and `b`'s start. Total;
