@@ -1065,7 +1065,7 @@ should. The shared frame — adversary classes, boundary vocabulary — is
 stated once; deployment contexts in scope explicitly include the
 pythia-class service boundary, where input arrives from untrusted
 callers. The *hostile-input* witness exercises what this document
-declares; the statement's *content* is security-review ground, its
+declares; the statement's *content* is security-analysis ground, its
 *presence* is this specification's obligation.
 
 ### 12.5 Dependency policy

@@ -2797,23 +2797,19 @@ the typed kind each lowers from (§7.1).
 
 ## Revisions
 
-Refinements to this document made after its gate, each alongside the
+Refinements to this document made after it was settled, each alongside the
 build code that surfaced it — the amend-in-commit pattern the §6.3
 query-mark precedent set. The §4.6 and §9.3 refinements are honesty-only,
-each correcting a claim to match what the tier does and vetted by its
-task's reading; the §10.2 amendment, approved by the principal during
-Task 15, the §6.8/§14/§16 correction, and the §6.6 two-limit design,
-both approved during Task 18, each change the document and the code
-together; the §6.1 and §7.1 amendments below, approved at the Task-20
-stage close, likewise.
+each correcting a claim to match what the tier does; the §10.2 amendment,
+the §6.8/§14/§16 correction, and the §6.6 two-limit design each change the
+document and the code together; the §6.1 and §7.1 amendments below likewise.
 
-- **§6.1, §7.1** (2026-08-20, the stage-2 close): two amendments the
-  Task-20 blind readings surfaced. §6.1's general-door signatures
+- **§6.1, §7.1** (2026-08-20): two amendments. §6.1's general-door signatures
   (`parse_program` and its siblings) gained the `limit: NestingLimit`
   argument the §6.6 two-limit revision and the code already carried and
   the block had been left without, so the block now reads consistently
   with §6.6 and the code. §7.1 gained the `EmptyConditionBeforeComma`
-  hint: a reader's differential seed found `a : , b.` and `:- a : , b.`
+  hint: a differential seed found `a : , b.` and `:- a : , b.`
   accepted here, though grammar §5.5 refuses a `,` after a conditioned
   element and §5.4 makes a `,` after the colon extend the condition (so an
   empty condition before it has no first literal). The parser now refuses
@@ -2821,7 +2817,7 @@ stage close, likewise.
   literal is diagnosed with the new hint — the empty-conditioned-before-`|`
   precedent (`EmptyConditionBeforePipe`) extended to `,`. A membership
   correction toward the grammar of record and the pinned authority, and
-  its hint, approved by the principal at the stage close.
+  its hint.
 
 - **§10.2** (2026-08-19): the mode of an adjacency, restated as the
   parser's *standpoint* — the region in force as it begins reading a
@@ -2848,8 +2844,8 @@ stage close, likewise.
   text between" — the reading its positional implementation gives, where
   a significant token between a non-adjacent pair counts, as `same_line`
   reads.
-- **§6.8, §14, §16** (2026-08-19): the depth gate's build (plan Task 18)
-  surfaced rowan-internals facts §14 had stated imprecisely. The alternate
+- **§6.8, §14, §16** (2026-08-19): the depth gate's build surfaced
+  rowan-internals facts §14 had stated imprecisely. The alternate
   `Debug` dump `{:#?}` does *not* recurse in tree depth at 0.17.0 — it
   walks `preorder_with_tokens` iteratively — and its per-node indentation
   is quadratic in depth; so §14's recursion fact is corrected (the
@@ -2865,8 +2861,8 @@ stage close, likewise.
   is byte-for-byte the same, so this changes cost, not the parse. The
   depth gate's constant is measured against this restored O(text) parser.
 - **§6.6** (2026-08-19): the single `MAX_NESTING_DEPTH` constant, replaced
-  by a two-limit `NestingLimit` — `DEFAULT` (128) and `CEILING` (5,000) —
-  approved by the principal during Task 18. The prior design set one
+  by a two-limit `NestingLimit` — `DEFAULT` (128) and `CEILING` (5,000).
+  The prior design set one
   measured constant against two bounds and, when they conflicted, let the
   gate's stack govern; measurement then showed the pole holds ~10,000
   frames while the authority nests to ~61,623 before *crashing*, so one

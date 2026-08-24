@@ -70,11 +70,11 @@ exclude_re = [
     "terms\\.rs:600:53: replace && with \\|\\| in Parser<'_, S>::operand",
     # The theory-loop synchronizers: on the reaching inputs — a theory element's
     # condition colon, a stray token between elements — these mutations produce
-    # identical trees. Direct-checked at the Task-20 stage close (each applied,
-    # the full `cargo test --workspace` run): all three SURVIVE, no test
-    # distinguishes them — a confirmed equivalence, not a triage. The body
-    # recovery's `statement_begins()` guard once grouped here was found KILLABLE
-    # by the same reader pass and is now covered by a regression test
+    # identical trees. Direct-checked (each applied, the full `cargo test
+    # --workspace` run): all three SURVIVE, no test distinguishes them — a
+    # confirmed equivalence, not a triage. The body recovery's
+    # `statement_begins()` guard once grouped here was found KILLABLE by a later
+    # check and is now covered by a regression test
     # (`a_directive_after_a_broken_body_ends_the_body`), not excluded.
     "terms\\.rs:840:45: replace && with \\|\\| in Parser<'_, S>::theory_synchronizes",
     "terms\\.rs:840:53: replace == with != in Parser<'_, S>::theory_synchronizes",
@@ -83,9 +83,8 @@ exclude_re = [
     # reaching token: a separator between empty elements (204, killed by a test)
     # exercises the walk; these two branches (the child-is-element early return
     # and the previous-element predicate) do not change the reconstructed mode
-    # over the corpus and the constructed theory-element shapes. Direct-checked
-    # at the Task-20 stage close: both SURVIVE the full suite — a confirmed
-    # equivalence, not a triage.
+    # over the corpus and the constructed theory-element shapes. Direct-checked:
+    # both SURVIVE the full suite — a confirmed equivalence, not a triage.
     "fusion\\.rs:197:24: replace == with != in follows_a_condition",
     "fusion\\.rs:205:40: replace match guard node.kind\\(\\) == SyntaxKind::THEORY_ELEMENT with true",
 ]
