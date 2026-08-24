@@ -2605,8 +2605,9 @@ what it proves and what it cannot (spec §10.2).
   spare, and the file door `parse` itself refused and held there.
 - **Scaling shapes (criterion):** parse linear in text; the certificate
   linear in both texts; bulk attachment linear in the tree; the oracle
-  constant per pair. Shape assertions in the gate; absolute numbers out
-  of band (spec §10.2).
+  constant per pair; the whitespace facts constant in the tree size (each
+  reads only the trivia between its two elements, §9.3). Shape assertions
+  in the gate; absolute numbers out of band (spec §10.2).
 - **The identity table**, snapshot-tested: Appendix B is the shipped
   table; a change is a visible diff.
 - **The trust checks:** the closure allow-list over Cargo's resolved

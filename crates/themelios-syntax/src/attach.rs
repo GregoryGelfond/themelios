@@ -381,9 +381,10 @@ fn root_of(element: &SyntaxElement) -> SyntaxNode {
 /// the shared tree — so the whitespace facts are a fact of position, not
 /// of siblinghood (docs/design/syntax.md §9.3): the text holds whatever
 /// stands there, trivia or a significant token between two non-adjacent
-/// elements. Empty when the two abut, when `b` starts before `a` ends,
-/// or when the offsets fall outside the tree (a pair from two trees) —
-/// so the facts are total and the walk never panics.
+/// elements. Empty when the two abut or `b` starts before `a` ends; a
+/// safe, unspecified read of `a`'s own tree when `a` and `b` are from
+/// different trees (their offsets are incomparable) — so the facts are
+/// total and the walk never panics.
 fn text_between(a: &SyntaxElement, b: &SyntaxElement) -> String {
     let root = root_of(a);
     let bound = root.text_range().end();
@@ -394,10 +395,10 @@ fn text_between(a: &SyntaxElement, b: &SyntaxElement) -> String {
     }
     // Concatenate the tokens spanning `[start, end)` — O(the tokens there), not
     // the O(subtree) of `root.text().slice(..).to_string()`, whose fold visits
-    // every token of the root (rowan's `SyntaxText`). The walk steps forward from
-    // `a` by `next_token`, a local navigation that never scans the root's child
-    // list; `start`/`end` fall on token boundaries — an element ends and begins
-    // on one — so the span is a whole run of tokens, none to clip.
+    // every token of the root (rowan's `SyntaxText`). The walk steps forward by
+    // `next_token`, never scanning the root's child list; `start`/`end` fall on
+    // token boundaries — an element ends and begins on one — so the span is a
+    // whole run of tokens, none to clip.
     let mut text = String::new();
     let mut next = token_after(a);
     while let Some(token) = next {
@@ -410,13 +411,19 @@ fn text_between(a: &SyntaxElement, b: &SyntaxElement) -> String {
     text
 }
 
-/// The token immediately after `element` in document order, or `None` at the
-/// end of the tree (or when `element` is an empty node, holding no token to step
-/// from — a degenerate left element for which the between-text reads empty).
+/// The token immediately after `element` in document order, or `None` past the
+/// last token of the tree. An empty node holds no token to step from, so its
+/// successor is found by descent to its end offset — a degenerate left operand,
+/// off the O(gap) path, whose bounded descent never costs a real fact call.
 fn token_after(element: &SyntaxElement) -> Option<SyntaxToken> {
     match element {
-        NodeOrToken::Node(node) => node.last_token()?.next_token(),
         NodeOrToken::Token(token) => token.next_token(),
+        NodeOrToken::Node(node) => match node.last_token() {
+            Some(last) => last.next_token(),
+            None => root_of(element)
+                .token_at_offset(node.text_range().end())
+                .right_biased(),
+        },
     }
 }
 
@@ -621,5 +628,30 @@ mod tests {
             "a token stands between"
         );
         let _ = crate::ast::Program::cast(root);
+    }
+    #[test]
+    fn an_empty_left_node_reads_the_text_after_it() {
+        // A conditional literal with a colon but no condition holds a zero-width
+        // CONDITION node (grammar §5.3); a whitespace fact on it reads the text
+        // that follows — here the line break before the aggregate's close —
+        // rather than folding to empty (docs/design/syntax.md §9.3).
+        let root = parsed(":- #count { a :\n} < 1.\n");
+        let empty = root
+            .descendants()
+            .find(|node| node.kind() == SyntaxKind::CONDITION && node.text_range().is_empty())
+            .expect("a zero-width condition node");
+        let close = root
+            .descendants_with_tokens()
+            .filter_map(SyntaxElement::into_token)
+            .find(|token| token.kind() == SyntaxKind::R_BRACE)
+            .expect("the aggregate close");
+        let left = SyntaxElement::Node(empty);
+        let right = SyntaxElement::Token(close);
+        assert_eq!(
+            line_breaks_between(&left, &right),
+            1,
+            "the line break after the empty condition is read, not folded to empty"
+        );
+        assert!(!same_line(&left, &right));
     }
 }
