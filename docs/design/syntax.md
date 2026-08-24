@@ -550,9 +550,9 @@ alternate form dumps the tree) on both; positional `Eq`/`Hash`; the
 `SyntaxNodePtr`/`AstPtr` (positional identity by kind and range,
 resolvable against a root); `GreenNode` as the `Send + Sync` handle. The
 hand-rolled fallback (§17) owes exactly this list. `token_at_offset` is
-on the list because the alias exposes it; this tier does not call it,
-and §5.4's depth bound is what makes its recursion (§14) safe for a
-consumer who does.
+on the list because the alias exposes it; this tier calls it only to
+find an empty node's successor (§9.3), and §5.4's depth bound is what
+makes its recursion (§14) safe.
 
 ### 5.3 Two coordinate vocabularies, one seam
 

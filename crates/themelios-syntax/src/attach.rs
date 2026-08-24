@@ -413,8 +413,8 @@ fn text_between(a: &SyntaxElement, b: &SyntaxElement) -> String {
 
 /// The token immediately after `element` in document order, or `None` past the
 /// last token of the tree. An empty node holds no token to step from, so its
-/// successor is found by descent to its end offset — a degenerate left operand,
-/// off the O(gap) path, whose bounded descent never costs a real fact call.
+/// successor is found by a descent from the root to its end offset — a
+/// degenerate left operand, off the O(gap) path, so no real fact call pays it.
 fn token_after(element: &SyntaxElement) -> Option<SyntaxToken> {
     match element {
         NodeOrToken::Token(token) => token.next_token(),
@@ -631,10 +631,10 @@ mod tests {
     }
     #[test]
     fn an_empty_left_node_reads_the_text_after_it() {
-        // A conditional literal with a colon but no condition holds a zero-width
-        // CONDITION node (grammar §5.3); a whitespace fact on it reads the text
-        // that follows — here the line break before the aggregate's close —
-        // rather than folding to empty (docs/design/syntax.md §9.3).
+        // A bare-colon aggregate element — a term then `:` with no condition —
+        // holds a zero-width CONDITION node (grammar §5.3); a whitespace fact on
+        // it reads the text that follows, here the line break before the
+        // aggregate's close, rather than folding to empty (docs/design/syntax.md §9.3).
         let root = parsed(":- #count { a :\n} < 1.\n");
         let empty = root
             .descendants()
