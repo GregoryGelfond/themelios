@@ -415,8 +415,8 @@ ast_node! {
 }
 
 impl Signature {
-    /// The `-`, when the signature is classically negated.
-    pub fn classical_negation_token(&self) -> Option<SyntaxToken> {
+    /// The `-`, when the signature is strongly negated.
+    pub fn strong_negation_token(&self) -> Option<SyntaxToken> {
         token(&self.0, SyntaxKind::MINUS)
     }
 
@@ -1038,8 +1038,8 @@ ast_node! {
 }
 
 impl Atom {
-    /// The `-` of classical negation.
-    pub fn classical_negation_token(&self) -> Option<SyntaxToken> {
+    /// The `-` of strong negation.
+    pub fn strong_negation_token(&self) -> Option<SyntaxToken> {
         token(&self.0, SyntaxKind::MINUS)
     }
 

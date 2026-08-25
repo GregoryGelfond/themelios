@@ -559,7 +559,7 @@ layer) — designed for, not built. The machinery argument is in §7.8.
 The logician's representation, in KR vocabulary: a `Program` is a set of
 `Rule`s and directives, organized in parts for multi-shot use. Rules have
 heads — atoms, disjunctions, choices — and bodies — literals under default
-and classical negation, aggregates (count, sum, min, max), comparisons,
+and strong negation, aggregates (count, sum, min, max), comparisons,
 conditional literals. Terms are the full algebra: symbols, variables,
 functions, arithmetic, intervals, pools, tuples. Optimization appears as
 weak constraints and minimize/maximize with weights and priorities.

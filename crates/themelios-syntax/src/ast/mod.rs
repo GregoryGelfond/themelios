@@ -547,7 +547,7 @@ mod tests {
         let Some(LiteralInner::Atom(atom)) = head.inner() else {
             panic!("an atom")
         };
-        assert!(atom.classical_negation_token().is_some());
+        assert!(atom.strong_negation_token().is_some());
         assert_eq!(
             atom.name().map(|n| n.text().to_owned()),
             Some("p".to_owned())

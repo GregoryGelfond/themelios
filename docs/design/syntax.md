@@ -1539,7 +1539,7 @@ pub enum LiteralInner { True(SyntaxToken), False(SyntaxToken),
 
 pub struct Atom(SyntaxNode);
 impl Atom {
-    pub fn classical_negation_token(&self) -> Option<SyntaxToken>;  // the `-`
+    pub fn strong_negation_token(&self) -> Option<SyntaxToken>;  // the `-`
     pub fn name(&self) -> Option<Ident>;
     pub fn arguments(&self) -> Option<Arguments>;
 }

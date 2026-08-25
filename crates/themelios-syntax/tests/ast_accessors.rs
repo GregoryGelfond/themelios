@@ -114,9 +114,9 @@ fn show_statement_reads_the_signature_and_the_conditioned_term_forms() {
 }
 
 #[test]
-fn signature_reads_its_classical_negation_name_and_arity() {
+fn signature_reads_its_strong_negation_name_and_arity() {
     let n: Signature = first("#show -p/1.");
-    assert!(n.classical_negation_token().is_some());
+    assert!(n.strong_negation_token().is_some());
     assert!(n.name().is_some());
     assert!(n.slash_token().is_some());
     assert!(n.arity().is_some());
@@ -301,7 +301,7 @@ fn literal_reads_its_inner_forms() {
 #[test]
 fn atom_reads_its_negation_name_and_arguments() {
     let n: Atom = first("-p(a).");
-    assert!(n.classical_negation_token().is_some());
+    assert!(n.strong_negation_token().is_some());
     assert!(n.name().is_some());
     assert!(n.arguments().is_some());
 }

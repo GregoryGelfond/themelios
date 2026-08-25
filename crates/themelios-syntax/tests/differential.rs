@@ -357,7 +357,7 @@ fn probe(family: &str, depth: usize) -> Outcome {
 /// The measurement (docs/design/syntax.md §6.6, §16): per family, the
 /// largest depth the authority accepts, found by doubling until it does
 /// not and bisecting the last interval; the failure mode named. Written
-/// to `target/differential/authority-ceiling.txt` for Task 18's record.
+/// to `target/differential/authority-ceiling.txt` for the record.
 #[test]
 #[ignore = "out of band: pixi run measure-ceiling"]
 fn measure_the_authoritys_nesting_ceiling_per_family() {
