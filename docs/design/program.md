@@ -252,11 +252,19 @@ of the literature and the engine (grammar §5.1): `Infimum` least, `Supremum`
 greatest, and between them the numbers, strings, functions, and tuples in the
 order the pinned authority prints — an order that **crosses the `String`
 variant** (a nullary function-like sorts before a string, an arity-bearing one
-after), so no derived `Ord` is faithful and the implementation is hand-written
-(§13) and checked against the authority by the differential (§16). Every
-higher structure keys on `Symbol: Ord` and on `Term: Ord` above it, so this
-order's agreement with equality is the precondition the set semantics of §4 and
-the provenance merge of §6 rest on.
+after) and orders a **tuple as an anonymous function**, so functions and
+tuples *interleave* by that key rather than share a rank: a tuple is an
+anonymous-named function slotted among the named ones, never a second symbol
+at the same position, so no two distinct symbols ever compare equal. The order
+is therefore **total up front** — equal only to an identical symbol, the
+precondition below — before the authority is consulted; what the differential
+(§16) settles is only *where* the anonymous name and the arity bands fall in
+the printed order, not *whether* the order is total. No derived `Ord` is
+faithful, so the implementation is hand-written (§13) and checked against the
+authority by the differential (§16). Every higher structure keys on
+`Symbol: Ord` and on `Term: Ord` above it, so this order's agreement with
+equality is the precondition the set semantics of §4 and the provenance merge
+of §6 rest on.
 
 **Computational cost.** `Symbol` is owned; clone is linear in the term's node
 count; equality, ordering, and hashing are linear and iterative (§13). There is
@@ -661,7 +669,7 @@ set erases. Statements before any `#program` belong to `base`.
 /// §6.1). Non-exhaustive for downstream growth; every internal match is
 /// exhaustive with no wildcard, so a new family is a compile error here, never
 /// a silent drop.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]   // hand-written, iterative (§13)
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]   // derives over content; §13-safe (the leaves are iterative)
 #[non_exhaustive]
 pub enum Statement {
     Rule(Rule),
@@ -715,7 +723,7 @@ impl Rule {
 /// A rule head (grammar §5.5). `Falsum` is the head of a constraint — written
 /// `:- body.` or `#false :- body.`, one head `⊥`; `Verum` is `#true`, which the
 /// engine grounds.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]   // iterative (§13)
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]   // derives over content; §13-safe (the leaves are iterative)
 pub enum Head {
     Literal(Literal),
     Disjunction(Disjunction),
@@ -773,7 +781,7 @@ the ambiguity.
 /// A rule body: a conjunction, hence a set (grammar §5.6). Its one filter axis is
 /// the **default-negation partition** (the reduct's B⁺/B⁻, §4); strong negation is
 /// a property of an atom, not of a body element (§4.6), so it is not a body axis.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]   // set equality, iterative (§13)
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]   // set equality; derives over content; §13-safe (leaves iterative)
 pub struct Body { /* private: BTreeSet<BodyElement> */ }
 impl Body {
     pub fn elements(&self) -> impl Iterator<Item = &BodyElement>;
