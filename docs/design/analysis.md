@@ -168,28 +168,21 @@ program's predicate signatures, an edge from a head predicate to each predicate
 its rule's body depends on, tagged by *how* it depends.
 
 ```rust
-/// Two types this crate **reuses from the program tier** rather than redefine
-/// (program §4, the one authority for both): `Signature` (a name, an arity, and a
-/// strong sign, grammar §5.2, §5.9) is the graph's node identity; `Rule`
-/// (program §4.3) is the owned rule a witness carries by value (§6.3) — a source
-/// span, when wanted, read from the rule's own provenance (program §6).
-pub use themelios_program::{Rule, Signature};
-
-/// How a head predicate depends on a body predicate — the tag an edge carries,
-/// because the projections read different kinds (positive edges bound the tight
-/// fragment; negative edges break stratification, §6). Non-exhaustive: a later
-/// split — a theory-atom kind distinct from an aggregate one — is a variant, not
-/// a break.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-#[non_exhaustive]
-pub enum EdgeKind {
-    /// A positive body literal (no default negation) — a monotone dependency.
-    Positive,
-    /// Under default negation (`not`) — the kind stratification reads.
-    Negative,
-    /// Through an aggregate or a theory atom — non-monotone.
-    ThroughAggregate,
-}
+/// Three types this crate **reuses from the program tier** rather than redefine
+/// (program §4, §12.1, the one authority for all three): `Signature` (a name, an
+/// arity, and a strong sign, grammar §5.2, §5.9) is the graph's node identity;
+/// `Rule` (program §4.3) is the owned rule a witness carries by value (§6.3) — a
+/// source span, when wanted, read from the rule's own provenance (program §6); and
+/// `DependencyKind` (program §12.1) is the tag an edge carries — the semantic mode a
+/// dependency runs through: `Positive`, a monotone dependency the tight fragment is
+/// bounded by; `Negative`, under default negation, which breaks stratification;
+/// `ThroughAggregate`, non-monotone through an aggregate or theory atom. It is
+/// defined at the substrate because the mode is a structural fact of a rule, read
+/// there by `body_signatures`, and the graph reuses it — so there is **one**
+/// authority for "how a predicate depends on another," not a substrate tag and a
+/// graph tag that could drift. Non-exhaustive there, so a later split — a
+/// theory-atom kind distinct from an aggregate one — is a variant, not a break.
+pub use themelios_program::{DependencyKind, Rule, Signature};
 
 /// The predicate dependency graph and its strongly-connected components. The SCC
 /// decomposition is the **primary product**, not a flag: the recursion classes
@@ -205,7 +198,7 @@ impl DependencyGraph {
     pub fn predicates(&self) -> impl Iterator<Item = &Signature>;
     /// The edges out of a predicate, each tagged (a predicate may reach another
     /// by more than one kind; both edges are present).
-    pub fn edges_from(&self, from: &Signature) -> impl Iterator<Item = (EdgeKind, &Signature)>;
+    pub fn edges_from(&self, from: &Signature) -> impl Iterator<Item = (DependencyKind, &Signature)>;
     /// The strongly-connected components, in reverse-topological order — a
     /// component before every component *that depends on it* — the order a
     /// bottom-up solver grounds them in.
@@ -255,9 +248,17 @@ predicate inside a *condition* (a conditional literal's condition, a disjunction
 or choice element's condition, an aggregate or optimize element's condition,
 program §4), because a positive cycle *through a condition* is a real dependency
 and omitting it would be a false `Holds` for tightness, the one over-claim §6
-forbids. Each edge is tagged `Negative` under default negation, `ThroughAggregate`
-inside an aggregate or theory atom, `Positive` otherwise. A choice or disjunctive
-head contributes an edge from *each* of its head predicates.
+forbids. Each occurrence contributes one edge **per dependency mode it carries**
+(`DependencyKind`, program §12.1), and the modes are not mutually exclusive: a
+positive literal is one `Positive` edge, a `not`-ed literal one `Negative`, a
+predicate inside an aggregate one `ThroughAggregate` — and a predicate inside a
+*negated* aggregate contributes **both** `ThroughAggregate` and `Negative`, because
+it is non-monotone *and* under negation, and collapsing it to one tag would drop a
+fact a projection reads (the `Negative` edge is what keeps stratification from
+clearing a recursive negated aggregate, §6.2). This is honest KR, not a symmetric
+grid: the modes are the three the literature draws, and a dependency simply carries
+each that holds of it. A choice or disjunctive head contributes an edge from *each*
+of its head predicates.
 
 **The strong sign is part of the node.** A predicate `p` and its strong
 negation `-p` are distinct nodes (grammar §5.2): they are different atoms in an
@@ -288,10 +289,13 @@ impl Safety {
     /// fact a grounder needs before it runs.
     pub fn unsafe_rules(&self) -> impl Iterator<Item = &UnsafeRule>;
     pub fn is_safe(&self) -> bool;
-    /// Whether grounding is finite — a sound approximation (§6): `Finite` is
-    /// proven, `Unknown` undecided; never asserted infinite where it might be
-    /// finite.
-    pub fn finiteness(&self) -> &Finiteness;
+    /// Whether grounding is finite — a sound approximation (§6.1), so it is the same
+    /// `Verdict` the recursion classes carry: `Holds` (proven finite), or `Unknown`
+    /// carrying the recursive `Component` whose term growth blocked the proof. Never
+    /// asserted infinite where it might be finite; there is no `DoesNotHold` arm,
+    /// because the property a grounder relies on is *finite* and this crate asserts
+    /// only what it proves.
+    pub fn finiteness(&self) -> &Verdict;
 }
 
 /// An unsafe rule and why: the rule — by structural value (§8), so it names a
@@ -301,12 +305,10 @@ impl Safety {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct UnsafeRule { /* private: rule: Rule, unbound: BTreeSet<Variable> */ }
 
-/// Grounding finiteness (§6's discipline): proven finite, or undecided with the
-/// recursive component whose term growth blocked a proof. There is no
-/// `Infinite`, because the property a grounder relies on is *finite*, and this
-/// crate asserts only what it proves.
-#[derive(Clone, PartialEq, Eq, Debug)]   // closed: `Finite` or `Unknown`, no third arm
-pub enum Finiteness { Finite, Unknown { witness: Component } }
+// Grounding finiteness has no bespoke type: it is a `Verdict` (§6.1) like tightness
+// and head-cycle-freeness — `Holds` (proven finite) or `Unknown` carrying the
+// recursive `Component`. Folding it into `Verdict` is what keeps the approximation
+// family one shape (there is no `Finiteness` enum, no `Verdict<W>` mono-generic).
 ```
 
 **Safety is definite; finiteness is approximate.** Safety is a *syntactic* check —
@@ -325,11 +327,11 @@ should they differ materially — parameterizes safety by dialect the way the
 grammar parameterizes the language (grammar §6). Finiteness is different:
 grounding termination is not decidable for programs with
 function symbols (a rule `p(f(X)) :- p(X)` grows terms without bound), so
-`finiteness` is a *sound approximation* — `Finite` where this crate can prove
-grounding bounded, `Unknown` (carrying the recursive component through which terms
-grow) where it cannot. This is the same discipline the recursion classes carry
-(§6): assert only the property a consumer safely specializes on, and make the
-uncertainty a value.
+`finiteness` is a *sound approximation* returning the same `Verdict` (§6.1) the
+recursion classes do — `Holds` where this crate can prove grounding bounded,
+`Unknown` (carrying the recursive `Component` through which terms grow) where it
+cannot. This is the same discipline the recursion classes carry (§6): assert only
+the property a consumer safely specializes on, and make the uncertainty a value.
 
 **Computational cost.** Safety is `O(rules · variables)` — one pass per rule
 collecting binding occurrences; finiteness reads the components (§4) and the
@@ -354,10 +356,18 @@ here the pre-grounding, predicate-level reading forces a discipline:
 /// A sound approximation of a ground-program property, read at the predicate
 /// level. `Holds` is *proven* — the property is guaranteed of the ground program.
 /// `Unknown` is undecided at the predicate level — the ground program may or may
-/// not have it — and carries the witness (a component or cycle) that blocked a
-/// proof. There is deliberately **no** third `DoesNotHold` arm.
+/// not have it — and carries the `Component` that blocked a proof. There is
+/// deliberately **no** third `DoesNotHold` arm. **Concrete over `Component`, not
+/// generic in the witness:** the approximation exists *because* this crate reads the
+/// predicate level, so its witness is always a predicate-level `Component`; a type
+/// parameter would be idle (used at one type), and the exact ground-level
+/// classification a grounder would later give is *definite*, not an approximation,
+/// so it is not a `Verdict` at all (§11). Every approximation verdict this crate
+/// reports uses this one type — `tightness`, `head_cycle_free`, and grounding
+/// `finiteness` (§5) — so a reader meets one shape, not a `Verdict` beside a
+/// bespoke twin.
 #[derive(Clone, PartialEq, Eq, Debug)]   // closed: `Holds` or `Unknown`, no third arm (below)
-pub enum Verdict<W> { Holds, Unknown { witness: W } }
+pub enum Verdict { Holds, Unknown { witness: Component } }
 ```
 
 **Why two arms, not three — the error direction, stated once and cited by every
@@ -386,18 +396,24 @@ impl Classes {
     /// (§4): `Holds` when `graph.positive()` is acyclic; `Unknown` carrying the
     /// positive SCC otherwise — the ground program may still be tight, so this
     /// crate does not claim it is not.
-    pub fn tightness(&self) -> Verdict<Component>;
+    pub fn tightness(&self) -> Verdict;
 
     /// Head-cycle-free (Ben-Eliyahu–Dechter): no two atoms of a disjunctive head
     /// lie in one positive cycle, so the program shifts to a normal one. Read off
     /// the positive dependency graph (§4) as a predicate-level approximation like
     /// tightness, its witness the positive SCC coupling two head atoms.
-    pub fn head_cycle_free(&self) -> Verdict<Component>;
+    pub fn head_cycle_free(&self) -> Verdict;
 
-    /// Stratified: no recursion through default negation. Definite at the
-    /// predicate level — stratification *is* a predicate-level property — so both
-    /// results are proven: `Stratified`, or `NotStratified` carrying the negative
-    /// cycle that a solver can itself use.
+    /// Stratified: no recursion through a non-monotone dependency. Read off the
+    /// dependency graph as the absence of any cycle through a `Negative` **or** a
+    /// `ThroughAggregate` edge (§4) — not `Negative` alone, since a recursive
+    /// non-monotone aggregate breaks the perfect-model computation exactly as a
+    /// negation cycle does, and the predicate level cannot prove such an aggregate
+    /// monotone. `Stratified` is proven (no such cycle → the program stratifies);
+    /// `NotStratified` carries the cycle a solver can itself use. Definite for the
+    /// negation fragment, conservative-safe for aggregates: it errs only toward
+    /// `NotStratified` (the general method), never toward a `Stratified` it has not
+    /// proven (§6.1's error direction).
     pub fn stratification(&self) -> &Stratification;
 }
 
@@ -409,8 +425,11 @@ The witness on every negative or `Unknown` verdict is the **strongly-connected
 component** (§4) that produced it — the primary product (§3): a solver reads it to
 dispatch the offending component to its general method while the tight components
 around it take completion, and a diagnostic reads it to point at the recursion.
-Stratification is definite because a cycle through a negative edge (§4)
-*proves* non-stratification and its absence proves stratification; tightness and
+Stratification is definite for negation — a cycle through a `Negative` edge (§4)
+*proves* non-stratification, and its absence, with no non-monotone aggregate
+recursion either, proves stratification — and conservative-safe for aggregates: a
+`ThroughAggregate` cycle is read as stratum-breaking, since the predicate level
+cannot prove a recursive aggregate monotone (§6.1's safe direction). Tightness and
 head-cycle-freeness are approximate because a positive predicate cycle does not
 prove the ground program has a positive cycle (§4).
 
@@ -487,7 +506,7 @@ witnessed verdict, the routable bit — and a consumer routinely wants more than
 at once: a diagnostic reads the class *and* the component that explains it; a router
 dispatches on the class *and* hands the offending SCC to the general method. So the
 projection sits over the verdicts, the verdicts over the graph, and every layer
-stays exposed; classification is never a gate in front of the primitive it derives
+stays exposed; classification is never a barrier in front of the primitive it derives
 from.
 
 The projection **inherits the error direction** (§6.1) for free: an `Unknown` tight
@@ -604,9 +623,10 @@ what it proves and what it cannot (spec §10.2).
     with a naive reachability reference, and the component order is
     reverse-topological.
   - **Definite verdicts, both directions:** `stratification` is `Stratified` iff
-    the graph has no negative cycle, and `safety` flags a rule iff a variable has
-    no binding occurrence — each checked against a naive reference on generated
-    programs.
+    the graph has no cycle through a `Negative` **or** `ThroughAggregate` edge (§5,
+    §6.2 — the conservative-safe reading, so a recursive negated aggregate is
+    `NotStratified`), and `safety` flags a rule iff a variable has no binding
+    occurrence — each checked against a naive reference on generated programs.
   - **The approximations are sound, and their witnesses real:** whenever
     `tightness`/`head_cycle_free` is `Holds`, the *ground* program (ground on a
     bounded generated program by a naive reference grounder) has the property; and
@@ -622,13 +642,13 @@ what it proves and what it cannot (spec §10.2).
   expected (the approximation's stated imprecision), while a `Holds` the ground
   program lacks is a defect.
 - **Scaling shapes (criterion):** `Analysis::of` linear in `program + edges`; the
-  component decomposition linear in the graph; the shapes asserted in the gate,
-  absolute numbers out of band (spec §10.2).
+  component decomposition linear in the graph; the shapes asserted by the test suite,
+  absolute numbers measured out of band as benchmarks (spec §10.2).
 - **Golden snapshots**, reviewed: a corpus of programs with their `Analysis`
   dumped via the derived iterative `Debug` (§8, no `Display`) — the graph, the
   components, the verdicts, the witnesses — so the classification's shape is a
   diffable, reviewed artifact.
-- **Standing gates:** mutation per milestone over the graph, classification, and
+- **Standing checks:** mutation per milestone over the graph, classification, and
   safety logic; the workspace coverage floor; unused-code and unused-result
   warnings denied; documentation examples that run; `forbid(unsafe_code)` and the
   structural trust checks (FFI-free closure, no build script).
@@ -681,3 +701,28 @@ successor carries them.
   notion is a differential obligation against the pinned binary and, if they
   differ materially, a dialect parameterization (§5) — recorded so the question is
   pinned, not assumed.
+- **The dependency kind is the substrate's, not this crate's.** The edge tag is
+  `DependencyKind` (program §12.1), reused here by `pub use` as `Signature` and `Rule`
+  are, rather than a crate-local `EdgeKind`. The program substrate's edge accessor
+  (`body_signatures`) had returned only the `DefaultNegation` prefix, which
+  under-determines the three-mode graph tag; the tag is now defined once, at the
+  substrate, and read here. The modes are not mutually exclusive, so a dependency
+  carries one edge per mode it holds (§4) — no symmetric grid. Recorded so the single
+  authority is visible, not left as a coincidence of two matching enums.
+- **Stratification generalized to aggregates (§6.2).** `Stratified` is the absence of
+  any cycle through a `Negative` *or* `ThroughAggregate` edge, not `Negative` alone,
+  because the predicate level cannot prove a recursive aggregate monotone and a
+  recursive non-monotone aggregate breaks the perfect model as a negation cycle does.
+  It stays definite for negation and errs conservative-safe for aggregates (§6.1's
+  direction) — recorded because it widens the classical negation-only stratification
+  the literature names.
+- **One approximation verdict, concrete over `Component` (§5, §6.1).** Grounding
+  `finiteness` returns the same `Verdict` as `tightness` and `head_cycle_free`, not a
+  bespoke `Finiteness` enum of identical shape; and `Verdict` is concrete over
+  `Component`, not `Verdict<W>`. The approximation is inherently predicate-level, so
+  its witness is inherently a `Component` (a type parameter used at one type is idle,
+  and the exact ground-level classification a grounder gives is *definite*, not an
+  approximation — §11). This makes the crate's generics obey the estate rule stated in
+  program §14 — a parameter only on a carrier/view/decomposition role type, a domain
+  object (a verdict included) concrete — so the analysis tier reads uniformly with the
+  program tier beneath it.

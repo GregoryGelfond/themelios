@@ -720,8 +720,10 @@ pub enum Head {
     Literal(Literal),
     Disjunction(Disjunction),
     Choice(Choice),
-    Aggregate(FunctionAggregate),   // a head *function* aggregate (grammar §5.3);
-                                    // a head *set* aggregate is a `Choice`, never this
+    Aggregate(HeadAggregate),       // a head function aggregate, deriving atoms
+                                    // (grammar §5.3); its elements carry the head
+                                    // literal (§4.7); a head *set* aggregate is a
+                                    // `Choice`, never this
     TheoryAtom(TheoryAtom),         // a head theory atom — unsigned (grammar §5.8)
     Falsum,
     Verum,
@@ -856,18 +858,40 @@ pub struct ConditionalLiteral { pub literal: Literal, pub condition: Condition }
 ### 4.7 Aggregates and optimization
 
 ```rust
-/// An aggregate (grammar §5.3), in a body an element (negatable, §4.5) and in a
-/// head a `Head::Aggregate`. `HasGuards` reads the two guards for either form.
+/// An aggregate (grammar §5.3): in a body a negatable element (§4.5), in a head a
+/// `Head::Aggregate`. A body aggregate's elements *test*; a head aggregate's *derive*,
+/// so a head element carries the literal it derives and a body element does not — two
+/// **distinct types**, `FunctionAggregate` in a body and `HeadAggregate` in a head, so
+/// a body aggregate holding a head element (or the reverse) is unrepresentable, one
+/// more of §4.5's invalid states the type forbids rather than deferring to the engine.
+/// They are two concrete types, not one generic over the element, so an aggregate
+/// stays a plain structural node like `Choice` and `Disjunction` and the taxonomy's
+/// regularity holds; the guard-and-function structure they share is small, and
+/// `HasGuards` reads the two guards for either.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Aggregate { Function(FunctionAggregate), Set(SetAggregate) }
 
+/// A body function aggregate: two guards, the function, and body elements that test.
 pub struct FunctionAggregate {
     /* left_guard: Option<Guard>, function: AggregateFunction,
-       elements: BTreeSet<AggregateElement>, right_guard: Option<Guard> */
+       elements: BTreeSet<BodyAggregateElement>, right_guard: Option<Guard> */
+}
+/// A head function aggregate (grammar §5.3): the same two guards and function over
+/// head elements that derive. `Head::Aggregate(HeadAggregate)` (§4.4).
+pub struct HeadAggregate {
+    /* left_guard: Option<Guard>, function: AggregateFunction,
+       elements: BTreeSet<HeadAggregateElement>, right_guard: Option<Guard> */
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum AggregateFunction { Count, Sum, SumPlus, Min, Max }
-pub struct SetAggregate { /* guards + elements — the body cardinality form */ }
+pub struct SetAggregate { /* guards + BTreeSet<SetElement> — the body cardinality form */ }
+
+/// The position-specific aggregate elements (grammar §5.3). A body element is a term
+/// tuple under a condition — it tests, so it carries no head literal. A head element
+/// adds the literal it derives; that literal is what makes it a *head* element and it
+/// exists only here, so a `FunctionAggregate` cannot hold one.
+pub struct BodyAggregateElement { /* terms: Vec<Term>, condition: Condition */ }
+pub struct HeadAggregateElement { /* terms: Vec<Term>, literal: Literal, condition: Condition */ }
 
 /// A guard (grammar §5.3): a relation and a term; `None` relation is the
 /// grammar's default (`<=` on its side), stated as absence because that is what
@@ -1108,8 +1132,12 @@ to the *content* and ignore the provenance:
 /// whose `Ord` erased provenance but whose `Eq` did not would break every set).
 pub struct WithProvenance<T> { /* value: T, provenance: Provenance */ }
 impl<T> WithProvenance<T> {
+    pub fn new(value: T, provenance: Provenance) -> WithProvenance<T>;
+    pub fn constructed(value: T) -> WithProvenance<T>;                 // Origin::Constructed
     pub fn get(&self) -> &T;
     pub fn provenance(&self) -> &Provenance;
+    pub fn into_value(self) -> T;                                      // the owned complement to `get`
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> WithProvenance<U>;  // rewrite content, provenance carried (§9.1)
 }
 // PartialEq/Eq/PartialOrd/Ord/Hash for WithProvenance<T> delegate to `value`.
 ```
@@ -1414,9 +1442,14 @@ machinery the unifier produces (§11) — one substitution core, two families of
 client (the query side binds; the transform side rewrites):
 
 ```rust
-/// Apply a substitution (§11) to a term, a rule, or a program — replace each
-/// variable by its bound term, provenance preserved. The workhorse of
-/// projection, inlining, and instantiation.
+/// Apply a substitution (§11) to a term, a rule, or a program — **resolving**: each
+/// variable is replaced by its binding and the binding's own variables are followed
+/// to the fixpoint (the substitution is triangular, §11.1), provenance preserved.
+/// The workhorse of projection, inlining, and instantiation. Cost is `O(output)` —
+/// proportional to the *resolved* result, which a pathological unifier can make
+/// exponentially larger than its input (§11.1); that exponential is an output-size
+/// fact, not an algorithm defect, and interning (§17) is the seam that shares the
+/// structure where a consumer needs the materialisation cheap.
 pub fn substitute(rule: Rule, substitution: &Substitution) -> Rule;
 impl Term { pub fn substitute(self, s: &Substitution) -> Term; }
 
@@ -1525,14 +1558,21 @@ default negation is the query layer's reading, not the unifier's.
 /// outcomes are distinct on purpose (§11.2).
 pub fn mgu(left: &Atom, right: &Atom) -> Result<Option<Substitution>, NotAPattern>;
 
-/// A substitution: variables to bindings, keyed by variable. No `Default` and no
-/// public empty constructor — the empty substitution means *unified, binding
-/// nothing* (the affirmative match) and must arise only from a successful unify,
-/// never be asserted (§11.2).
+/// A substitution: variables to bindings, keyed by variable. **Triangular**, not
+/// fully resolved: a binding's term may itself mention bound variables (`X ↦ f(Y)`
+/// with `Y ↦ a`), which is exactly what lets `mgu` produce it in near-linear space
+/// — the fully-resolved (idempotent) form over explicit terms is worst-case
+/// *exponential* in the atoms' size (the doubling `Xᵢ ↦ f(Xᵢ₋₁, Xᵢ₋₁)`), the
+/// algorithmic-complexity blow-up the near-linear algorithm is chosen to avoid. The
+/// triangular map is still a plain map keyed by variable, no scope-qualified key;
+/// `substitute` (§9.2) is the resolving reader that follows the chains to the
+/// fixpoint. No `Default` and no public empty constructor — the empty substitution
+/// means *unified, binding nothing* (the affirmative match) and must arise only
+/// from a successful unify, never be asserted (§11.2).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Substitution { /* private: BTreeMap<Variable, Binding> */ }
 impl Substitution {
-    pub fn get(&self, v: &Variable) -> Option<&Binding>;
+    pub fn get(&self, v: &Variable) -> Option<&Binding>;   // the *immediate* binding, unresolved
     pub fn iter(&self) -> impl Iterator<Item = (&Variable, &Binding)>;   // Ord order
 }
 
@@ -1546,8 +1586,8 @@ pub enum Binding { Bound(Term) }
 ```
 
 **One namespace, and rename-apart as a separate step.** `mgu` treats its two
-atoms as sharing one variable namespace — the textbook unifier — so its
-substitution is a plain map keyed by variable, with no scope-qualified key to
+atoms as sharing one variable namespace — one namespace, not a scope per rule — so
+its substitution is a plain map keyed by variable, with no scope-qualified key to
 reason about. Unifying atoms from *different* rules, where each rule's `X` is
 its own, is `mgu(a1, rename_apart(a2, &mut fresh))`: the caller standardizes apart
 first (drawing fresh variables from §9.2's `Fresh`), and the result is again a
@@ -1567,7 +1607,25 @@ pub fn rename_apart(atom: &Atom, fresh: &mut Fresh) -> Atom;
 so a cyclic term is *not representable*; omitting the occurs check would diverge
 building a rational tree that has no home, rather than silently produce an unsound
 binding. So the unifier is sound by construction, where a system that omits the
-check (Prolog by default) is not.
+check (Prolog by default) is not. The occurs check rules out an *infinite* term; it
+does not rule out a *finite but exponentially large* one, which is a size fact, not
+a soundness one, handled next.
+
+**The algorithm, and where the cost lives.** `mgu` is the near-linear unification of
+Martelli and Montanari (1982) — a union-find over the two atoms' term structure with
+the occurs check run as the equations are solved — so *deciding* unifiability and
+producing the triangular `Substitution` is near-linear in the two atoms (the
+worst-case-efficient choice the mission-critical bar and spec §12.4 require, not a
+naive quadratic composition). The exponential blow-up unification is infamous for is
+**not** in the decision or in `mgu`'s result: it lives only in *materialising* a
+resolved term, which `substitute` (§9.2) does on demand at `O(output)`. So the
+unifier itself is not an algorithmic-complexity denial-of-service, and the matching
+path (§11.3), which range-scans rather than materialises, never pays it; a caller
+that explicitly substitutes a pathological unifier into a term pays the output cost
+by choice, and interning (§17) is the seam that bounds even that when a consumer
+measures the need. This is the reconciliation the substitution representation forces:
+near-linear `mgu` (§15), a triangular result, and a resolving `substitute` whose cost
+is honestly the size of what it builds.
 
 ### 11.2 What a pattern is, and the three outcomes
 
@@ -1666,9 +1724,37 @@ impl Rule {
     pub fn variables(&self) -> impl Iterator<Item = &Variable>;   // free variables, in order
     pub fn is_ground(&self) -> bool;
     /// The head and body predicate signatures — the edges a dependency graph is
-    /// built from (§12.2).
+    /// built from (§12.2). `body_signatures` tags each dependency with the **kind**
+    /// it runs through, the semantic mode a dependency graph reads, not the
+    /// syntactic negation word (below).
     pub fn head_signatures(&self) -> impl Iterator<Item = Signature>;
-    pub fn body_signatures(&self) -> impl Iterator<Item = (DefaultNegation, Signature)>;
+    pub fn body_signatures(&self) -> impl Iterator<Item = (DependencyKind, Signature)>;
+}
+
+/// How a body predicate is depended on — the semantic mode a dependency graph
+/// reads (analysis §4), defined here as its one authority. It is deliberately **not**
+/// the syntactic `DefaultNegation` prefix (§4.5): that carries the negation *word*
+/// (`not`/`not not`), while a graph consumer needs the dependency *mode*, and
+/// mapping one to the other also needs the enclosing former (a plain literal, an
+/// aggregate, a theory atom), which the prefix does not carry. The three modes are
+/// the honest KR distinctions — the literature's positive/negative dependency and
+/// the non-monotone aggregate edge, no artificial symmetry — and they are **not
+/// mutually exclusive**: `body_signatures` yields one `(DependencyKind, Signature)`
+/// pair per mode an occurrence carries, so a predicate reached inside a *negated*
+/// aggregate yields both `ThroughAggregate` and `Negative` (analysis §4). The
+/// analysis reuses this type (`pub use`) rather than redefine it, exactly as it
+/// reuses `Signature` and `Rule` (analysis §4).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[non_exhaustive]
+pub enum DependencyKind {
+    /// A positive body occurrence — no default negation, not through a non-monotone
+    /// former: a monotone dependency, the edge the positive dependency graph keeps.
+    Positive,
+    /// Through default negation (`not`/`not not`) — the mode stratification reads;
+    /// double negation is not monotone, so `NotNot` is `Negative` here too.
+    Negative,
+    /// Through a non-monotone aggregate or theory atom.
+    ThroughAggregate,
 }
 ```
 
@@ -1773,6 +1859,19 @@ dictating the type — and this section states only what this tier adds.
   obvious; boilerplate falls away as a consequence of that, never as the goal, so
   a terse spelling that obscures, or a second way that competes with the obvious
   one, is refused even where it would save keystrokes.
+- **A type parameter marks a role, not a domain object.** A public type is generic
+  only when it is a *carrier*, a *view*, or a *decomposition* — a shape defined by
+  what it holds rather than by the domain: `WithProvenance<T>` (the provenance
+  carrier, §6), `TermParts<T>`/`SymbolParts<T>` (the one-level decompositions, §3.6),
+  and the generic *operations* over them (`fold`, `map`, the coercions, `not`). A
+  **domain object** — a node of the logical taxonomy (`Symbol`, `Term`, `Head`,
+  `Body`, `Rule`, an aggregate, a verdict) — is always **concrete**; structure shared
+  among sibling concrete nodes is a **trait** (`HasGuards`, `Negatable`), never a type
+  parameter. This is the rule the syntax tier already follows (`Parse<T>`,
+  `AstChildren<T>` generic; every AST node concrete), carried here so a reader
+  predicts a type's shape from its role and no lone generic sits among an
+  otherwise-concrete family (§4.7's two aggregate types are the worked instance;
+  `themelios-analysis`'s single concrete `Verdict` is the other).
 
 ## 15. Failure semantics and computational costs, consolidated
 
@@ -1787,7 +1886,7 @@ the operation's error type (base §3.2).
 | `floor`/`ceil`/`round`/`trunc` | `NotAnInteger` (`NotFinite` \| `OutOfRange`) | O(1) |
 | `Term::evaluate` / `evaluate` | `EvalError` (`NotGround` \| `External` \| `Undefined` \| `Overflow`) | O(nodes) |
 | `FromSymbol::from_symbol` | `FromSymbolError` (the unmatched symbol) | O(nodes) |
-| `mgu` | `NotAPattern`; `Ok(None)` is *no match*, not a refusal (§11.2) | O(both atoms) |
+| `mgu` | `NotAPattern`; `Ok(None)` is *no match*, not a refusal (§11.2) | near-linear in both atoms (§11.1) |
 | `render` | `Unspellable` (a string value the dialect cannot spell) | O(output) |
 
 `raise` never refuses — every parse yields a `Raised` carrying the program and its
@@ -1801,9 +1900,12 @@ and drop (§13); the conversion `impl`s (§3.4); `subterms`/`fold`/`into_parts`;
 Costs, consolidated: construction, canonicalization, evaluation, rendering, and
 every walk are `O(nodes)` in time and iterative in depth (§13); equality,
 ordering, and hashing are `O(nodes)` and proportional to structure (spec §7.1);
-clone is linear; part-wise access is `O(log parts)`; `mgu` is `O(both atoms)`; a
-match against an answer set of `n` symbols is `O(log n + k)` via `signature_range`
-(§11.3). The scaling benches (§16) hold these shapes.
+clone is linear; part-wise access is `O(log parts)`; `mgu` is near-linear in both
+atoms, deciding and producing the triangular substitution (§11.1); `substitute`
+resolving that substitution is `O(output)` — the resolved result's size, which a
+pathological unifier makes exponential (an output-size lower bound, not an algorithm
+cost, §9.2, §11.1); a match against an answer set of `n` symbols is `O(log n + k)`
+via `signature_range` (§11.3). The scaling benches (§16) hold these shapes.
 
 ## 16. Assurance instruments
 
@@ -1852,7 +1954,8 @@ with what it proves and what it cannot (spec §10.2).
   per-walk proof that §13's discipline holds, no walk excepted.
 - **Scaling shapes (criterion):** equality, clone, rendering, and traversal linear
   in structure; equality proportional to structure size; part-wise access cheap;
-  the shapes asserted in the gate, absolute numbers out of band (spec §10.2).
+  the shapes asserted by the test suite, absolute numbers measured out of band as
+  benchmarks (spec §10.2).
 - **Golden snapshots**, reviewed: canonical renderings of a corpus of programs, and
   the lowering diagnostics of §8 rendered through base's human view at the
   rust-analyzer bar (the *diagnostics-quality* discipline, spec §2 item 9).
@@ -1861,7 +1964,7 @@ with what it proves and what it cannot (spec §10.2).
   the macros is structurally equal; *round-trip*; and *transformation* — a
   `Program → Program` rewrite whose provenance reaches the origins and whose
   diagnostic on a rewritten rule points at source.
-- **Standing gates:** mutation per milestone over the constructor, canonicalization,
+- **Standing checks:** mutation per milestone over the constructor, canonicalization,
   transformation, and unification logic; the workspace coverage floor as a
   tripwire; unused-code and unused-result warnings denied (spec §5.2); documentation
   examples that run; the executable-claims standard for anything this crate says
@@ -1874,8 +1977,12 @@ Named reserved seams — deferred with their reasons and their arriving consumer
 never gaps:
 
 - **Symbol interning** (§3.1): a per-arena interner for structural dedup and
-  `O(1)` equality, never a global table (spec §1.2); its consumer is a program
-  large enough that the benches (§16) show the dedup pays. v1 is owned by value.
+  `O(1)` equality, never a global table (spec §1.2); its consumers are a program
+  large enough that the benches (§16) show the dedup pays, and a caller that
+  *materialises* a large unifier — `substitute` resolving a triangular substitution
+  is `O(output)`, and a pathological unifier makes that output exponentially larger
+  than its input (§9.2, §11.1), which shared structure bounds. v1 is owned by value,
+  so v1 pays the output cost; the interner is the measured-need answer to both.
 - **Semantic equivalence checking** (spec §7.1, §13): ordinary and strong
   equivalence as decision services, deliberately distinct from structural
   equality; the consumer is a verified-rewrite checker or an across-barrier
@@ -1949,3 +2056,38 @@ evolution with its argument, not a drift.
   faithful to the standard it implements:
   the syntactic register cites the standard, the logic register states the
   semantics, and both name one operator.
+- **The substitution representation (§9.2, §11.1, §15, §17).** `Substitution` is
+  **triangular**, and `substitute` **resolving**: the original document left the
+  representation implicit, under which a near-linear `mgu`, a single-pass `O(nodes)`
+  `substitute`, and a fully-resolved substitution over owned terms cannot all hold —
+  the resolved form is worst-case exponential. Pinned so the three cohere: `mgu` is
+  near-linear deciding and producing the compact triangular substitution, `substitute`
+  resolves it at `O(output)` (the honest output-size bound), the matching path never
+  materialises, and interning (§17) gains the materialisation consumer. This also
+  settles the algorithm question the review raised alongside it (Martelli–Montanari,
+  §11.1).
+- **The dependency kind (§12.1).** `body_signatures` yields `(DependencyKind,
+  Signature)`, and `DependencyKind` — the honest three-mode classification a
+  dependency graph reads — is defined **here**, in the substrate, and reused by
+  `themelios-analysis` rather than redefined there (it had carried its own `EdgeKind`,
+  under-determined by the substrate's older `DefaultNegation` tag). The modes are not
+  mutually exclusive, so a dependency carries one pair per mode; no symmetric grid is
+  introduced.
+- **Position-typed aggregate elements (§4.4, §4.7).** A head aggregate's elements
+  derive and carry a literal; a body aggregate's test and do not. The original
+  document shared one `FunctionAggregate` across both positions and left the element
+  type unnamed, which would let a body aggregate hold a head element. There are now two
+  concrete types — `FunctionAggregate` (body) and `HeadAggregate` (head), each over its
+  own element type — so the position invariant is held in the type as §4.5 promises for
+  its neighbours, and an aggregate stays a plain structural node, keeping the taxonomy's
+  regularity (no lone generic among the structural-node types).
+- **The generics rule is stated (§14), and the carrier surface named (§6.2).** A
+  reader's review of the API found the estate's generic-versus-concrete rule followed
+  but never articulated (the concrete side argued at §4.7, the generic side only
+  demonstrated), which is where an analysis-tier inconsistency had slipped in. §14 now
+  states it — a type parameter marks a carrier/view/decomposition role or a generic
+  operation, a domain object (a verdict included) is concrete, shared structure is a
+  trait. `themelios-analysis` folds its bespoke `Finiteness` into the one concrete
+  `Verdict` accordingly (analysis §5/§6, §12). And §6.2 now names the full
+  `WithProvenance` surface (`new`/`constructed`/`into_value`/`map`) the tier builds,
+  rather than leaving `map`/`into_value` to a plan-level note.
