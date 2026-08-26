@@ -13,7 +13,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 
-use super::rule::Condition;
+use super::rule::{Atom, Body, Condition};
 use crate::provenance::WithProvenance;
 use crate::symbol::{Name, Signature, Symbol};
 use crate::term::{Term, Variable};
@@ -841,5 +841,262 @@ impl Script {
     /// The verbatim body text — carried, never run (§4.8).
     pub fn body(&self) -> &str {
         &self.body
+    }
+}
+
+/// A `#show` directive (grammar §5.9): one of four forms (§4.8).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum Show {
+    /// `#show.` — show nothing.
+    All,
+    /// `#show p/1.` — a signature.
+    Signature(Signature),
+    /// `#show t.` — a term.
+    Term(Term),
+    /// `#show t : body.` — a term under a body.
+    TermBody {
+        /// The shown term.
+        term: Term,
+        /// The body it shows under.
+        body: Body,
+    },
+}
+
+/// A `#project` directive (grammar §5.9): a signature or an atom under a body (§4.8).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum Project {
+    /// `#project p/1.` — a signature.
+    Signature(Signature),
+    /// `#project a : body.` — an atom under a body (empty when the `:` is absent).
+    Atom {
+        /// The projected atom.
+        atom: Atom,
+        /// The body.
+        body: Body,
+    },
+}
+
+/// An `#edge` directive (grammar §5.9): node pairs under a body (§4.8).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Edge {
+    pairs: Vec<(Term, Term)>,
+    body: Body,
+}
+
+impl Edge {
+    /// An edge over the given node pairs and body, the node terms canonicalized (§5.1).
+    pub fn new(pairs: impl IntoIterator<Item = (Term, Term)>, body: Body) -> Edge {
+        Edge {
+            pairs: pairs
+                .into_iter()
+                .map(|(from, to)| (from.canonicalize(), to.canonicalize()))
+                .collect(),
+            body,
+        }
+    }
+
+    /// The node pairs, in order.
+    pub fn pairs(&self) -> impl Iterator<Item = (&Term, &Term)> {
+        self.pairs.iter().map(|(from, to)| (from, to))
+    }
+
+    /// The body.
+    pub fn body(&self) -> &Body {
+        &self.body
+    }
+}
+
+/// A `#heuristic` directive (grammar §5.9): an atom under a body, with a bias, an
+/// optional priority, and a modifier (§4.8).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Heuristic {
+    atom: Atom,
+    body: Body,
+    bias: Term,
+    priority: Option<Term>,
+    modifier: Term,
+}
+
+impl Heuristic {
+    /// A heuristic over the given parts, its bias, priority, and modifier canonicalized
+    /// (§5.1).
+    pub fn new(
+        atom: Atom,
+        body: Body,
+        bias: impl Into<Term>,
+        priority: Option<Term>,
+        modifier: impl Into<Term>,
+    ) -> Heuristic {
+        Heuristic {
+            atom,
+            body,
+            bias: bias.into().canonicalize(),
+            priority: priority.map(Term::canonicalize),
+            modifier: modifier.into().canonicalize(),
+        }
+    }
+
+    /// The atom.
+    pub fn atom(&self) -> &Atom {
+        &self.atom
+    }
+
+    /// The body.
+    pub fn body(&self) -> &Body {
+        &self.body
+    }
+
+    /// The heuristic bias term.
+    pub fn bias(&self) -> &Term {
+        &self.bias
+    }
+
+    /// The priority term, if any.
+    pub fn priority(&self) -> Option<&Term> {
+        self.priority.as_ref()
+    }
+
+    /// The heuristic modifier term.
+    pub fn modifier(&self) -> &Term {
+        &self.modifier
+    }
+}
+
+/// An `#external` directive (grammar §5.9): an atom under a body, with an optional value
+/// — carried, never meaningful (grammar §13, §4.8).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct External {
+    atom: Atom,
+    body: Body,
+    value: Option<Term>,
+}
+
+impl External {
+    /// An external over the given atom, body, and optional value (canonicalized, §5.1).
+    pub fn new(atom: Atom, body: Body, value: Option<Term>) -> External {
+        External {
+            atom,
+            body,
+            value: value.map(Term::canonicalize),
+        }
+    }
+
+    /// The atom.
+    pub fn atom(&self) -> &Atom {
+        &self.atom
+    }
+
+    /// The body.
+    pub fn body(&self) -> &Body {
+        &self.body
+    }
+
+    /// The value, if any — carried, never meaningful (grammar §13).
+    pub fn value(&self) -> Option<&Term> {
+        self.value.as_ref()
+    }
+}
+
+// ---- Canonicalization (§5.1) ----
+//
+// The directive spine of the pass (see `rule.rs`): a directive's ordinary terms, atoms,
+// and bodies are canonicalized; a theory term never ground-collapses (§4.9), so only the
+// ordinary terms and the atoms inside an element's condition move. Provenance preserved
+// through the carrier's `map` (§6.2). Grammar-bounded, so a bounded recursion (§13).
+
+impl TheoryAtom {
+    pub(crate) fn canonicalize(self) -> TheoryAtom {
+        TheoryAtom {
+            name: self.name,
+            arguments: self.arguments.into_iter().map(Term::canonicalize).collect(),
+            elements: self
+                .elements
+                .into_iter()
+                .map(|element| element.map(TheoryElement::canonicalize))
+                .collect(),
+            guard: self.guard,
+        }
+    }
+}
+
+impl TheoryElement {
+    pub(crate) fn canonicalize(self) -> TheoryElement {
+        // Theory terms do not ground-collapse (§4.9); the ordinary literals of a
+        // condition do.
+        TheoryElement {
+            terms: self.terms,
+            condition: self.condition.map(Condition::canonicalize),
+        }
+    }
+}
+
+impl Show {
+    pub(crate) fn canonicalize(self) -> Show {
+        match self {
+            Show::All => Show::All,
+            Show::Signature(signature) => Show::Signature(signature),
+            Show::Term(term) => Show::Term(term.canonicalize()),
+            Show::TermBody { term, body } => Show::TermBody {
+                term: term.canonicalize(),
+                body: body.canonicalize(),
+            },
+        }
+    }
+}
+
+impl Project {
+    pub(crate) fn canonicalize(self) -> Project {
+        match self {
+            Project::Signature(signature) => Project::Signature(signature),
+            Project::Atom { atom, body } => Project::Atom {
+                atom: atom.canonicalize(),
+                body: body.canonicalize(),
+            },
+        }
+    }
+}
+
+impl Edge {
+    pub(crate) fn canonicalize(self) -> Edge {
+        Edge {
+            pairs: self
+                .pairs
+                .into_iter()
+                .map(|(from, to)| (from.canonicalize(), to.canonicalize()))
+                .collect(),
+            body: self.body.canonicalize(),
+        }
+    }
+}
+
+impl Heuristic {
+    pub(crate) fn canonicalize(self) -> Heuristic {
+        Heuristic {
+            atom: self.atom.canonicalize(),
+            body: self.body.canonicalize(),
+            bias: self.bias.canonicalize(),
+            priority: self.priority.map(Term::canonicalize),
+            modifier: self.modifier.canonicalize(),
+        }
+    }
+}
+
+impl External {
+    pub(crate) fn canonicalize(self) -> External {
+        External {
+            atom: self.atom.canonicalize(),
+            body: self.body.canonicalize(),
+            value: self.value.map(Term::canonicalize),
+        }
+    }
+}
+
+impl Const {
+    pub(crate) fn canonicalize(self) -> Const {
+        Const {
+            name: self.name,
+            value: self.value.canonicalize(),
+            policy: self.policy,
+        }
     }
 }

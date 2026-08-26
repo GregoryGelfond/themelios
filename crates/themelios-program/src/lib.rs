@@ -27,3 +27,4 @@ pub mod symbol;
 pub mod term;
 pub mod provenance;
 pub mod program;
+pub mod analyze;

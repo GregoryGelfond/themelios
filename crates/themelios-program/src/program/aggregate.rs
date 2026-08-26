@@ -370,3 +370,125 @@ impl OptimizeElement {
         &self.condition
     }
 }
+
+// ---- Canonicalization (§5.1) ----
+//
+// The aggregate spine of the pass (see `rule.rs`): guard bounds and the ordinary terms
+// and conditions an element carries are canonicalized, provenance preserved through the
+// carrier's `map` (§6.2). Grammar-bounded, so a bounded recursion (§13).
+
+impl Guard {
+    pub(crate) fn canonicalize(self) -> Guard {
+        Guard {
+            relation: self.relation,
+            term: self.term.canonicalize(),
+        }
+    }
+}
+
+impl Aggregate {
+    pub(crate) fn canonicalize(self) -> Aggregate {
+        match self {
+            Aggregate::Function(aggregate) => Aggregate::Function(aggregate.canonicalize()),
+            Aggregate::Set(aggregate) => Aggregate::Set(aggregate.canonicalize()),
+        }
+    }
+}
+
+impl FunctionAggregate {
+    pub(crate) fn canonicalize(self) -> FunctionAggregate {
+        FunctionAggregate {
+            left_guard: self.left_guard.map(Guard::canonicalize),
+            function: self.function,
+            elements: self
+                .elements
+                .into_iter()
+                .map(|element| element.map(BodyAggregateElement::canonicalize))
+                .collect(),
+            right_guard: self.right_guard.map(Guard::canonicalize),
+        }
+    }
+}
+
+impl HeadAggregate {
+    pub(crate) fn canonicalize(self) -> HeadAggregate {
+        HeadAggregate {
+            left_guard: self.left_guard.map(Guard::canonicalize),
+            function: self.function,
+            elements: self
+                .elements
+                .into_iter()
+                .map(|element| element.map(HeadAggregateElement::canonicalize))
+                .collect(),
+            right_guard: self.right_guard.map(Guard::canonicalize),
+        }
+    }
+}
+
+impl SetAggregate {
+    pub(crate) fn canonicalize(self) -> SetAggregate {
+        SetAggregate {
+            left_guard: self.left_guard.map(Guard::canonicalize),
+            elements: self
+                .elements
+                .into_iter()
+                .map(|element| element.map(SetElement::canonicalize))
+                .collect(),
+            right_guard: self.right_guard.map(Guard::canonicalize),
+        }
+    }
+}
+
+impl BodyAggregateElement {
+    pub(crate) fn canonicalize(self) -> BodyAggregateElement {
+        BodyAggregateElement {
+            terms: self.terms.into_iter().map(Term::canonicalize).collect(),
+            condition: self.condition.canonicalize(),
+        }
+    }
+}
+
+impl HeadAggregateElement {
+    pub(crate) fn canonicalize(self) -> HeadAggregateElement {
+        HeadAggregateElement {
+            terms: self.terms.into_iter().map(Term::canonicalize).collect(),
+            literal: self.literal.canonicalize(),
+            condition: self.condition.canonicalize(),
+        }
+    }
+}
+
+impl SetElement {
+    pub(crate) fn canonicalize(self) -> SetElement {
+        match self {
+            SetElement::Literal(literal) => SetElement::Literal(literal.canonicalize()),
+            SetElement::ConditionalLiteral(conditional) => {
+                SetElement::ConditionalLiteral(conditional.canonicalize())
+            }
+        }
+    }
+}
+
+impl Optimize {
+    pub(crate) fn canonicalize(self) -> Optimize {
+        Optimize {
+            direction: self.direction,
+            elements: self
+                .elements
+                .into_iter()
+                .map(|element| element.map(OptimizeElement::canonicalize))
+                .collect(),
+        }
+    }
+}
+
+impl OptimizeElement {
+    pub(crate) fn canonicalize(self) -> OptimizeElement {
+        OptimizeElement {
+            weight: self.weight.canonicalize(),
+            priority: self.priority.map(Term::canonicalize),
+            terms: self.terms.into_iter().map(Term::canonicalize).collect(),
+            condition: self.condition.canonicalize(),
+        }
+    }
+}

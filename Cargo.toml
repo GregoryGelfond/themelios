@@ -58,3 +58,14 @@ missing_panics_doc = "allow"
 # Doc comments cite design sections as prose (base.md §5); ticking
 # every citation adds markup without information.
 doc_markdown = "allow"
+# Every structural node carries its provenance in-node (program.md §6.2):
+# a WithProvenance node is its content beside a Provenance, itself some
+# 120 bytes. A Statement is then a sum whose variants differ in size by
+# design — a Rule holds two provenance-bearing children, an #include
+# holds none. The design spells the Statement variants unboxed
+# (program.md §4.2), the shape a consumer matching on them expects;
+# boxing the large ones to equalise sizes would cascade asymmetrically
+# across the enum and depart that API for no gain the value's use — a
+# set of owned statements — rewards. The disparity is a deliberate
+# consequence of in-node provenance, not a defect.
+large_enum_variant = "allow"

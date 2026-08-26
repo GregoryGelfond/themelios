@@ -20,12 +20,210 @@ pub use aggregate::{
     SetElement,
 };
 pub use directive::{
-    Const, ConstPolicy, Defined, Include, IncludeTarget, Script, TheoryAtom, TheoryAtomDefinition,
-    TheoryAtomGuardDefinition, TheoryDefinition, TheoryElement, TheoryGuard, TheoryOccurrence,
-    TheoryOperator, TheoryOperatorArity, TheoryOperatorDefinition, TheoryTerm,
-    TheoryTermDefinition, TheoryTermParts,
+    Const, ConstPolicy, Defined, Edge, External, Heuristic, Include, IncludeTarget, Project,
+    Script, Show, TheoryAtom, TheoryAtomDefinition, TheoryAtomGuardDefinition, TheoryDefinition,
+    TheoryElement, TheoryGuard, TheoryOccurrence, TheoryOperator, TheoryOperatorArity,
+    TheoryOperatorDefinition, TheoryTerm, TheoryTermDefinition, TheoryTermParts,
 };
 pub use rule::{
-    Atom, Comparison, Condition, ConditionalLiteral, DefaultNegation, Literal, LiteralInner,
-    Relation,
+    Atom, Body, BodyElement, Choice, ChoiceElement, Comparison, Condition, ConditionalLiteral,
+    DefaultNegation, Disjunction, DisjunctionElement, Head, IntoBody, IntoHead, Literal,
+    LiteralInner, Relation, Rule, WeakConstraint,
 };
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::provenance::WithProvenance;
+use crate::symbol::Name;
+
+/// A statement of a part (grammar §5.11), plus the ASP-Core-2 query (grammar §6.1).
+/// Non-exhaustive for downstream growth; every internal match is exhaustive with no
+/// wildcard, so a new family is a compile error here, never a silent drop (§4.2).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[non_exhaustive]
+pub enum Statement {
+    /// A rule.
+    Rule(Rule),
+    /// A weak constraint.
+    WeakConstraint(WeakConstraint),
+    /// An optimization statement.
+    Optimize(Optimize),
+    /// A `#show`.
+    Show(Show),
+    /// A `#project`.
+    Project(Project),
+    /// A `#defined`.
+    Defined(Defined),
+    /// An `#edge`.
+    Edge(Edge),
+    /// A `#heuristic`.
+    Heuristic(Heuristic),
+    /// An `#external`.
+    External(External),
+    /// A `#const`.
+    Const(Const),
+    /// An `#include`, parsed and never resolved (§4.8).
+    Include(Include),
+    /// A `#script`, carried opaque and never run (§4.8).
+    Script(Script),
+    /// A `#theory` definition.
+    TheoryDefinition(TheoryDefinition),
+    /// An ASP-Core-2 query (grammar §6.1).
+    Query(Query),
+}
+
+/// An ASP-Core-2 query (grammar §6.1): the queried atom — the class of forms a program
+/// position holds, so it belongs to the statement enum (§4.2).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Query {
+    atom: Atom,
+}
+
+impl Query {
+    /// A query over the given atom.
+    pub fn new(atom: Atom) -> Query {
+        Query { atom }
+    }
+
+    /// The queried atom.
+    pub fn atom(&self) -> &Atom {
+        &self.atom
+    }
+
+    pub(crate) fn canonicalize(self) -> Query {
+        Query {
+            atom: self.atom.canonicalize(),
+        }
+    }
+}
+
+/// A part's identity: its name and the **spelled** formal parameters (grammar §5.9's
+/// `#program name(p, q)`), not its arity (§4.1). Two parts named `step(t)` and `step(u)`
+/// therefore coexist rather than merge — merging would rename a formal and could capture
+/// a global constant.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct PartKey {
+    /// The part name.
+    pub name: Name,
+    /// The spelled formal parameters.
+    pub formals: Vec<Name>,
+}
+
+/// A part: a keyed set of statements (§4.1).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Part {
+    key: PartKey,
+    statements: BTreeSet<WithProvenance<Statement>>,
+}
+
+impl Part {
+    /// The part's identity.
+    pub fn key(&self) -> &PartKey {
+        &self.key
+    }
+
+    /// The statements — a set, each with its provenance, in `Ord` order (§6.2).
+    pub fn statements(&self) -> impl Iterator<Item = &WithProvenance<Statement>> {
+        self.statements.iter()
+    }
+}
+
+/// A part-structured set of statements, giving cheap part-wise access for multi-shot use
+/// (§4.1). `base` is the implicit default part, always present.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Program {
+    parts: BTreeMap<PartKey, Part>,
+}
+
+impl Program {
+    /// Build a program by admitting statements into the base part through the one ingest
+    /// door (§6.3): each is canonicalized and merged with any content-equal statement
+    /// already present. The design leaves the program's public constructor to the
+    /// construction surface (§7) and the raise (§8); this names the door they build on.
+    pub fn of(statements: impl IntoIterator<Item = WithProvenance<Statement>>) -> Program {
+        let mut base = Part {
+            key: base_key(),
+            statements: BTreeSet::new(),
+        };
+        for statement in statements {
+            ingest(&mut base.statements, statement);
+        }
+        let mut parts = BTreeMap::new();
+        parts.insert(base_key(), base);
+        Program { parts }
+    }
+
+    /// The parts, in `PartKey` order (§4.1).
+    pub fn parts(&self) -> impl Iterator<Item = &Part> {
+        self.parts.values()
+    }
+
+    /// The part with the given key, if present.
+    pub fn part(&self, key: &PartKey) -> Option<&Part> {
+        self.parts.get(key)
+    }
+
+    /// The base part — always present (§4.1).
+    pub fn base(&self) -> &Part {
+        self.parts
+            .get(&base_key())
+            .expect("the base part is always present")
+    }
+
+    /// Every statement, across parts, each with its provenance (§6.2).
+    pub fn statements(&self) -> impl Iterator<Item = &WithProvenance<Statement>> {
+        self.parts.values().flat_map(Part::statements)
+    }
+}
+
+/// The `base` part's key — the implicit default part (§4.1).
+fn base_key() -> PartKey {
+    PartKey {
+        name: Name::new("base").expect("base is a valid identifier"),
+        formals: Vec::new(),
+    }
+}
+
+/// The one ingest/merge door (§6.3): canonicalize the statement, then admit it into the
+/// set, merging provenance with any content-equal statement already present — a raw
+/// `BTreeSet::insert` would keep the existing element and drop the newcomer's provenance.
+/// This is the only path that mutates a part's set, so the preservation law is structural.
+fn ingest(set: &mut BTreeSet<WithProvenance<Statement>>, statement: WithProvenance<Statement>) {
+    let canonical = statement.map(canonicalize_statement);
+    let admitted = match set.take(&canonical) {
+        Some(existing) => {
+            let provenance = existing
+                .provenance()
+                .clone()
+                .merge(canonical.provenance().clone());
+            WithProvenance::new(canonical.into_value(), provenance)
+        }
+        None => canonical,
+    };
+    set.insert(admitted);
+}
+
+/// Canonicalize a statement (§5.1): the boolean-head fold, and the term-level collapse
+/// (§3.6) across every term the statement reaches — an atom's arguments, a guard's bound,
+/// a directive's terms. Idempotent and total. The match is exhaustive with no wildcard, so
+/// a new statement family is a compile error here, never a silently un-canonicalized one.
+/// The opaque regions (`#script`, `#include`) and the term-free directives (`#defined`,
+/// `#theory`) carry nothing to collapse.
+fn canonicalize_statement(statement: Statement) -> Statement {
+    match statement {
+        Statement::Rule(rule) => Statement::Rule(rule.canonicalize()),
+        Statement::WeakConstraint(weak) => Statement::WeakConstraint(weak.canonicalize()),
+        Statement::Optimize(optimize) => Statement::Optimize(optimize.canonicalize()),
+        Statement::Show(show) => Statement::Show(show.canonicalize()),
+        Statement::Project(project) => Statement::Project(project.canonicalize()),
+        Statement::Edge(edge) => Statement::Edge(edge.canonicalize()),
+        Statement::Heuristic(heuristic) => Statement::Heuristic(heuristic.canonicalize()),
+        Statement::External(external) => Statement::External(external.canonicalize()),
+        Statement::Const(constant) => Statement::Const(constant.canonicalize()),
+        Statement::Query(query) => Statement::Query(query.canonicalize()),
+        statement @ (Statement::Defined(_)
+        | Statement::Include(_)
+        | Statement::Script(_)
+        | Statement::TheoryDefinition(_)) => statement,
+    }
+}
