@@ -749,6 +749,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "themelios-program"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "proptest",
+ "serde_json",
+ "themelios-base",
+ "themelios-syntax",
+]
+
+[[package]]
 name = "themelios-syntax"
 version = "0.1.0"
 dependencies = [

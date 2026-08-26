@@ -1,0 +1,38 @@
+[package]
+name = "themelios-program"
+version = "0.1.0"
+description = "The logician's owned representation of an ASP program: the ground-symbol and term algebra, the Program value with in-node provenance, smart constructors and the raise from the syntax tier under one well-formedness authority, canonical round-trippable rendering, Program-to-Program transformation, and patterns with the most general unifier."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The shipped closure: the base and syntax tiers, and syntax's own closure
+# (rowan and its transitive crates) — no dependency of this crate's own
+# beyond them (docs/design/program.md §1; docs/specification.md §12.3,
+# §12.5). tests/trust.rs holds the closure over Cargo's resolved graph. A
+# hash-map utility is admitted here only under an argued necessity a bench
+# shows (§12.5); v1 declares none.
+[dependencies]
+themelios-base = { path = "../themelios-base" }
+themelios-syntax = { path = "../themelios-syntax" }
+
+# The stage-3 instruments (docs/design/program.md §16), outside the shipped
+# closure's claim: proptest and criterion as at stages 1-2, and serde_json
+# solely so tests/trust.rs reads `cargo metadata`'s JSON.
+[dev-dependencies]
+proptest = "1"
+criterion = "0.7"
+serde_json = "1"
+
+[features]
+# The out-of-band differential against the pinned authority (clingo 5.8.2
+# through the repository's pixi environment, docs/design/program.md §16),
+# which never runs in the default test run.
+differential = []
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "scaling"
+harness = false
