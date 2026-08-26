@@ -22,3 +22,5 @@
 //! hands out no structure whose walk is proportional in depth to a value's
 //! nesting (§13).
 #![forbid(unsafe_code)]
+
+pub mod symbol;
