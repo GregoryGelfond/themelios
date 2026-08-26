@@ -173,7 +173,7 @@ fn evaluate_refuses_variables_and_external_calls_carrying_the_offender() {
 
 #[test]
 fn evaluate_refuses_a_set_former() {
-    // A pool and an interval name a set, not a single symbol (flagged for review, §3.5).
+    // A pool and an interval name a set, not a single symbol, so neither is a value term (§3.5).
     assert_eq!(
         evaluate(&Term::Pool(vec![num(1), num(2)])),
         Err(EvalError::Undefined)
@@ -200,7 +200,7 @@ fn arithmetic_on_a_non_number_is_undefined() {
 #[test]
 fn every_refusal_carries_the_std_error_posture() {
     // Display is non-empty and the type composes as std::error::Error (§14, base §8.5),
-    // over the names' refusals (Task 2's types included) and this task's.
+    // over the name refusals (the symbol tier's) and the bridge's.
     fn message<E: std::error::Error>(error: &E) -> String {
         error.to_string()
     }

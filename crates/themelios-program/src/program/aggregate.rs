@@ -108,8 +108,8 @@ impl HasGuards for FunctionAggregate {
 }
 
 /// A head function aggregate (grammar §5.3): the same two guards and function over head
-/// elements that *derive* (§4.4, §4.7). `Head::Aggregate(HeadAggregate)` at the keystone
-/// task. Two distinct concrete types keep the taxonomy regular (§4.7).
+/// elements that *derive* (§4.4, §4.7); a `Head::Aggregate(HeadAggregate)`. Two distinct
+/// concrete types keep the taxonomy regular (§4.7).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct HeadAggregate {
     left_guard: Option<Guard>,
@@ -400,11 +400,11 @@ impl FunctionAggregate {
         FunctionAggregate {
             left_guard: self.left_guard.map(Guard::canonicalize),
             function: self.function,
-            elements: self
-                .elements
-                .into_iter()
-                .map(|element| element.map(BodyAggregateElement::canonicalize))
-                .collect(),
+            elements: super::merge_collect(
+                self.elements
+                    .into_iter()
+                    .map(|element| element.map(BodyAggregateElement::canonicalize)),
+            ),
             right_guard: self.right_guard.map(Guard::canonicalize),
         }
     }
@@ -415,11 +415,11 @@ impl HeadAggregate {
         HeadAggregate {
             left_guard: self.left_guard.map(Guard::canonicalize),
             function: self.function,
-            elements: self
-                .elements
-                .into_iter()
-                .map(|element| element.map(HeadAggregateElement::canonicalize))
-                .collect(),
+            elements: super::merge_collect(
+                self.elements
+                    .into_iter()
+                    .map(|element| element.map(HeadAggregateElement::canonicalize)),
+            ),
             right_guard: self.right_guard.map(Guard::canonicalize),
         }
     }
@@ -429,11 +429,11 @@ impl SetAggregate {
     pub(crate) fn canonicalize(self) -> SetAggregate {
         SetAggregate {
             left_guard: self.left_guard.map(Guard::canonicalize),
-            elements: self
-                .elements
-                .into_iter()
-                .map(|element| element.map(SetElement::canonicalize))
-                .collect(),
+            elements: super::merge_collect(
+                self.elements
+                    .into_iter()
+                    .map(|element| element.map(SetElement::canonicalize)),
+            ),
             right_guard: self.right_guard.map(Guard::canonicalize),
         }
     }
@@ -473,11 +473,11 @@ impl Optimize {
     pub(crate) fn canonicalize(self) -> Optimize {
         Optimize {
             direction: self.direction,
-            elements: self
-                .elements
-                .into_iter()
-                .map(|element| element.map(OptimizeElement::canonicalize))
-                .collect(),
+            elements: super::merge_collect(
+                self.elements
+                    .into_iter()
+                    .map(|element| element.map(OptimizeElement::canonicalize)),
+            ),
         }
     }
 }

@@ -223,3 +223,46 @@ fn a_predicate_inside_a_negated_aggregate_yields_both_through_aggregate_and_nega
         ]
     );
 }
+
+#[test]
+fn the_empty_program_has_a_present_empty_base_and_one_form() {
+    let empty = Program::default();
+    // base() is total on the default program — no panic (§4.1).
+    assert_eq!(empty.base().statements().count(), 0);
+    assert!(empty.statements().next().is_none());
+    // default() and of([]) denote the one empty program.
+    assert_eq!(empty, Program::of([]));
+}
+
+#[test]
+fn a_predicate_in_a_head_element_condition_is_a_dependency() {
+    // `a : b.` — a is derived under the condition b, so a depends on b (the grounder tracks
+    // it: `a : b.` with `b :- a.` is unsatisfiable). The edge must reach body_signatures.
+    let rule = Rule::new(
+        Head::Disjunction(Disjunction::new([DisjunctionElement::new(
+            positive(atom("a", vec![])),
+            Condition::new([positive(atom("b", vec![]))]),
+        )])),
+        Body::empty(),
+    );
+    let head: Vec<Signature> = rule.head_signatures().collect();
+    assert_eq!(head, vec![signature("a", 0)]); // a is derived
+    let body: Vec<(DependencyKind, Signature)> = rule.body_signatures().collect();
+    assert_eq!(body, vec![(DependencyKind::Positive, signature("b", 0))]); // and depends on b
+}
+
+#[test]
+fn each_anonymous_variable_is_distinct_while_a_named_one_is_deduped() {
+    // p(X, X, _, _): X once (named, deduped); each _ a distinct fresh variable, as the
+    // grounder treats `_` (§12.1).
+    let anon = || Term::Variable(Variable::Anonymous);
+    let rule = Rule::new(
+        positive(atom("p", vec![var("X"), var("X"), anon(), anon()])),
+        Body::empty(),
+    );
+    let variables: Vec<Variable> = rule.variables().cloned().collect();
+    assert_eq!(
+        variables,
+        vec![named("X"), Variable::Anonymous, Variable::Anonymous]
+    );
+}

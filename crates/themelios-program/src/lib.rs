@@ -1,13 +1,12 @@
 //! The program tier: the logician's owned, total representation of an ASP
-//! program and the operations over it. The ground-symbol and term algebra
-//! (`symbol`, `term`); the `Program` value, a part-structured set of rules
-//! and directives (`program`); provenance as in-node model data
-//! (`provenance`); the two construction doors — spelled-out constructors
-//! (`construct`) and the raise from the syntax tier (`raise`) — under one
-//! well-formedness authority; canonical round-trippable rendering
-//! (`render`); `Program` -> `Program` transformation (`transform`); the
-//! pattern language and the most general unifier (`unify`); and the
-//! structural accessors the analysis client reads (`analyze`).
+//! program and the operations over it. Present: the ground-symbol and term
+//! algebra (`symbol`, `term`); the `Program` value, a part-structured set of
+//! rules and directives (`program`); provenance as in-node model data
+//! (`provenance`); and the structural accessors the analysis client reads
+//! (`analyze`). Forthcoming, under one well-formedness authority: the two
+//! construction doors — spelled-out constructors and the raise from the
+//! syntax tier; canonical round-trippable rendering; `Program` -> `Program`
+//! transformation; and the pattern language with the most general unifier.
 //!
 //! Design of record: `docs/design/program.md`; the grammar it is held to:
 //! `docs/grammar.md`; the tiers beneath it: `docs/design/base.md`,

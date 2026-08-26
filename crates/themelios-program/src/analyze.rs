@@ -45,14 +45,21 @@ pub enum DependencyKind {
 }
 
 impl Rule {
-    /// The rule's free variables, each once, in first-occurrence document order (§12.1) —
-    /// the head's terms before the body's, structurally within each. `_` reads as the one
-    /// anonymous variable. A dependency-free reading of the value; O(nodes).
+    /// The rule's free variables in first-occurrence order — the head before the body, and
+    /// within a term its pre-order; across a body's elements, the body being a set (§4.5),
+    /// their canonical order (§12.1). A **named** variable appears once however often it
+    /// occurs; each **anonymous** `_` is a distinct fresh variable — as the grounder treats
+    /// it (`p(X,_), q(_)` binds two independent values) — so every `_` occurrence is
+    /// reported. A dependency-free reading of the value; O(nodes).
     pub fn variables(&self) -> impl Iterator<Item = &Variable> {
         let mut seen = BTreeSet::new();
         let mut ordered = Vec::new();
         for variable in self.variable_occurrences() {
-            if seen.insert(variable) {
+            let fresh = match variable {
+                Variable::Named(_) => seen.insert(variable),
+                Variable::Anonymous => true,
+            };
+            if fresh {
                 ordered.push(variable);
             }
         }
@@ -75,16 +82,21 @@ impl Rule {
         signatures.into_iter()
     }
 
-    /// Each body dependency's signature paired with the [`DependencyKind`] it runs through,
-    /// **one pair per mode** an occurrence carries (§12.1): a plain literal is `Positive`
-    /// or `Negative` by its default negation; a predicate reached through an aggregate or a
-    /// theory atom is `ThroughAggregate`, and additionally `Negative` when that former —
-    /// or the occurrence itself — is default-negated; predicates *inside conditions* are
-    /// reached, the tightness soundness resting on it (analysis §4). The graph's edges with
-    /// their kind. O(nodes).
+    /// Each predicate the rule **depends on**, its signature paired with the
+    /// [`DependencyKind`] it runs through, **one pair per mode** an occurrence carries
+    /// (§12.1): a plain literal is `Positive` or `Negative` by its default negation; a
+    /// predicate reached through an aggregate or a theory atom is `ThroughAggregate`, and
+    /// additionally `Negative` when that former — or the occurrence itself — is
+    /// default-negated. Predicates *inside conditions* are reached wherever the condition
+    /// sits: a body conditional, a body aggregate, **and a head disjunction/choice/aggregate
+    /// element's condition** — a positive cycle through a head-element condition (`a : b.`
+    /// with `b :- a.`) is a real dependency the grounder tracks, and missing it would be a
+    /// false `Holds` for tightness, the over-claim analysis §6 forbids. The graph's edges
+    /// with their kind. O(nodes).
     pub fn body_signatures(&self) -> impl Iterator<Item = (DependencyKind, Signature)> {
         let mut signatures = Vec::new();
-        body_signatures(self.body().get(), &mut signatures);
+        head_dependencies(self.head().get(), &mut signatures);
+        body_dependencies(self.body().get(), &mut signatures);
         signatures.into_iter()
     }
 }
@@ -318,7 +330,7 @@ enum Former {
     ThroughAggregate { negated: bool },
 }
 
-fn body_signatures(body: &Body, out: &mut Vec<(DependencyKind, Signature)>) {
+fn body_dependencies(body: &Body, out: &mut Vec<(DependencyKind, Signature)>) {
     for element in body.elements() {
         match element.get() {
             BodyElement::Literal(literal) => push_literal_dependency(literal, Former::Plain, out),
@@ -344,8 +356,49 @@ fn body_signatures(body: &Body, out: &mut Vec<(DependencyKind, Signature)>) {
     }
 }
 
+/// The dependencies a head carries — the predicates in its **element conditions** (§4.4).
+/// A head element *derives* its atom ([`head_signatures`]) but its condition is a
+/// dependency: `a : b.` derives `a` under the condition `b`, so `a` depends on `b`
+/// (analysis §4). A disjunction/choice element's condition is a plain dependency; a head
+/// aggregate's or head theory atom's element condition runs through that non-monotone
+/// former, exactly as a body one does.
+fn head_dependencies(head: &Head, out: &mut Vec<(DependencyKind, Signature)>) {
+    match head {
+        Head::Disjunction(disjunction) => {
+            for element in disjunction.elements() {
+                push_condition_dependencies(element.get().condition(), Former::Plain, out);
+            }
+        }
+        Head::Choice(choice) => {
+            for element in choice.elements() {
+                push_condition_dependencies(element.get().condition(), Former::Plain, out);
+            }
+        }
+        Head::Aggregate(aggregate) => {
+            let former = Former::ThroughAggregate { negated: false };
+            for element in aggregate.elements() {
+                push_condition_dependencies(element.get().condition(), former, out);
+            }
+        }
+        Head::TheoryAtom(atom) => {
+            theory_atom_dependencies(atom, Former::ThroughAggregate { negated: false }, out);
+        }
+        Head::Literal(_) | Head::Falsum | Head::Verum => {}
+    }
+}
+
 fn is_negated(negation: DefaultNegation) -> bool {
     negation != DefaultNegation::None
+}
+
+fn push_condition_dependencies(
+    condition: &Condition,
+    former: Former,
+    out: &mut Vec<(DependencyKind, Signature)>,
+) {
+    for literal in condition.literals() {
+        push_literal_dependency(literal.get(), former, out);
+    }
 }
 
 fn push_literal_dependency(
@@ -383,9 +436,7 @@ fn push_conditional_dependencies(
     out: &mut Vec<(DependencyKind, Signature)>,
 ) {
     push_literal_dependency(&conditional.literal, former, out);
-    for literal in conditional.condition.literals() {
-        push_literal_dependency(literal.get(), former, out);
-    }
+    push_condition_dependencies(&conditional.condition, former, out);
 }
 
 fn aggregate_dependencies(

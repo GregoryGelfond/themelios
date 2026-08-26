@@ -1,8 +1,8 @@
-//! Rules and their parts (docs/design/program.md §4.3–§4.6): the literal core now —
-//! atoms with their strong sign, the guarded comparison chain, literals under default
-//! negation, conditions, and conditional literals — heads, bodies, and rules at the
-//! keystone task. Each type is grammar-bounded and derives its identity over content
-//! (§13), with provenance-bearing children wrapped in `WithProvenance` (§6.2).
+//! Rules and their parts (docs/design/program.md §4.3–§4.6): the literal core — atoms
+//! with their strong sign, the guarded comparison chain, literals under default negation,
+//! conditions, and conditional literals — and the heads, bodies, and rules built over
+//! them. Each type is grammar-bounded and derives its identity over content (§13), with
+//! provenance-bearing children wrapped in `WithProvenance` (§6.2).
 
 use std::collections::BTreeSet;
 
@@ -599,11 +599,11 @@ impl ChoiceElement {
 impl Disjunction {
     pub(crate) fn canonicalize(self) -> Disjunction {
         Disjunction {
-            elements: self
-                .elements
-                .into_iter()
-                .map(|element| element.map(DisjunctionElement::canonicalize))
-                .collect(),
+            elements: super::merge_collect(
+                self.elements
+                    .into_iter()
+                    .map(|element| element.map(DisjunctionElement::canonicalize)),
+            ),
         }
     }
 }
@@ -612,11 +612,11 @@ impl Choice {
     pub(crate) fn canonicalize(self) -> Choice {
         Choice {
             left_guard: self.left_guard.map(Guard::canonicalize),
-            elements: self
-                .elements
-                .into_iter()
-                .map(|element| element.map(ChoiceElement::canonicalize))
-                .collect(),
+            elements: super::merge_collect(
+                self.elements
+                    .into_iter()
+                    .map(|element| element.map(ChoiceElement::canonicalize)),
+            ),
             right_guard: self.right_guard.map(Guard::canonicalize),
         }
     }
@@ -650,11 +650,11 @@ impl Head {
 impl Body {
     pub(crate) fn canonicalize(self) -> Body {
         Body {
-            elements: self
-                .elements
-                .into_iter()
-                .map(|element| element.map(BodyElement::canonicalize))
-                .collect(),
+            elements: super::merge_collect(
+                self.elements
+                    .into_iter()
+                    .map(|element| element.map(BodyElement::canonicalize)),
+            ),
         }
     }
 }

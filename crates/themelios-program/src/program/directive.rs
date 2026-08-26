@@ -6,8 +6,7 @@
 //! `Clone`/`Drop`/`Eq`/`Ord`/`Hash`/`Debug` and its `fold` are hand-written and
 //! iterative, exactly as `Term`'s. Its `Ord`, like `Term`'s, has no external
 //! authority — a consistent total order agreeing with `Eq` suffices. The Body-bearing
-//! directives (`Show`, `Project`, `Edge`, `Heuristic`, `External`) land with `Body` at
-//! the keystone task.
+//! directives (`Show`, `Project`, `Edge`, `Heuristic`, `External`) carry a `Body`.
 
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
@@ -1009,11 +1008,11 @@ impl TheoryAtom {
         TheoryAtom {
             name: self.name,
             arguments: self.arguments.into_iter().map(Term::canonicalize).collect(),
-            elements: self
-                .elements
-                .into_iter()
-                .map(|element| element.map(TheoryElement::canonicalize))
-                .collect(),
+            elements: super::merge_collect(
+                self.elements
+                    .into_iter()
+                    .map(|element| element.map(TheoryElement::canonicalize)),
+            ),
             guard: self.guard,
         }
     }

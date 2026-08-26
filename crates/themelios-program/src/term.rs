@@ -162,8 +162,8 @@ impl Term {
     }
 
     /// Whether the term is ground — no variable occurs (§3.3). A walk, not a variant
-    /// check: an `External` with variable-free arguments reads as ground here
-    /// (variable-freedom is the reading, its `External` subtlety flagged for review).
+    /// check: an `External` (`@`-call) with variable-free arguments reads as ground, as the
+    /// grounder treats it, though `evaluate` still refuses it at the ground door (§3.5).
     /// Iterative; O(nodes).
     pub fn is_ground(&self) -> bool {
         !self
@@ -1029,9 +1029,8 @@ pub fn evaluate(term: &Term) -> Result<Symbol, EvalError> {
             .checked_abs()
             .ok_or(EvalError::Overflow)
             .map(Symbol::Number),
-        // A pool or interval names a *set*, not a single symbol, so it is outside the
-        // value-term sublanguage evaluate covers (§3.5; the plan flags whether a
-        // distinct arm is owed or the value-term subset excludes them upstream).
+        // A pool or interval names a *set*, not a single symbol, so it is not a value term
+        // and `evaluate` reports it `Undefined` (§3.5).
         TermParts::Pool(_) | TermParts::Interval { .. } => Err(EvalError::Undefined),
     })
 }

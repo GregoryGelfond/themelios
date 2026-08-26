@@ -111,9 +111,9 @@ impl Provenance {
         &self.annotations
     }
 
-    /// Attach a documentation string (the raise's `%!` doc comment, §8). Named here
-    /// as the construction surface §6.2 leaves implicit; the other annotation kinds'
-    /// builders land with the consumers that write them.
+    /// Attach a documentation string (the raise's `%!` doc comment, §8). `with_doc` is the
+    /// annotation builder §6.2 makes explicit; the label, reference, and trace annotations
+    /// merge (below) but have no builder here.
     #[must_use]
     pub fn with_doc(mut self, doc: impl Into<String>) -> Provenance {
         self.annotations.doc.insert(doc.into());
