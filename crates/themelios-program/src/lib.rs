@@ -3,13 +3,15 @@
 //! algebra (`symbol`, `term`); the `Program` value, a part-structured set of
 //! rules and directives (`program`); provenance as in-node model data
 //! (`provenance`); the structural accessors the analysis client reads
-//! (`analyze`); and the declarative construction surface — spelled-out
-//! constructors whose Rust mirrors the logic (`construct`), the first of the
-//! two construction doors onto a program. Forthcoming, on the one shared
-//! well-formedness authority: the raise from the syntax tier — the second
-//! door, lowering ASP concrete syntax; canonical round-trippable rendering;
-//! `Program` -> `Program` transformation; and the pattern language with the
-//! most general unifier.
+//! (`analyze`); the two construction doors onto a program, one shared
+//! well-formedness authority behind both — the declarative construction
+//! surface, spelled-out constructors whose Rust mirrors the logic
+//! (`construct`), and the raise from the syntax tier, lowering ASP concrete
+//! syntax (`raise`); and the substitution core over the term algebra —
+//! resolving substitution and a collision-free source of fresh names
+//! (`unify`). Forthcoming: canonical round-trippable rendering; `Program` ->
+//! `Program` transformation; and the most general unifier and pattern language
+//! that complete `unify`.
 //!
 //! Design of record: `docs/design/program.md`; the grammar it is held to:
 //! `docs/grammar.md`; the tiers beneath it: `docs/design/base.md`,
