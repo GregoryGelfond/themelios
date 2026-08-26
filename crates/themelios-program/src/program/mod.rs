@@ -193,6 +193,19 @@ impl Program {
         self.parts.values().flat_map(Part::statements)
     }
 
+    /// Every statement, owned, paired with the key of the part it belongs to — the
+    /// consuming complement to [`statements`](Program::statements), for a by-value rewrite
+    /// that rebuilds the program part by part (§9).
+    pub(crate) fn into_statements(
+        self,
+    ) -> impl Iterator<Item = (PartKey, WithProvenance<Statement>)> {
+        self.parts.into_iter().flat_map(|(key, part)| {
+            part.statements
+                .into_iter()
+                .map(move |statement| (key.clone(), statement))
+        })
+    }
+
     /// Admit a statement into the named part through the one ingest door (§6.3),
     /// opening the part with its first statement when it is not yet present — the
     /// part-structured door the raise lifts a `#program` delimiter into (§4.1, §8).

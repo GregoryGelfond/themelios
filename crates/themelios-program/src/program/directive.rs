@@ -610,6 +610,12 @@ impl TheoryElement {
     pub fn condition(&self) -> Option<&Condition> {
         self.condition.as_ref()
     }
+
+    /// The theory terms and the optional condition, owned — the complement to the borrowing
+    /// accessors, for a by-value rewrite (§9.1).
+    pub(crate) fn into_parts(self) -> (Vec<TheoryTerm>, Option<Condition>) {
+        (self.terms, self.condition)
+    }
 }
 
 /// A theory atom's guard (grammar §5.8): a single operator and a theory term.
@@ -688,6 +694,24 @@ impl TheoryAtom {
     /// The guard, if any.
     pub fn guard(&self) -> Option<&TheoryGuard> {
         self.guard.as_ref()
+    }
+
+    /// The name, ordinary-term arguments, elements, and guard, owned — the complement to
+    /// the borrowing accessors, for a by-value rewrite (§9.1).
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Name,
+        Vec<Term>,
+        impl Iterator<Item = WithProvenance<TheoryElement>>,
+        Option<TheoryGuard>,
+    ) {
+        (
+            self.name,
+            self.arguments,
+            self.elements.into_iter(),
+            self.guard,
+        )
     }
 }
 

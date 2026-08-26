@@ -102,6 +102,13 @@ impl Comparison {
     pub fn steps(&self) -> impl Iterator<Item = (Relation, &Term)> {
         self.steps.iter().map(|(relation, term)| (*relation, term))
     }
+
+    /// The first term and the relation/term steps, owned — the complement to
+    /// [`first`](Comparison::first) and [`steps`](Comparison::steps)'s borrows, for a
+    /// by-value rewrite (§9.1).
+    pub(crate) fn into_parts(self) -> (Term, Vec<(Relation, Term)>) {
+        (self.first, self.steps)
+    }
 }
 
 /// A comparison relation (grammar §5.2).
@@ -164,6 +171,12 @@ impl Condition {
     /// Whether the condition holds no literals.
     pub fn is_empty(&self) -> bool {
         self.literals.is_empty()
+    }
+
+    /// The literals, owned with their provenance — the complement to
+    /// [`literals`](Condition::literals)'s borrow, for a by-value rewrite (§9.1).
+    pub(crate) fn into_literals(self) -> impl Iterator<Item = WithProvenance<Literal>> {
+        self.literals.into_iter()
     }
 }
 
@@ -377,6 +390,12 @@ impl Body {
     /// The elements — a set, each with its provenance (§6.2).
     pub fn elements(&self) -> impl Iterator<Item = &WithProvenance<BodyElement>> {
         self.elements.iter()
+    }
+
+    /// The elements, owned with their provenance — the complement to
+    /// [`elements`](Body::elements)'s borrow, for a by-value rewrite (§9.1).
+    pub(crate) fn into_elements(self) -> impl Iterator<Item = WithProvenance<BodyElement>> {
+        self.elements.into_iter()
     }
 
     /// Whether the body holds no elements.
