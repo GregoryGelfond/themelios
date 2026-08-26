@@ -87,6 +87,23 @@ impl FunctionAggregate {
         }
     }
 
+    /// A body function aggregate over already-provenanced elements, unioning
+    /// provenance on any content collision (§6.3) — the raise's door, carrying each
+    /// element's parsed origin (§6.2, §8). O(elements).
+    pub(crate) fn from_nodes(
+        left_guard: Option<Guard>,
+        function: AggregateFunction,
+        elements: impl IntoIterator<Item = WithProvenance<BodyAggregateElement>>,
+        right_guard: Option<Guard>,
+    ) -> FunctionAggregate {
+        FunctionAggregate {
+            left_guard,
+            function,
+            elements: super::merge_collect(elements),
+            right_guard,
+        }
+    }
+
     /// The aggregate function.
     pub fn function(&self) -> AggregateFunction {
         self.function
@@ -138,6 +155,23 @@ impl HeadAggregate {
         }
     }
 
+    /// A head function aggregate over already-provenanced elements, unioning
+    /// provenance on any content collision (§6.3) — the raise's door, carrying each
+    /// element's parsed origin (§6.2, §8). O(elements).
+    pub(crate) fn from_nodes(
+        left_guard: Option<Guard>,
+        function: AggregateFunction,
+        elements: impl IntoIterator<Item = WithProvenance<HeadAggregateElement>>,
+        right_guard: Option<Guard>,
+    ) -> HeadAggregate {
+        HeadAggregate {
+            left_guard,
+            function,
+            elements: super::merge_collect(elements),
+            right_guard,
+        }
+    }
+
     /// The aggregate function.
     pub fn function(&self) -> AggregateFunction {
         self.function
@@ -181,6 +215,21 @@ impl SetAggregate {
                 .into_iter()
                 .map(WithProvenance::constructed)
                 .collect(),
+            right_guard,
+        }
+    }
+
+    /// A set aggregate over already-provenanced elements, unioning provenance on any
+    /// content collision (§6.3) — the raise's door for a body set form (§4.4, §8),
+    /// carrying each element's parsed origin (§6.2). O(elements).
+    pub(crate) fn from_nodes(
+        left_guard: Option<Guard>,
+        elements: impl IntoIterator<Item = WithProvenance<SetElement>>,
+        right_guard: Option<Guard>,
+    ) -> SetAggregate {
+        SetAggregate {
+            left_guard,
+            elements: super::merge_collect(elements),
             right_guard,
         }
     }
@@ -305,6 +354,19 @@ impl Optimize {
                 .into_iter()
                 .map(WithProvenance::constructed)
                 .collect(),
+        }
+    }
+
+    /// An optimization over already-provenanced elements, unioning provenance on any
+    /// content collision (§6.3) — the raise's door, carrying each element's parsed
+    /// origin (§6.2, §8). O(elements).
+    pub(crate) fn from_nodes(
+        direction: Direction,
+        elements: impl IntoIterator<Item = WithProvenance<OptimizeElement>>,
+    ) -> Optimize {
+        Optimize {
+            direction,
+            elements: super::merge_collect(elements),
         }
     }
 

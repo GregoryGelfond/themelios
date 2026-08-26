@@ -652,6 +652,24 @@ impl TheoryAtom {
         }
     }
 
+    /// A theory atom over already-provenanced elements, unioning provenance on any
+    /// content collision (§6.3) — the raise's door, carrying each element's parsed
+    /// origin (§6.2, §8). The ordinary-term arguments canonicalize at the ingest
+    /// door with the rest of the statement, so they are stored as read. O(size).
+    pub(crate) fn from_nodes(
+        name: Name,
+        arguments: Vec<Term>,
+        elements: impl IntoIterator<Item = WithProvenance<TheoryElement>>,
+        guard: Option<TheoryGuard>,
+    ) -> TheoryAtom {
+        TheoryAtom {
+            name,
+            arguments,
+            elements: super::merge_collect(elements),
+            guard,
+        }
+    }
+
     /// The atom name.
     pub fn name(&self) -> &Name {
         &self.name

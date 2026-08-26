@@ -192,10 +192,23 @@ impl Program {
     pub fn statements(&self) -> impl Iterator<Item = &WithProvenance<Statement>> {
         self.parts.values().flat_map(Part::statements)
     }
+
+    /// Admit a statement into the named part through the one ingest door (§6.3),
+    /// opening the part with its first statement when it is not yet present — the
+    /// part-structured door the raise lifts a `#program` delimiter into (§4.1, §8).
+    /// `base` is seeded at construction; every other part is opened by a statement
+    /// joining it. Crate-internal: the public doors are `of` (§7) and the raise (§8).
+    pub(crate) fn ingest_into(&mut self, key: PartKey, statement: WithProvenance<Statement>) {
+        let part = self.parts.entry(key.clone()).or_insert_with(|| Part {
+            key,
+            statements: BTreeSet::new(),
+        });
+        ingest(&mut part.statements, statement);
+    }
 }
 
 /// The `base` part's key — the implicit default part (§4.1).
-fn base_key() -> PartKey {
+pub(crate) fn base_key() -> PartKey {
     PartKey {
         name: Name::new("base").expect("base is a valid identifier"),
         formals: Vec::new(),
@@ -247,7 +260,7 @@ pub(crate) fn merge_collect<T: Ord>(
 /// a new statement family is a compile error here, never a silently un-canonicalized one.
 /// The opaque regions (`#script`, `#include`) and the term-free directives (`#defined`,
 /// `#theory`) carry nothing to collapse.
-fn canonicalize_statement(statement: Statement) -> Statement {
+pub(crate) fn canonicalize_statement(statement: Statement) -> Statement {
     match statement {
         Statement::Rule(rule) => Statement::Rule(rule.canonicalize()),
         Statement::WeakConstraint(weak) => Statement::WeakConstraint(weak.canonicalize()),

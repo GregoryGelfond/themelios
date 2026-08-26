@@ -140,6 +140,17 @@ impl Condition {
         }
     }
 
+    /// A condition over already-provenanced literals — the raise's door, carrying
+    /// each literal's parsed origin (§6.2, §8). A sequence, so order is kept and no
+    /// merge is owed. O(literals).
+    pub(crate) fn from_nodes(
+        literals: impl IntoIterator<Item = WithProvenance<Literal>>,
+    ) -> Condition {
+        Condition {
+            literals: literals.into_iter().collect(),
+        }
+    }
+
     /// The empty condition (also `Default`).
     pub fn empty() -> Condition {
         Condition::default()
@@ -205,6 +216,17 @@ impl Disjunction {
         }
     }
 
+    /// A disjunction over already-provenanced elements, unioning provenance on any
+    /// content collision (§6.3) — the raise's door, carrying each element's parsed
+    /// origin (§6.2, §8). O(elements).
+    pub(crate) fn from_nodes(
+        elements: impl IntoIterator<Item = WithProvenance<DisjunctionElement>>,
+    ) -> Disjunction {
+        Disjunction {
+            elements: super::merge_collect(elements),
+        }
+    }
+
     /// The elements — a set, each with its provenance (§6.2).
     pub fn elements(&self) -> impl Iterator<Item = &WithProvenance<DisjunctionElement>> {
         self.elements.iter()
@@ -259,6 +281,21 @@ impl Choice {
                 .into_iter()
                 .map(WithProvenance::constructed)
                 .collect(),
+            right_guard,
+        }
+    }
+
+    /// A choice over already-provenanced elements, unioning provenance on any
+    /// content collision (§6.3) — the raise's door for a head set form (§4.4, §8),
+    /// carrying each element's parsed origin (§6.2). O(elements).
+    pub(crate) fn from_nodes(
+        left_guard: Option<Guard>,
+        elements: impl IntoIterator<Item = WithProvenance<ChoiceElement>>,
+        right_guard: Option<Guard>,
+    ) -> Choice {
+        Choice {
+            left_guard,
+            elements: super::merge_collect(elements),
             right_guard,
         }
     }
@@ -318,6 +355,17 @@ impl Body {
                 .into_iter()
                 .map(WithProvenance::constructed)
                 .collect(),
+        }
+    }
+
+    /// A body over already-provenanced elements, unioning provenance on any content
+    /// collision (§6.3) — the raise's door, carrying each element's parsed origin
+    /// (§6.2, §8). O(elements).
+    pub(crate) fn from_nodes(
+        elements: impl IntoIterator<Item = WithProvenance<BodyElement>>,
+    ) -> Body {
+        Body {
+            elements: super::merge_collect(elements),
         }
     }
 
@@ -445,6 +493,13 @@ impl Rule {
             head: WithProvenance::constructed(head.into_head()),
             body: WithProvenance::constructed(body.into_body()),
         }
+    }
+
+    /// A rule over an already-provenanced head and body — the raise's door,
+    /// carrying the parsed origin of each (§6.2, §8). The program-level
+    /// canonicalization runs at the ingest door (§6.3).
+    pub(crate) fn from_nodes(head: WithProvenance<Head>, body: WithProvenance<Body>) -> Rule {
+        Rule { head, body }
     }
 
     /// The head, with its provenance (§6.2).
