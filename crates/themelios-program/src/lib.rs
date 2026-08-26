@@ -30,4 +30,5 @@ pub mod term;
 pub mod provenance;
 pub mod program;
 pub mod construct;
+pub mod raise;
 pub mod analyze;
