@@ -11,12 +11,19 @@
 //! public surface is re-exported here.
 
 mod aggregate;
+mod directive;
 mod rule;
 
 pub use aggregate::{
     Aggregate, AggregateFunction, BodyAggregateElement, Direction, FunctionAggregate, Guard,
     HasGuards, HeadAggregate, HeadAggregateElement, Optimize, OptimizeElement, SetAggregate,
     SetElement,
+};
+pub use directive::{
+    Const, ConstPolicy, Defined, Include, IncludeTarget, Script, TheoryAtom, TheoryAtomDefinition,
+    TheoryAtomGuardDefinition, TheoryDefinition, TheoryElement, TheoryGuard, TheoryOccurrence,
+    TheoryOperator, TheoryOperatorArity, TheoryOperatorDefinition, TheoryTerm,
+    TheoryTermDefinition, TheoryTermParts,
 };
 pub use rule::{
     Atom, Comparison, Condition, ConditionalLiteral, DefaultNegation, Literal, LiteralInner,
