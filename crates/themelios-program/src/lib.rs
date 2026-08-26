@@ -24,3 +24,4 @@
 #![forbid(unsafe_code)]
 
 pub mod symbol;
+pub mod term;
