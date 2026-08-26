@@ -29,6 +29,12 @@ serde_json = "1"
 # through the repository's pixi environment, docs/design/program.md §16),
 # which never runs in the default test run.
 differential = []
+# The out-of-band differential for the most general unifier (§11.1) against
+# SWI-Prolog's unify_with_occurs_check/2, an independent oracle on the
+# constructor-fragment core. Needs `swipl` on PATH; never runs in the default
+# test run. The always-on naive-twin differential (tests/unify_differential.rs)
+# is the default correctness net; this is the deeper on-demand cross-check.
+swipl-differential = []
 
 [lints]
 workspace = true
