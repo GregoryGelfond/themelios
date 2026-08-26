@@ -323,41 +323,81 @@ pub enum Direction {
     Maximize,
 }
 
-/// An optimize element (grammar §5.7): a weight, an optional priority, a term tuple, and
-/// a condition. The weight, priority, and terms canonicalize at the door (§5.1).
+/// A weight at an optimization priority level (grammar §5.7's `weight@priority`): a weight
+/// term and an optional priority term — its absence is the default level 0. One value,
+/// because `weight@priority` is written and meant as one thing (how much a term tuple
+/// contributes, and at which level), and it is the same in a weak constraint (§4.7) and an
+/// optimize statement (§4.2), the two written forms of optimization. Build it with
+/// [`weight`], raising the level with [`Weight::at_priority`].
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Weight {
+    term: Term,
+    priority: Option<Term>,
+}
+
+/// A weight at the default priority level (§5.7); the weight term canonicalizes at the
+/// door (§5.1). Raise the level with [`Weight::at_priority`].
+pub fn weight(term: impl Into<Term>) -> Weight {
+    Weight {
+        term: term.into().canonicalize(),
+        priority: None,
+    }
+}
+
+impl Weight {
+    /// This weight at the given priority level — `weight@priority` (§5.7); the priority
+    /// term canonicalizes at the door (§5.1).
+    #[must_use]
+    pub fn at_priority(mut self, priority: impl Into<Term>) -> Weight {
+        self.priority = Some(priority.into().canonicalize());
+        self
+    }
+
+    /// The weight term.
+    pub fn term(&self) -> &Term {
+        &self.term
+    }
+
+    /// The priority term, if any — its absence is the default level 0.
+    pub fn priority(&self) -> Option<&Term> {
+        self.priority.as_ref()
+    }
+
+    pub(crate) fn canonicalize(self) -> Weight {
+        Weight {
+            term: self.term.canonicalize(),
+            priority: self.priority.map(Term::canonicalize),
+        }
+    }
+}
+
+/// An optimize element (grammar §5.7): a weight at a priority, a term tuple, and a
+/// condition. The terms canonicalize at the door (§5.1); the weight carries its own.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct OptimizeElement {
-    weight: Term,
-    priority: Option<Term>,
+    weight: Weight,
     terms: Vec<Term>,
     condition: Condition,
 }
 
 impl OptimizeElement {
-    /// An optimize element, its weight, priority, and terms canonicalized at the door
-    /// (§5.1). O(terms).
+    /// An optimize element over the given `weight(w).at_priority(p)`, term tuple, and
+    /// condition, its terms canonicalized at the door (§5.1). O(terms).
     pub fn new(
-        weight: impl Into<Term>,
-        priority: Option<Term>,
+        weight: Weight,
         terms: impl IntoIterator<Item = Term>,
         condition: Condition,
     ) -> OptimizeElement {
         OptimizeElement {
-            weight: weight.into().canonicalize(),
-            priority: priority.map(Term::canonicalize),
+            weight,
             terms: terms.into_iter().map(Term::canonicalize).collect(),
             condition,
         }
     }
 
-    /// The weight term.
-    pub fn weight(&self) -> &Term {
+    /// The weight at its priority level.
+    pub fn weight(&self) -> &Weight {
         &self.weight
-    }
-
-    /// The priority term, if any.
-    pub fn priority(&self) -> Option<&Term> {
-        self.priority.as_ref()
     }
 
     /// The term tuple, in order (§4).
@@ -486,7 +526,6 @@ impl OptimizeElement {
     pub(crate) fn canonicalize(self) -> OptimizeElement {
         OptimizeElement {
             weight: self.weight.canonicalize(),
-            priority: self.priority.map(Term::canonicalize),
             terms: self.terms.into_iter().map(Term::canonicalize).collect(),
             condition: self.condition.canonicalize(),
         }

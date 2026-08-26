@@ -17,7 +17,7 @@ mod rule;
 pub use aggregate::{
     Aggregate, AggregateFunction, BodyAggregateElement, Direction, FunctionAggregate, Guard,
     HasGuards, HeadAggregate, HeadAggregateElement, Optimize, OptimizeElement, SetAggregate,
-    SetElement,
+    SetElement, Weight, weight,
 };
 pub use directive::{
     Const, ConstPolicy, Defined, Edge, External, Heuristic, Include, IncludeTarget, Project,

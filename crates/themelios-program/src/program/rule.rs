@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use super::aggregate::{Aggregate, Guard, HeadAggregate};
+use super::aggregate::{Aggregate, Guard, HeadAggregate, Weight};
 use super::directive::TheoryAtom;
 use crate::provenance::WithProvenance;
 use crate::symbol::{Name, Sign};
@@ -468,29 +468,27 @@ impl Rule {
     }
 }
 
-/// A weak constraint (grammar §5.7): a body and a bracket of weight, optional priority,
-/// and a term tuple. Distinct from `Optimize` (§4.2) — the two written forms of
-/// optimization are kept structurally distinct, one of §5's equality carve-outs.
+/// A weak constraint (grammar §5.7): a body and a bracket of a weight at a priority and a
+/// term tuple. Distinct from `Optimize` (§4.2) — the two written forms of optimization are
+/// kept structurally distinct, one of §5's equality carve-outs.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct WeakConstraint {
     body: Body,
-    weight: Term,
-    priority: Option<Term>,
+    weight: Weight,
     terms: Vec<Term>,
 }
 
 impl WeakConstraint {
-    /// A weak constraint, its weight, priority, and terms canonicalized at the door (§5.1).
+    /// A weak constraint over the given body, `weight(w).at_priority(p)`, and term tuple,
+    /// its terms canonicalized at the door (§5.1); the weight carries its own. O(terms).
     pub fn new(
         body: Body,
-        weight: impl Into<Term>,
-        priority: Option<Term>,
+        weight: Weight,
         terms: impl IntoIterator<Item = Term>,
     ) -> WeakConstraint {
         WeakConstraint {
             body,
-            weight: weight.into().canonicalize(),
-            priority: priority.map(Term::canonicalize),
+            weight,
             terms: terms.into_iter().map(Term::canonicalize).collect(),
         }
     }
@@ -500,14 +498,9 @@ impl WeakConstraint {
         &self.body
     }
 
-    /// The weight term.
-    pub fn weight(&self) -> &Term {
+    /// The weight at its priority level.
+    pub fn weight(&self) -> &Weight {
         &self.weight
-    }
-
-    /// The priority term, if any.
-    pub fn priority(&self) -> Option<&Term> {
-        self.priority.as_ref()
     }
 
     /// The term tuple, in order (§4).
@@ -698,7 +691,6 @@ impl WeakConstraint {
         WeakConstraint {
             body: self.body.canonicalize(),
             weight: self.weight.canonicalize(),
-            priority: self.priority.map(Term::canonicalize),
             terms: self.terms.into_iter().map(Term::canonicalize).collect(),
         }
     }

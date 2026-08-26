@@ -7,7 +7,7 @@
 
 use themelios_program::program::{
     Atom, Body, BodyElement, Condition, DefaultNegation, Direction, Head, Literal, LiteralInner,
-    Optimize, OptimizeElement, PartKey, Program, Rule, Statement, WeakConstraint,
+    Optimize, OptimizeElement, PartKey, Program, Rule, Statement, WeakConstraint, weight,
 };
 use themelios_program::provenance::WithProvenance;
 use themelios_program::symbol::{Name, Sign, Symbol};
@@ -114,12 +114,11 @@ fn the_two_written_forms_of_optimization_are_kept_distinct() {
     // `:~ b. [1]` (a weak constraint) and `#minimize { 1 : b }` denote the same
     // optimization, which the authority folds; this tier keeps them structurally distinct.
     let body = || Body::new([BodyElement::Literal(positive(atom("b")))]);
-    let weak = Statement::WeakConstraint(WeakConstraint::new(body(), num(1), None, []));
+    let weak = Statement::WeakConstraint(WeakConstraint::new(body(), weight(num(1)), []));
     let minimize = Statement::Optimize(Optimize::new(
         Direction::Minimize,
         [OptimizeElement::new(
-            num(1),
-            None,
+            weight(num(1)),
             [],
             Condition::new([positive(atom("b"))]),
         )],

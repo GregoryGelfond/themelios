@@ -6,7 +6,7 @@
 use themelios_program::program::{
     AggregateFunction, Atom, BodyAggregateElement, Condition, DefaultNegation, Direction,
     FunctionAggregate, Guard, HasGuards, HeadAggregate, HeadAggregateElement, Literal,
-    LiteralInner, Optimize, OptimizeElement, Relation, SetAggregate, SetElement,
+    LiteralInner, Optimize, OptimizeElement, Relation, SetAggregate, SetElement, weight,
 };
 use themelios_program::provenance::WithProvenance;
 use themelios_program::symbol::{Name, Sign, Symbol};
@@ -56,7 +56,7 @@ fn aggregate_and_optimize_elements_are_sets() {
     );
     assert_eq!(one, other);
     // Optimize elements are a set too.
-    let element = || OptimizeElement::new(number(1), None, [number(1)], Condition::empty());
+    let element = || OptimizeElement::new(weight(number(1)), [number(1)], Condition::empty());
     let optimize = Optimize::new(Direction::Minimize, [element(), element()]);
     assert_eq!(optimize.elements().count(), 1);
 }
@@ -129,4 +129,22 @@ fn an_element_canonicalizes_its_terms_at_the_door() {
         sign: Sign::Positive,
     });
     assert_eq!(element.terms().next(), Some(&collapsed));
+}
+
+#[test]
+fn a_weight_carries_an_optional_priority_and_both_forms_share_it() {
+    // weight(w) is at the default level; .at_priority(p) raises it, and the priority is
+    // part of the weight's identity, so the two differ (`w` vs `w@p`).
+    let plain = weight(number(1));
+    assert_eq!(plain.term(), &number(1));
+    assert!(plain.priority().is_none());
+
+    let leveled = weight(number(1)).at_priority(number(2));
+    assert_eq!(leveled.term(), &number(1));
+    assert_eq!(leveled.priority(), Some(&number(2)));
+    assert_ne!(plain, leveled);
+
+    // An optimize element carries the one weight@priority value.
+    let element = OptimizeElement::new(leveled, [number(1)], Condition::empty());
+    assert_eq!(element.weight().priority(), Some(&number(2)));
 }
