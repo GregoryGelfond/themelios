@@ -1,0 +1,10 @@
+1 { p((1 .. 4)) } 1.
+#show show/0.
+#show p(X) : p(X).
+#const imin = 4.
+#include <incmode>.
+#program step(k).
+q((k + 1)) | k < 3.
+{ show } :- k = 3.
+:- p(X), q(X), k < 3.
+#show p((1 .. 4)) : show, k = 3.

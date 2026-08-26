@@ -13,6 +13,7 @@ use themelios_base::diagnostic::ToDiagnostic;
 use themelios_base::source::{Source, SourceSet};
 use themelios_base::view::{canonical_order, human};
 use themelios_program::raise::raise;
+use themelios_program::render::render;
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::parse::parse;
 
@@ -73,11 +74,35 @@ fn lowering_report(name: &str, text: &str) -> String {
         .collect()
 }
 
-/// Compare a rendered report to its reviewed snapshot, or rewrite it under the bless
-/// toggle — the reviewed-artifact discipline base's golden corpus keeps (base §10).
-fn check(name: &str, actual: &str) {
+/// The canonical clingo rendering of a corpus program (docs/design/program.md §10) — the
+/// reviewed artifact a golden pins, stable because the rendering is canonical. A clean member
+/// of the corpus renders without refusal, so a spelling refusal here is itself a regression a
+/// review reads.
+fn rendering(name: &str, text: &str) -> String {
+    let source = Source::new(themelios_base::source::SourceId::new(0), text.to_owned())
+        .expect("a corpus input admits");
+    let raised = raise(&parse(&source, Dialect::Clingo));
+    render(raised.program(), Dialect::Clingo)
+        .unwrap_or_else(|refusal| panic!("the corpus program `{name}` renders: {refusal}"))
+}
+
+/// A spread of the authority's own programs whose canonical renderings are reviewed snapshots
+/// (§10) — aggregates and their guards, the directives, the arithmetic of numbers.
+const RENDER_INPUTS: &[(&str, &str)] = &[
+    ("clingo/app/clingo/tests/lp/aggregates.lp", "aggregates"),
+    ("clingo/app/clingo/tests/lp/external.lp", "external"),
+    ("clingo/app/clingo/tests/lp/project.lp", "project"),
+    ("clingo/app/clingo/tests/lp/show.lp", "show"),
+    ("clingo/app/clingo/tests/lp/numbers.lp", "numbers"),
+];
+
+/// Compare a rendered report to its reviewed snapshot under `subdirectory`, or rewrite it
+/// under the bless toggle — the reviewed-artifact discipline base's golden corpus keeps
+/// (base §10).
+fn check(subdirectory: &str, name: &str, actual: &str) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/golden/lowering")
+        .join("tests/golden")
+        .join(subdirectory)
         .join(format!("{name}.txt"));
     if std::env::var_os("GOLDEN_BLESS").is_some() {
         fs::create_dir_all(path.parent().expect("a golden parent directory"))
@@ -93,7 +118,7 @@ fn check(name: &str, actual: &str) {
     });
     assert_eq!(
         actual, expected,
-        "the lowering diagnostics diverged from the reviewed golden `{name}`"
+        "the output diverged from the reviewed golden `{name}`"
     );
 }
 
@@ -102,6 +127,15 @@ fn the_authoritys_programs_lower_without_spurious_diagnostics() {
     for (relative, name) in INPUTS {
         let text = fs::read_to_string(corpus_dir().join(relative))
             .unwrap_or_else(|error| panic!("corpus input `{relative}` reads: {error}"));
-        check(name, &lowering_report(name, &text));
+        check("lowering", name, &lowering_report(name, &text));
+    }
+}
+
+#[test]
+fn the_authoritys_programs_render_to_their_reviewed_snapshots() {
+    for (relative, name) in RENDER_INPUTS {
+        let text = fs::read_to_string(corpus_dir().join(relative))
+            .unwrap_or_else(|error| panic!("corpus input `{relative}` reads: {error}"));
+        check("render", name, &rendering(name, &text));
     }
 }

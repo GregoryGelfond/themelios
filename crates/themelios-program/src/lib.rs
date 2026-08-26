@@ -7,11 +7,12 @@
 //! well-formedness authority behind both — the declarative construction
 //! surface, spelled-out constructors whose Rust mirrors the logic
 //! (`construct`), and the raise from the syntax tier, lowering ASP concrete
-//! syntax (`raise`); and the substitution core over the term algebra —
-//! resolving substitution and a collision-free source of fresh names
-//! (`unify`). Forthcoming: canonical round-trippable rendering; `Program` ->
-//! `Program` transformation; and the most general unifier and pattern language
-//! that complete `unify`.
+//! syntax (`raise`); the substitution core over the term algebra — resolving
+//! substitution and a collision-free source of fresh names (`unify`); the
+//! `Program` -> `Program` transformation surface, a read-only visitor and a
+//! provenance-tracing, canonicalizing rewriter (`transform`); and canonical,
+//! round-trippable rendering to concrete syntax (`render`). Forthcoming: the
+//! most general unifier and the pattern language that complete `unify`.
 //!
 //! Design of record: `docs/design/program.md`; the grammar it is held to:
 //! `docs/grammar.md`; the tiers beneath it: `docs/design/base.md`,
@@ -36,3 +37,4 @@ pub mod raise;
 pub mod analyze;
 pub mod unify;
 pub mod transform;
+pub mod render;
