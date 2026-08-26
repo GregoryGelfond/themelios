@@ -512,6 +512,13 @@ impl Rule {
         &self.body
     }
 
+    /// The head and body carriers, owned — the complement to [`head`](Rule::head) and
+    /// [`body`](Rule::body)'s borrows, for a by-value rewrite that reuses each carrier's
+    /// provenance rather than clone it (§6.2, §9.2).
+    pub(crate) fn into_parts(self) -> (WithProvenance<Head>, WithProvenance<Body>) {
+        (self.head, self.body)
+    }
+
     /// Whether the rule is a fact — a single-literal head and an empty body (§4.3).
     pub fn is_fact(&self) -> bool {
         matches!(self.head.get(), Head::Literal(_)) && self.body.get().is_empty()
