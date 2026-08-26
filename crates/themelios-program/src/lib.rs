@@ -2,11 +2,14 @@
 //! program and the operations over it. Present: the ground-symbol and term
 //! algebra (`symbol`, `term`); the `Program` value, a part-structured set of
 //! rules and directives (`program`); provenance as in-node model data
-//! (`provenance`); and the structural accessors the analysis client reads
-//! (`analyze`). Forthcoming, under one well-formedness authority: the two
-//! construction doors — spelled-out constructors and the raise from the
-//! syntax tier; canonical round-trippable rendering; `Program` -> `Program`
-//! transformation; and the pattern language with the most general unifier.
+//! (`provenance`); the structural accessors the analysis client reads
+//! (`analyze`); and the declarative construction surface — spelled-out
+//! constructors whose Rust mirrors the logic (`construct`), the first of the
+//! two construction doors onto a program. Forthcoming, on the one shared
+//! well-formedness authority: the raise from the syntax tier — the second
+//! door, lowering ASP concrete syntax; canonical round-trippable rendering;
+//! `Program` -> `Program` transformation; and the pattern language with the
+//! most general unifier.
 //!
 //! Design of record: `docs/design/program.md`; the grammar it is held to:
 //! `docs/grammar.md`; the tiers beneath it: `docs/design/base.md`,
@@ -26,4 +29,5 @@ pub mod symbol;
 pub mod term;
 pub mod provenance;
 pub mod program;
+pub mod construct;
 pub mod analyze;
