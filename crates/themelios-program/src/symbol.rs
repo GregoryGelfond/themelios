@@ -664,3 +664,190 @@ impl std::fmt::Debug for Symbol {
         Ok(())
     }
 }
+
+/// A Rust value that denotes a ground symbol (§3.4). Not `From`/`Into`: this names a
+/// KR relationship — *this value denotes this ground term* — and, being this crate's
+/// own trait, a downstream library may implement it for its own types (the orphan
+/// rule would block a bare `From<Symbol>`), which lets a mathematics, string, or
+/// date/time library of `@`-functions bridge its types.
+pub trait ToSymbol {
+    /// The ground symbol this value denotes.
+    fn to_symbol(&self) -> Symbol;
+}
+
+impl ToSymbol for i8 {
+    fn to_symbol(&self) -> Symbol {
+        Symbol::Number(i32::from(*self))
+    }
+}
+impl ToSymbol for i16 {
+    fn to_symbol(&self) -> Symbol {
+        Symbol::Number(i32::from(*self))
+    }
+}
+impl ToSymbol for i32 {
+    fn to_symbol(&self) -> Symbol {
+        Symbol::Number(*self)
+    }
+}
+impl ToSymbol for u8 {
+    fn to_symbol(&self) -> Symbol {
+        Symbol::Number(i32::from(*self))
+    }
+}
+impl ToSymbol for u16 {
+    fn to_symbol(&self) -> Symbol {
+        Symbol::Number(i32::from(*self))
+    }
+}
+
+/// Extract a Rust value from a ground symbol, refusing with the symbol that did not
+/// match — a value, not a rendered string (§3.4, spec §1.5).
+pub trait FromSymbol: Sized {
+    /// Read this value from a ground symbol, or refuse with the offending symbol.
+    fn from_symbol(symbol: &Symbol) -> Result<Self, FromSymbolError>;
+}
+
+/// The symbol a `FromSymbol` conversion did not match, and the class it expected
+/// (§3.4). The offending symbol is carried by value (spec §1.5).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FromSymbolError {
+    /// The class the conversion expected, in words.
+    pub expected: &'static str,
+    /// The symbol that did not match.
+    pub found: Symbol,
+}
+
+/// Read an `i32` from a `Symbol::Number` and narrow it to `T`, refusing the wrong
+/// variant or an out-of-range number with the offending symbol (§3.4).
+fn from_number<T: TryFrom<i32>>(
+    symbol: &Symbol,
+    expected: &'static str,
+) -> Result<T, FromSymbolError> {
+    match symbol {
+        Symbol::Number(n) => T::try_from(*n).map_err(|_| FromSymbolError {
+            expected,
+            found: symbol.clone(),
+        }),
+        _ => Err(FromSymbolError {
+            expected,
+            found: symbol.clone(),
+        }),
+    }
+}
+
+impl FromSymbol for i8 {
+    fn from_symbol(symbol: &Symbol) -> Result<i8, FromSymbolError> {
+        from_number(symbol, "an 8-bit integer")
+    }
+}
+impl FromSymbol for i16 {
+    fn from_symbol(symbol: &Symbol) -> Result<i16, FromSymbolError> {
+        from_number(symbol, "a 16-bit integer")
+    }
+}
+impl FromSymbol for i32 {
+    fn from_symbol(symbol: &Symbol) -> Result<i32, FromSymbolError> {
+        from_number(symbol, "an integer")
+    }
+}
+impl FromSymbol for u8 {
+    fn from_symbol(symbol: &Symbol) -> Result<u8, FromSymbolError> {
+        from_number(symbol, "an 8-bit unsigned integer")
+    }
+}
+impl FromSymbol for u16 {
+    fn from_symbol(symbol: &Symbol) -> Result<u16, FromSymbolError> {
+        from_number(symbol, "a 16-bit unsigned integer")
+    }
+}
+impl FromSymbol for String {
+    fn from_symbol(symbol: &Symbol) -> Result<String, FromSymbolError> {
+        match symbol {
+            Symbol::String(text) => Ok(text.clone()),
+            _ => Err(FromSymbolError {
+                expected: "a string",
+                found: symbol.clone(),
+            }),
+        }
+    }
+}
+
+/// Why a real has no integer symbol (§3.4): it is not finite, or it lies outside the
+/// integer range. Carried by the rounding adapters.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NotAnInteger {
+    /// `NaN` or `±∞`.
+    NotFinite,
+    /// A finite value whose magnitude exceeds the integer range.
+    OutOfRange,
+}
+
+/// Land a real in the integer domain under the floor rounding (§3.4). `NaN`, `±∞`, and
+/// any value outside `Symbol`'s integer range refuse — never a garbage integer. O(1).
+pub fn floor(x: f64) -> Result<Symbol, NotAnInteger> {
+    round_with(x, f64::floor)
+}
+/// As `floor`, under the ceiling rounding (§3.4). O(1).
+pub fn ceil(x: f64) -> Result<Symbol, NotAnInteger> {
+    round_with(x, f64::ceil)
+}
+/// As `floor`, rounding to the nearest integer, halves away from zero (§3.4). O(1).
+pub fn round(x: f64) -> Result<Symbol, NotAnInteger> {
+    round_with(x, f64::round)
+}
+/// As `floor`, truncating toward zero (§3.4). O(1).
+pub fn trunc(x: f64) -> Result<Symbol, NotAnInteger> {
+    round_with(x, f64::trunc)
+}
+
+/// The shared body of the rounding adapters: refuse the non-finite, apply the policy,
+/// refuse the out-of-range, else the number (§3.4). The safe replacement for a bare
+/// `as` cast, which saturates `NaN`/`±∞` and truncates out-of-range into garbage.
+fn round_with(x: f64, policy: fn(f64) -> f64) -> Result<Symbol, NotAnInteger> {
+    if !x.is_finite() {
+        return Err(NotAnInteger::NotFinite);
+    }
+    let rounded = policy(x);
+    // Both i32 bounds are exact in f64 (below 2^53), so this comparison is exact and
+    // the cast below is provably in range — the workspace `cast_possible_truncation`
+    // allowance, argued: after the guard the value is a whole number within i32.
+    if rounded < f64::from(i32::MIN) || rounded > f64::from(i32::MAX) {
+        return Err(NotAnInteger::OutOfRange);
+    }
+    Ok(Symbol::Number(rounded as i32))
+}
+
+// §14 / base §8.5 — the std-trait posture on this module's refusals: each states the
+// question the caller can fix in `Display`, and composes as `std::error::Error`.
+
+impl std::fmt::Display for NotAnIdentifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?} is not a legal identifier", self.text)
+    }
+}
+impl std::error::Error for NotAnIdentifier {}
+
+impl std::fmt::Display for NotAVariable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?} is not a legal variable", self.text)
+    }
+}
+impl std::error::Error for NotAVariable {}
+
+impl std::fmt::Display for NotAnInteger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NotAnInteger::NotFinite => f.write_str("not a finite number"),
+            NotAnInteger::OutOfRange => f.write_str("outside the integer range"),
+        }
+    }
+}
+impl std::error::Error for NotAnInteger {}
+
+impl std::fmt::Display for FromSymbolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "expected {}, found {:?}", self.expected, self.found)
+    }
+}
+impl std::error::Error for FromSymbolError {}

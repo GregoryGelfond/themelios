@@ -960,3 +960,133 @@ fn push_debug_list<'a>(work: &mut Vec<DebugAct<'a>>, items: &'a [Term]) {
         }
     }
 }
+
+/// Why a ground evaluation refused (§3.5). Each carries the offending value.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum EvalError {
+    /// A variable occurred — the term is not ground.
+    NotGround {
+        /// The variable that occurred.
+        variable: Variable,
+    },
+    /// An `@`-call: evaluation needs a registered context (spec §9.6), the solve
+    /// tier's, so this tier reports rather than guesses.
+    External {
+        /// The extension name.
+        name: Name,
+    },
+    /// Division or modulo by zero, arithmetic over a non-number, a set-former (a pool
+    /// or interval) where a single symbol is required, or another operation the
+    /// authority rejects.
+    Undefined,
+    /// A result outside the `i32` range. This door refuses rather than wrap — a
+    /// silently wrapped sum is the undetectable wrong answer this estate forbids (§3.5,
+    /// spec §5.2). The differential records the authority's own overflow behaviour
+    /// beside this refusal.
+    Overflow,
+}
+
+impl Term {
+    /// Evaluate a ground term to the symbol it denotes (§3.5), folding arithmetic
+    /// faithfully to the authority's ground-term evaluation (grammar §5.10). Iterative
+    /// (§13); O(nodes). A variable, an unevaluated `@`-call, an undefined operation, a
+    /// set-former, or an out-of-range result refuses. The one place this tier evaluates
+    /// arithmetic — a `1 + 2` embedded in a rule stays a `BinaryOperation` (§3.5, §5.1).
+    pub fn evaluate(&self) -> Result<Symbol, EvalError> {
+        evaluate(self)
+    }
+}
+
+/// Evaluate a ground term to the symbol it denotes (§3.5). See [`Term::evaluate`].
+pub fn evaluate(term: &Term) -> Result<Symbol, EvalError> {
+    // Written in the iterative `try_fold` (§13), so a deep term evaluates without
+    // recursion; the walk consumes, so this clones first (O(nodes), as evaluation is).
+    // Bottom-up: a child's refusal short-circuits before its parent's step.
+    term.clone().try_fold(|parts| match parts {
+        TermParts::Symbolic(symbol) => Ok(symbol),
+        TermParts::Variable(variable) => Err(EvalError::NotGround { variable }),
+        TermParts::External { name, .. } => Err(EvalError::External { name }),
+        // A term-position functor bears no strong sign (§3.3): the collapsed symbol is
+        // Positive. Its children have already evaluated to symbols.
+        TermParts::Function { name, arguments } => Ok(Symbol::Function {
+            name,
+            arguments,
+            sign: Sign::Positive,
+        }),
+        TermParts::Tuple(items) => Ok(Symbol::Tuple(items)),
+        TermParts::UnaryOperation { operator, argument } => {
+            apply_unary(operator, as_number(&argument)?).map(Symbol::Number)
+        }
+        TermParts::BinaryOperation {
+            operator,
+            left,
+            right,
+        } => {
+            let (left, right) = (as_number(&left)?, as_number(&right)?);
+            apply_binary(operator, left, right).map(Symbol::Number)
+        }
+        TermParts::Absolute(inner) => as_number(&inner)?
+            .checked_abs()
+            .ok_or(EvalError::Overflow)
+            .map(Symbol::Number),
+        // A pool or interval names a *set*, not a single symbol, so it is outside the
+        // value-term sublanguage evaluate covers (§3.5; the plan flags whether a
+        // distinct arm is owed or the value-term subset excludes them upstream).
+        TermParts::Pool(_) | TermParts::Interval { .. } => Err(EvalError::Undefined),
+    })
+}
+
+/// The `i32` a symbol carries, or `Undefined` when it is not a number — arithmetic
+/// over a non-number (§3.5).
+fn as_number(symbol: &Symbol) -> Result<i32, EvalError> {
+    match symbol {
+        Symbol::Number(n) => Ok(*n),
+        _ => Err(EvalError::Undefined),
+    }
+}
+
+/// Apply a prefix operator with checked arithmetic (§3.5, grammar §5.10): overflow
+/// refuses rather than wraps.
+fn apply_unary(operator: UnaryOp, operand: i32) -> Result<i32, EvalError> {
+    match operator {
+        UnaryOp::Negate => operand.checked_neg().ok_or(EvalError::Overflow),
+        UnaryOp::BitwiseNot => Ok(!operand),
+    }
+}
+
+/// Apply an infix operator with checked arithmetic (§3.5, grammar §5.10): division or
+/// modulo by zero refuses `Undefined`, a result outside `i32` refuses `Overflow`. The
+/// exact per-operator semantics — the sign of division and modulo, a negative exponent
+/// — are pinned by the differential against the authority (§16).
+fn apply_binary(operator: BinaryOp, left: i32, right: i32) -> Result<i32, EvalError> {
+    match operator {
+        BinaryOp::Add => left.checked_add(right).ok_or(EvalError::Overflow),
+        BinaryOp::Sub => left.checked_sub(right).ok_or(EvalError::Overflow),
+        BinaryOp::Mul => left.checked_mul(right).ok_or(EvalError::Overflow),
+        BinaryOp::Div | BinaryOp::Mod if right == 0 => Err(EvalError::Undefined),
+        BinaryOp::Div => left.checked_div(right).ok_or(EvalError::Overflow),
+        BinaryOp::Mod => left.checked_rem(right).ok_or(EvalError::Overflow),
+        BinaryOp::Pow if right < 0 => Err(EvalError::Undefined),
+        BinaryOp::Pow => {
+            let exponent = u32::try_from(right).map_err(|_| EvalError::Overflow)?;
+            left.checked_pow(exponent).ok_or(EvalError::Overflow)
+        }
+        BinaryOp::BitAnd => Ok(left & right),
+        BinaryOp::BitOr => Ok(left | right),
+        BinaryOp::BitXor => Ok(left ^ right),
+    }
+}
+
+impl std::fmt::Display for EvalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EvalError::NotGround { variable } => {
+                write!(f, "not ground: the variable {variable:?}")
+            }
+            EvalError::External { name } => write!(f, "cannot evaluate the external call {name:?}"),
+            EvalError::Undefined => f.write_str("undefined operation"),
+            EvalError::Overflow => f.write_str("arithmetic overflow"),
+        }
+    }
+}
+impl std::error::Error for EvalError {}
