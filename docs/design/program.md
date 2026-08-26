@@ -906,6 +906,23 @@ pub struct HeadAggregateElement { /* terms: Vec<Term>, literal: Literal, conditi
 /// the author wrote.
 pub struct Guard { pub relation: Option<Relation>, pub term: Term }
 
+/// A weight at an optimization priority level (grammar §5.7's `weight@priority`): a
+/// weight term and an optional priority term, its absence the default level 0. **One
+/// value**, because `weight@priority` is written and meant as one thing — how much a
+/// term tuple contributes, and at which level — and it is identical in a weak
+/// constraint and an optimize statement, the two written forms of optimization (§4.2).
+/// Built `weight(w).at_priority(p)`, so a construction reads as the `weight@priority` it
+/// denotes rather than a bare `Term` weight beside a loose `Option<Term>` priority a
+/// reader must reassemble — the meaning lives in the value, not in argument position.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Weight { /* term: Term, priority: Option<Term> */ }
+pub fn weight(term: impl Into<Term>) -> Weight;             // at the default level 0
+impl Weight {
+    pub fn at_priority(self, priority: impl Into<Term>) -> Weight;   // raise to `weight@priority`
+    pub fn term(&self) -> &Term;
+    pub fn priority(&self) -> Option<&Term>;                // absent = the default level 0
+}
+
 /// Optimization by `#minimize`/`#maximize` (grammar §5.7). The direction is a
 /// tag; the maximize-to-minimize desugaring is the solve tier's (§4.2), so it is
 /// kept structural here and `i32::MIN` never overflows.
@@ -914,14 +931,14 @@ pub struct Optimize { pub direction: Direction, /* elements: BTreeSet<OptimizeEl
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Direction { Minimize, Maximize }
 pub struct OptimizeElement {
-    /* weight: Term, priority: Option<Term>, terms: Vec<Term>, condition: Condition */
+    /* weight: Weight, terms: Vec<Term>, condition: Condition */
 }
 
-/// A weak constraint (grammar §5.7): a body and a bracket of weight, optional
-/// priority, and a term tuple. Distinct from `Optimize` (§4.2).
+/// A weak constraint (grammar §5.7): a body and a bracket of a weight at a priority
+/// and a term tuple. Distinct from `Optimize` (§4.2).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct WeakConstraint {
-    /* body: Body, weight: Term, priority: Option<Term>, terms: Vec<Term> */
+    /* body: Body, weight: Weight, terms: Vec<Term> */
 }
 ```
 
