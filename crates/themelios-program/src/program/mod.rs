@@ -10,8 +10,14 @@
 //! `program` is a directory of private submodules under one public module (§1); the
 //! public surface is re-exported here.
 
+mod aggregate;
 mod rule;
 
+pub use aggregate::{
+    Aggregate, AggregateFunction, BodyAggregateElement, Direction, FunctionAggregate, Guard,
+    HasGuards, HeadAggregate, HeadAggregateElement, Optimize, OptimizeElement, SetAggregate,
+    SetElement,
+};
 pub use rule::{
     Atom, Comparison, Condition, ConditionalLiteral, DefaultNegation, Literal, LiteralInner,
     Relation,
