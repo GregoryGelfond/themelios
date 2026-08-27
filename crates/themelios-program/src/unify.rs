@@ -844,15 +844,30 @@ fn collect_optimize_element(element: &OptimizeElement, names: &mut Names) {
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum NotAPattern {
-    /// An argument does not denote a ground pattern term: an arithmetic term with a variable
-    /// (it would need inverting — this tier evaluates only *ground* arithmetic in a pattern,
-    /// §3.5), an interval or a pool (each *names a set*, whose all-versus-any reading a
+    /// An argument does not denote a ground pattern term: a *ground* arithmetic term that does
+    /// not denote (an undefined operation, or a result out of range, §3.5), an arithmetic term
+    /// with a variable (it would need inverting — this tier evaluates only ground arithmetic in a
+    /// pattern), an interval or a pool (each *names a set*, whose all-versus-any reading a
     /// term-against-symbol match cannot decide), or an unevaluated `@`-call.
     NonDenoting {
         /// The offending term.
         term: Term,
     },
 }
+
+impl std::fmt::Display for NotAPattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NotAPattern::NonDenoting { term } => {
+                write!(
+                    f,
+                    "not a pattern: the term {term:?} does not denote a ground term"
+                )
+            }
+        }
+    }
+}
+impl std::error::Error for NotAPattern {}
 
 /// The most general unifier of two atoms, in one shared variable namespace (§11.1).
 /// `Ok(Some(σ))` — a unifier exists; `Ok(None)` — the atoms do not unify; `Err` — an argument
@@ -993,12 +1008,17 @@ fn unify_arguments(left: Vec<Term>, right: Vec<Term>) -> Option<Substitution> {
     Some(nodes.read_out())
 }
 
-/// One node of the unification graph (§11.1): a variable (its name kept for the read-out), an
-/// opaque ground symbol leaf, or a term function / tuple over child node indices.
+/// One node of the unification graph (§11.1): a variable (its name kept for the read-out), a
+/// ground **leaf** symbol (a number, string, `Infimum`/`Supremum`, or a strongly-negated function
+/// kept whole), or a positive function / tuple over child node indices. A ground symbol is
+/// **decomposed** into these cells at build time (a positive `f(1)` becomes a `Function` over a
+/// leaf `1`), uniform with a term of the same shape — so unifying a ground `f(1)` with a term
+/// `f(X)` is a structural descent, never a per-level re-clone of the symbol; that uniformity is
+/// what keeps the unifier near-linear rather than quadratic on a deep ground symbol (§15).
 #[derive(Clone)]
 enum Cell {
     Variable(Variable),
-    Symbol(Symbol),
+    Leaf(Symbol),
     Function { name: Name, children: Vec<usize> },
     Tuple { children: Vec<usize> },
 }
@@ -1021,6 +1041,13 @@ enum Colour {
 /// A step on the read-out's term rebuild (§11.1), iterative in depth (§13).
 enum Reconstruct {
     Enter(usize),
+    AssembleFunction(Name, usize),
+    AssembleTuple(usize),
+}
+
+/// A step on the ground-symbol decomposition (§11.1), iterative in depth (§13).
+enum SymbolFrame {
+    Enter(Symbol),
     AssembleFunction(Name, usize),
     AssembleTuple(usize),
 }
@@ -1065,11 +1092,12 @@ impl Nodes {
     }
 
     /// Build a pattern-normalised term into the node graph, returning its root node. Written in
-    /// the iterative `fold` (§13): each level becomes a node over its children's nodes.
+    /// the iterative `fold` (§13): each level becomes a node over its children's nodes, and a
+    /// ground symbol leaf is decomposed by [`build_symbol`].
     fn build(&mut self, term: Term) -> usize {
         term.fold(|parts| match parts {
             TermParts::Variable(variable) => self.variable(variable),
-            TermParts::Symbolic(symbol) => self.push(Cell::Symbol(symbol)),
+            TermParts::Symbolic(symbol) => self.build_symbol(symbol),
             TermParts::Function { name, arguments } => self.push(Cell::Function {
                 name,
                 children: arguments,
@@ -1086,6 +1114,68 @@ impl Nodes {
                 unreachable!("a pattern-normalised term is a variable, symbol, function, or tuple")
             }
         })
+    }
+
+    /// Decompose a ground symbol into cells (§11.1), returning its root node. A **positive**
+    /// function or a tuple becomes a `Function`/`Tuple` node over its decomposed children —
+    /// uniform with a term of the same shape, so a ground `f(1)` and a term `f(X)` unify by
+    /// structural descent, not a per-level re-clone of the symbol (the near-linearity §15
+    /// promises). An atomic symbol, or a strongly-negated function — which a positive term
+    /// function (§3.3) can only clash with — stays a whole `Leaf`. Iterative in depth (§13), a
+    /// ground symbol being unbounded (§3.1).
+    fn build_symbol(&mut self, symbol: Symbol) -> usize {
+        let mut work = vec![SymbolFrame::Enter(symbol)];
+        let mut done: Vec<usize> = Vec::new();
+        while let Some(frame) = work.pop() {
+            match frame {
+                SymbolFrame::Enter(symbol) => match symbol.into_parts() {
+                    SymbolParts::Infimum => done.push(self.push(Cell::Leaf(Symbol::Infimum))),
+                    SymbolParts::Supremum => done.push(self.push(Cell::Leaf(Symbol::Supremum))),
+                    SymbolParts::Number(value) => {
+                        done.push(self.push(Cell::Leaf(Symbol::Number(value))));
+                    }
+                    SymbolParts::String(text) => {
+                        done.push(self.push(Cell::Leaf(Symbol::String(text))));
+                    }
+                    SymbolParts::Function {
+                        name,
+                        arguments,
+                        sign,
+                    } => {
+                        if sign == Sign::Positive {
+                            work.push(SymbolFrame::AssembleFunction(name, arguments.len()));
+                            for argument in arguments.into_iter().rev() {
+                                work.push(SymbolFrame::Enter(argument));
+                            }
+                        } else {
+                            // A strongly-negated symbol has no positive term counterpart (§3.3),
+                            // so it is kept whole and only ever clashes with a term function.
+                            done.push(self.push(Cell::Leaf(Symbol::Function {
+                                name,
+                                arguments,
+                                sign,
+                            })));
+                        }
+                    }
+                    SymbolParts::Tuple(elements) => {
+                        work.push(SymbolFrame::AssembleTuple(elements.len()));
+                        for element in elements.into_iter().rev() {
+                            work.push(SymbolFrame::Enter(element));
+                        }
+                    }
+                },
+                SymbolFrame::AssembleFunction(name, arity) => {
+                    let children = done.split_off(done.len() - arity);
+                    done.push(self.push(Cell::Function { name, children }));
+                }
+                SymbolFrame::AssembleTuple(arity) => {
+                    let children = done.split_off(done.len() - arity);
+                    done.push(self.push(Cell::Tuple { children }));
+                }
+            }
+        }
+        done.pop()
+            .expect("the symbol's decomposition leaves one node")
     }
 
     /// The class representative of a node, with path halving. O(α).
@@ -1105,7 +1195,7 @@ impl Nodes {
     }
 
     /// Merge two representative classes by rank, returning the new representative (§11.1). Used
-    /// when both carry a shape (a function, a tuple, or a lift's ground twin).
+    /// when both carry a shape (a function or a tuple).
     fn union(&mut self, left: usize, right: usize) -> usize {
         match self.rank[left].cmp(&self.rank[right]) {
             Ordering::Less => {
@@ -1136,16 +1226,24 @@ impl Nodes {
                 continue;
             }
             match (self.cell[left].clone(), self.cell[right].clone()) {
-                // A bare variable class links under the other, which keeps its shape.
+                // Two variable classes merge by rank (either may be the representative, both
+                // being bare); the read-out canonicalizes the class by its Ord-least variable, so
+                // which node wins is immaterial to the result.
+                (Cell::Variable(_), Cell::Variable(_)) => {
+                    self.union(left, right);
+                }
+                // A bare variable class links under a shaped one, which keeps its shape.
                 (Cell::Variable(_), _) => self.link(left, right),
                 (_, Cell::Variable(_)) => self.link(right, left),
-                // Two ground symbols: ground, so they unify iff identical.
-                (Cell::Symbol(left_symbol), Cell::Symbol(right_symbol)) => {
+                // Two ground leaves: ground, so they unify iff identical.
+                (Cell::Leaf(left_symbol), Cell::Leaf(right_symbol)) => {
                     if left_symbol != right_symbol {
                         return false;
                     }
                 }
-                // Two term functions / tuples of the same shape: merge and descend.
+                // Two functions of the same shape — a term or a decomposed ground symbol, held
+                // uniformly (§11.1): merge and descend. A ground `f(1)` and a term `f(X)` meet
+                // here, not through a per-level lift.
                 (
                     Cell::Function {
                         name: left_name,
@@ -1176,87 +1274,10 @@ impl Nodes {
                     self.union(left, right);
                     work.extend(left_items.into_iter().zip(right_items));
                 }
-                // A term function / tuple against its ground twin: lift the symbol one level and
-                // descend, so a non-ground `f(X)` unifies the ground symbol `f(1)` (§11.2).
-                (Cell::Function { name, children }, Cell::Symbol(symbol))
-                | (Cell::Symbol(symbol), Cell::Function { name, children }) => {
-                    if !self.lift_function(&mut work, left, right, &name, children, symbol) {
-                        return false;
-                    }
-                }
-                (Cell::Tuple { children }, Cell::Symbol(symbol))
-                | (Cell::Symbol(symbol), Cell::Tuple { children }) => {
-                    if !self.lift_tuple(&mut work, left, right, children, symbol) {
-                        return false;
-                    }
-                }
-                // Distinct constructor kinds — a function against a tuple, or a non-compound
-                // symbol against either — do not unify.
+                // Distinct constructor kinds — a function against a tuple, or a leaf against
+                // either — do not unify.
                 _ => return false,
             }
-        }
-        true
-    }
-
-    /// Merge a term function class with its ground-symbol twin (§11.2), lifting the symbol's
-    /// arguments to fresh leaf nodes paired with the function's children; `false` on a clash. A
-    /// term function is positive (§3.3), so a strongly-negated symbol clashes.
-    fn lift_function(
-        &mut self,
-        work: &mut Vec<(usize, usize)>,
-        left: usize,
-        right: usize,
-        name: &Name,
-        children: Vec<usize>,
-        symbol: Symbol,
-    ) -> bool {
-        let SymbolParts::Function {
-            name: symbol_name,
-            arguments,
-            sign: Sign::Positive,
-        } = symbol.into_parts()
-        else {
-            return false;
-        };
-        if &symbol_name != name || arguments.len() != children.len() {
-            return false;
-        }
-        let root = self.union(left, right);
-        // Whatever the rank chose, the merged class is the term function.
-        self.cell[root] = Cell::Function {
-            name: name.clone(),
-            children: children.clone(),
-        };
-        for (child, argument) in children.into_iter().zip(arguments) {
-            let leaf = self.push(Cell::Symbol(argument));
-            work.push((child, leaf));
-        }
-        true
-    }
-
-    /// Merge a term tuple class with its ground-symbol twin (§11.2), lifting the symbol's
-    /// elements to fresh leaf nodes paired with the tuple's children; `false` on a clash.
-    fn lift_tuple(
-        &mut self,
-        work: &mut Vec<(usize, usize)>,
-        left: usize,
-        right: usize,
-        children: Vec<usize>,
-        symbol: Symbol,
-    ) -> bool {
-        let SymbolParts::Tuple(elements) = symbol.into_parts() else {
-            return false;
-        };
-        if elements.len() != children.len() {
-            return false;
-        }
-        let root = self.union(left, right);
-        self.cell[root] = Cell::Tuple {
-            children: children.clone(),
-        };
-        for (child, element) in children.into_iter().zip(elements) {
-            let leaf = self.push(Cell::Symbol(element));
-            work.push((child, leaf));
         }
         true
     }
@@ -1301,7 +1322,7 @@ impl Nodes {
     fn shape_children(&self, node: usize) -> Vec<usize> {
         match &self.cell[node] {
             Cell::Function { children, .. } | Cell::Tuple { children } => children.clone(),
-            Cell::Variable(_) | Cell::Symbol(_) => Vec::new(),
+            Cell::Variable(_) | Cell::Leaf(_) => Vec::new(),
         }
     }
 
@@ -1370,7 +1391,7 @@ impl Nodes {
                     }
                     match self.cell[rep].clone() {
                         Cell::Variable(variable) => done.push(Term::Variable(variable)),
-                        Cell::Symbol(symbol) => done.push(Term::Symbolic(symbol)),
+                        Cell::Leaf(symbol) => done.push(Term::Symbolic(symbol)),
                         Cell::Function { name, children } => {
                             work.push(Reconstruct::AssembleFunction(name, children.len()));
                             for child in children.into_iter().rev() {

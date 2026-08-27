@@ -204,6 +204,28 @@ fn a_const_value_outside_the_constant_term_subset_is_diagnosed() {
     );
 }
 
+#[test]
+fn a_const_value_may_be_an_external_call() {
+    // `#const x = @f(1).` — an `@`-call is inside the constant-term subset (grammar §5.9, §4.8):
+    // admitted, carried unevaluated (resolved with a context later, §3.5), never a diagnostic.
+    let clean = raised("#const x = @f(1).");
+    assert!(
+        clean.diagnostics().is_empty(),
+        "an `@`-call constant raises cleanly, got {:?}",
+        clean.diagnostics(),
+    );
+    // Nested, and under a function — still admitted, never a NonConstantValue.
+    for text in ["#const x = @g(@h(a)).", "#const x = f(@e(1), 2)."] {
+        assert!(
+            !raised(text)
+                .diagnostics()
+                .iter()
+                .any(|error| matches!(error.kind(), LowerErrorKind::NonConstantValue)),
+            "an `@`-call is a constant term: {text:?}",
+        );
+    }
+}
+
 // ---- Documentation and parsed provenance ride the raised node (§6, §8) ----
 
 #[test]

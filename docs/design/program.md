@@ -484,9 +484,14 @@ REPL and the query surface want — `parse_term_value` → `raise_term` →
 `Term::evaluate` → `Symbol`. It is the **only** place this tier evaluates
 arithmetic: a `1+2` embedded in a rule stays a `BinaryOperation` term — the
 grounder's to evaluate — and canonicalization (§5.1) collapses ground
-*constructor* terms to symbols but never folds an operator, so structural
-equality never smuggles in an arithmetic normalization and the representation
-stays a faithful record of what was written.
+*constructor* terms to symbols but folds only one operator, unary minus of a
+numeral (`-5` is the integer −5, the grammar having no negative numeral, grammar
+§4.3 — so `Number(-5)` is the number's spelling, not arithmetic evaluation), so
+structural equality never smuggles in an arithmetic normalization and the
+representation stays a faithful record of what was written. `-(1 + 2)` stays a
+`BinaryOperation`; the fold is the negative-numeral case alone, and it is what
+lets a constructed negative number round-trip (§10) — `render` writes `-5` and
+the raise reads it back through this fold.
 
 ### 3.6 Navigating and rebuilding terms
 
@@ -1025,9 +1030,18 @@ Canonicalization does the following, each syntactic:
 
 - **Ground collapse.** A maximal ground constructor term — a function, tuple, or
   ground leaf whose subterms are all ground — becomes a `Symbolic(Symbol)`, the
-  same normalization the authority performs (grammar §5.10). It does **not** fold
-  an operator: a ground `1+2` stays a `BinaryOperation` (§3.5), because folding
-  it would evaluate, which this tier does only at the explicit door.
+  same normalization the authority performs (grammar §5.10). It folds **no
+  arithmetic operator** — a ground `1+2` stays a `BinaryOperation` (§3.5), because
+  folding it would evaluate, which this tier does only at the explicit door — save
+  the negative-numeral spelling below.
+- **Negative numeral.** Unary minus of a numeral folds to the negative number it
+  denotes (`-5` → `Number(-5)`): the grammar has **no** negative numeral (grammar
+  §4.3), so this is the number's canonical spelling, not arithmetic evaluation. It
+  is the one operator that folds, and it is what lets a constructed negative number
+  round-trip (§10) — `render` writes `-5` and the raise reads it back through this
+  fold. `-(1 + 2)` is not a numeral and stays a `BinaryOperation`; the lone
+  exception is `i32::MIN`, whose magnitude no numeral spells (grammar §4.3), kept as
+  `Negate(Number(i32::MIN))`.
 - **Degenerate forms.** A one-alternative pool is its term (`(a)` is `a`, grammar
   §5.1); the grammar's other degeneracies (an empty tuple, a one-element tuple)
   are kept, because the grammar makes them distinct terms.
@@ -1874,11 +1888,15 @@ dictating the type — and this section states only what this tier adds.
   (§10) alone; `Program`, `Term`, and `Symbol` claim **no** `Display`, so no
   second, drifting rendering of a program can exist (syntax §12.5's discipline).
   A `Debug` is derived-shaped but iterative (§13).
-- **The std-trait posture.** Every refusal type — `NotAnIdentifier`,
+- **The std-trait posture.** Every refusal type — a value a fallible operation
+  returns in `Result::Err` — implements `Display` (the question the caller can fix,
+  in words) and `std::error::Error` (so a host `?`-composes them): `NotAnIdentifier`,
   `NotAVariable`, `NotAnInteger`, `EvalError`, `FromSymbolError`, `NotAPattern`,
-  `Unspellable`, `LowerError` — implements `Display` (the question the caller can
-  fix, in words) and `std::error::Error` (so a host `?`-composes them). Their
-  `Display` texts are presentation and may improve.
+  `Unspellable`. Their `Display` texts are presentation and may improve.
+  `LowerError` is **not** among them: it is a **diagnostic**, a value on a total
+  raise (§15) carried in `Raised::diagnostics`, never returned as a `Result::Err`,
+  so it renders through `ToDiagnostic` (§8) rather than `Display`/`Error` — giving
+  it the error posture would falsely signal it is a value a host `?`-composes.
 - **The criterion of one obvious way is posture, not only a failure condition
   (§2).** A convenience is admitted only when it makes the obvious way *more*
   obvious; boilerplate falls away as a consequence of that, never as the goal, so

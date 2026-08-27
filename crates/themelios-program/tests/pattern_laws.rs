@@ -225,6 +225,24 @@ fn the_pattern_check_reaches_both_atoms() {
     ));
 }
 
+#[test]
+fn the_pattern_refusal_carries_the_std_error_posture() {
+    // NotAPattern is mgu's `Result` error, so it Displays a non-empty message and composes as
+    // std::error::Error (§14) — a host can `?` it.
+    fn message<E: std::error::Error>(error: &E) -> String {
+        error.to_string()
+    }
+    let refusal = mgu(
+        &Atom::new(name("p"), [add(tvar("X"), num(1))]),
+        &atom("p", [num(3)]),
+    )
+    .expect_err("a variable-bearing arithmetic argument is not a pattern");
+    assert!(
+        !message(&refusal).is_empty(),
+        "the refusal Displays its cause"
+    );
+}
+
 // ---- matching against an answer set: signature_range (§11.3, §16) ----
 
 fn sfun(functor: &str, arguments: Vec<Symbol>, sign: Sign) -> Symbol {

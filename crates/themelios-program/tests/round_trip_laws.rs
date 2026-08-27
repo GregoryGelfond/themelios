@@ -75,6 +75,58 @@ fn renders_and_reparses_cleanly(text: &str, dialect: Dialect) {
     );
 }
 
+/// The round-trip witness for a *constructed* program (§10): one that never came from text, so
+/// it can carry a value the raise itself never makes (a negative `Number`).
+fn constructed_round_trips(program: &Program, dialect: Dialect) {
+    let rendered = render(program, dialect).expect("the program renders");
+    let source = Source::new(SourceId::new(0), rendered.clone()).expect("the rendering admits");
+    let reparsed = raise(&parse(&source, dialect));
+    assert!(
+        reparsed.diagnostics().is_empty(),
+        "the rendering `{rendered}` reparses cleanly: {:?}",
+        reparsed.diagnostics(),
+    );
+    assert_eq!(
+        program,
+        reparsed.program(),
+        "a constructed program round-trips (rendered `{rendered}`)",
+    );
+}
+
+#[test]
+fn a_constructed_negative_number_round_trips() {
+    // A negative integer reaches a program only by construction — the raise reads `-5` as unary
+    // minus of 5. render writes `-5`, and the reparse canonicalizes it back to `Number(-5)` (the
+    // §5.1 numeral fold); before that fold the reparse was `UnaryOp(Negate, 5)`, and this failed.
+    use themelios_program::program::{Atom, Rule, Statement};
+    use themelios_program::provenance::WithProvenance;
+    use themelios_program::symbol::Name;
+    use themelios_program::term::Term;
+
+    let predicate = Name::new("p").expect("a valid identifier");
+    let f = Name::new("f").expect("a valid identifier");
+    for value in [-5_i32, -1, i32::MIN + 1] {
+        // Flat `p(-5)` and nested-and-mixed `p(f(-5), -5)`.
+        let flat = Atom::new(predicate.clone(), [Term::from(value)]);
+        let nested = Atom::new(
+            predicate.clone(),
+            [
+                Term::Function {
+                    name: f.clone(),
+                    arguments: vec![Term::from(value)],
+                },
+                Term::from(value),
+            ],
+        );
+        for atom in [flat, nested] {
+            let program = Program::of([WithProvenance::constructed(Statement::Rule(Rule::fact(
+                atom,
+            )))]);
+            constructed_round_trips(&program, Dialect::Clingo);
+        }
+    }
+}
+
 // ---- the round-trip law, over generated programs ----
 
 /// The breadth of ordinary (theory-free, optimization-distinct) programs the estate parser

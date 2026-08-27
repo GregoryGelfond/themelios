@@ -440,6 +440,27 @@ fn the_exponential_doubling_case_is_decided_in_compact_triangular_form() {
     assert_eq!(xvar(1).substitute(&s), func("f", [xvar(0), xvar(0)]));
 }
 
+#[test]
+fn a_deep_ground_symbol_unifies_with_its_non_ground_twin_in_near_linear_time() {
+    // p(f(f(…f(a)…))) — a ground symbol 200,000 deep — against p(f(f(…f(X)…))) of the same depth.
+    // The ground side is decomposed into the node graph once, so the two descend structurally,
+    // near-linearly; a representation that re-cloned the ground symbol one level per step would be
+    // Θ(depth²) here and would not finish. Completing at all is the witness that it does not.
+    fn nest(bottom: Term, depth: usize) -> Term {
+        let mut term = bottom;
+        for _ in 0..depth {
+            term = func("f", [term]);
+        }
+        term
+    }
+    const DEPTH: usize = 200_000;
+    let ground = Atom::new(name("p"), [nest(konst("a"), DEPTH)]);
+    let non_ground = Atom::new(name("p"), [nest(tvar("X"), DEPTH)]);
+    let s = unifier(&ground, &non_ground);
+    // X is bound (to the whole ground nest); the substitution is a single triangular binding.
+    assert_eq!(s.iter().count(), 1, "one binding: X ↦ the ground nest");
+}
+
 // ---- canonical hard cases from the unification literature ----
 
 #[test]

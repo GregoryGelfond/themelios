@@ -327,10 +327,14 @@ impl Term {
     }
 
     /// Canonicalize a term (§5.1): idempotent, total, iterative (written in `fold`,
-    /// one bottom-up pass, O(nodes)). Two syntactic normalizations — the maximal
-    /// ground *constructor* collapse to a `Symbolic` (operators never fold, §3.5),
-    /// and the degenerate one-alternative pool. A pass, not a constructor guarantee:
-    /// a caller can build a non-canonical term directly, and every door that admits a
+    /// one bottom-up pass, O(nodes)). Three syntactic normalizations — the maximal
+    /// ground *constructor* collapse to a `Symbolic`, the degenerate one-alternative
+    /// pool, and unary minus of a numeral folded to the negative number it denotes.
+    /// That last is the *only* operator that folds (§3.5): `-5` is the integer −5, the
+    /// grammar having no negative numeral (grammar §4.3), so `Number(-5)` is its
+    /// canonical form — this is the number's spelling, not arithmetic evaluation, so
+    /// `-(1 + 2)` stays a `BinaryOperation`. A pass, not a constructor guarantee: a
+    /// caller can build a non-canonical term directly, and every door that admits a
     /// term into a program runs this.
     #[must_use]
     pub fn canonicalize(self) -> Term {
@@ -356,8 +360,30 @@ impl Term {
                     Term::Pool(items)
                 }
             }
+            // Unary minus of a numeral is the negative number it denotes (§3.5, §5.1): `-5`
+            // → `Number(-5)`, so it round-trips — `render` writes `-5` (the grammar has no
+            // negative numeral) and the raise reads it back as this fold's input.
+            TermParts::UnaryOperation {
+                operator: UnaryOp::Negate,
+                argument,
+            } => negate_numeral(argument),
             other => Term::from(other),
         })
+    }
+}
+
+/// Fold unary minus of a numeral into the negative number it denotes (§5.1, §3.5) — the one
+/// operator canonicalization. A non-numeral argument, or the single numeral whose negation
+/// leaves the `i32` range (`i32::MIN`, which no numeral spells anyway), keeps the `Negate` form.
+fn negate_numeral(argument: Term) -> Term {
+    if let Term::Symbolic(Symbol::Number(value)) = &argument
+        && let Some(negated) = value.checked_neg()
+    {
+        return Term::Symbolic(Symbol::Number(negated));
+    }
+    Term::UnaryOperation {
+        operator: UnaryOp::Negate,
+        argument: Box::new(argument),
     }
 }
 

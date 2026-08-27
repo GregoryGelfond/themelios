@@ -470,6 +470,34 @@ fn a_ground_operator_term_does_not_fold() {
 }
 
 #[test]
+fn unary_minus_of_a_numeral_folds_to_the_negative_number() {
+    // The one operator that folds (§5.1): `-5` is the integer −5 (the grammar has no negative
+    // numeral), so it canonicalizes to `Number(-5)` and round-trips (§10).
+    let negate = |t: Term| Term::UnaryOperation {
+        operator: UnaryOp::Negate,
+        argument: Box::new(t),
+    };
+    assert_eq!(negate(Term::from(5)).canonicalize(), Term::from(-5));
+    // Double negation folds through: -(-5) is 5.
+    assert_eq!(negate(Term::from(-5)).canonicalize(), Term::from(5));
+    // `-(1 + 2)` is not a numeral and stays a `BinaryOperation` — only the numeral folds.
+    let one_plus_two = Term::BinaryOperation {
+        operator: BinaryOp::Add,
+        left: Box::new(Term::from(1)),
+        right: Box::new(Term::from(2)),
+    };
+    assert!(matches!(
+        negate(one_plus_two).canonicalize(),
+        Term::UnaryOperation { .. }
+    ));
+    // `i32::MIN` has no numeral spelling (its negation leaves range), so it keeps the Negate form.
+    assert!(matches!(
+        negate(Term::from(i32::MIN)).canonicalize(),
+        Term::UnaryOperation { .. }
+    ));
+}
+
+#[test]
 fn a_one_alternative_pool_becomes_its_term() {
     // (a) is a, but (a; b) and (a,) are not degenerate (grammar §5.1).
     let inside = Term::Symbolic(Symbol::Number(7));

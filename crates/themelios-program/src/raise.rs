@@ -100,8 +100,8 @@ pub enum LowerErrorKind {
     /// A recovered statement the value cannot complete — a required node the parser's
     /// recovery left absent (§8), diagnosed and skipped so its neighbors still raise.
     IncompleteStatement,
-    /// A `#const` value outside the constant-term subset (grammar §5.9): a variable or
-    /// an `@`-call where a constant term must stand (§4.8). The value is carried
+    /// A `#const` value outside the constant-term subset (grammar §5.9): a variable, a pool,
+    /// or an interval where a constant term must stand (§4.8). The value is carried
     /// unevaluated all the same; this marks it as one a constant may not take.
     NonConstantValue,
 }
@@ -2074,11 +2074,14 @@ fn number_u32(number: &ast::NumberLit) -> Option<u32> {
     u32::from_str_radix(number.digits(), radix).ok()
 }
 
-/// Whether a term is in the constant-term subset (grammar §5.9): no variable and no
-/// `@`-call — a value a constant may take, evaluated only when a consumer asks (§3.5).
-/// Walked iteratively (§13).
+/// Whether a term is in the constant-term subset (grammar §5.9): no variable, pool, or
+/// interval — a value a constant may take. Arithmetic and an `@`-call are admitted (§4.8),
+/// carried unevaluated and evaluated only when a consumer asks (§3.5). Walked iteratively (§13).
 fn is_constant_term(term: &Term) -> bool {
-    !term
-        .subterms()
-        .any(|subterm| matches!(subterm, Term::Variable(_) | Term::External { .. }))
+    !term.subterms().any(|subterm| {
+        matches!(
+            subterm,
+            Term::Variable(_) | Term::Pool(_) | Term::Interval { .. }
+        )
+    })
 }
