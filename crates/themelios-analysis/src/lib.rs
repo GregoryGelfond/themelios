@@ -29,3 +29,4 @@
 #![forbid(unsafe_code)]
 
 pub mod construct;
+pub mod depend;
