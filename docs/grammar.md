@@ -82,14 +82,14 @@ ASP-Core-2 delta set, §9 the macro dialect — extractable as-is into
 reference documentation. Everything argued, pinned, or cautioned lives
 in the prose around them.
 
-**Audience.** The implementer and reviewer of `themelios-syntax`, for
+**Audience.** The implementer and maintainer of `themelios-syntax`, for
 whom this is the contract; the clingo-world practitioner (spec §1.3)
 checking what "shared syntax" claims; and the tool builder deciding
 whether a construct is in the language without reading C++.
 
 ## 2. What this document is for
 
-The postcondition, stated so a review can check drift against it:
+The postcondition, stated so a maintainer can check drift against it:
 
 > docs/grammar.md states the concrete syntax shared by clingo and
 > clingcon, and the ASP-Core-2 dialect of the same grammar, once —
@@ -1250,7 +1250,7 @@ lists, and tuples:
 
 Every walk that parses, traverses, or renders these families runs on
 an explicit stack; input depth never becomes call depth (spec §5.2's
-depth constraint, §7.2's discipline, held per walk by the depth gate,
+depth constraint, §7.2's discipline, held per walk by the depth proof,
 spec §10.1).
 
 **Grammar-bounded — the call stack is licensed.** Everything above

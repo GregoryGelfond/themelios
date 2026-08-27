@@ -1,6 +1,6 @@
 # themelios-base — tier design
 
-2026-08-13. Design for review, pre-implementation. This document is the
+2026-08-13. Design, pre-implementation. This document is the
 API design of `themelios-base` — the types, traits, signatures, semantics,
 and computational costs of the foundation's lowest tier — derived from the
 v1 specification (`docs/specification.md`), cited throughout as *spec §n*;
@@ -45,7 +45,7 @@ mutability, no global state, no I/O (spec §1.2).
 
 ## 2. What this design is for
 
-The postcondition, stated so a review can check drift against it:
+The postcondition, stated so a maintainer can check drift against it:
 
 > themelios-base gives every tier one shared, typed vocabulary for source
 > text, location, and reporting, such that a report from any tier yields
@@ -976,16 +976,16 @@ tier's landing.
 - **Scaling shapes (criterion):** `LineIndex::of` linear in text;
   `position`/`offset` logarithmic; `human` linear in rendered output.
   Shape assertions in CI; absolute numbers out-of-band (spec §10.2).
-- **Standing gates:** mutation per milestone; the workspace coverage
+- **Standing checks:** mutation per milestone; the workspace coverage
   floor; unused-code and unused-result warnings denied;
   `forbid(unsafe_code)` plus the structural trust checks (FFI-free
   closure, no build script); documentation examples that run; the
   executable-claims standard for anything this crate says about itself
   (spec §10.4).
 - **Depth, honestly.** This crate holds no recursive structure — flat
-  data throughout — so spec §5.2's per-walk depth-gate obligation attaches
+  data throughout — so spec §5.2's per-walk depth-proof obligation attaches
   vacuously and is discharged by inspection plus the totality
-  properties. The depth-gate machinery first bites at the program tier.
+  properties. The depth-proof machinery first bites at the program tier.
 
 ## 11. Reserved seams and non-goals
 

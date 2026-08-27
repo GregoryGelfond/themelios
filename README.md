@@ -26,7 +26,7 @@ comment-attachment policy; a typed AST; the tier's typed diagnostics; and
 token-stream equivalence — is built under
 [`docs/design/syntax.md`](docs/design/syntax.md), held to the grammar of
 record at [`docs/grammar.md`](docs/grammar.md), with its stage-2 instruments
-green (the property laws, the vendored corpus, the goldens, the depth gate,
+green (the property laws, the vendored corpus, the goldens, the depth proof,
 the scaling shapes, the differential against pinned clingo, the coverage
 floor, the mutation audit, and the fuzz targets). The syntax tier's
 first-consumer checkpoint (spec §11) is met: morphe, the formatter, is built

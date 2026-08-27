@@ -1,6 +1,6 @@
 # themelios-analysis — tier design
 
-2026-08-24. Design for review, pre-implementation. This document is the API
+2026-08-24. Design, pre-implementation. This document is the API
 design of `themelios-analysis` — the types, traits, signatures, semantics, and
 computational costs of the crate that reads a `Program` and reports its
 structural facts — derived from the v1 specification (`docs/specification.md`,
@@ -74,7 +74,7 @@ function of the program it reads: no global state, no I/O, no panic on any input
 
 ## 2. What this design is for
 
-The postcondition, stated so a review can check drift against it:
+The postcondition, stated so a maintainer can check drift against it:
 
 > themelios-analysis gives every consumer a **typed model of a program's
 > structural facts** — its constructs, its predicate dependency structure and the

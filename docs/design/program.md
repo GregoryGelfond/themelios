@@ -1,6 +1,6 @@
 # themelios-program — tier design
 
-2026-08-24. Design for review, pre-implementation. This document is the API
+2026-08-24. Design, pre-implementation. This document is the API
 design of `themelios-program` — the types, traits, signatures, semantics, and
 computational costs of the foundation's program tier — derived from the v1
 specification (`docs/specification.md`, cited as *spec §n*), the base tier
@@ -27,7 +27,7 @@ into this tier's value. It is consumed by the solve tier (spec §9), by the
 macro tier (spec §8, whose expansions call the constructors here), and by the
 immediate analysis and query clients this document names (§11, §12).
 
-**The keystone: the `Program` is the abstract object, not the parse tree.** In
+**The central idea: the `Program` is the abstract object, not the parse tree.** In
 the knowledge-representation literature a logic program *is* a set of rules over
 a term algebra: the reduct operates on the rules, and answer sets are defined
 over the program-as-a-set. The syntax tier's tree (syntax §5) is *one concrete
@@ -91,7 +91,7 @@ this tier delivers its half by **privileging neither** from the outset.
 
 ## 2. What this design is for
 
-The postcondition, stated so a review can check drift against it:
+The postcondition, stated so a maintainer can check drift against it:
 
 > themelios-program gives every consumer the logician's **owned, total**
 > representation of an ASP program — constructed declaratively in Rust or raised
@@ -1870,7 +1870,7 @@ because its tree builder's dependency recurses in depth (syntax §6.6); this
 tier's values are plain trees its own work-list walks traverse, so any depth the
 heap holds is *handled*, not refused — a term is `O(nodes)` to walk however deep
 it is, and there is no shared structure to unfold (that concern is the solve
-tier's, where symbols are read from an engine, §8). The depth gate (§16) proves
+tier's, where symbols are read from an engine, §8). The depth proof (§16) proves
 each walk stack-independent on a stated stack at a depth far past anything the
 raise's bounded tree or a real construction produces.
 
@@ -1996,7 +1996,7 @@ with what it proves and what it cannot (spec §10.2).
   printing order (§3.1); and canonical-syntactic equality agrees with the
   authority's parse-then-unparse on the theory-free, optimization-free fragment
   (§5.2's arbiter).
-- **The depth gate** (subprocess, spec §10.1): on a stated stack, a term nested far
+- **The depth proof** (subprocess, spec §10.1): on a stated stack, a term nested far
   beyond any real program is constructed, canonicalized, compared, hashed,
   rendered, substituted into, evaluated, and dropped, and every walk survives — the
   per-walk proof that §13's discipline holds, no walk excepted.

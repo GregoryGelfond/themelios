@@ -1,6 +1,6 @@
 # themelios-syntax — tier design
 
-2026-08-15. Design for review, pre-implementation. This document is the
+2026-08-15. Design, pre-implementation. This document is the
 API design of `themelios-syntax` — the types, traits, signatures,
 semantics, and computational costs of the syntax tier — derived from the
 v1 specification (`docs/specification.md`, cited as *spec §n*), held to
@@ -91,7 +91,7 @@ conversions), `token` (§4: `Token`, `LexMode`, `TokenSource`), `lexer`
 
 ## 2. What this design is for
 
-The postcondition, stated so a review can check drift against it:
+The postcondition, stated so a maintainer can check drift against it:
 
 > themelios-syntax turns any admitted source text into a lossless,
 > error-resilient tree of the one grammar under a declared dialect — the
@@ -1053,14 +1053,14 @@ impl NestingLimit {
     /// below it — the deepest in the whole vendored corpus, clingo's own
     /// tests included, nests twenty-three — and deeper input is refused,
     /// not crashed. Set well below what the modest stack survives (the
-    /// depth gate measures ~323 frames of the deepest shape there): 128,
+    /// depth proof measures ~323 frames of the deepest shape there): 128,
     /// echoing serde_json's recursion floor, leaves better than twofold
     /// margin and clears the corpus more than fivefold.
     pub const DEFAULT: NestingLimit = NestingLimit(128);
 
     /// The definition's unbounded nesting honored as far as the crate
     /// proves safe — the deepest `REQUIRED_STACK_BYTES` is shown to hold
-    /// (the depth gate, §16), no lower. A consumer raises a general door
+    /// (the depth proof, §16), no lower. A consumer raises a general door
     /// (`parse_program` and its siblings) to it and holds the result
     /// under `with_required_stack`. It grows with the pole: a larger
     /// `REQUIRED_STACK_BYTES`, re-measured, raises it.
@@ -1073,7 +1073,7 @@ impl NestingLimit {
 /// The stack, in bytes, on which every operation this crate performs
 /// or hands out over the deepest tree it can build at `CEILING` —
 /// dropping it, comparing two, rendering one, walking the typed AST,
-/// attaching, certifying — is proven to complete: the depth gate (§16)
+/// attaching, certifying — is proven to complete: the depth proof (§16)
 /// runs on a thread of exactly this size and passes with headroom. A
 /// consumer's thread that holds such a tree needs at least this much,
 /// and a language server's worker or a WASM host reads it here rather
@@ -1111,7 +1111,7 @@ limit times the term families' per-frame layer count, plus the
 grammar's fixed layer count above them; taken at `CEILING`, the deepest
 the crate builds, that is `MAX_TREE_DEPTH` (§5.4, law 3), whose two
 grammar constants are named in the crate and valued by inspection of
-Appendix A, and which the depth gate holds by measuring the deepest tree
+Appendix A, and which the depth proof holds by measuring the deepest tree
 it builds against it. Operator chains never reach either limit: they are
 flat (§6.2), so `1+1+…+1` of any length is a member here as it is under
 the authority, and only bracket nesting is refused.
@@ -1139,7 +1139,7 @@ opt-in (`disable_recursion_limit`) for the caller who takes on the
 stack — named for this estate's registers.
 
 **Each limit is measured, not guessed.** `DEFAULT` is measured against
-the modest stack it promises: the depth gate (§16) parses the deepest
+the modest stack it promises: the depth proof (§16) parses the deepest
 per-frame shape of every family at it, on a two-mebibyte thread, and
 walks, compares, renders, and drops the trees — no overflow, with the
 value sitting well below the stack's edge (the margin is the point, so
@@ -1165,7 +1165,7 @@ divergence D2, whose obligation is to hold both measured values beside
 the entry; §2's second failure condition pins there. **Safety governs
 that band, deliberately.** Matching the authority would mean building
 trees the pole cannot hold — or matching its *crash*, which the goals of
-this project forbid — so `CEILING` stays where the gate proves it and D2
+this project forbid — so `CEILING` stays where the depth proof shows it holds and D2
 widens rather than the stack requirement growing. `with_required_stack`
 and the raisable `CEILING` are the forward-thinking hedge: the pinned
 authority's stack limit is a defect of *its* parser, not the language,
@@ -2310,7 +2310,7 @@ handed to consumers whose dependency recurses in its depth (§14), depth
 bounded at construction (§6.6). Every walk this crate performs —
 lexing, parsing, the typed accessors, attachment, the oracle, the
 certificates, tree text — is iterative or grammar-bounded, and the
-depth gate (§16) holds it per walk.
+depth proof (§16) holds it per walk.
 
 ### 12.4 Refusal, and what is not a refusal
 
@@ -2435,9 +2435,9 @@ consumer's `to_string()` runs (§5.4, law 1) — recurse through the
 children too. (The design does not rest on the alternate `Debug` dump
 `{:#?}`: at 0.17.0 its source walks `preorder_with_tokens` iteratively —
 constant stack — but its per-node indentation is quadratic in depth, in
-both time and output, a reviewer's tool for a small tree rather than a
-walk for the deepest one, which is why the gate (§16) renders through
-`Display`, not it. Nothing here depends on `Debug`'s strategy — the gate
+both time and output, a maintainer's tool for a small tree rather than a
+walk for the deepest one, which is why the depth proof (§16) renders through
+`Display`, not it. Nothing here depends on `Debug`'s strategy — the depth proof
 exercises the recursions above, not the dump — so an upgrade that changed
 it costs nothing but a re-reading, which every pin move already does.) The
 recursions are why the tree's depth is bounded at construction (§5.4,
@@ -2456,7 +2456,7 @@ most three children, hence every node cached — building is O(depth²)
 narrow one). Interning only shares memory, and every relation this tier
 reads is structural, so the parser builds through its own cache-free
 builder (§6.8; crates/themelios-syntax/src/parse/builder.rs), keeping
-the O(text) cost §6.8 states; the depth gate surfaced the quadratic. And at 0.17.0 rowan carries no
+the O(text) cost §6.8 states; the depth proof surfaced the quadratic. And at 0.17.0 rowan carries no
 mutable-tree API — the release removed it — so the read-only posture of
 §5.1 is rowan's own, and the tree-editing seam (§17) will ride on
 green-level splicing if a consumer ever names it.
@@ -2588,7 +2588,7 @@ what it proves and what it cannot (spec §10.2).
   as non-members (§6.3); every input parsed under its stated dialect
   with the expected outcome (member, or the diagnostic identities
   expected).
-- **The depth gate:** at each of the two limits (§6.6). At `CEILING`, a
+- **The depth proof:** at each of the two limits (§6.6). At `CEILING`, a
   thread of exactly `REQUIRED_STACK_BYTES` parses inputs nested far beyond
   it in every self-recursive family — bracket nesting in each of them, and
   beside it the bracket-free shapes: additive, exponentiation, and unary
@@ -2607,7 +2607,7 @@ what it proves and what it cannot (spec §10.2).
   linear in both texts; bulk attachment linear in the tree; the oracle
   constant per pair; the whitespace facts constant in the tree size (each
   reads only the trivia between its two elements, §9.3). Shape assertions
-  in the gate; absolute numbers out of band (spec §10.2).
+  in the checks; absolute numbers out of band (spec §10.2).
 - **The identity table**, snapshot-tested: Appendix B is the shipped
   table; a change is a visible diff.
 - **The trust checks:** the closure allow-list over Cargo's resolved
@@ -2615,7 +2615,7 @@ what it proves and what it cannot (spec §10.2).
   `forbid(unsafe_code)` (§14). The check reads `cargo metadata`'s JSON
   through `serde_json`, a dev-dependency outside the shipped closure — a
   test instrument, not a shipped crate.
-- **Standing gates:** mutation per milestone; the workspace coverage
+- **Standing checks:** mutation per milestone; the workspace coverage
   floor; unused-code and unused-result warnings denied; documentation
   examples that run; the executable-claims standard for anything this
   crate says about itself (spec §10.4).
@@ -2844,13 +2844,13 @@ document and the code together; the §6.1 and §7.1 amendments below likewise.
   text between" — the reading its positional implementation gives, where
   a significant token between a non-adjacent pair counts, as `same_line`
   reads.
-- **§6.8, §14, §16** (2026-08-19): the depth gate's build surfaced
+- **§6.8, §14, §16** (2026-08-19): the depth proof's build surfaced
   rowan-internals facts §14 had stated imprecisely. The alternate
   `Debug` dump `{:#?}` does *not* recurse in tree depth at 0.17.0 — it
   walks `preorder_with_tokens` iteratively — and its per-node indentation
   is quadratic in depth; so §14's recursion fact is corrected (the
   depth-recursions are drop, structural equality, `token_at_offset`, and
-  `Display`, not the debug dump) and §16's gate renders through `Display`,
+  `Display`, not the debug dump) and §16's depth proof renders through `Display`,
   the walk a consumer's `to_string()` runs. Separately, rowan's
   `GreenNodeBuilder` interns through a cache whose rehash walks each node's
   whole subtree, so building a deep, narrow tree is O(depth²) — a
@@ -2859,12 +2859,12 @@ document and the code together; the §6.1 and §7.1 amendments below likewise.
   cache-free builder (§6.8, §14; src/parse/builder.rs), which restores
   O(text); interning only shared memory, and the tree the parser hands out
   is byte-for-byte the same, so this changes cost, not the parse. The
-  depth gate's constant is measured against this restored O(text) parser.
+  depth proof's constant is measured against this restored O(text) parser.
 - **§6.6** (2026-08-19): the single `MAX_NESTING_DEPTH` constant, replaced
   by a two-limit `NestingLimit` — `DEFAULT` (128) and `CEILING` (5,000).
   The prior design set one
   measured constant against two bounds and, when they conflicted, let the
-  gate's stack govern; measurement then showed the pole holds ~10,000
+  depth proof's stack govern; measurement then showed the pole holds ~10,000
   frames while the authority nests to ~61,623 before *crashing*, so one
   constant had to be either high (unsafe to hold on a normal thread) or
   low (an artificial ceiling below the definition). The two limits

@@ -1,6 +1,6 @@
 # themelios — v1 specification
 
-2026-08-13. Draft for review, pre-implementation. This document is the
+2026-08-13. Draft, pre-implementation. This document is the
 normative statement of what themelios v1 is, what it delivers, and what would
 count as failing to deliver it. It is written to stand alone: a reader
 holding only this repository and public sources can check every claim.
@@ -145,7 +145,7 @@ result.
 When v1 is done, all of the following are true:
 
 1. **The witness roster runs.** Every scenario in §3 exists as an
-   executable, gate-run example.
+   executable, checked example.
 2. **The syntax tier is a product.** Lossless, error-resilient,
    trivia-preserving parsing of the shared clingo/clingcon syntax and,
    as a declared dialect of the one grammar (§6.1), the ASP-Core-2
@@ -207,7 +207,7 @@ When v1 is done, all of the following are true:
 ## 3. The witness roster
 
 The floor of v1, stated as executable scenarios. Each is an example the
-gate runs, not merely compiles, and each carries a **name** — the citation
+checks run, not merely compile, and each carries a **name** — the citation
 form used throughout this document, per the no-magic-numbers policy
 (§5.2): ordinals renumber when the roster grows; names do not. Together
 the witnesses are the self-contained definition of "expressive enough":
@@ -250,7 +250,7 @@ out less clear or less safe than that rendering, is a failure (§4).
     public API; emit preserves them byte-for-byte.
 12. **diagnostics-quality.** Feed the parser a set of characteristic
     malformed programs; the rendered diagnostics match golden snapshots
-    that a reviewer has accepted as rust-analyzer-grade.
+    that a maintainer has accepted as rust-analyzer-grade.
 13. **ground-extension.** Define an `@`-function as a plain Rust fn with
     the registration attribute; ground a program that calls it, including
     a multi-valued case and a failing case that surfaces as a typed
@@ -283,7 +283,7 @@ out less clear or less safe than that rendering, is a failure (§4).
     side by side, with the differences in safety, clarity, and
     diagnostics stated. The themelios side is the executed example; the
     comparator side is held honest by the out-of-band execution check
-    (§10.2) and accepted as idiomatic by a named reviewer — the
+    (§10.2) and accepted as idiomatic by a named maintainer — the
     *diagnostics-quality* pattern applied to comparison.
 20. **asp-core-2.** Parse a conformant ASP-Core-2 program — query
     included — under the declared dialect; the shared constructs lower
@@ -301,7 +301,7 @@ it and restate nothing.
   *ground-extension*; python-clingox — witness sides for
   *transformation* and *extraction*, its own ground. Both are Python;
   one out-of-band harness executes all comparator sources against the
-  pinned engine on a stated cadence (§10.2), and a named reviewer
+  pinned engine on a stated cadence (§10.2), and a named maintainer
   accepts each rendering as idiomatic.
 - **Context comparators, not evidenced:** clingo's C and C++ APIs. The
   dominance argument, stated once: the Python API is the field's
@@ -421,13 +421,13 @@ re-establishes each compensation's necessity or retires it.
   nesting levels arise in practice from recursive constructions — so any
   recursive walk over user-reachable structure is a latent, uncatchable
   crash. Every walk in themelios — construction, traversal, rendering,
-  drop — is work-list based from birth, and the depth gate (§10.1) proves
+  drop — is work-list based from birth, and the depth proof (§10.1) proves
   it per walk. Designing this in is cheap; retrofitting it means
   converting every walk after the fact.
 - **A missing loop terminator in a work-list is a memory bomb that
   compiles clean.** Work-list code trades stack exhaustion (loud) for
   unbounded heap growth (silent) when a pop is missing. Unused-code and
-  unused-result warnings are denied workspace-wide, and the full gate
+  unused-result warnings are denied workspace-wide, and the full check suite
   runs memory-capped where the platform allows (§10.2).
 - **Refusal beats repair.** Silent truncation or normalization converts a
   detectable mistake into an undetectable wrong answer; refusal converts
@@ -442,7 +442,7 @@ re-establishes each compensation's necessity or retires it.
 - **Documentation lies unless something holds it.** Claims a repository
   makes about its own state are held to an executable-claims standard: a
   claim a test can hold, a test holds (§10.4). Nothing is promised in v1
-  documentation that v1 does not gate.
+  documentation that v1 does not check.
 - **No magic numbers.** Any literal that carries meaning — an exit code,
   a sentinel, an index with significance, a limit — gets a symbolic name
   conveying its intent, because a reader cannot distinguish `1`-the-exit-
@@ -588,7 +588,7 @@ These claims are held by the scaling-shape benchmarks of §10.1.
 
 All values are owned and total. No walk over user-reachable structure
 recurses — construction, traversal, rendering, and drop are work-list
-based from birth (§5.2), and the depth gate proves it per walk.
+based from birth (§5.2), and the depth proof holds it per walk.
 
 ### 7.3 Smart constructors
 
@@ -852,7 +852,7 @@ totality and the fusion oracle in both directions; golden diagnostic
 snapshots; the attachment policy seeded with kallos's scar corpus (§5.1).
 
 **Program:** algebraic property laws (set semantics; render → parse →
-lower identity); the subprocess depth gate proving every walk
+lower identity); the subprocess depth proof proving every walk
 stack-independent; mutation testing over constructor and transformation
 logic.
 
@@ -877,7 +877,7 @@ per-milestone mutation audit would catch weeks late; the number is a
 tripwire, never a target — raising it is not a goal, gaming it is a
 defect, and mutation remains the auditor of whether tests ask anything.
 Unused-code warnings denied workspace-wide with the motivating argument
-cited beside the lint (§5.2); executed examples in the gate;
+cited beside the lint (§5.2); executed examples in the checks;
 documentation examples that run. Toolchain: the `rust-version` **floor**
 is declared in every manifest — the contract a stranger's build meets —
 set forward-facing to current stable at authoring (1.97 at this
@@ -887,12 +887,12 @@ CI runs Linux and macOS; the platform split is explicit — valgrind and
 helgrind run on Linux CI runners (the development machine is macOS,
 where native `leaks` serves locally, with the recorded caveat that
 hosted-runner `leaks` hangs) — so no assurance claim depends on tools
-the working machine cannot run. Memory-capped full-gate runs where the
+the working machine cannot run. Memory-capped runs of the full checks where the
 platform allows.
 
-### 10.2 In-gate versus out-of-band
+### 10.2 Checked versus out-of-band
 
-The gate — run on every change — is: format check, clippy as errors, the
+The checks — run on every change — are: format check, clippy as errors, the
 test suite, the trust-boundary checks, executed examples, documentation
 build. Out-of-band, on stated cadences: fuzzing continuously with its
 corpus committed; mutation and the clingo differential per milestone;
@@ -913,7 +913,7 @@ The corpus serves the parser now and solver conformance later.
 
 rustdoc plus executed examples are the v1 documentation; claims about the
 project's own state are held to the executable-claims standard (§5.2).
-Nothing is promised in documentation that v1 does not gate.
+Nothing is promised in documentation that v1 does not check.
 
 ---
 
@@ -968,7 +968,7 @@ optimization surfaces; an **elenctic-successor** (declarative ASP
 testing) exercises the outcome vocabulary, the query surface, and
 comment-borne contract extraction — the reasoning modes under a
 consumer that reads them for verdicts. With these four, every major
-public surface has a named consumer. All but morphe gate
+public surface has a named consumer. All but morphe are a precondition of
 *stabilization*, not v1 completion: v1 ships those surfaces proven by
 witnesses and conformance, and they are not declared stable — nor
 published (§13) — until their consumers have built against them and
@@ -1002,7 +1002,7 @@ Eleven workspace members. Satellites live in their own repositories.
 | `themelios-clingcon-sys` | allow (bindings only) | Vendored, pinned bindings to libclingcon's registration surface. |
 | `themelios-clingcon` | allow (thin TCB delta) | Registration onto a clingo-backed session plus typed assignment retrieval. |
 | `themelios-reference` | forbid, `publish = false` | The naive pure-Rust reference solver: oracle, second implementor, native-backend demonstration. |
-| `themelios` | forbid | The facade: curated re-exports, adapters behind default features — disable them and the stack is FFI-free — and the witness examples, executed by the gate. |
+| `themelios` | forbid | The facade: curated re-exports, adapters behind default features — disable them and the stack is FFI-free — and the witness examples, executed on every change. |
 
 Typed AST placement is deliberate: it lives in `themelios-syntax`
 (syntactic accessors over the tree, no semantic opinions), serving
