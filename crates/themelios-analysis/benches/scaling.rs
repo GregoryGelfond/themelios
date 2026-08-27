@@ -1,24 +1,37 @@
 //! Scaling shapes for the analysis (docs/design/analysis.md §10), measured out of
-//! band as criterion benchmarks: the strongly-connected-components decomposition
-//! (§4) linear in the graph, and — as those surfaces land — `Analysis::of` linear in
-//! `program + edges`. Each shape lands with the surface it measures; the test suite
-//! asserts the shapes hold (the in-suite scaling tripwires, `tests/scc_laws.rs`),
-//! while these benchmarks measure the absolute numbers across doubling sizes, so a
-//! super-linear regression shows as a curve (docs/specification.md §10.2). Run with
-//! `cargo bench`.
+//! band as criterion benchmarks: the strongly-connected-components decomposition (§4)
+//! linear in the graph, and the ASP-Core-2 safety binding fixpoint (§5) linear in the
+//! rule. As those surfaces land, `Analysis::of` linear in `program + edges` joins them.
+//! The test suite asserts the shapes hold (the in-suite scaling tripwires,
+//! `tests/scc_laws.rs`, `tests/safe_laws.rs`), while these benchmarks measure the
+//! absolute numbers across doubling sizes, so a super-linear regression shows as a
+//! curve (docs/specification.md §10.2). Run with `cargo bench`.
 
 use criterion::{BenchmarkId, Criterion};
 
 use themelios_analysis::depend::DependencyGraph;
-use themelios_program::program::{Atom, Program, Rule, Statement};
+use themelios_analysis::safe::Safety;
+use themelios_program::program::{
+    Atom, BodyElement, Comparison, DefaultNegation, Literal, LiteralInner, Program, Relation, Rule,
+    Statement,
+};
 use themelios_program::provenance::WithProvenance;
-use themelios_program::symbol::Name;
+use themelios_program::symbol::{Name, Symbol, VarName};
+use themelios_program::term::{Term, Variable};
+
+const SIZES: [usize; 3] = [1_000, 4_000, 16_000];
 
 fn name(text: &str) -> Name {
     Name::new(text).expect("a valid identifier")
 }
 
-fn rule(head: usize, body: usize) -> WithProvenance<Statement> {
+fn variable(i: usize) -> Term {
+    Term::Variable(Variable::Named(
+        VarName::new(format!("X{i}")).expect("a valid variable"),
+    ))
+}
+
+fn edge(head: usize, body: usize) -> WithProvenance<Statement> {
     WithProvenance::constructed(Statement::Rule(Rule::new(
         Atom::constant(name(&format!("p{head}"))),
         Atom::constant(name(&format!("p{body}"))),
@@ -27,19 +40,45 @@ fn rule(head: usize, body: usize) -> WithProvenance<Statement> {
 
 /// A chain `p0 :- p1. … p_{n-1} :- p_n.` — a deep acyclic dependency graph.
 fn chain(n: usize) -> Program {
-    Program::of((0..n).map(|i| rule(i, i + 1)))
+    Program::of((0..n).map(|i| edge(i, i + 1)))
 }
 
 /// A cycle `p0 :- p1. … p_{n-1} :- p0.` — one strongly-connected component of `n`.
 fn cycle(n: usize) -> Program {
-    Program::of((0..n).map(|i| rule(i, (i + 1) % n)))
+    Program::of((0..n).map(|i| edge(i, (i + 1) % n)))
 }
 
-/// The decomposition (`DependencyGraph::of`, the walk and the iterative Tarjan) over
-/// a chain and a cycle at doubling sizes — linear in the graph (§4).
+/// One rule `p(X_n) :- X0 = 0, X1 = X0 + 1, …, X_n = X_{n-1} + 1.` — an assignment
+/// chain of `n` variables, each bound after the previous.
+fn assignment_chain(n: usize) -> Program {
+    let assign = |lhs: usize, rhs: Term| {
+        BodyElement::Literal(Literal {
+            negation: DefaultNegation::None,
+            inner: LiteralInner::Comparison(WithProvenance::constructed(Comparison::new(
+                variable(lhs),
+                Relation::Eq,
+                rhs,
+            ))),
+        })
+    };
+    let mut body = vec![assign(0, Term::Symbolic(Symbol::Number(0)))];
+    for i in 1..=n {
+        body.push(assign(
+            i,
+            variable(i - 1) + Term::Symbolic(Symbol::Number(1)),
+        ));
+    }
+    let head = Atom::new(name("p"), [variable(n)]);
+    Program::of([WithProvenance::constructed(Statement::Rule(Rule::new(
+        head, body,
+    )))])
+}
+
+/// The decomposition (`DependencyGraph::of`, the walk and the iterative Tarjan) over a
+/// chain and a cycle at doubling sizes — linear in the graph (§4).
 fn decompose(c: &mut Criterion) {
     let mut group = c.benchmark_group("scc_decompose");
-    for n in [1_000_usize, 4_000, 16_000] {
+    for n in SIZES {
         let chain = chain(n);
         group.bench_with_input(BenchmarkId::new("chain", n), &chain, |b, program| {
             b.iter(|| DependencyGraph::of(program));
@@ -47,6 +86,19 @@ fn decompose(c: &mut Criterion) {
         let cycle = cycle(n);
         group.bench_with_input(BenchmarkId::new("cycle", n), &cycle, |b, program| {
             b.iter(|| DependencyGraph::of(program));
+        });
+    }
+    group.finish();
+}
+
+/// The safety binding fixpoint (`Safety::of`) over an assignment chain at doubling
+/// sizes — linear in the rule (§5), where a re-scan would be quadratic.
+fn binding_fixpoint(c: &mut Criterion) {
+    let mut group = c.benchmark_group("safety_fixpoint");
+    for n in SIZES {
+        let program = assignment_chain(n);
+        group.bench_with_input(BenchmarkId::new("chain", n), &program, |b, program| {
+            b.iter(|| Safety::of(program));
         });
     }
     group.finish();
@@ -62,6 +114,7 @@ fn decompose(c: &mut Criterion) {
 pub fn scaling() {
     let mut criterion: Criterion = Criterion::default().configure_from_args();
     decompose(&mut criterion);
+    binding_fixpoint(&mut criterion);
 }
 
 fn main() {
