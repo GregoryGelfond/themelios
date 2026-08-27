@@ -96,7 +96,7 @@ fn descend_statement<V: Visit + ?Sized>(v: &mut V, statement: &Statement) {
     match statement {
         Statement::Rule(rule) => v.visit_rule(rule),
         Statement::WeakConstraint(weak) => {
-            v.visit_body(weak.body());
+            v.visit_body(weak.body().get());
             visit_weight(v, weak.weight());
             for term in weak.terms() {
                 visit_terms(v, term);
@@ -112,14 +112,14 @@ fn descend_statement<V: Visit + ?Sized>(v: &mut V, statement: &Statement) {
             Show::Term(term) => visit_terms(v, term),
             Show::TermBody { term, body } => {
                 visit_terms(v, term);
-                v.visit_body(body);
+                v.visit_body(body.get());
             }
         },
         Statement::Project(project) => match project {
             Project::Signature(_) => {}
             Project::Atom { atom, body } => {
-                v.visit_atom(atom);
-                v.visit_body(body);
+                v.visit_atom(atom.get());
+                v.visit_body(body.get());
             }
         },
         Statement::Edge(edge) => {
@@ -127,11 +127,11 @@ fn descend_statement<V: Visit + ?Sized>(v: &mut V, statement: &Statement) {
                 visit_terms(v, from);
                 visit_terms(v, to);
             }
-            v.visit_body(edge.body());
+            v.visit_body(edge.body().get());
         }
         Statement::Heuristic(heuristic) => {
-            v.visit_atom(heuristic.atom());
-            v.visit_body(heuristic.body());
+            v.visit_atom(heuristic.atom().get());
+            v.visit_body(heuristic.body().get());
             visit_terms(v, heuristic.bias());
             if let Some(priority) = heuristic.priority() {
                 visit_terms(v, priority);
@@ -139,14 +139,14 @@ fn descend_statement<V: Visit + ?Sized>(v: &mut V, statement: &Statement) {
             visit_terms(v, heuristic.modifier());
         }
         Statement::External(external) => {
-            v.visit_atom(external.atom());
-            v.visit_body(external.body());
+            v.visit_atom(external.atom().get());
+            v.visit_body(external.body().get());
             if let Some(value) = external.value() {
                 visit_terms(v, value);
             }
         }
         Statement::Const(constant) => visit_terms(v, &constant.value),
-        Statement::Query(query) => v.visit_atom(query.atom()),
+        Statement::Query(query) => v.visit_atom(query.atom().get()),
         Statement::Defined(_)
         | Statement::Include(_)
         | Statement::Script(_)
@@ -418,9 +418,11 @@ fn rebuild_statement<R: Rewrite + ?Sized>(r: &mut R, statement: Statement) -> St
         Statement::Heuristic(heuristic) => Statement::Heuristic(rebuild_heuristic(r, &heuristic)),
         Statement::External(external) => Statement::External(rebuild_external(r, &external)),
         Statement::Const(constant) => Statement::Const(rebuild_const(r, constant)),
-        Statement::Query(query) => {
-            Statement::Query(Query::new(r.rewrite_atom(query.atom().clone())))
-        }
+        Statement::Query(query) => Statement::Query(Query::from_nodes(rewrite_carrier(
+            r,
+            query.atom(),
+            |r, atom| r.rewrite_atom(atom.clone()),
+        ))),
         Statement::Defined(_)
         | Statement::Include(_)
         | Statement::Script(_)
@@ -685,13 +687,13 @@ fn rebuild_weak_constraint<R: Rewrite + ?Sized>(
     r: &mut R,
     weak: &WeakConstraint,
 ) -> WeakConstraint {
-    let body = r.rewrite_body(weak.body().clone());
+    let body = rewrite_carrier(r, weak.body(), |r, body| r.rewrite_body(body.clone()));
     let weight = rewrite_weight(r, weak.weight());
     let terms: Vec<_> = weak
         .terms()
         .map(|term| rewrite_term(r, term.clone()))
         .collect();
-    WeakConstraint::new(body, weight, terms)
+    WeakConstraint::from_nodes(body, weight, terms)
 }
 
 fn rebuild_optimize<R: Rewrite + ?Sized>(r: &mut R, optimize: &Optimize) -> Optimize {
@@ -722,7 +724,7 @@ fn rebuild_show<R: Rewrite + ?Sized>(r: &mut R, show: Show) -> Show {
         Show::Term(term) => Show::Term(rewrite_term(r, term)),
         Show::TermBody { term, body } => {
             let term = rewrite_term(r, term);
-            let body = r.rewrite_body(body);
+            let body = rewrite_owned_carrier(r, body, Rewrite::rewrite_body);
             Show::TermBody { term, body }
         }
     }
@@ -732,8 +734,8 @@ fn rebuild_project<R: Rewrite + ?Sized>(r: &mut R, project: Project) -> Project 
     match project {
         Project::Signature(signature) => Project::Signature(signature),
         Project::Atom { atom, body } => {
-            let atom = r.rewrite_atom(atom);
-            let body = r.rewrite_body(body);
+            let atom = rewrite_owned_carrier(r, atom, Rewrite::rewrite_atom);
+            let body = rewrite_owned_carrier(r, body, Rewrite::rewrite_body);
             Project::Atom { atom, body }
         }
     }
@@ -748,26 +750,26 @@ fn rebuild_edge<R: Rewrite + ?Sized>(r: &mut R, edge: &Edge) -> Edge {
             (from, to)
         })
         .collect();
-    let body = r.rewrite_body(edge.body().clone());
-    Edge::new(pairs, body)
+    let body = rewrite_carrier(r, edge.body(), |r, body| r.rewrite_body(body.clone()));
+    Edge::from_nodes(pairs, body)
 }
 
 fn rebuild_heuristic<R: Rewrite + ?Sized>(r: &mut R, heuristic: &Heuristic) -> Heuristic {
-    let atom = r.rewrite_atom(heuristic.atom().clone());
-    let body = r.rewrite_body(heuristic.body().clone());
+    let atom = rewrite_carrier(r, heuristic.atom(), |r, atom| r.rewrite_atom(atom.clone()));
+    let body = rewrite_carrier(r, heuristic.body(), |r, body| r.rewrite_body(body.clone()));
     let bias = rewrite_term(r, heuristic.bias().clone());
     let priority = heuristic
         .priority()
         .map(|priority| rewrite_term(r, priority.clone()));
     let modifier = rewrite_term(r, heuristic.modifier().clone());
-    Heuristic::new(atom, body, bias, priority, modifier)
+    Heuristic::from_nodes(atom, body, bias, priority, modifier)
 }
 
 fn rebuild_external<R: Rewrite + ?Sized>(r: &mut R, external: &External) -> External {
-    let atom = r.rewrite_atom(external.atom().clone());
-    let body = r.rewrite_body(external.body().clone());
+    let atom = rewrite_carrier(r, external.atom(), |r, atom| r.rewrite_atom(atom.clone()));
+    let body = rewrite_carrier(r, external.body(), |r, body| r.rewrite_body(body.clone()));
     let value = external.value().map(|value| rewrite_term(r, value.clone()));
-    External::new(atom, body, value)
+    External::from_nodes(atom, body, value)
 }
 
 fn rebuild_const<R: Rewrite + ?Sized>(r: &mut R, constant: Const) -> Const {

@@ -554,28 +554,43 @@ impl Rule {
 /// kept structurally distinct, one of §5's equality carve-outs.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct WeakConstraint {
-    body: Body,
+    body: WithProvenance<Body>,
     weight: Weight,
     terms: Vec<Term>,
 }
 
 impl WeakConstraint {
     /// A weak constraint over the given body, `weight(w).at_priority(p)`, and term tuple,
-    /// its terms canonicalized at the door (§5.1); the weight carries its own. O(terms).
+    /// its terms canonicalized at the door (§5.1); the weight carries its own, and the
+    /// body a `Constructed` origin (§6.2). O(terms).
     pub fn new(
         body: Body,
         weight: Weight,
         terms: impl IntoIterator<Item = Term>,
     ) -> WeakConstraint {
         WeakConstraint {
-            body,
+            body: WithProvenance::constructed(body),
             weight,
             terms: terms.into_iter().map(Term::canonicalize).collect(),
         }
     }
 
-    /// The body.
-    pub fn body(&self) -> &Body {
+    /// A weak constraint over an already-provenanced body — the raise's door, carrying
+    /// the body's parsed origin (§6.2, §8). Canonicalization runs at the ingest door (§6.3).
+    pub(crate) fn from_nodes(
+        body: WithProvenance<Body>,
+        weight: Weight,
+        terms: Vec<Term>,
+    ) -> WeakConstraint {
+        WeakConstraint {
+            body,
+            weight,
+            terms,
+        }
+    }
+
+    /// The body, with its provenance (§6.2).
+    pub fn body(&self) -> &WithProvenance<Body> {
         &self.body
     }
 
@@ -770,7 +785,7 @@ impl Rule {
 impl WeakConstraint {
     pub(crate) fn canonicalize(self) -> WeakConstraint {
         WeakConstraint {
-            body: self.body.canonicalize(),
+            body: self.body.map(Body::canonicalize),
             weight: self.weight.canonicalize(),
             terms: self.terms.into_iter().map(Term::canonicalize).collect(),
         }

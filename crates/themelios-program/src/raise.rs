@@ -1256,10 +1256,10 @@ fn raise_weak_constraint(
     parse: &dyn Reads,
     errors: &mut Vec<LowerError>,
 ) -> Statement {
-    let body = raise_body(weak.body(), parse, errors);
+    let body = raise_body_node(weak.body(), weak.syntax().text_range(), parse, errors);
     let weight = raise_weight(weak.weight(), weak.priority(), parse, errors);
     let terms = raise_terms(weak.tuple(), parse, errors);
-    Statement::WeakConstraint(WeakConstraint::new(body, weight, terms))
+    Statement::WeakConstraint(WeakConstraint::from_nodes(body, weight, terms))
 }
 
 fn raise_optimize(
@@ -1326,7 +1326,7 @@ fn raise_show(
         return Some(Statement::Show(if show.colon_token().is_some() {
             Show::TermBody {
                 term,
-                body: raise_body(show.body(), parse, errors),
+                body: raise_body_node(show.body(), show.syntax().text_range(), parse, errors),
             }
         } else {
             Show::Term(term)
@@ -1372,8 +1372,8 @@ fn raise_project(
     let Some(atom) = project.atom() else {
         return incomplete(project.syntax(), parse, errors);
     };
-    let atom = raise_atom(&atom, parse, errors)?;
-    let body = raise_body(project.body(), parse, errors);
+    let atom = raise_atom_node(&atom, parse, errors)?;
+    let body = raise_body_node(project.body(), project.syntax().text_range(), parse, errors);
     Some(Statement::Project(Project::Atom { atom, body }))
 }
 
@@ -1411,8 +1411,8 @@ fn raise_edge(
             ));
         }
     }
-    let body = raise_body(edge.body(), parse, errors);
-    Statement::Edge(Edge::new(pairs, body))
+    let body = raise_body_node(edge.body(), edge.syntax().text_range(), parse, errors);
+    Statement::Edge(Edge::from_nodes(pairs, body))
 }
 
 fn raise_heuristic(
@@ -1423,14 +1423,19 @@ fn raise_heuristic(
     let Some(atom) = heuristic.atom() else {
         return incomplete(heuristic.syntax(), parse, errors);
     };
-    let atom = raise_atom(&atom, parse, errors)?;
-    let body = raise_body(heuristic.body(), parse, errors);
+    let atom = raise_atom_node(&atom, parse, errors)?;
+    let body = raise_body_node(
+        heuristic.body(),
+        heuristic.syntax().text_range(),
+        parse,
+        errors,
+    );
     let bias = step_term(heuristic.weight(), heuristic.syntax(), parse, errors);
     let priority = heuristic
         .priority()
         .map(|term| raise_term_node(&term, parse, errors));
     let modifier = step_term(heuristic.modifier(), heuristic.syntax(), parse, errors);
-    Some(Statement::Heuristic(Heuristic::new(
+    Some(Statement::Heuristic(Heuristic::from_nodes(
         atom, body, bias, priority, modifier,
     )))
 }
@@ -1443,12 +1448,17 @@ fn raise_external(
     let Some(atom) = external.atom() else {
         return incomplete(external.syntax(), parse, errors);
     };
-    let atom = raise_atom(&atom, parse, errors)?;
-    let body = raise_body(external.body(), parse, errors);
+    let atom = raise_atom_node(&atom, parse, errors)?;
+    let body = raise_body_node(
+        external.body(),
+        external.syntax().text_range(),
+        parse,
+        errors,
+    );
     let value = external
         .value()
         .map(|term| raise_term_node(&term, parse, errors));
-    Some(Statement::External(External::new(atom, body, value)))
+    Some(Statement::External(External::from_nodes(atom, body, value)))
 }
 
 fn raise_const(
@@ -1536,7 +1546,7 @@ fn raise_query(
     let Some(atom) = query.atom() else {
         return incomplete(query.syntax(), parse, errors);
     };
-    Some(Statement::Query(Query::new(raise_atom(
+    Some(Statement::Query(Query::from_nodes(raise_atom_node(
         &atom, parse, errors,
     )?)))
 }
@@ -1962,6 +1972,32 @@ fn wrap<T>(content: T, range: TextRange, parse: &dyn Reads) -> WithProvenance<T>
         content,
         Provenance::from(Origin::Parsed(parse.locate(range))),
     )
+}
+
+/// Raise an atom node and wrap it with its parsed span (§6.1) — the directive analogue of
+/// a rule head/body carrier (`raise_rule`), so a directive's atom carries its own origin.
+fn raise_atom_node(
+    atom: &ast::Atom,
+    parse: &dyn Reads,
+    errors: &mut Vec<LowerError>,
+) -> Option<WithProvenance<Atom>> {
+    let range = atom.syntax().text_range();
+    Some(wrap(raise_atom(atom, parse, errors)?, range, parse))
+}
+
+/// Raise a directive's optional body and wrap it with its parsed span, falling back to the
+/// directive's own span when the body is absent (§6.1) — the directive analogue of a rule's
+/// body carrier (`raise_rule`).
+fn raise_body_node(
+    body: Option<ast::Body>,
+    fallback: TextRange,
+    parse: &dyn Reads,
+    errors: &mut Vec<LowerError>,
+) -> WithProvenance<Body> {
+    let range = body
+        .as_ref()
+        .map_or(fallback, |body| body.syntax().text_range());
+    wrap(raise_body(body, parse, errors), range, parse)
 }
 
 /// Diagnose a recovered node the value cannot complete, and skip it (§8): an

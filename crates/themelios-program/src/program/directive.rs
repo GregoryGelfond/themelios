@@ -898,8 +898,8 @@ pub enum Show {
     TermBody {
         /// The shown term.
         term: Term,
-        /// The body it shows under.
-        body: Body,
+        /// The body it shows under, with its provenance (§6.2).
+        body: WithProvenance<Body>,
     },
 }
 
@@ -910,10 +910,10 @@ pub enum Project {
     Signature(Signature),
     /// `#project a : body.` — an atom under a body (empty when the `:` is absent).
     Atom {
-        /// The projected atom.
-        atom: Atom,
-        /// The body.
-        body: Body,
+        /// The projected atom, with its provenance (§6.2).
+        atom: WithProvenance<Atom>,
+        /// The body, with its provenance (§6.2).
+        body: WithProvenance<Body>,
     },
 }
 
@@ -921,19 +921,26 @@ pub enum Project {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Edge {
     pairs: Vec<(Term, Term)>,
-    body: Body,
+    body: WithProvenance<Body>,
 }
 
 impl Edge {
-    /// An edge over the given node pairs and body, the node terms canonicalized (§5.1).
+    /// An edge over the given node pairs and body, the node terms canonicalized (§5.1);
+    /// the body carries a `Constructed` origin (§6.2).
     pub fn new(pairs: impl IntoIterator<Item = (Term, Term)>, body: Body) -> Edge {
         Edge {
             pairs: pairs
                 .into_iter()
                 .map(|(from, to)| (from.canonicalize(), to.canonicalize()))
                 .collect(),
-            body,
+            body: WithProvenance::constructed(body),
         }
+    }
+
+    /// An edge over an already-provenanced body — the raise's door, carrying the body's
+    /// parsed origin (§6.2, §8). Canonicalization runs at the ingest door (§6.3).
+    pub(crate) fn from_nodes(pairs: Vec<(Term, Term)>, body: WithProvenance<Body>) -> Edge {
+        Edge { pairs, body }
     }
 
     /// The node pairs, in order.
@@ -941,8 +948,8 @@ impl Edge {
         self.pairs.iter().map(|(from, to)| (from, to))
     }
 
-    /// The body.
-    pub fn body(&self) -> &Body {
+    /// The body, with its provenance (§6.2).
+    pub fn body(&self) -> &WithProvenance<Body> {
         &self.body
     }
 }
@@ -951,8 +958,8 @@ impl Edge {
 /// optional priority, and a modifier (§4.8).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Heuristic {
-    atom: Atom,
-    body: Body,
+    atom: WithProvenance<Atom>,
+    body: WithProvenance<Body>,
     bias: Term,
     priority: Option<Term>,
     modifier: Term,
@@ -960,7 +967,7 @@ pub struct Heuristic {
 
 impl Heuristic {
     /// A heuristic over the given parts, its bias, priority, and modifier canonicalized
-    /// (§5.1).
+    /// (§5.1); the atom and body carry a `Constructed` origin (§6.2).
     pub fn new(
         atom: Atom,
         body: Body,
@@ -969,21 +976,40 @@ impl Heuristic {
         modifier: impl Into<Term>,
     ) -> Heuristic {
         Heuristic {
-            atom,
-            body,
+            atom: WithProvenance::constructed(atom),
+            body: WithProvenance::constructed(body),
             bias: bias.into().canonicalize(),
             priority: priority.map(Term::canonicalize),
             modifier: modifier.into().canonicalize(),
         }
     }
 
-    /// The atom.
-    pub fn atom(&self) -> &Atom {
+    /// A heuristic over an already-provenanced atom and body — the raise's door,
+    /// carrying each's parsed origin (§6.2, §8). Canonicalization runs at the ingest
+    /// door (§6.3).
+    pub(crate) fn from_nodes(
+        atom: WithProvenance<Atom>,
+        body: WithProvenance<Body>,
+        bias: Term,
+        priority: Option<Term>,
+        modifier: Term,
+    ) -> Heuristic {
+        Heuristic {
+            atom,
+            body,
+            bias,
+            priority,
+            modifier,
+        }
+    }
+
+    /// The atom, with its provenance (§6.2).
+    pub fn atom(&self) -> &WithProvenance<Atom> {
         &self.atom
     }
 
-    /// The body.
-    pub fn body(&self) -> &Body {
+    /// The body, with its provenance (§6.2).
+    pub fn body(&self) -> &WithProvenance<Body> {
         &self.body
     }
 
@@ -1007,28 +1033,40 @@ impl Heuristic {
 /// — carried, never meaningful (grammar §13, §4.8).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct External {
-    atom: Atom,
-    body: Body,
+    atom: WithProvenance<Atom>,
+    body: WithProvenance<Body>,
     value: Option<Term>,
 }
 
 impl External {
-    /// An external over the given atom, body, and optional value (canonicalized, §5.1).
+    /// An external over the given atom, body, and optional value (canonicalized, §5.1);
+    /// the atom and body carry a `Constructed` origin (§6.2).
     pub fn new(atom: Atom, body: Body, value: Option<Term>) -> External {
         External {
-            atom,
-            body,
+            atom: WithProvenance::constructed(atom),
+            body: WithProvenance::constructed(body),
             value: value.map(Term::canonicalize),
         }
     }
 
-    /// The atom.
-    pub fn atom(&self) -> &Atom {
+    /// An external over an already-provenanced atom and body — the raise's door,
+    /// carrying each's parsed origin (§6.2, §8). Canonicalization runs at the ingest
+    /// door (§6.3).
+    pub(crate) fn from_nodes(
+        atom: WithProvenance<Atom>,
+        body: WithProvenance<Body>,
+        value: Option<Term>,
+    ) -> External {
+        External { atom, body, value }
+    }
+
+    /// The atom, with its provenance (§6.2).
+    pub fn atom(&self) -> &WithProvenance<Atom> {
         &self.atom
     }
 
-    /// The body.
-    pub fn body(&self) -> &Body {
+    /// The body, with its provenance (§6.2).
+    pub fn body(&self) -> &WithProvenance<Body> {
         &self.body
     }
 
@@ -1079,7 +1117,7 @@ impl Show {
             Show::Term(term) => Show::Term(term.canonicalize()),
             Show::TermBody { term, body } => Show::TermBody {
                 term: term.canonicalize(),
-                body: body.canonicalize(),
+                body: body.map(Body::canonicalize),
             },
         }
     }
@@ -1090,8 +1128,8 @@ impl Project {
         match self {
             Project::Signature(signature) => Project::Signature(signature),
             Project::Atom { atom, body } => Project::Atom {
-                atom: atom.canonicalize(),
-                body: body.canonicalize(),
+                atom: atom.map(Atom::canonicalize),
+                body: body.map(Body::canonicalize),
             },
         }
     }
@@ -1105,7 +1143,7 @@ impl Edge {
                 .into_iter()
                 .map(|(from, to)| (from.canonicalize(), to.canonicalize()))
                 .collect(),
-            body: self.body.canonicalize(),
+            body: self.body.map(Body::canonicalize),
         }
     }
 }
@@ -1113,8 +1151,8 @@ impl Edge {
 impl Heuristic {
     pub(crate) fn canonicalize(self) -> Heuristic {
         Heuristic {
-            atom: self.atom.canonicalize(),
-            body: self.body.canonicalize(),
+            atom: self.atom.map(Atom::canonicalize),
+            body: self.body.map(Body::canonicalize),
             bias: self.bias.canonicalize(),
             priority: self.priority.map(Term::canonicalize),
             modifier: self.modifier.canonicalize(),
@@ -1125,8 +1163,8 @@ impl Heuristic {
 impl External {
     pub(crate) fn canonicalize(self) -> External {
         External {
-            atom: self.atom.canonicalize(),
-            body: self.body.canonicalize(),
+            atom: self.atom.map(Atom::canonicalize),
+            body: self.body.map(Body::canonicalize),
             value: self.value.map(Term::canonicalize),
         }
     }

@@ -76,23 +76,31 @@ pub enum Statement {
 /// position holds, so it belongs to the statement enum (§4.2).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Query {
-    atom: Atom,
+    atom: WithProvenance<Atom>,
 }
 
 impl Query {
-    /// A query over the given atom.
+    /// A query over the given atom, carrying a `Constructed` origin (§6.2).
     pub fn new(atom: Atom) -> Query {
+        Query {
+            atom: WithProvenance::constructed(atom),
+        }
+    }
+
+    /// A query over an already-provenanced atom — the raise's door, carrying the atom's
+    /// parsed origin (§6.2, §8). Canonicalization runs at the ingest door (§6.3).
+    pub(crate) fn from_nodes(atom: WithProvenance<Atom>) -> Query {
         Query { atom }
     }
 
-    /// The queried atom.
-    pub fn atom(&self) -> &Atom {
+    /// The queried atom, with its provenance (§6.2).
+    pub fn atom(&self) -> &WithProvenance<Atom> {
         &self.atom
     }
 
     pub(crate) fn canonicalize(self) -> Query {
         Query {
-            atom: self.atom.canonicalize(),
+            atom: self.atom.map(Atom::canonicalize),
         }
     }
 }

@@ -9,7 +9,8 @@ use themelios_base::source::{Source, SourceId};
 use themelios_base::view::canonical_order;
 
 use themelios_program::program::{
-    Aggregate, BodyElement, Const, Head, Literal, LiteralInner, PartKey, Statement,
+    Aggregate, Atom, Body, BodyElement, Const, External, Head, Literal, LiteralInner, PartKey,
+    Statement,
 };
 use themelios_program::provenance::Origin;
 use themelios_program::raise::{LowerErrorKind, Raised, raise, raise_statement};
@@ -72,6 +73,71 @@ fn is_fact_named(statement: &Statement, predicate: &str) -> bool {
         return rule.is_fact() && atom.get().name.as_str() == predicate;
     }
     false
+}
+
+// ---- Directive components carry their own parsed provenance (§6.1) ----
+
+/// The single `#external` of a program that holds exactly one.
+fn only_external(raised: &Raised) -> External {
+    raised
+        .program()
+        .statements()
+        .find_map(|statement| match statement.get() {
+            Statement::External(external) => Some(external.clone()),
+            _ => None,
+        })
+        .expect("an `#external`")
+}
+
+#[test]
+fn a_parsed_directive_s_atom_and_body_carry_their_own_span() {
+    // §6.1: provenance rides every structural node down to the atom — a directive's
+    // atom and body, not only a rule's head and body.
+    let raised = raised("#external p : q.");
+    let external = only_external(&raised);
+    assert!(
+        external
+            .atom()
+            .provenance()
+            .origins()
+            .any(|origin| matches!(origin, Origin::Parsed(_))),
+        "the external's atom carries its parsed span (§6.1)"
+    );
+    assert!(
+        external
+            .body()
+            .provenance()
+            .origins()
+            .any(|origin| matches!(origin, Origin::Parsed(_))),
+        "the external's body carries its parsed span (§6.1)"
+    );
+}
+
+#[test]
+fn a_constructed_directive_s_atom_and_body_carry_a_constructed_origin() {
+    // §6.2: a directive built through the construction surface carries a `Constructed`
+    // origin on its atom and body — the parsed twin above carries a `Parsed` one.
+    let external = External::new(
+        Atom::constant(Name::new("p").expect("a valid identifier")),
+        Body::empty(),
+        None,
+    );
+    assert!(
+        external
+            .atom()
+            .provenance()
+            .origins()
+            .any(|origin| matches!(origin, Origin::Constructed)),
+        "a constructed external's atom carries a Constructed origin (§6.2)"
+    );
+    assert!(
+        external
+            .body()
+            .provenance()
+            .origins()
+            .any(|origin| matches!(origin, Origin::Constructed)),
+        "a constructed external's body carries a Constructed origin (§6.2)"
+    );
 }
 
 // ---- Per-statement resilience: a recovered statement is skipped (§8) ----

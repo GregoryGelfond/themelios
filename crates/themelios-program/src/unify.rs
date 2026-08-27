@@ -592,7 +592,7 @@ fn collect_statement(statement: &Statement, names: &mut Names) {
             collect_body(rule.body().get(), names);
         }
         Statement::WeakConstraint(weak) => {
-            collect_body(weak.body(), names);
+            collect_body(weak.body().get(), names);
             collect_weight(weak.weight(), names);
             for term in weak.terms() {
                 collect_term(term, names);
@@ -611,7 +611,7 @@ fn collect_statement(statement: &Statement, names: &mut Names) {
             Show::Term(term) => collect_term(term, names),
             Show::TermBody { term, body } => {
                 collect_term(term, names);
-                collect_body(body, names);
+                collect_body(body.get(), names);
             }
         },
         Statement::Project(project) => match project {
@@ -619,8 +619,8 @@ fn collect_statement(statement: &Statement, names: &mut Names) {
                 names.predicates.insert(signature.name.clone());
             }
             Project::Atom { atom, body } => {
-                collect_atom(atom, names);
-                collect_body(body, names);
+                collect_atom(atom.get(), names);
+                collect_body(body.get(), names);
             }
         },
         Statement::Defined(defined) => {
@@ -631,11 +631,11 @@ fn collect_statement(statement: &Statement, names: &mut Names) {
                 collect_term(from, names);
                 collect_term(to, names);
             }
-            collect_body(edge.body(), names);
+            collect_body(edge.body().get(), names);
         }
         Statement::Heuristic(heuristic) => {
-            collect_atom(heuristic.atom(), names);
-            collect_body(heuristic.body(), names);
+            collect_atom(heuristic.atom().get(), names);
+            collect_body(heuristic.body().get(), names);
             collect_term(heuristic.bias(), names);
             if let Some(priority) = heuristic.priority() {
                 collect_term(priority, names);
@@ -643,8 +643,8 @@ fn collect_statement(statement: &Statement, names: &mut Names) {
             collect_term(heuristic.modifier(), names);
         }
         Statement::External(external) => {
-            collect_atom(external.atom(), names);
-            collect_body(external.body(), names);
+            collect_atom(external.atom().get(), names);
+            collect_body(external.body().get(), names);
             if let Some(value) = external.value() {
                 collect_term(value, names);
             }
@@ -653,7 +653,7 @@ fn collect_statement(statement: &Statement, names: &mut Names) {
             names.predicates.insert(constant.name.clone());
             collect_term(&constant.value, names);
         }
-        Statement::Query(query) => collect_atom(query.atom(), names),
+        Statement::Query(query) => collect_atom(query.atom().get(), names),
         // Opaque or theory-namespace: no ordinary variable or predicate name (§4.8, §4.9).
         Statement::Include(_) | Statement::Script(_) | Statement::TheoryDefinition(_) => {}
     }

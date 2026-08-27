@@ -551,9 +551,9 @@ fn render_weak_constraint(
     dialect: Dialect,
 ) -> Result<(), Unspellable> {
     out.push_str(":~");
-    if !weak.body().is_empty() {
+    if !weak.body().get().is_empty() {
         out.push(' ');
-        render_body(out, weak.body(), dialect)?;
+        render_body(out, weak.body().get(), dialect)?;
     }
     out.push_str(". [");
     render_weight(out, weak.weight(), dialect)?;
@@ -636,7 +636,7 @@ fn render_show(out: &mut String, show: &Show, dialect: Dialect) -> Result<(), Un
             out.push_str("#show ");
             render_term(out, term, dialect)?;
             out.push_str(" : ");
-            render_body(out, body, dialect)?;
+            render_body(out, body.get(), dialect)?;
             out.push('.');
         }
     }
@@ -658,10 +658,10 @@ fn render_project(
         }
         Project::Atom { atom, body } => {
             out.push_str("#project ");
-            render_atom(out, atom, dialect)?;
-            if !body.is_empty() {
+            render_atom(out, atom.get(), dialect)?;
+            if !body.get().is_empty() {
                 out.push_str(" : ");
-                render_body(out, body, dialect)?;
+                render_body(out, body.get(), dialect)?;
             }
             out.push('.');
         }
@@ -688,9 +688,9 @@ fn render_edge(out: &mut String, edge: &Edge, dialect: Dialect) -> Result<(), Un
         render_term(out, to, dialect)?;
     }
     out.push(')');
-    if !edge.body().is_empty() {
+    if !edge.body().get().is_empty() {
         out.push_str(" : ");
-        render_body(out, edge.body(), dialect)?;
+        render_body(out, edge.body().get(), dialect)?;
     }
     out.push('.');
     Ok(())
@@ -704,10 +704,10 @@ fn render_heuristic(
     dialect: Dialect,
 ) -> Result<(), Unspellable> {
     out.push_str("#heuristic ");
-    render_atom(out, heuristic.atom(), dialect)?;
-    if !heuristic.body().is_empty() {
+    render_atom(out, heuristic.atom().get(), dialect)?;
+    if !heuristic.body().get().is_empty() {
         out.push_str(" : ");
-        render_body(out, heuristic.body(), dialect)?;
+        render_body(out, heuristic.body().get(), dialect)?;
     }
     out.push_str(". [");
     render_term(out, heuristic.bias(), dialect)?;
@@ -729,10 +729,10 @@ fn render_external(
     dialect: Dialect,
 ) -> Result<(), Unspellable> {
     out.push_str("#external ");
-    render_atom(out, external.atom(), dialect)?;
-    if !external.body().is_empty() {
+    render_atom(out, external.atom().get(), dialect)?;
+    if !external.body().get().is_empty() {
         out.push_str(" : ");
-        render_body(out, external.body(), dialect)?;
+        render_body(out, external.body().get(), dialect)?;
     }
     out.push('.');
     if let Some(value) = external.value() {
@@ -795,7 +795,7 @@ fn render_script(out: &mut String, script: &Script) {
 /// An ASP-Core-2 query (grammar §6.1): the queried atom and the query mark, no dot — the
 /// query stands last (§6.1), which its `Ord` placement gives it.
 fn render_query(out: &mut String, query: &Query, dialect: Dialect) -> Result<(), Unspellable> {
-    render_atom(out, query.atom(), dialect)?;
+    render_atom(out, query.atom().get(), dialect)?;
     out.push('?');
     Ok(())
 }
