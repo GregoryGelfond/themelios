@@ -469,7 +469,10 @@ witnessing rule because a consumer that learns a program is *not* normal wants t
 rule that makes it so. (The witness is the program tier's `Rule` itself, reused
 here — owned and identified by its **structural value**, so it names a rule of
 *any* program, parsed or constructed — and a consumer reads a source span from
-that rule's own provenance, program §6, which a constructed rule simply lacks, §8.)
+that rule's own provenance, program §6, which a constructed rule simply lacks, §8.
+The `Rule` is read from the `Statement::Rule` the construct scan records as its
+witness (§7); these classes' constructs are always rule-borne, so that statement
+is always a rule.)
 
 ### 6.4 The membership projection
 
@@ -529,15 +532,15 @@ lints read: which of the language's constructs a program uses.
 
 ```rust
 /// Which constructs a program uses. A set of flags with, for each, the first
-/// occurrence's rule (program §6) so a consumer can point at one.
+/// occurrence's statement (program §4, §6) so a consumer can point at one.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Constructs { /* private */ }
 
 impl Constructs {
     pub fn uses(&self, construct: Construct) -> bool;
-    /// The first rule using a construct, if any — the "show me one" a lint wants.
-    pub fn first(&self, construct: Construct) -> Option<Rule>;
-    pub fn all(&self) -> impl Iterator<Item = (Construct, Rule)>;
+    /// The first statement bearing a construct, if any — the "show me one" a lint wants.
+    pub fn first(&self, construct: Construct) -> Option<WithProvenance<Statement>>;
+    pub fn all(&self) -> impl Iterator<Item = (Construct, WithProvenance<Statement>)>;
 }
 
 /// The constructs an analysis or a lint distinguishes (grammar §5). Closed; a
@@ -552,11 +555,26 @@ pub enum Construct {
 ```
 
 The scan is one iterative walk of the program (program §13), setting a flag and
-recording the first rule at the first occurrence of each construct. It is a fact,
-not a judgement: it reports that a program *uses* an aggregate, never that using
-one is good or bad — a lint's policy over the scan is the lint's (§1).
+recording the first bearing statement at the first occurrence of each construct.
+It is a fact, not a judgement: it reports that a program *uses* an aggregate,
+never that using one is good or bad — a lint's policy over the scan is the
+lint's (§1).
 
-**Computational cost.** `O(program)` — one walk; `uses`/`first` are `O(1)`.
+**The witness is the bearing statement.** Five of the constructs are
+directive-borne — `Optimization`, `WeakConstraint`, `ExternalStatement`,
+`Heuristic`, and `Edge` are statements in their own right, with no enclosing
+`Rule` — so the witness is the `WithProvenance<Statement>` that bears the
+construct, not a `Rule`: this makes *every* construct, rule- or directive-borne,
+one a consumer can point at, and read a source span from when it wants one
+(program §6, which a constructed statement simply lacks, §8). The carrier's
+identity erases provenance (program §6.2), so the scan stays provenance-blind
+(§8) — two programs equal up to provenance yield equal scans. The syntactic
+classes (§6.3) that carry a `Rule` witness read it from the `Statement::Rule` the
+scan records, their constructs — disjunction, choice, head aggregate, negation —
+being always rule-borne.
+
+**Computational cost.** `O(program)` — one walk; `uses` is `O(1)`, and reading a
+witness clones a statement, `O(witness)` (§8).
 
 ## 8. Posture, totality, and cost
 
@@ -633,7 +651,7 @@ what it proves and what it cannot (spec §10.2).
     whenever the verdict is `Unknown`, its witness component carries a real cycle
     of the stated kind. This is the load-bearing law — it holds `Holds` honest.
   - **The scan is complete:** every construct that occurs is flagged, and every
-    flag's `first` names a rule that uses it.
+    flag's `first` names a statement that bears it.
 - **The differential** (out of band, once a grounder exists — the solve tier):
   the predicate-level approximations against the ground-level truth on the corpus,
   and the classes against a corpus of programs tagged with their known

@@ -27,3 +27,5 @@
 //! docs/specification.md §2 item 8). No walk recurses on the call stack (§4;
 //! docs/design/program.md §13).
 #![forbid(unsafe_code)]
+
+pub mod construct;
