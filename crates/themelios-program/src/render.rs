@@ -511,10 +511,11 @@ fn render_set_element(
 /// with a trailing space where present.
 fn render_left_guard(
     out: &mut String,
-    guard: Option<&Guard>,
+    guard: Option<&WithProvenance<Guard>>,
     dialect: Dialect,
 ) -> Result<(), Unspellable> {
     if let Some(guard) = guard {
+        let guard = guard.get();
         render_term(out, &guard.term, dialect)?;
         if let Some(relation) = guard.relation {
             out.push(' ');
@@ -529,10 +530,11 @@ fn render_left_guard(
 /// — the mirror of [`render_left_guard`], with a leading space where present.
 fn render_right_guard(
     out: &mut String,
-    guard: Option<&Guard>,
+    guard: Option<&WithProvenance<Guard>>,
     dialect: Dialect,
 ) -> Result<(), Unspellable> {
     if let Some(guard) = guard {
+        let guard = guard.get();
         out.push(' ');
         if let Some(relation) = guard.relation {
             out.push_str(relation_str(relation));

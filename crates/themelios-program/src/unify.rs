@@ -390,11 +390,11 @@ fn substitute_choice_element(element: &ChoiceElement, s: &Substitution) -> Choic
     )
 }
 
-fn substitute_guard(guard: &Guard, s: &Substitution) -> Guard {
-    Guard {
+fn substitute_guard(guard: &WithProvenance<Guard>, s: &Substitution) -> WithProvenance<Guard> {
+    map_carrier(guard, |guard| Guard {
         relation: guard.relation,
         term: guard.term.clone().substitute(s),
-    }
+    })
 }
 
 fn substitute_head_aggregate(aggregate: &HeadAggregate, s: &Substitution) -> HeadAggregate {
@@ -718,8 +718,8 @@ fn collect_conditional(conditional: &ConditionalLiteral, names: &mut Names) {
     collect_condition(&conditional.condition, names);
 }
 
-fn collect_guard(guard: &Guard, names: &mut Names) {
-    collect_term(&guard.term, names);
+fn collect_guard(guard: &WithProvenance<Guard>, names: &mut Names) {
+    collect_term(&guard.get().term, names);
 }
 
 fn collect_head(head: &Head, names: &mut Names) {

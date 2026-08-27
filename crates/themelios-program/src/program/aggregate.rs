@@ -25,10 +25,10 @@ pub struct Guard {
 /// Reads the two guards of a guarded aggregate uniformly (§4.7): the small structure a
 /// `FunctionAggregate`, a `HeadAggregate`, and a `SetAggregate` share.
 pub trait HasGuards {
-    /// The left guard, if any.
-    fn left_guard(&self) -> Option<&Guard>;
-    /// The right guard, if any.
-    fn right_guard(&self) -> Option<&Guard>;
+    /// The left guard, with its provenance, if any (§6.2).
+    fn left_guard(&self) -> Option<&WithProvenance<Guard>>;
+    /// The right guard, with its provenance, if any (§6.2).
+    fn right_guard(&self) -> Option<&WithProvenance<Guard>>;
 }
 
 /// An aggregate function (grammar §5.3). `SumPlus` is `#sum+`.
@@ -61,15 +61,15 @@ pub enum Aggregate {
 /// that *test* (§4.7). Its elements are a set (§4).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct FunctionAggregate {
-    left_guard: Option<Guard>,
+    left_guard: Option<WithProvenance<Guard>>,
     function: AggregateFunction,
     elements: BTreeSet<WithProvenance<BodyAggregateElement>>,
-    right_guard: Option<Guard>,
+    right_guard: Option<WithProvenance<Guard>>,
 }
 
 impl FunctionAggregate {
     /// A body function aggregate over the given elements, each carrying a `Constructed`
-    /// origin (§6.2). O(elements).
+    /// origin — and each guard likewise (§6.2). O(elements).
     pub fn new(
         left_guard: Option<Guard>,
         function: AggregateFunction,
@@ -77,24 +77,24 @@ impl FunctionAggregate {
         right_guard: Option<Guard>,
     ) -> FunctionAggregate {
         FunctionAggregate {
-            left_guard,
+            left_guard: left_guard.map(WithProvenance::constructed),
             function,
             elements: elements
                 .into_iter()
                 .map(WithProvenance::constructed)
                 .collect(),
-            right_guard,
+            right_guard: right_guard.map(WithProvenance::constructed),
         }
     }
 
-    /// A body function aggregate over already-provenanced elements, unioning
+    /// A body function aggregate over already-provenanced elements and guards, unioning
     /// provenance on any content collision (§6.3) — the raise's door, carrying each
-    /// element's parsed origin (§6.2, §8). O(elements).
+    /// element's and guard's parsed origin (§6.2, §8). O(elements).
     pub(crate) fn from_nodes(
-        left_guard: Option<Guard>,
+        left_guard: Option<WithProvenance<Guard>>,
         function: AggregateFunction,
         elements: impl IntoIterator<Item = WithProvenance<BodyAggregateElement>>,
-        right_guard: Option<Guard>,
+        right_guard: Option<WithProvenance<Guard>>,
     ) -> FunctionAggregate {
         FunctionAggregate {
             left_guard,
@@ -116,10 +116,10 @@ impl FunctionAggregate {
 }
 
 impl HasGuards for FunctionAggregate {
-    fn left_guard(&self) -> Option<&Guard> {
+    fn left_guard(&self) -> Option<&WithProvenance<Guard>> {
         self.left_guard.as_ref()
     }
-    fn right_guard(&self) -> Option<&Guard> {
+    fn right_guard(&self) -> Option<&WithProvenance<Guard>> {
         self.right_guard.as_ref()
     }
 }
@@ -129,15 +129,15 @@ impl HasGuards for FunctionAggregate {
 /// concrete types keep the taxonomy regular (§4.7).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct HeadAggregate {
-    left_guard: Option<Guard>,
+    left_guard: Option<WithProvenance<Guard>>,
     function: AggregateFunction,
     elements: BTreeSet<WithProvenance<HeadAggregateElement>>,
-    right_guard: Option<Guard>,
+    right_guard: Option<WithProvenance<Guard>>,
 }
 
 impl HeadAggregate {
     /// A head function aggregate over the given elements, each carrying a `Constructed`
-    /// origin (§6.2). O(elements).
+    /// origin — and each guard likewise (§6.2). O(elements).
     pub fn new(
         left_guard: Option<Guard>,
         function: AggregateFunction,
@@ -145,24 +145,24 @@ impl HeadAggregate {
         right_guard: Option<Guard>,
     ) -> HeadAggregate {
         HeadAggregate {
-            left_guard,
+            left_guard: left_guard.map(WithProvenance::constructed),
             function,
             elements: elements
                 .into_iter()
                 .map(WithProvenance::constructed)
                 .collect(),
-            right_guard,
+            right_guard: right_guard.map(WithProvenance::constructed),
         }
     }
 
-    /// A head function aggregate over already-provenanced elements, unioning
+    /// A head function aggregate over already-provenanced elements and guards, unioning
     /// provenance on any content collision (§6.3) — the raise's door, carrying each
-    /// element's parsed origin (§6.2, §8). O(elements).
+    /// element's and guard's parsed origin (§6.2, §8). O(elements).
     pub(crate) fn from_nodes(
-        left_guard: Option<Guard>,
+        left_guard: Option<WithProvenance<Guard>>,
         function: AggregateFunction,
         elements: impl IntoIterator<Item = WithProvenance<HeadAggregateElement>>,
-        right_guard: Option<Guard>,
+        right_guard: Option<WithProvenance<Guard>>,
     ) -> HeadAggregate {
         HeadAggregate {
             left_guard,
@@ -184,10 +184,10 @@ impl HeadAggregate {
 }
 
 impl HasGuards for HeadAggregate {
-    fn left_guard(&self) -> Option<&Guard> {
+    fn left_guard(&self) -> Option<&WithProvenance<Guard>> {
         self.left_guard.as_ref()
     }
-    fn right_guard(&self) -> Option<&Guard> {
+    fn right_guard(&self) -> Option<&WithProvenance<Guard>> {
         self.right_guard.as_ref()
     }
 }
@@ -196,36 +196,36 @@ impl HasGuards for HeadAggregate {
 /// `{ … }` form (§4.7). Its elements are a set (§4).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct SetAggregate {
-    left_guard: Option<Guard>,
+    left_guard: Option<WithProvenance<Guard>>,
     elements: BTreeSet<WithProvenance<SetElement>>,
-    right_guard: Option<Guard>,
+    right_guard: Option<WithProvenance<Guard>>,
 }
 
 impl SetAggregate {
-    /// A set aggregate over the given elements, each carrying a `Constructed` origin
-    /// (§6.2). O(elements).
+    /// A set aggregate over the given elements, each carrying a `Constructed` origin —
+    /// and each guard likewise (§6.2). O(elements).
     pub fn new(
         left_guard: Option<Guard>,
         elements: impl IntoIterator<Item = SetElement>,
         right_guard: Option<Guard>,
     ) -> SetAggregate {
         SetAggregate {
-            left_guard,
+            left_guard: left_guard.map(WithProvenance::constructed),
             elements: elements
                 .into_iter()
                 .map(WithProvenance::constructed)
                 .collect(),
-            right_guard,
+            right_guard: right_guard.map(WithProvenance::constructed),
         }
     }
 
-    /// A set aggregate over already-provenanced elements, unioning provenance on any
-    /// content collision (§6.3) — the raise's door for a body set form (§4.4, §8),
-    /// carrying each element's parsed origin (§6.2). O(elements).
+    /// A set aggregate over already-provenanced elements and guards, unioning provenance on
+    /// any content collision (§6.3) — the raise's door for a body set form (§4.4, §8),
+    /// carrying each element's and guard's parsed origin (§6.2). O(elements).
     pub(crate) fn from_nodes(
-        left_guard: Option<Guard>,
+        left_guard: Option<WithProvenance<Guard>>,
         elements: impl IntoIterator<Item = WithProvenance<SetElement>>,
-        right_guard: Option<Guard>,
+        right_guard: Option<WithProvenance<Guard>>,
     ) -> SetAggregate {
         SetAggregate {
             left_guard,
@@ -241,10 +241,10 @@ impl SetAggregate {
 }
 
 impl HasGuards for SetAggregate {
-    fn left_guard(&self) -> Option<&Guard> {
+    fn left_guard(&self) -> Option<&WithProvenance<Guard>> {
         self.left_guard.as_ref()
     }
-    fn right_guard(&self) -> Option<&Guard> {
+    fn right_guard(&self) -> Option<&WithProvenance<Guard>> {
         self.right_guard.as_ref()
     }
 }
@@ -500,14 +500,14 @@ impl Aggregate {
 impl FunctionAggregate {
     pub(crate) fn canonicalize(self) -> FunctionAggregate {
         FunctionAggregate {
-            left_guard: self.left_guard.map(Guard::canonicalize),
+            left_guard: self.left_guard.map(|guard| guard.map(Guard::canonicalize)),
             function: self.function,
             elements: super::merge_collect(
                 self.elements
                     .into_iter()
                     .map(|element| element.map(BodyAggregateElement::canonicalize)),
             ),
-            right_guard: self.right_guard.map(Guard::canonicalize),
+            right_guard: self.right_guard.map(|guard| guard.map(Guard::canonicalize)),
         }
     }
 }
@@ -515,14 +515,14 @@ impl FunctionAggregate {
 impl HeadAggregate {
     pub(crate) fn canonicalize(self) -> HeadAggregate {
         HeadAggregate {
-            left_guard: self.left_guard.map(Guard::canonicalize),
+            left_guard: self.left_guard.map(|guard| guard.map(Guard::canonicalize)),
             function: self.function,
             elements: super::merge_collect(
                 self.elements
                     .into_iter()
                     .map(|element| element.map(HeadAggregateElement::canonicalize)),
             ),
-            right_guard: self.right_guard.map(Guard::canonicalize),
+            right_guard: self.right_guard.map(|guard| guard.map(Guard::canonicalize)),
         }
     }
 }
@@ -530,13 +530,13 @@ impl HeadAggregate {
 impl SetAggregate {
     pub(crate) fn canonicalize(self) -> SetAggregate {
         SetAggregate {
-            left_guard: self.left_guard.map(Guard::canonicalize),
+            left_guard: self.left_guard.map(|guard| guard.map(Guard::canonicalize)),
             elements: super::merge_collect(
                 self.elements
                     .into_iter()
                     .map(|element| element.map(SetElement::canonicalize)),
             ),
-            right_guard: self.right_guard.map(Guard::canonicalize),
+            right_guard: self.right_guard.map(|guard| guard.map(Guard::canonicalize)),
         }
     }
 }

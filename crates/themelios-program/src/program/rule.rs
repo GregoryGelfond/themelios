@@ -275,36 +275,36 @@ impl DisjunctionElement {
 /// `1 { a; b } 2` (§4.4).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct Choice {
-    left_guard: Option<Guard>,
+    left_guard: Option<WithProvenance<Guard>>,
     elements: BTreeSet<WithProvenance<ChoiceElement>>,
-    right_guard: Option<Guard>,
+    right_guard: Option<WithProvenance<Guard>>,
 }
 
 impl Choice {
     /// A choice over the given guards and elements, each element carrying a `Constructed`
-    /// origin (§6.2).
+    /// origin — and each guard likewise (§6.2).
     pub fn new(
         left_guard: Option<Guard>,
         elements: impl IntoIterator<Item = ChoiceElement>,
         right_guard: Option<Guard>,
     ) -> Choice {
         Choice {
-            left_guard,
+            left_guard: left_guard.map(WithProvenance::constructed),
             elements: elements
                 .into_iter()
                 .map(WithProvenance::constructed)
                 .collect(),
-            right_guard,
+            right_guard: right_guard.map(WithProvenance::constructed),
         }
     }
 
-    /// A choice over already-provenanced elements, unioning provenance on any
+    /// A choice over already-provenanced elements and guards, unioning provenance on any
     /// content collision (§6.3) — the raise's door for a head set form (§4.4, §8),
-    /// carrying each element's parsed origin (§6.2). O(elements).
+    /// carrying each element's and guard's parsed origin (§6.2). O(elements).
     pub(crate) fn from_nodes(
-        left_guard: Option<Guard>,
+        left_guard: Option<WithProvenance<Guard>>,
         elements: impl IntoIterator<Item = WithProvenance<ChoiceElement>>,
-        right_guard: Option<Guard>,
+        right_guard: Option<WithProvenance<Guard>>,
     ) -> Choice {
         Choice {
             left_guard,
@@ -313,13 +313,13 @@ impl Choice {
         }
     }
 
-    /// The left guard, if any.
-    pub fn left_guard(&self) -> Option<&Guard> {
+    /// The left guard, with its provenance, if any (§6.2).
+    pub fn left_guard(&self) -> Option<&WithProvenance<Guard>> {
         self.left_guard.as_ref()
     }
 
-    /// The right guard, if any.
-    pub fn right_guard(&self) -> Option<&Guard> {
+    /// The right guard, with its provenance, if any (§6.2).
+    pub fn right_guard(&self) -> Option<&WithProvenance<Guard>> {
         self.right_guard.as_ref()
     }
 
@@ -700,13 +700,13 @@ impl Disjunction {
 impl Choice {
     pub(crate) fn canonicalize(self) -> Choice {
         Choice {
-            left_guard: self.left_guard.map(Guard::canonicalize),
+            left_guard: self.left_guard.map(|guard| guard.map(Guard::canonicalize)),
             elements: super::merge_collect(
                 self.elements
                     .into_iter()
                     .map(|element| element.map(ChoiceElement::canonicalize)),
             ),
-            right_guard: self.right_guard.map(Guard::canonicalize),
+            right_guard: self.right_guard.map(|guard| guard.map(Guard::canonicalize)),
         }
     }
 }

@@ -903,6 +903,19 @@ pub enum Show {
     },
 }
 
+impl Show {
+    /// A `#show t : body.` over the given term and body — the declarative form that hides
+    /// the provenance carrier, as the struct directives' `new` does: the term is
+    /// canonicalized and the body carries a `Constructed` origin (§5.1, §6.2). The other
+    /// forms are struct-literal-simple and need no constructor.
+    pub fn term_body(term: impl Into<Term>, body: Body) -> Show {
+        Show::TermBody {
+            term: term.into().canonicalize(),
+            body: WithProvenance::constructed(body),
+        }
+    }
+}
+
 /// A `#project` directive (grammar §5.9): a signature or an atom under a body (§4.8).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Project {
@@ -915,6 +928,18 @@ pub enum Project {
         /// The body, with its provenance (§6.2).
         body: WithProvenance<Body>,
     },
+}
+
+impl Project {
+    /// A `#project a : body.` over the given atom and body — the declarative form that hides
+    /// the provenance carrier, as `External::new` does: each carries a `Constructed` origin
+    /// (§6.2). The signature form is struct-literal-simple and needs no constructor.
+    pub fn atom_body(atom: Atom, body: Body) -> Project {
+        Project::Atom {
+            atom: WithProvenance::constructed(atom),
+            body: WithProvenance::constructed(body),
+        }
+    }
 }
 
 /// An `#edge` directive (grammar §5.9): node pairs under a body (§4.8).

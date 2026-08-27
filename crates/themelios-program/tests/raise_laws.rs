@@ -9,8 +9,8 @@ use themelios_base::source::{Source, SourceId};
 use themelios_base::view::canonical_order;
 
 use themelios_program::program::{
-    Aggregate, Atom, Body, BodyElement, Const, External, Head, Literal, LiteralInner, PartKey,
-    Statement,
+    Aggregate, Atom, Body, BodyElement, Const, External, HasGuards, Head, Literal, LiteralInner,
+    PartKey, Project, Show, Statement,
 };
 use themelios_program::provenance::Origin;
 use themelios_program::raise::{LowerErrorKind, Raised, raise, raise_statement};
@@ -137,6 +137,61 @@ fn a_constructed_directive_s_atom_and_body_carry_a_constructed_origin() {
             .origins()
             .any(|origin| matches!(origin, Origin::Constructed)),
         "a constructed external's body carries a Constructed origin (§6.2)"
+    );
+}
+
+#[test]
+fn a_parsed_guard_carries_its_own_span() {
+    // §6.1: a guard is a structural node — a relation and a bound — so it carries its own
+    // parsed span, as a comparison does.
+    let raised = raised(":- #count { X : q(X) } > 3.");
+    let rule = only_rule(&raised);
+    let guard = rule
+        .body()
+        .get()
+        .elements()
+        .find_map(|element| match element.get() {
+            BodyElement::Aggregate {
+                aggregate: Aggregate::Function(aggregate),
+                ..
+            } => aggregate.right_guard(),
+            _ => None,
+        })
+        .expect("an aggregate right guard");
+    assert!(
+        guard
+            .provenance()
+            .origins()
+            .any(|origin| matches!(origin, Origin::Parsed(_))),
+        "the guard carries its parsed span (§6.1)"
+    );
+}
+
+#[test]
+fn the_show_and_project_body_forms_construct_without_carrier_ceremony() {
+    // The declarative constructors hide the provenance carrier, as the struct directives'
+    // `new` does (§6.2): a hand-built `#show t : body` / `#project a : body` takes bare
+    // content and stamps a `Constructed` origin.
+    let Show::TermBody { body, .. } = Show::term_body(1, Body::empty()) else {
+        panic!("a term-body show");
+    };
+    assert!(
+        body.provenance()
+            .origins()
+            .any(|origin| matches!(origin, Origin::Constructed)),
+        "the show body carries a Constructed origin (§6.2)"
+    );
+    let Project::Atom { atom, .. } = Project::atom_body(
+        Atom::constant(Name::new("p").expect("a valid identifier")),
+        Body::empty(),
+    ) else {
+        panic!("an atom-body project");
+    };
+    assert!(
+        atom.provenance()
+            .origins()
+            .any(|origin| matches!(origin, Origin::Constructed)),
+        "the project atom carries a Constructed origin (§6.2)"
     );
 }
 

@@ -180,10 +180,10 @@ fn push_conditional_variables<'a>(
 
 fn push_guard_variables<'a>(aggregate: &'a impl HasGuards, out: &mut Vec<&'a Variable>) {
     if let Some(guard) = aggregate.left_guard() {
-        push_term_variables(&guard.term, out);
+        push_term_variables(&guard.get().term, out);
     }
     if let Some(guard) = aggregate.right_guard() {
-        push_term_variables(&guard.term, out);
+        push_term_variables(&guard.get().term, out);
     }
 }
 
@@ -267,14 +267,14 @@ fn push_disjunction_variables<'a>(disjunction: &'a Disjunction, out: &mut Vec<&'
 
 fn push_choice_variables<'a>(choice: &'a Choice, out: &mut Vec<&'a Variable>) {
     if let Some(guard) = choice.left_guard() {
-        push_term_variables(&guard.term, out);
+        push_term_variables(&guard.get().term, out);
     }
     for element in choice.elements() {
         push_literal_variables(element.get().literal(), out);
         push_condition_variables(element.get().condition(), out);
     }
     if let Some(guard) = choice.right_guard() {
-        push_term_variables(&guard.term, out);
+        push_term_variables(&guard.get().term, out);
     }
 }
 

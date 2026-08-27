@@ -77,16 +77,22 @@ fn has_guards_reads_both_guards_and_an_absent_relation_is_none() {
         [body_element(1)],
         Some(right.clone()),
     );
-    assert_eq!(function.left_guard(), Some(&left));
-    assert_eq!(function.right_guard(), Some(&right));
-    assert_eq!(function.right_guard().expect("a guard").relation, None);
+    assert_eq!(function.left_guard().map(WithProvenance::get), Some(&left));
+    assert_eq!(
+        function.right_guard().map(WithProvenance::get),
+        Some(&right)
+    );
+    assert_eq!(
+        function.right_guard().expect("a guard").get().relation,
+        None
+    );
     // A set aggregate reads its guards through the same trait.
     let set = SetAggregate::new(
         Some(left.clone()),
         [SetElement::Literal(literal("p"))],
         None,
     );
-    assert_eq!(set.left_guard(), Some(&left));
+    assert_eq!(set.left_guard().map(WithProvenance::get), Some(&left));
     assert_eq!(set.right_guard(), None);
     // A head aggregate too.
     let head = HeadAggregate::new(
@@ -99,7 +105,7 @@ fn has_guards_reads_both_guards_and_an_absent_relation_is_none() {
         )],
         Some(right.clone()),
     );
-    assert_eq!(head.right_guard(), Some(&right));
+    assert_eq!(head.right_guard().map(WithProvenance::get), Some(&right));
 }
 
 #[test]

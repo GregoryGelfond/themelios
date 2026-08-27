@@ -268,9 +268,13 @@ fn descend_theory_atom<V: Visit + ?Sized>(v: &mut V, atom: &TheoryAtom) {
     }
 }
 
-fn visit_guards<V: Visit + ?Sized>(v: &mut V, left: Option<&Guard>, right: Option<&Guard>) {
+fn visit_guards<V: Visit + ?Sized>(
+    v: &mut V,
+    left: Option<&WithProvenance<Guard>>,
+    right: Option<&WithProvenance<Guard>>,
+) {
     for guard in [left, right].into_iter().flatten() {
-        visit_terms(v, &guard.term);
+        visit_terms(v, &guard.get().term);
     }
 }
 
@@ -666,11 +670,14 @@ fn rewrite_set_element<R: Rewrite + ?Sized>(r: &mut R, element: &SetElement) -> 
     }
 }
 
-fn rewrite_guard<R: Rewrite + ?Sized>(r: &mut R, guard: &Guard) -> Guard {
-    Guard {
+fn rewrite_guard<R: Rewrite + ?Sized>(
+    r: &mut R,
+    guard: &WithProvenance<Guard>,
+) -> WithProvenance<Guard> {
+    rewrite_carrier(r, guard, |r, guard| Guard {
         relation: guard.relation,
         term: rewrite_term(r, guard.term.clone()),
-    }
+    })
 }
 
 fn rewrite_weight<R: Rewrite + ?Sized>(r: &mut R, current: &Weight) -> Weight {

@@ -1108,11 +1108,12 @@ fn raise_guard(
     guard: Option<ast::Guard>,
     parse: &dyn Reads,
     errors: &mut Vec<LowerError>,
-) -> Option<Guard> {
+) -> Option<WithProvenance<Guard>> {
     let guard = guard?;
+    let range = guard.syntax().text_range();
     let relation = guard.relation().map(relation_of);
     let term = step_term(guard.term(), guard.syntax(), parse, errors);
-    Some(Guard { relation, term })
+    Some(wrap(Guard { relation, term }, range, parse))
 }
 
 /// Raise a body aggregate (§4.7): a function aggregate over testing elements, or a set
