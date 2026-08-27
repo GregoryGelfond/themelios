@@ -17,6 +17,11 @@ tree-sitter-cli = ">=0.26.12"
 [tasks]
 # The differential: membership, statement kinds, canonical spellings.
 differential = "cargo test -p themelios-syntax --features differential --test differential -- --nocapture --test-threads=1 differential"
+# The program tier's differential: the rendered text, ground arithmetic, symbol order,
+# canonical equality, and the i32 width, each against the authority.
+differential-program = "cargo test -p themelios-program --features differential --test differential -- --nocapture --test-threads=1"
+# The analysis tier's differential: the safety divergence against the authority's grounder.
+differential-analysis = "cargo test -p themelios-analysis --features differential --test differential -- --nocapture --test-threads=1"
 # The authority's nesting ceiling per family, for the depth constant's
 # lower bound and grammar §11 D2 (a bisection, one process per probe).
 measure-ceiling = "cargo test -p themelios-syntax --features differential --test differential -- --nocapture --ignored measure_the_authoritys_nesting_ceiling_per_family"
