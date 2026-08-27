@@ -33,8 +33,18 @@ pub struct Safety {
 
 impl Safety {
     /// Read a program's safety and grounding finiteness (§5). `O(rules · variables +
-    /// program + edges)`.
+    /// program + edges)`. Builds the dependency graph and delegates to `from_graph`;
+    /// the assembled `Analysis` (§3) builds the graph once and shares it.
     pub fn of(program: &Program) -> Safety {
+        Safety::from_graph(program, &DependencyGraph::of(program))
+    }
+
+    /// Read a program's safety against a dependency graph already built for it (§5):
+    /// the door the assembled `Analysis` (§3) calls so the graph is built once and
+    /// shared across the facets rather than rebuilt per facet. `Safety::of` is this
+    /// with a freshly built graph; safety consults the graph only for `finiteness`,
+    /// since `unsafe_rules` is a program walk.
+    pub(crate) fn from_graph(program: &Program, graph: &DependencyGraph) -> Safety {
         let mut unsafe_rules = Vec::new();
         for statement in program.statements() {
             if let Statement::Rule(rule) = statement.get() {
@@ -47,8 +57,7 @@ impl Safety {
                 }
             }
         }
-        let graph = DependencyGraph::of(program);
-        let finiteness = finiteness_verdict(program, &graph);
+        let finiteness = finiteness_verdict(program, graph);
         Safety {
             unsafe_rules,
             finiteness,

@@ -1,0 +1,19 @@
+constructs:
+  ExternalStatement: #external a(X) : p(X). [X]
+dependencies:
+  predicates: p/1
+  edges:
+  components (reverse-topological):
+    {p/1}
+safety:
+  safe: true
+  finiteness: Holds
+classes:
+  tightness: Holds
+  head_cycle_free: Holds
+  stratification: Stratified
+  normality: Normal
+  horn: Horn
+  uses_disjunction: false
+  uses_choice: false
+  confirmed: Tight, HeadCycleFree, Stratified, Normal, Horn, NonDisjunctive, ChoiceFree

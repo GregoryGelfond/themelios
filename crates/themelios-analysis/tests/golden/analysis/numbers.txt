@@ -1,0 +1,22 @@
+constructs:
+dependencies:
+  predicates: b/1, d/1, h/1, l/1, o/1
+  edges:
+  components (reverse-topological):
+    {b/1}
+    {d/1}
+    {h/1}
+    {l/1}
+    {o/1}
+safety:
+  safe: true
+  finiteness: Holds
+classes:
+  tightness: Holds
+  head_cycle_free: Holds
+  stratification: Stratified
+  normality: Normal
+  horn: Horn
+  uses_disjunction: false
+  uses_choice: false
+  confirmed: Tight, HeadCycleFree, Stratified, Normal, Horn, NonDisjunctive, ChoiceFree

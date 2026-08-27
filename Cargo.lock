@@ -747,7 +747,9 @@ dependencies = [
  "criterion",
  "proptest",
  "serde_json",
+ "themelios-base",
  "themelios-program",
+ "themelios-syntax",
 ]
 
 [[package]]

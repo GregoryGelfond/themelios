@@ -58,18 +58,33 @@ pub struct Classes {
 impl Classes {
     /// Read the classes of a program (§6): its dependency graph and its construct scan,
     /// then the recursion classes off the graph (§6.2) and the syntactic classes off its
-    /// structure (§6.3). `O(program + edges)`. (It builds its own graph and scan, as
-    /// `Safety::of` does; the assembled `Analysis` shares one of each across its facets.)
+    /// structure (§6.3). `O(program + edges)`. Builds the graph and scan and delegates to
+    /// `from_parts`; the assembled `Analysis` (§3) builds them once and shares them.
     pub fn of(program: &Program) -> Classes {
-        let graph = DependencyGraph::of(program);
+        Classes::from_parts(
+            program,
+            &DependencyGraph::of(program),
+            &Constructs::of(program),
+        )
+    }
+
+    /// Read the classes from a dependency graph and construct scan already built for the
+    /// program (§6): the door the assembled `Analysis` (§3) calls so the graph and scan
+    /// are built once and shared across the facets. `Classes::of` is this with a freshly
+    /// built graph and scan. Only the classes read the positive projection, so it is
+    /// taken from the passed graph here.
+    pub(crate) fn from_parts(
+        program: &Program,
+        graph: &DependencyGraph,
+        constructs: &Constructs,
+    ) -> Classes {
         let positive = graph.positive();
-        let constructs = Constructs::of(program);
         let normality = normality_of(program);
         let horn = horn_of(program, &normality);
         Classes {
             tightness: tightness_verdict(&positive),
             head_cycle_free: head_cycle_free_verdict(program, &positive),
-            stratification: stratification_of(&graph),
+            stratification: stratification_of(graph),
             normality,
             horn,
             uses_disjunction: constructs.uses(Construct::Disjunction),

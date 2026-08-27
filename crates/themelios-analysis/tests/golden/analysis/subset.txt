@@ -1,0 +1,21 @@
+constructs:
+  Choice: 2 { p((1 .. 5)) }.
+  Interval: 2 { p((1 .. 5)) }.
+  Heuristic: #heuristic p((1 .. 2)). [1, false]
+dependencies:
+  predicates: p/1
+  edges:
+  components (reverse-topological):
+    {p/1}
+safety:
+  safe: true
+  finiteness: Holds
+classes:
+  tightness: Holds
+  head_cycle_free: Holds
+  stratification: Stratified
+  normality: NotNormal 2 { p((1 .. 5)) }.
+  horn: NotHorn 2 { p((1 .. 5)) }.
+  uses_disjunction: false
+  uses_choice: true
+  confirmed: Tight, HeadCycleFree, Stratified, NonDisjunctive

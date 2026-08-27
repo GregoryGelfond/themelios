@@ -18,8 +18,14 @@ themelios-program = { path = "../themelios-program" }
 
 # The stage instruments (docs/design/analysis.md §10), outside the shipped
 # closure's claim: proptest and criterion as in the tiers beneath, and
-# serde_json solely so tests/trust.rs reads `cargo metadata`'s JSON.
+# serde_json solely so tests/trust.rs reads `cargo metadata`'s JSON. The base and
+# syntax tiers are reached only by the golden corpus (tests/golden.rs), which
+# parses the syntax tier's vendored programs and raises them through the program
+# tier; both already sit in the shipped closure beneath the program tier
+# (tests/trust.rs reads normal edges alone), so this adds no crate to it.
 [dev-dependencies]
+themelios-base = { path = "../themelios-base" }
+themelios-syntax = { path = "../themelios-syntax" }
 proptest = "1"
 criterion = "0.7"
 serde_json = "1"

@@ -1,0 +1,55 @@
+constructs:
+  Disjunction: asstwo(S, 0) | asstwo(S, 1) | asstwo(S, u) :- ass(S, u).
+  BodyAggregate: inv(s1) :- ass(s2, Y_s2), ass(s3, Y_s3), dom(V_11), dom(V_t_10), dom(V_t_13), lt(Y_s2, Z_s2), lt(Y_s3, Z_s3), V_0_11 = ((2 * V_t_14) + V_1_11), V_11 = 0, V_1_11 = ((1 * V_t_13) + V_2_11), V_2_11 = ((-2 * V_t_12) + V_3_11), V_3_11 = -V_t_10, V_t_12 = 0, V_t_14 = 0, V_11 #sum { 1 : V_0_11 > 0 } V_11, V_t_10 #sum { Z_s2, s2 } V_t_10, V_t_13 #sum { Z_s3, s3 } V_t_13.
+  DefaultNegation: ass(S, 0) :- arg(S), not ass(S, 1), not ass(S, u).
+  Comparison: inv(s1) :- ass(s2, Y_s2), ass(s3, Y_s3), dom(V_11), dom(V_t_10), dom(V_t_13), lt(Y_s2, Z_s2), lt(Y_s3, Z_s3), V_0_11 = ((2 * V_t_14) + V_1_11), V_11 = 0, V_1_11 = ((1 * V_t_13) + V_2_11), V_2_11 = ((-2 * V_t_12) + V_3_11), V_3_11 = -V_t_10, V_t_12 = 0, V_t_14 = 0, V_11 #sum { 1 : V_0_11 > 0 } V_11, V_t_10 #sum { Z_s2, s2 } V_t_10, V_t_13 #sum { Z_s3, s3 } V_t_13.
+  Interval: dom((0 .. 1)).
+  Arithmetic: inv(s1) :- ass(s2, Y_s2), ass(s3, Y_s3), dom(V_11), dom(V_t_10), dom(V_t_13), lt(Y_s2, Z_s2), lt(Y_s3, Z_s3), V_0_11 = ((2 * V_t_14) + V_1_11), V_11 = 0, V_1_11 = ((1 * V_t_13) + V_2_11), V_2_11 = ((-2 * V_t_12) + V_3_11), V_3_11 = -V_t_10, V_t_12 = 0, V_t_14 = 0, V_11 #sum { 1 : V_0_11 > 0 } V_11, V_t_10 #sum { Z_s2, s2 } V_t_10, V_t_13 #sum { Z_s3, s3 } V_t_13.
+dependencies:
+  predicates: arg/1, ass/2, asstwo/2, dom/1, inv/1, invtwo/1, lt/2, sat/1, sattwo/1, saturate/0
+  edges:
+    ass/2 -[Positive]-> arg/1
+    ass/2 -[Negative]-> ass/2
+    asstwo/2 -[Positive]-> arg/1
+    asstwo/2 -[Positive]-> ass/2
+    asstwo/2 -[Positive]-> saturate/0
+    inv/1 -[Positive]-> ass/2
+    inv/1 -[Positive]-> dom/1
+    inv/1 -[Positive]-> lt/2
+    invtwo/1 -[Positive]-> asstwo/2
+    invtwo/1 -[Positive]-> dom/1
+    invtwo/1 -[Positive]-> lt/2
+    sat/1 -[Positive]-> ass/2
+    sat/1 -[Positive]-> dom/1
+    sat/1 -[Positive]-> lt/2
+    sattwo/1 -[Positive]-> arg/1
+    sattwo/1 -[Positive]-> ass/2
+    sattwo/1 -[Positive]-> asstwo/2
+    sattwo/1 -[Positive]-> dom/1
+    sattwo/1 -[Positive]-> lt/2
+    sattwo/1 -[Positive]-> saturate/0
+    saturate/0 -[Positive]-> arg/1
+    saturate/0 -[Positive]-> ass/2
+    saturate/0 -[Positive]-> asstwo/2
+    saturate/0 -[Positive]-> invtwo/1
+    saturate/0 -[Positive]-> sattwo/1
+  components (reverse-topological):
+    {arg/1}
+    {ass/2} [negative]
+    {dom/1}
+    {lt/2}
+    {asstwo/2, invtwo/1, sattwo/1, saturate/0} [positive]
+    {inv/1}
+    {sat/1}
+safety:
+  safe: true
+  finiteness: Holds
+classes:
+  tightness: Unknown {asstwo/2, invtwo/1, sattwo/1, saturate/0} [positive]
+  head_cycle_free: Unknown {asstwo/2, invtwo/1, sattwo/1, saturate/0} [positive]
+  stratification: NotStratified {ass/2} [negative]
+  normality: NotNormal asstwo(S, 0) | asstwo(S, 1) | asstwo(S, u) :- ass(S, u).
+  horn: NotHorn asstwo(S, 0) | asstwo(S, 1) | asstwo(S, u) :- ass(S, u).
+  uses_disjunction: true
+  uses_choice: false
+  confirmed: ChoiceFree

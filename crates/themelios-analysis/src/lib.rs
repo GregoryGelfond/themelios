@@ -32,3 +32,4 @@ pub mod construct;
 pub mod depend;
 pub mod safe;
 pub mod classify;
+pub mod analysis;
