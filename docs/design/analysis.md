@@ -470,9 +470,12 @@ rule that makes it so. (The witness is the program tier's `Rule` itself, reused
 here — owned and identified by its **structural value**, so it names a rule of
 *any* program, parsed or constructed — and a consumer reads a source span from
 that rule's own provenance, program §6, which a constructed rule simply lacks, §8.
-The `Rule` is read from the `Statement::Rule` the construct scan records as its
-witness (§7); these classes' constructs are always rule-borne, so that statement
-is always a rule.)
+The `Rule` is the first offending rule, read from the program's rules directly:
+normality's constructs — disjunction, choice, head aggregate — are head-borne,
+always a rule's; and Horn's negation is **rule-restricted**, read from the
+derivation rules alone, since a directive's negation — which the construct scan
+records program-wide (§7) — is not part of the least-model fragment and could
+witness no `Rule`.)
 
 ### 6.4 The membership projection
 
@@ -569,9 +572,11 @@ one a consumer can point at, and read a source span from when it wants one
 (program §6, which a constructed statement simply lacks, §8). The carrier's
 identity erases provenance (program §6.2), so the scan stays provenance-blind
 (§8) — two programs equal up to provenance yield equal scans. The syntactic
-classes (§6.3) that carry a `Rule` witness read it from the `Statement::Rule` the
-scan records, their constructs — disjunction, choice, head aggregate, negation —
-being always rule-borne.
+classes (§6.3) that carry a `Rule` witness read it from the program's rules. Their
+head constructs — disjunction, choice, head aggregate — are always rule-borne, so
+the scan's witness for them is a `Statement::Rule`; negation is not, since the scan
+records a directive's negation too (`#external -p`, `#show a : not p`), so Horn
+reads it from the derivation rules alone (§6.3).
 
 **Computational cost.** `O(program)` — one walk; `uses` is `O(1)`, and reading a
 witness clones a statement, `O(witness)` (§8).
