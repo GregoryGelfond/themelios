@@ -22,7 +22,7 @@ themelios-syntax = { path = ".." }
 
 # The targets are harness bodies under a generated entry point; the
 # workspace lint tables address the shipped crates and their tests. The
-# gate's clippy still runs over these targets with warnings denied.
+# checks' clippy still runs over these targets with warnings denied.
 [lints]
 
 [[bin]]

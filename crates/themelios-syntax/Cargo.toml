@@ -28,7 +28,7 @@ serde_json = "1"
 # The out-of-band harnesses against the pinned authority — the clingo
 # differential and the tree-sitter cross-check (docs/design/syntax.md
 # §16) — which need the pixi environment at the repository root and
-# never run in the gate.
+# never run in the checks.
 differential = []
 
 [lints]
