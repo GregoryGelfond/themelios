@@ -1,0 +1,39 @@
+[package]
+name = "themelios-analysis"
+version = "0.1.0"
+description = "The engine-free static analysis of an ASP program: the construct scan, the predicate dependency graph and its strongly-connected components, safety and finiteness, and the literature's program classes — tight, stratified, head-cycle-free, normal, Horn, disjunctive, and choice — reported as owned plain data, a pure total function of the program it reads."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The shipped closure: the program tier and, beneath it, the base and syntax
+# tiers and syntax's own closure — no dependency of this crate's own beyond the
+# program value it reads (docs/design/analysis.md §1, §12; docs/specification.md
+# §12.3, §12.5). The strongly-connected-components decomposition is hand-rolled
+# and iterative (§4), not a graph-library dependency, so the hand-writing-by-
+# default rule and the depth discipline both hold. tests/trust.rs holds the
+# closure over Cargo's resolved graph.
+[dependencies]
+themelios-program = { path = "../themelios-program" }
+
+# The stage instruments (docs/design/analysis.md §10), outside the shipped
+# closure's claim: proptest and criterion as in the tiers beneath, and
+# serde_json solely so tests/trust.rs reads `cargo metadata`'s JSON.
+[dev-dependencies]
+proptest = "1"
+criterion = "0.7"
+serde_json = "1"
+
+[features]
+# The out-of-band differential against the pinned authority (clingo 5.8.2
+# through the repository's pixi environment, docs/design/analysis.md §10):
+# the predicate-level approximations against the ground-level truth. It never
+# runs in the default test run.
+differential = []
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "scaling"
+harness = false

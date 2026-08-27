@@ -741,6 +741,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f18aa187839b2bdb1ad2fa35ead8c4c2976b64e4363c386d45ac0f7ee85c9233"
 
 [[package]]
+name = "themelios-analysis"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "proptest",
+ "serde_json",
+ "themelios-program",
+]
+
+[[package]]
 name = "themelios-base"
 version = "0.1.0"
 dependencies = [
