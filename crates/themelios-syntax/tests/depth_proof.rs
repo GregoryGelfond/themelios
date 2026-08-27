@@ -212,7 +212,7 @@ fn parse_twice(text: &str, entry: Entry, limit: NestingLimit) -> (usize, bool) {
 
 /// The proof's body at `frames` frames and `limit`: every family, then the
 /// chains. Returns the deepest tree seen.
-fn gate_body(frames: usize, expect_refusal: bool, limit: NestingLimit) -> usize {
+fn proof_body(frames: usize, expect_refusal: bool, limit: NestingLimit) -> usize {
     let mut deepest = 0usize;
     for (family, text, entry) in family_inputs(frames) {
         let (tree_depth, refused) = parse_twice(&text, entry, limit);
@@ -251,14 +251,14 @@ fn the_depth_proof() {
     let ceiling = NestingLimit::CEILING;
     let beyond = ceiling.frames() as usize * BEYOND as usize;
     let deepest_beyond = on_stack(REQUIRED_STACK_BYTES, move || {
-        gate_body(beyond, true, ceiling)
+        proof_body(beyond, true, ceiling)
     });
     assert!(deepest_beyond <= MAX_TREE_DEPTH as usize);
     // At the ceiling, on half the stack: admitted, walked, dropped — the
     // headroom — and the deepest shape measured against the bound exactly.
     let at = ceiling.frames() as usize;
     let deepest_at = on_stack(REQUIRED_STACK_BYTES / HEADROOM, move || {
-        gate_body(at, false, ceiling)
+        proof_body(at, false, ceiling)
     });
     assert!(deepest_at <= MAX_TREE_DEPTH as usize);
     let expected_deepest = 2 + at * TERM_LAYERS_PER_FRAME as usize;
@@ -283,12 +283,14 @@ fn the_default_tier_is_safe_on_a_normal_stack() {
     // beyond the default: refused, the capped tree walked and dropped.
     let default = NestingLimit::DEFAULT;
     let beyond = default.frames() as usize * BEYOND as usize;
-    let deepest_beyond = on_stack(NORMAL_STACK_BYTES, move || gate_body(beyond, true, default));
+    let deepest_beyond = on_stack(NORMAL_STACK_BYTES, move || {
+        proof_body(beyond, true, default)
+    });
     assert!(deepest_beyond <= MAX_TREE_DEPTH as usize);
     // And at the default: admitted, the deepest tree it builds walked and
     // dropped — on the modest stack, with margin to spare.
     let at = default.frames() as usize;
-    let deepest_at = on_stack(NORMAL_STACK_BYTES, move || gate_body(at, false, default));
+    let deepest_at = on_stack(NORMAL_STACK_BYTES, move || proof_body(at, false, default));
     assert!(deepest_at <= MAX_TREE_DEPTH as usize);
     // The file door itself — the door a naive consumer calls — refuses the
     // deepest program and holds, on the modest stack.
