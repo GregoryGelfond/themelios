@@ -504,14 +504,14 @@ impl Ord for Symbol {
         // The ground-term order of the literature and the engine (grammar §5.1),
         // iterative and lexicographic: compare the rank band (which crosses the
         // `String` variant, §3.1), then the leaf value or the **function-like
-        // head** — a tuple orders as an anonymous function (§3.1), so a function
-        // and a tuple interleave by (name, arity, sign) with a tuple's name
-        // anonymous and never tie — then descend the arguments, returning on the
-        // first difference. **Total by construction** (§3.1's precondition): equal
-        // only to an identical symbol, so it agrees with `Eq`. Where the anonymous
-        // name and the bands fall in the printed order is the authority's, the
-        // differential (§16) confirming it without disturbing totality; the naive
-        // twin holds the iteration honest.
+        // head** — a tuple orders as a positive anonymous function (§3.1), so a
+        // function and a tuple interleave by (sign, arity, name) with a tuple's
+        // name anonymous and never tie — then descend the arguments, returning on
+        // the first difference. **Total by construction** (§3.1's precondition):
+        // equal only to an identical symbol, so it agrees with `Eq`. Where the
+        // anonymous name and the bands fall in the printed order is the authority's,
+        // the differential (§16) confirming it without disturbing totality; the
+        // naive twin holds the iteration honest.
         let mut pairs: Vec<(&Symbol, &Symbol)> = vec![(self, other)];
         while let Some((a, b)) = pairs.pop() {
             let by_rank = order_rank(a).cmp(&order_rank(b));
@@ -560,19 +560,23 @@ fn order_rank(symbol: &Symbol) -> u8 {
     }
 }
 
-/// The function-like head that orders a function or a tuple (§3.1): its name
-/// (a tuple is anonymous, `None`), its arity, and its strong sign (a tuple has
-/// none, `None`). `Ord` on `(Option<&Name>, usize, Option<Sign>)` sorts an
-/// anonymous head before any named one, then by arity, then by sign — a total
-/// key, so a function and a same-arity tuple never compare equal. Only where the
-/// key falls against the authority's printed order is the differential's (§16);
-/// the totality is fixed here.
-fn head_key(symbol: &Symbol) -> (Option<&Name>, usize, Option<Sign>) {
+/// The function-like head that orders a function or a tuple (§3.1): its strong
+/// sign, then its arity, then its name. A tuple is a *positive* anonymous function
+/// — the authority's reading — so its head sign is `Positive` and its name `None`.
+/// `Ord` on `(Sign, usize, Option<&Name>)` sorts a positive head before a negative
+/// one, then a smaller arity before a larger, then an anonymous head before any
+/// named one — a total key, so a function and a same-arity tuple never compare equal
+/// (a tuple's `None` name never ties a function's `Some`). This field order is the
+/// authority's printed order, confirmed by the differential (§16); the totality is
+/// fixed here.
+fn head_key(symbol: &Symbol) -> (Sign, usize, Option<&Name>) {
     let sign = match symbol {
-        Symbol::Function { sign, .. } => Some(*sign),
-        _ => None,
+        Symbol::Function { sign, .. } => *sign,
+        // A tuple interleaves among the positive functions of its arity, never before
+        // every function, so its head sign is `Positive` (§3.1, the authority's reading).
+        _ => Sign::Positive,
     };
-    (symbol.name(), symbol.arguments().len(), sign)
+    (sign, symbol.arguments().len(), symbol.name())
 }
 
 impl Hash for Symbol {

@@ -89,9 +89,9 @@ mod naive {
         rank(a).cmp(&rank(b)).then_with(|| match (a, b) {
             (Symbol::Number(x), Symbol::Number(y)) => x.cmp(y),
             (Symbol::String(x), Symbol::String(y)) => x.cmp(y),
-            // A function and/or a tuple, a tuple ordered as an anonymous function
-            // (§3.1): compare the (name, arity, sign) head with a tuple's name
-            // anonymous, then the arguments — total, so a function and a
+            // A function and/or a tuple, a tuple ordered as a positive anonymous
+            // function (§3.1): compare the (sign, arity, name) head with a tuple's
+            // name anonymous, then the arguments — total, so a function and a
             // same-arity tuple never tie, and the mixed case never falls to `Equal`.
             (
                 Symbol::Function { .. } | Symbol::Tuple(_),
@@ -103,18 +103,19 @@ mod naive {
         })
     }
 
-    /// The function-like head (a tuple is anonymous, `None`, §3.1): name, arity,
-    /// and sign as a rank (a tuple's sign is neutral, never deciding — the name
-    /// distinguishes it from a function first).
-    fn head(s: &Symbol) -> (Option<&Name>, usize, u8) {
+    /// The function-like head (§3.1): sign as a rank, then arity, then name. A tuple
+    /// is a positive anonymous function — sign positive, name `None` — so it
+    /// interleaves among the positive functions of its arity, its `None` name never
+    /// tying a function's `Some`.
+    fn head(s: &Symbol) -> (u8, usize, Option<&Name>) {
         match s {
             Symbol::Function {
                 name,
                 arguments,
                 sign,
-            } => (Some(name), arguments.len(), sign_rank(*sign)),
-            Symbol::Tuple(e) => (None, e.len(), 0),
-            _ => (None, 0, 0),
+            } => (sign_rank(*sign), arguments.len(), Some(name)),
+            Symbol::Tuple(e) => (sign_rank(Sign::Positive), e.len(), None),
+            _ => (sign_rank(Sign::Positive), 0, None),
         }
     }
 
