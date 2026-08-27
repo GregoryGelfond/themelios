@@ -191,17 +191,25 @@ fn a_const_value_is_carried_unevaluated() {
 
 #[test]
 fn a_const_value_outside_the_constant_term_subset_is_diagnosed() {
-    // `#const x = p(X).` holds a variable — outside the constant-term subset
-    // (grammar §5.9); the raise diagnoses it at its span rather than evaluating.
-    let raised = raised("#const x = p(X).");
-    assert!(
-        raised
-            .diagnostics()
-            .iter()
-            .any(|error| matches!(error.kind(), LowerErrorKind::NonConstantValue)),
-        "a non-constant `#const` value is a lowering diagnostic, got {:?}",
-        raised.diagnostics()
-    );
+    // A variable, a pool, or an interval is outside the constant-term subset (grammar §5.9,
+    // §4.8); the raise diagnoses each at its span rather than evaluating. A pool or interval
+    // also draws a syntax error — the parser restricts a constant term — but the raise diagnoses
+    // its recovered term all the same, so re-admitting either would surface here.
+    for text in [
+        "#const x = p(X).",
+        "#const x = 1 .. 3.",
+        "#const x = (a; b).",
+    ] {
+        let raised = raised(text);
+        assert!(
+            raised
+                .diagnostics()
+                .iter()
+                .any(|error| matches!(error.kind(), LowerErrorKind::NonConstantValue)),
+            "a non-constant `#const` value is a lowering diagnostic: {text:?} -> {:?}",
+            raised.diagnostics(),
+        );
+    }
 }
 
 #[test]

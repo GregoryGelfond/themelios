@@ -485,13 +485,14 @@ REPL and the query surface want — `parse_term_value` → `raise_term` →
 arithmetic: a `1+2` embedded in a rule stays a `BinaryOperation` term — the
 grounder's to evaluate — and canonicalization (§5.1) collapses ground
 *constructor* terms to symbols but folds only one operator, unary minus of a
-numeral (`-5` is the integer −5, the grammar having no negative numeral, grammar
-§4.3 — so `Number(-5)` is the number's spelling, not arithmetic evaluation), so
-structural equality never smuggles in an arithmetic normalization and the
-representation stays a faithful record of what was written. `-(1 + 2)` stays a
-`BinaryOperation`; the fold is the negative-numeral case alone, and it is what
-lets a constructed negative number round-trip (§10) — `render` writes `-5` and
-the raise reads it back through this fold.
+number (`-5` is the integer −5, the grammar having no negative numeral, grammar
+§4.3 — so `Number(-5)` is the number's spelling, not arithmetic evaluation; a
+double `-(-5)` folds to `Number(5)`, the authority's own reading), so structural
+equality never smuggles in an arithmetic normalization and the representation
+stays a faithful record of what was written. `-(1 + 2)` stays a `BinaryOperation`;
+the fold is unary minus of a number alone, and it is what lets a constructed
+negative number round-trip (§10) — `render` writes `-5` and the raise reads it
+back through this fold.
 
 ### 3.6 Navigating and rebuilding terms
 
@@ -1034,14 +1035,16 @@ Canonicalization does the following, each syntactic:
   arithmetic operator** — a ground `1+2` stays a `BinaryOperation` (§3.5), because
   folding it would evaluate, which this tier does only at the explicit door — save
   the negative-numeral spelling below.
-- **Negative numeral.** Unary minus of a numeral folds to the negative number it
-  denotes (`-5` → `Number(-5)`): the grammar has **no** negative numeral (grammar
-  §4.3), so this is the number's canonical spelling, not arithmetic evaluation. It
-  is the one operator that folds, and it is what lets a constructed negative number
+- **Negative number.** Unary minus of a **number** folds to its negation (`-5` →
+  `Number(-5)`, and a double `-(-5)` → `Number(5)`): the grammar has **no** negative
+  numeral (grammar §4.3), so `Number(-5)` is the integer's canonical spelling, not
+  arithmetic evaluation, and folding the double negation to the positive number is
+  the authority's own reading (clingo grounds `- -5` to `5`; §16 holds this). It is
+  the one operator that folds, and it is what lets a constructed negative number
   round-trip (§10) — `render` writes `-5` and the raise reads it back through this
-  fold. `-(1 + 2)` is not a numeral and stays a `BinaryOperation`; the lone
-  exception is `i32::MIN`, whose magnitude no numeral spells (grammar §4.3), kept as
-  `Negate(Number(i32::MIN))`.
+  fold. `-(1 + 2)` is not a number (an unevaluated sum) and stays a
+  `BinaryOperation`; the lone exception is a value whose negation leaves the `i32`
+  range (`-i32::MIN`), kept as `Negate(Number(i32::MIN))`.
 - **Degenerate forms.** A one-alternative pool is its term (`(a)` is `a`, grammar
   §5.1); the grammar's other degeneracies (an empty tuple, a one-element tuple)
   are kept, because the grammar makes them distinct terms.
@@ -1651,9 +1654,11 @@ does not rule out a *finite but exponentially large* one, which is a size fact, 
 a soundness one, handled next.
 
 **The algorithm, and where the cost lives.** `mgu` is the near-linear unification of
-Martelli and Montanari (1982) — a union-find over the two atoms' term structure with
-the occurs check run as the equations are solved — so *deciding* unifiability and
-producing the triangular `Substitution` is near-linear in the two atoms (the
+Martelli and Montanari (1982) — a union-find over the two atoms' term structure, the
+occurs check a single acyclicity pass over the solved graph rather than a check at
+each bind (the per-bind form is the quadratic trap the near-linear algorithm avoids)
+— so *deciding* unifiability and producing the triangular `Substitution` is
+near-linear in the two atoms (the
 worst-case-efficient choice the mission-critical bar and spec §12.4 require, not a
 naive quadratic composition). The exponential blow-up unification is infamous for is
 **not** in the decision or in `mgu`'s result: it lives only in *materialising* a

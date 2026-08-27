@@ -470,7 +470,7 @@ fn a_ground_operator_term_does_not_fold() {
 }
 
 #[test]
-fn unary_minus_of_a_numeral_folds_to_the_negative_number() {
+fn unary_minus_of_a_number_folds_to_its_negation() {
     // The one operator that folds (§5.1): `-5` is the integer −5 (the grammar has no negative
     // numeral), so it canonicalizes to `Number(-5)` and round-trips (§10).
     let negate = |t: Term| Term::UnaryOperation {
@@ -478,7 +478,8 @@ fn unary_minus_of_a_numeral_folds_to_the_negative_number() {
         argument: Box::new(t),
     };
     assert_eq!(negate(Term::from(5)).canonicalize(), Term::from(-5));
-    // Double negation folds through: -(-5) is 5.
+    // Double negation folds through to the positive number — the authority's reading (clingo
+    // grounds `- -5` to `5`): -(-5) is 5.
     assert_eq!(negate(Term::from(-5)).canonicalize(), Term::from(5));
     // `-(1 + 2)` is not a numeral and stays a `BinaryOperation` — only the numeral folds.
     let one_plus_two = Term::BinaryOperation {

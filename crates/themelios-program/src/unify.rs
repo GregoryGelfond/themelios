@@ -1178,7 +1178,9 @@ impl Nodes {
             .expect("the symbol's decomposition leaves one node")
     }
 
-    /// The class representative of a node, with path halving. O(α).
+    /// The class representative of a node, with path halving — so finds stay amortized
+    /// near-linear (the class merges are by rank where both sides are shaped or both bare, a
+    /// bare variable otherwise linking under the shaped side, which must be the representative).
     fn find(&mut self, mut id: usize) -> usize {
         while self.parent[id] != id {
             let grandparent = self.parent[self.parent[id]];
