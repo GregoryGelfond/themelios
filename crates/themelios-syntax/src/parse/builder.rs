@@ -9,7 +9,7 @@
 //! cached" propagates upward — so a wide tree is cheap — but a deep, narrow
 //! tree, where every node has at most three children, is cached to the
 //! root, and rehashing the spine costs the sum of its subtree sizes: 1, 2,
-//! …, depth — O(depth²). The depth gate (§16) surfaced this as an O(depth²)
+//! …, depth — O(depth²). The depth proof (§16) surfaced this as an O(depth²)
 //! parse of `(((…)))`-shaped input, breaking §6.8's O(text) and giving a
 //! nested-bracket input quadratic parse time.
 //!

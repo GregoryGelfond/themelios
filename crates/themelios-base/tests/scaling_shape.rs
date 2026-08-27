@@ -6,7 +6,7 @@
 //! absolute speed — that lives in the out-of-band benches.
 //!
 //! The design names criterion for the shape claim; the shape is held
-//! here instead because it must run under the test gate, which
+//! here instead because it must run under the checks, which
 //! criterion's benches do not, and criterion measures rather than
 //! asserts — it holds the absolute numbers out-of-band
 //! (`benches/scaling.rs`).

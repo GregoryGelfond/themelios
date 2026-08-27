@@ -554,7 +554,7 @@ fn deep_terms_survive_every_walk_without_overflowing_the_stack() {
     // Far past any real term, on the default test stack: sequence children (nested
     // Function) and boxed children (nested UnaryOperation) both, each ~200,000 deep.
     // An iterative walk handles them; a recursive one would overflow here (§13). The
-    // rigorous, stack-controlled proof is the depth gate (§16); this is the canary.
+    // rigorous, stack-controlled proof is the depth proof (§16); this is the canary.
     let functiony = deep_via_function(200_000);
     let unary = deep_via_unary(200_000);
     for deep in [&functiony, &unary] {

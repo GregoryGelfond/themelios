@@ -269,7 +269,7 @@ fn deep_theory_term(depth: usize) -> TheoryTerm {
 #[test]
 fn a_deep_theory_term_survives_every_walk_without_overflowing_the_stack() {
     // Far past any real theory term, on the default test stack (§13). The rigorous proof
-    // is the depth gate (§16); this is the canary.
+    // is the depth proof (§16); this is the canary.
     let deep = deep_theory_term(200_000);
     let same = deep.clone();
     let clone_is_equal = deep == same;

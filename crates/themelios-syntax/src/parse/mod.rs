@@ -52,7 +52,7 @@ impl NestingLimit {
     /// vendored corpus, clingo's own tests included, nests twenty-three
     /// (docs/design/syntax.md §6.6) — and deeper input is *refused*, not
     /// crashed. Set well below what the modest stack survives (the depth
-    /// gate measures ~323 frames of the deepest shape there, 2026-08-19,
+    /// proof measures ~323 frames of the deepest shape there, 2026-08-19,
     /// rowan 0.17.0): 128 — echoing serde_json's recursion floor — leaves
     /// better than twofold margin and clears the corpus more than fivefold.
     /// A consumer parsing on a thread it sized smaller manages that stack
@@ -61,7 +61,7 @@ impl NestingLimit {
     pub const DEFAULT: NestingLimit = NestingLimit(128);
 
     /// The ceiling: the deepest [`REQUIRED_STACK_BYTES`] is proven to hold
-    /// (the depth gate, docs/design/syntax.md §16) — the language's
+    /// (the depth proof, docs/design/syntax.md §16) — the language's
     /// unbounded nesting honored as far as safety allows, no lower. A
     /// consumer that raises a general door ([`parse_program`] and its
     /// siblings) to it holds the result under [`with_required_stack`]. It
@@ -87,7 +87,7 @@ impl Default for NestingLimit {
 /// The stack, in bytes, on which every operation this crate performs or
 /// hands out over the deepest tree it can build — dropping it, comparing
 /// two, rendering one, walking the typed AST, attaching, certifying — is
-/// proven to complete: the depth gate runs on a thread of exactly this
+/// proven to complete: the depth proof runs on a thread of exactly this
 /// size and passes with headroom (docs/design/syntax.md §6.6). A
 /// consumer's thread that holds a tree needs at least this much. Sixty-
 /// four mebibytes: eight times the eight-mebibyte main-thread default of

@@ -288,8 +288,8 @@ fn deep_symbol(depth: usize) -> Symbol {
 fn a_deep_symbol_survives_every_walk_without_overflowing_the_stack() {
     // Far past any real ground term, on the default test stack: an iterative
     // walk handles it; a recursive one would overflow here (§13). The rigorous,
-    // stack-controlled proof is the depth gate (§16); this is the canary that
-    // catches an accidental recursion the moment it lands.
+    // stack-controlled proof is the depth proof (§16); this is the
+    // canary that catches an accidental recursion the moment it lands.
     let deep = deep_symbol(200_000);
     let same = deep.clone();
     // Compared through a bound `bool` rather than `assert!(deep == same)`, so a

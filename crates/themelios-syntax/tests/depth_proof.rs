@@ -1,4 +1,4 @@
-//! The depth gate (docs/design/syntax.md §6.6, §16), at the two named
+//! The depth proof (docs/design/syntax.md §6.6, §16), at the two named
 //! limits. The ceiling tier: on a thread of exactly `REQUIRED_STACK_BYTES`,
 //! inputs nested far beyond `NestingLimit::CEILING` in every self-recursive
 //! family — and beside them the bracket-free chains that must not deepen
@@ -9,7 +9,7 @@
 //! again on half the stack at the ceiling itself — the headroom. The
 //! default tier: the same families and walks at `NestingLimit::DEFAULT` on
 //! a modest `NORMAL_STACK_BYTES` thread, the crash-averse floor a naive
-//! consumer holds, with margin to spare. What the gate proves: this
+//! consumer holds, with margin to spare. What the proof shows: this
 //! crate's and rowan's walks complete on the stated stack over the deepest
 //! tree the parser builds at each limit. What it cannot: a consumer's own
 //! recursion over the typed AST.
@@ -36,10 +36,10 @@ use themelios_syntax::parse::{
 };
 use themelios_syntax::tree::{Asp, AstNode, SyntaxKind, SyntaxNode, TextSize, WalkEvent};
 
-/// The headroom factor: the gate's claim holds on half the stack at the
+/// The headroom factor: the proof's claim holds on half the stack at the
 /// constant.
 const HEADROOM: usize = 2;
-/// How far beyond the constant the gate nests.
+/// How far beyond the constant the proof nests.
 const BEYOND: u32 = 4;
 /// The measured constant is rounded down to a multiple of this.
 const GRANULE: u32 = 1_000;
@@ -147,7 +147,7 @@ enum Entry {
 }
 
 /// Every walk over one parse — the walks the design names — and the
-/// tree's depth. Runs on the caller's thread: call it on the gate's.
+/// tree's depth. Runs on the caller's thread: call it on the proof's.
 fn walks<T: AstNode<Language = Asp>>(one: &Parse<T>, two: &Parse<T>) -> usize {
     let root = one.syntax();
     // Display renders the tree to its text and recurses in tree depth
@@ -210,7 +210,7 @@ fn parse_twice(text: &str, entry: Entry, limit: NestingLimit) -> (usize, bool) {
     }
 }
 
-/// The gate's body at `frames` frames and `limit`: every family, then the
+/// The proof's body at `frames` frames and `limit`: every family, then the
 /// chains. Returns the deepest tree seen.
 fn gate_body(frames: usize, expect_refusal: bool, limit: NestingLimit) -> usize {
     let mut deepest = 0usize;
@@ -236,16 +236,16 @@ fn gate_body(frames: usize, expect_refusal: bool, limit: NestingLimit) -> usize 
 
 fn on_stack<F: FnOnce() -> R + Send + 'static, R: Send + 'static>(bytes: usize, body: F) -> R {
     thread::Builder::new()
-        .name(format!("depth-gate-{bytes}"))
+        .name(format!("depth-proof-{bytes}"))
         .stack_size(bytes)
         .spawn(body)
-        .expect("the gate's thread spawns")
+        .expect("the proof's thread spawns")
         .join()
-        .expect("the gate's thread completes")
+        .expect("the proof's thread completes")
 }
 
 #[test]
-fn the_depth_gate() {
+fn the_depth_proof() {
     // The ceiling tier, on the pole. Far beyond the ceiling, on the full
     // stack: refused, walked, dropped.
     let ceiling = NestingLimit::CEILING;
@@ -376,8 +376,8 @@ fn build_maximal(frames: usize) -> SyntaxNode {
 fn walks_over_built(frames: usize) {
     let one = build_maximal(frames);
     let two = build_maximal(frames);
-    // The depth-recursions the gate's `walks` runs, so this measurement's
-    // overflow point predicts the gate's headroom: Display (§5.4 law 1,
+    // The depth-recursions the proof's `walks` runs, so this measurement's
+    // overflow point predicts the proof's headroom: Display (§5.4 law 1,
     // §14), `token_at_offset`, structural equality, and drop.
     let rendered = one.to_string();
     assert!(!rendered.is_empty());
@@ -421,7 +421,7 @@ fn survives(frames: usize, bytes: usize) -> bool {
 /// deepest per-frame shape, by doubling then bisection; the constant is
 /// the largest multiple of the granule not above it.
 #[test]
-#[ignore = "out of band: cargo test -p themelios-syntax --test depth_gate -- --ignored measure_the_constant --nocapture"]
+#[ignore = "out of band: cargo test -p themelios-syntax --test depth_proof -- --ignored measure_the_constant --nocapture"]
 fn measure_the_constant() {
     let stack = REQUIRED_STACK_BYTES / HEADROOM;
     let mut low = 1usize;
@@ -454,7 +454,7 @@ fn measure_the_constant() {
 // ---- builder validation (TDD for the shape helpers) -------------------
 //
 // The measurement builds trees directly with `build_maximal`, bypassing
-// the parser and its constant; the gate then trusts the parsed tree's
+// the parser and its constant; the proof then trusts the parsed tree's
 // depth exactly. These hold both to the ground truth at small frame
 // counts — cheap, and permanent regressions — so a builder that drifts
 // from what the parser emits is caught here, not silently mismeasured.

@@ -3,7 +3,7 @@
 //! vendored corpus (spec §10.3), re-read by path — no new corpus is vendored; the
 //! snapshots under `tests/golden/lowering/` are the reviewed artifacts. A raise of the
 //! authority's own programs emits no spurious lowering diagnostic (an empty report), so
-//! a snapshot that gains one is a regression a review reads. Bless with
+//! a snapshot that gains one is a regression a maintainer reads. Bless with
 //! `GOLDEN_BLESS=1 cargo test -p themelios-program --test golden`, then review the diff.
 
 use std::fs;
@@ -50,7 +50,7 @@ fn corpus_dir() -> PathBuf {
 
 /// The rendered lowering-diagnostic report of a corpus program: its diagnostics in the
 /// shared batch order (base §7.4), each through base's human view (base §6.5) — the
-/// report a review reads at the rust-analyzer bar. Empty of diagnostics is a named
+/// report a maintainer reads at the rust-analyzer bar. Empty of diagnostics is a named
 /// clean report, so the snapshot is a reviewed artifact either way.
 fn lowering_report(name: &str, text: &str) -> String {
     let mut catalog = SourceSet::new();
@@ -77,7 +77,7 @@ fn lowering_report(name: &str, text: &str) -> String {
 /// The canonical clingo rendering of a corpus program (docs/design/program.md §10) — the
 /// reviewed artifact a golden pins, stable because the rendering is canonical. A clean member
 /// of the corpus renders without refusal, so a spelling refusal here is itself a regression a
-/// review reads.
+/// maintainer reads.
 fn rendering(name: &str, text: &str) -> String {
     let source = Source::new(themelios_base::source::SourceId::new(0), text.to_owned())
         .expect("a corpus input admits");

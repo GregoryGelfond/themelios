@@ -1349,7 +1349,7 @@ mod tests {
     fn nesting_past_the_default_limit_is_refused_once_and_carried_losslessly() {
         // At `NestingLimit::DEFAULT` the refused tree is shallow enough to
         // hold on a modest stack, so no `with_required_stack` is needed; the
-        // deep tier is exercised at the ceiling by `tests/depth_gate.rs`.
+        // deep tier is exercised at the ceiling by `tests/depth_proof.rs`.
         let depth = NestingLimit::DEFAULT.frames() as usize;
         let admitted_text = format!("{}x{}", "f(".repeat(depth), ")".repeat(depth));
         assert!(

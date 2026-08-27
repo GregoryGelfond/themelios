@@ -2,7 +2,7 @@
 //! are the syntax tier's vendored corpus (spec §10.3), re-read by path — no new
 //! corpus is vendored — raised through the program tier; the snapshots under
 //! `tests/golden/analysis/` are the reviewed artifacts, so a change in a program's
-//! classification shape shows as a diff a review reads. Bless with
+//! classification shape shows as a diff a maintainer reads. Bless with
 //! `GOLDEN_BLESS=1 cargo test -p themelios-analysis --test golden`, then review the
 //! diff.
 //!

@@ -37,7 +37,7 @@ pub enum Sign {
 /// `Debug` are hand-written and iterative (§13, §14), so a deep ground value is
 /// cloned, compared, hashed, rendered, and dropped without call-stack recursion.
 /// Each matches its derived shape (held by the naive twin, tests/symbol_laws.rs)
-/// while its depth is the heap's (the depth gate, §16).
+/// while its depth is the heap's (the depth proof, §16).
 pub enum Symbol {
     /// The least element of the term order.
     Infimum,
