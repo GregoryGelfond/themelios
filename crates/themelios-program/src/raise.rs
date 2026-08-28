@@ -2047,7 +2047,7 @@ fn raise_terms(
 }
 
 /// A required step term, or a placeholder beside an incompleteness (§8): a comparison
-/// step, a guard bound, or a heuristic term the recovery left absent.
+/// step, a guard bound, a heuristic term, or an optimization weight the recovery left absent.
 fn step_term(
     term: Option<ast::Term>,
     at: &SyntaxNode,

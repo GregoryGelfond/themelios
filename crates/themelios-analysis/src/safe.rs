@@ -475,10 +475,15 @@ fn recursive_body_vars(rule: &Rule, members: &BTreeSet<Signature>) -> BTreeSet<V
                         term_named_vars(term, &mut carried);
                     }
                 }
-                LiteralInner::Comparison(comparison) => {
+                // A positive `=` comparison aliases variables; a *negated* one is a
+                // disequality (`not X = Y` asserts X ≠ Y), so it aliases nothing.
+                LiteralInner::Comparison(comparison)
+                    if literal.negation == DefaultNegation::None =>
+                {
                     collect_equalities(comparison.get(), &mut equalities);
                 }
-                // A non-member atom, and the boolean literals, carry nothing.
+                // A non-member atom, a negated comparison, and the boolean literals
+                // carry nothing.
                 _ => {}
             },
             BodyElement::Aggregate { aggregate, .. }
@@ -521,18 +526,35 @@ fn collect_equalities(comparison: &Comparison, out: &mut Vec<BTreeSet<Variable>>
 /// already carried joins the set wholesale — the transitive `=`-alias closure. A group
 /// touching nothing carried (an equality to a constant, or between non-recursive
 /// variables) leaves the set unchanged, so the closure does not over-flag.
+///
+/// A worklist over the `=`-classes, each group **absorbed once** when a carried variable
+/// first reaches it, so the whole closure is near-linear in the equality content — not the
+/// `O(variables · groups)` of a re-scan fixpoint, the same trap the sibling `close` refuses
+/// (§5). An adversarial `=`-chain of `n` links is `O(n)`, not `O(n²)`.
 fn close_over_equalities(carried: &mut BTreeSet<Variable>, equalities: &[BTreeSet<Variable>]) {
-    loop {
-        let mut changed = false;
-        for group in equalities {
-            if group.iter().any(|variable| carried.contains(variable)) {
-                for variable in group {
-                    changed |= carried.insert(variable.clone());
+    // The groups each variable appears in, so reaching a variable reaches its groups in O(1).
+    let mut groups_of: BTreeMap<Variable, Vec<usize>> = BTreeMap::new();
+    for (index, group) in equalities.iter().enumerate() {
+        for variable in group {
+            groups_of.entry(variable.clone()).or_default().push(index);
+        }
+    }
+    let mut absorbed = vec![false; equalities.len()];
+    let mut worklist: Vec<Variable> = carried.iter().cloned().collect();
+    while let Some(variable) = worklist.pop() {
+        let Some(indices) = groups_of.get(&variable) else {
+            continue;
+        };
+        for &index in indices {
+            if absorbed[index] {
+                continue;
+            }
+            absorbed[index] = true;
+            for member in &equalities[index] {
+                if carried.insert(member.clone()) {
+                    worklist.push(member.clone());
                 }
             }
-        }
-        if !changed {
-            break;
         }
     }
 }

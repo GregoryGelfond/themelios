@@ -28,9 +28,13 @@ use std::time::Instant;
 
 use themelios_analysis::analysis::Analysis;
 use themelios_analysis::depend::DependencyGraph;
-use themelios_program::program::{Atom, Program, Rule, Statement};
+use themelios_program::program::{
+    Atom, BodyElement, Comparison, DefaultNegation, Literal, LiteralInner, Program, Relation, Rule,
+    Statement,
+};
 use themelios_program::provenance::WithProvenance;
-use themelios_program::symbol::Name;
+use themelios_program::symbol::{Name, VarName};
+use themelios_program::term::{Term, Variable};
 
 /// The data-size ratio between the small and large cases.
 const SIZE_RATIO: usize = 16;
@@ -98,6 +102,39 @@ fn cycle(n: usize) -> Program {
 /// indexed pass is linear.
 fn self_loops(n: usize) -> Program {
     Program::of((0..n).map(|i| edge(i, i)))
+}
+
+/// One recursive rule `p(g(X0)) :- p(Xn), X0 = X1, …, X_{n-1} = Xn.` — an `n`-link equality
+/// chain the finiteness `=`-alias closure must traverse (`X0`, deepened under `g` in the
+/// head, is aliased to the recursive `Xn`). A re-scan closure is Θ(n²) here; the worklist
+/// closure is linear. `self_loops` cannot catch this — it is equality-free.
+fn equality_chain(n: usize) -> Program {
+    let var = |index: usize| {
+        Term::Variable(Variable::Named(
+            VarName::new(format!("X{index}")).expect("a valid variable"),
+        ))
+    };
+    let head = Atom::new(
+        name("p"),
+        [Term::Function {
+            name: name("g"),
+            arguments: vec![var(0)],
+        }],
+    );
+    let mut body: Vec<BodyElement> = vec![BodyElement::from(Atom::new(name("p"), [var(n)]))];
+    for i in 0..n {
+        body.push(BodyElement::Literal(Literal {
+            negation: DefaultNegation::None,
+            inner: LiteralInner::Comparison(WithProvenance::constructed(Comparison::new(
+                var(i),
+                Relation::Eq,
+                var(i + 1),
+            ))),
+        }));
+    }
+    Program::of([WithProvenance::constructed(Statement::Rule(Rule::new(
+        head, body,
+    )))])
 }
 
 #[test]
@@ -180,5 +217,32 @@ fn finiteness_is_linear_in_many_recursive_components() {
     assert!(
         ratio < LINEAR_CEILING * RATIO_SCALE,
         "finiteness's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} recursive components; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[test]
+fn finiteness_is_linear_in_an_equality_chain() {
+    // The finiteness `=`-alias closure (§5) traverses a rule's equality chain. Over an
+    // `n`-link chain a re-scan closure is Θ(n²) (up to `n` passes over `n` groups); the
+    // worklist closure, absorbing each group once, is linear. `self_loops` above guards
+    // the component-loop half of the finiteness pass; this guards the equality-closure half.
+    let small = equality_chain(BASE);
+    let big = equality_chain(BASE * SIZE_RATIO);
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(Analysis::of(&small));
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(Analysis::of(&big));
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "finiteness's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} equality chain; the linear shape allows at most x{LINEAR_CEILING}"
     );
 }

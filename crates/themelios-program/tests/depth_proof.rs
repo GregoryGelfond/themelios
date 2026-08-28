@@ -9,8 +9,8 @@
 //! or evaluate: enough to catch an accidental recursion the moment it lands, not a
 //! rigorous or complete proof. This makes it
 //! rigorous: on a **stated small stack** a recursive walk of the same depth would
-//! overflow, every program-tier walk over a value nested ~200,000 levels deep — far past
-//! the raise's bounded tree or any real construction — completes without overflow.
+//! overflow, yet every program-tier walk over a value nested ~200,000 levels deep — far
+//! past the raise's bounded tree or any real construction — completes without overflow.
 //!
 //! The walks (§13, §16): clone, drop, `PartialEq`/`Eq`, `PartialOrd`/`Ord`, `Hash`,
 //! `render`, `substitute`, `evaluate`, `canonicalize`, `fold`, and the pre-order

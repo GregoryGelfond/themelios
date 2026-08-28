@@ -1,8 +1,10 @@
 # The program tier's depth and scaling proofs sit behind the default-on `scale-proofs`
 # feature (crates/themelios-program/Cargo.toml); disabling defaults here keeps their very
 # deep and large fixtures out of the mutated build — a runaway-loop mutant on a 200,000-deep
-# value would exhaust memory before the timeout fires, while they add no kill a small law
-# input does not. The analysis tier has no such feature: its scaling proofs use flat fixtures
+# value would exhaust memory before the timeout fires. The one kill these proofs add that a
+# small law input cannot — the non-equivalent survivor recorded below (`symbol.rs:453`), which
+# only a deep-tuple drop distinguishes — is the acknowledged cost of holding them out; every
+# other kill a small law input also makes. The analysis tier has no such feature: its scaling proofs use flat fixtures
 # (chains, cycles, and self-loops, O(n) memory), so they run in the mutation loop by design,
 # where a complexity-regression mutant trips their ratio ceiling. The behavioural law tests
 # that discriminate the mutants are unaffected.

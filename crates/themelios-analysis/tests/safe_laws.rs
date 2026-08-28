@@ -709,6 +709,39 @@ fn finiteness_flags_equality_aliased_growth() {
         Verdict::Holds,
         "an equality binding a constant does not carry the recursion",
     );
+
+    // p(g(Y)) :- p(X), edge(Y), not X = Y.  — a *negated* equality is a disequality (X ≠ Y),
+    // not an alias, so Y is bound by the non-member edge(Y), not carried from the recursion:
+    // finitely many g(y), so Holds. The negation guard's precision gain, pinned — an
+    // unguarded closure that read `not X = Y` as an alias would flip this to a spurious
+    // Unknown, and reverting the guard would leave every positive-equality law green.
+    let negated_equality = BodyElement::Literal(Literal {
+        negation: DefaultNegation::Not,
+        inner: LiteralInner::Comparison(WithProvenance::constructed(Comparison::new(
+            var("X"),
+            Relation::Eq,
+            var("Y"),
+        ))),
+    });
+    let disequality = finiteness_of([Statement::Rule(Rule::new(
+        Atom::new(
+            name("p"),
+            [Term::Function {
+                name: name("g"),
+                arguments: vec![var("Y")],
+            }],
+        ),
+        vec![
+            BodyElement::from(pred("p", &["X"])),
+            BodyElement::from(pred("edge", &["Y"])),
+            negated_equality,
+        ],
+    ))]);
+    assert_eq!(
+        disequality,
+        Verdict::Holds,
+        "a negated equality is a disequality, not an alias, so it carries no recursion",
+    );
 }
 
 #[test]

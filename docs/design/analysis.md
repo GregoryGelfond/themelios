@@ -381,8 +381,10 @@ tight or because the predicate level simply cannot decide — is `Unknown`, whic
 consumer reads as "use the general method." Folding "not proven present" into one
 `Unknown` is not imprecision; it is the guarantee that `Holds` never lies. A class
 whose *absence* a consumer safely specializes on (stratification, whose negative
-result a solver *can* use) is reported definite instead (§6.2), because there both
-directions are proven.
+result a solver *can* use) is reported definite instead (§6.2): definite for
+negation — both directions proven — and conservative-safe for aggregates, where a
+`NotStratified` is always safe for a solver to use though the ground program may
+still be stratifiable.
 
 ### 6.2 The recursion classes
 
