@@ -183,6 +183,10 @@ fn recursive_walk(term: &Term) -> u64 {
 
 // ---- the laws (§13, §16): every walk survives the stated stack ----
 
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "depth proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
 #[test]
 fn every_walk_over_a_deep_symbol_survives_the_stated_stack() {
     on_stack(STATED_STACK_BYTES, || {
@@ -211,6 +215,10 @@ fn every_walk_over_a_deep_symbol_survives_the_stated_stack() {
     });
 }
 
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "depth proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
 #[test]
 fn every_walk_over_a_deep_term_survives_the_stated_stack() {
     on_stack(STATED_STACK_BYTES, || {
@@ -256,6 +264,10 @@ fn every_walk_over_a_deep_term_survives_the_stated_stack() {
     });
 }
 
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "depth proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
 #[test]
 fn every_walk_over_a_deep_theory_term_survives_the_stated_stack() {
     on_stack(STATED_STACK_BYTES, || {
@@ -282,6 +294,10 @@ fn every_walk_over_a_deep_theory_term_survives_the_stated_stack() {
     });
 }
 
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "depth proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
 #[test]
 fn substitute_resolves_a_deep_term_and_a_deep_triangular_chain_on_the_stated_stack() {
     on_stack(STATED_STACK_BYTES, || {
@@ -345,6 +361,10 @@ fn recursive_control_entry() {
     });
 }
 
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "depth proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
 #[test]
 fn the_recursive_control_overflows_the_stated_stack() {
     // A recursive walk of the same shape, on the same stated stack, overflows — so the
@@ -368,6 +388,10 @@ fn the_recursive_control_overflows_the_stated_stack() {
 
 /// The deep builders realize the depth they claim — cheap, at small counts, so a builder
 /// that silently stopped nesting (making every survival above vacuous) is caught here.
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "depth proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
 #[test]
 fn the_deep_builders_realize_their_depth() {
     for levels in [1usize, 2, 7] {

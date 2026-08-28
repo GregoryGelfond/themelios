@@ -14,7 +14,11 @@ license.workspace = true
 # default rule and the depth discipline both hold. tests/trust.rs holds the
 # closure over Cargo's resolved graph.
 [dependencies]
-themelios-program = { path = "../themelios-program" }
+# `default-features = false`: this crate uses the program tier's library, never its
+# test targets, so it does not need the program tier's `scale-proofs` default.
+# Declining it here keeps workspace feature-unification from switching those deep
+# tests back on when cargo-mutants builds with `--no-default-features`.
+themelios-program = { path = "../themelios-program", default-features = false }
 
 # The stage instruments (docs/design/analysis.md §10), outside the shipped
 # closure's claim: proptest and criterion as in the tiers beneath, and

@@ -35,6 +35,16 @@ differential = []
 # test run. The always-on naive-twin differential (tests/unify_differential.rs)
 # is the default correctness net; this is the deeper on-demand cross-check.
 swipl-differential = []
+# The depth and scaling proofs (tests/{depth_proof,scaling_shape}.rs): the
+# whole-value assurance tests that run on very deep and large fixtures. They run
+# in the default test suite and the checks, but not inside cargo-mutants' loop —
+# their size forces the mutation timeout high and lets a runaway-loop mutant
+# exhaust memory before it fires, while adding no kill a small law input doesn't.
+# On `default` so `cargo test` runs them; cargo-mutants sets `no_default_features`
+# to compile them out of the mutated build.
+scale-proofs = []
+
+default = ["scale-proofs"]
 
 [lints]
 workspace = true

@@ -114,6 +114,10 @@ fn deep_term(depth: usize) -> Term {
 /// SIZE_RATIO deeper.
 const DEPTH: usize = 1_000;
 
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
 #[test]
 fn equality_is_linear_in_term_depth() {
     // Two EQUAL deep terms, so equality cannot short-circuit on a mismatch and must
@@ -147,6 +151,10 @@ fn equality_is_linear_in_term_depth() {
     );
 }
 
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
 #[test]
 fn clone_is_linear_in_term_depth() {
     const REPEAT: usize = 8;
@@ -175,6 +183,10 @@ fn clone_is_linear_in_term_depth() {
     );
 }
 
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
 #[test]
 fn traversal_is_linear_in_term_depth() {
     // `subterms` visits every node once, pre-order (§3.6); counting the whole walk is
@@ -215,6 +227,10 @@ fn deep_program(depth: usize) -> Program {
     Program::of([WithProvenance::constructed(Statement::Rule(rule))])
 }
 
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
 #[test]
 fn rendering_is_linear_in_structure() {
     // `render` is a single work-list walk, O(output) (§10). A renderer that re-scanned
@@ -261,6 +277,10 @@ fn nested_atom(depth: usize) -> Atom {
     Atom::new(name("p"), [deep_term(depth)])
 }
 
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
 #[test]
 fn mgu_is_near_linear_in_both_atoms() {
     // A deep ground symbol against its non-ground twin — the adversarial shape that was
@@ -357,6 +377,10 @@ fn answer_set(fillers: usize) -> BTreeSet<Symbol> {
     set
 }
 
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
 #[test]
 fn matching_an_answer_set_is_logarithmic() {
     // A pattern's predicate, arity, and sign block in the ground-term order, so its
@@ -426,6 +450,10 @@ fn q_key(i: usize) -> PartKey {
     }
 }
 
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
 #[test]
 fn part_wise_access_is_logarithmic_in_the_parts() {
     // `Program::part` is a `BTreeMap` lookup, O(log parts) (§4.1, §15) — cheap

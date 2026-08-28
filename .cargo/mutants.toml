@@ -1,3 +1,13 @@
+# The depth and scaling proofs sit behind the default-on `scale-proofs` feature
+# (crates/*/Cargo.toml); disabling defaults here keeps their very deep and large
+# fixtures out of the mutated build — a runaway-loop mutant on them would
+# exhaust memory before the timeout fires, while they add no kill a small law input
+# does not. The behavioural law tests that discriminate the mutants are unaffected.
+no_default_features = true
+
+# A floor under the auto-set (5x baseline) test timeout.
+minimum_test_timeout = 20
+
 # Accepted mutation survivors, each carrying its argument. This list
 # is a reviewed artifact: an entry without an argument is a defect,
 # and a pattern broader than its argument is a defect — so patterns
