@@ -150,7 +150,8 @@ fn through_the_primitives() -> Program {
 /// reparse up-to-grounding for theory-bearing programs. The program below carries arithmetic, a
 /// comparison, and an interval — the round-trippable core — and **neither** exception, so the
 /// identity is exact. The authority half of the law (the rendered text parsed by the pinned
-/// engine) is Task 24's differential; this is the estate-parser fixpoint half.
+/// engine) is the clingo differential (`tests/differential.rs`); this is the estate-parser
+/// fixpoint half.
 #[test]
 fn round_trip_render_parse_raise_returns_the_same_program() {
     let text = "reachable(a).\n\

@@ -668,9 +668,11 @@ what it proves and what it cannot (spec §10.2).
   component decomposition linear in the graph; the shapes asserted by the test suite,
   absolute numbers measured out of band as benchmarks (spec §10.2).
 - **Golden snapshots**, reviewed: a corpus of programs with their `Analysis`
-  dumped via the derived iterative `Debug` (§8, no `Display`) — the graph, the
-  components, the verdicts, the witnesses — so the classification's shape is a
-  diffable, reviewed artifact.
+  dumped via a **provenance-blind view function** over the facts (§8, no `Display`)
+  — the graph, the components, the verdicts, the witnesses — so the classification's
+  shape is a diffable, reviewed artifact. The derived `Debug` is not used for the
+  snapshot: it renders each `WithProvenance` node's provenance, which would make the
+  golden provenance-sensitive and defeat the crate's provenance-blindness (§8).
 - **Standing checks:** mutation per milestone over the graph, classification, and
   safety logic; the workspace coverage floor; unused-code and unused-result
   warnings denied; documentation examples that run; `forbid(unsafe_code)` and the

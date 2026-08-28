@@ -1,8 +1,11 @@
-# The depth and scaling proofs sit behind the default-on `scale-proofs` feature
-# (crates/*/Cargo.toml); disabling defaults here keeps their very deep and large
-# fixtures out of the mutated build — a runaway-loop mutant on them would
-# exhaust memory before the timeout fires, while they add no kill a small law input
-# does not. The behavioural law tests that discriminate the mutants are unaffected.
+# The program tier's depth and scaling proofs sit behind the default-on `scale-proofs`
+# feature (crates/themelios-program/Cargo.toml); disabling defaults here keeps their very
+# deep and large fixtures out of the mutated build — a runaway-loop mutant on a 200,000-deep
+# value would exhaust memory before the timeout fires, while they add no kill a small law
+# input does not. The analysis tier has no such feature: its scaling proofs use flat fixtures
+# (chains, cycles, and self-loops, O(n) memory), so they run in the mutation loop by design,
+# where a complexity-regression mutant trips their ratio ceiling. The behavioural law tests
+# that discriminate the mutants are unaffected.
 no_default_features = true
 
 # A floor under the auto-set (5x baseline) test timeout.
@@ -40,11 +43,16 @@ exclude_re = [
     # computes the identical canonical variable. (The `==` and `>` forms of this site
     # change the canonical and are killed by `the_common_variable_is_the_ord_least_of_its_class`.)
     "unify\\.rs:1349:33: replace < with <= in Nodes::read_out",
-    # `take_children` feeds the iterative `Drop` (§13); its arms are exercised only by a
-    # value deep enough to overflow a recursive drop — the depth proof's domain
-    # (tests/depth_proof.rs), held out of the mutation loop by `scale-proofs`. The deep
-    # `Symbol::Function` drop there proves the mechanism; the Tuple arm applies the identical
-    # `out.append` to the symmetric variant.
+
+    # ---- The program tier (stage 3): a non-equivalent survivor caught only by the held-out depth proof ----
+    # `take_children` feeds the iterative `Drop` (§13). Deleting the Tuple arm makes a nested
+    # `Symbol::Tuple` drop RECURSIVELY — its elements are never moved to the work list — which a
+    # deep-enough value overflows: this is NOT an equivalent mutant, it is behaviourally
+    # distinguishable from the committed code. The deep-`Symbol::Tuple` depth proof
+    # (`every_walk_over_the_other_recursion_shapes_...`, tests/depth_proof.rs) kills it under the
+    # default suite and CI. It survives only THIS mutation run, whose `no_default_features` turns
+    # `scale-proofs` off and ignores the depth proof; a sweep with the depth proof on (a
+    # memory-capped runner) kills it. Excluded as held-out, not as equivalent.
     "symbol\\.rs:453:9: delete match arm Symbol::Tuple\\(elements\\) in take_children",
 
     # ---- The syntax tier (stage 2): equivalent mutants ----

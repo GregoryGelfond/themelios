@@ -1205,6 +1205,14 @@ law is structural, not a discipline that could be forgotten:
 > merged into each canonical rule — *equality* in both directions: nothing
 > load-bearing is lost, and nothing is fabricated.
 
+The union is taken at the granularity of the **ingested node** — the rule or statement
+merged — and does not recurse into a content-equal collision's *nested* nodes: two
+statements equal up to provenance are one content, and the surviving copy's atom- and
+element-level provenance is what stands; the superseded duplicate's nested provenance is
+not merged into it. The cost is `O(facts)` per collision, and no consumer reads a
+superseded duplicate's nested origins; a deep per-node union would change that cost model
+to no end.
+
 The equality (not mere containment) is the safety half: a consumer that maps a
 node's references back to their sources — an explanation tool citing a rule's
 origin, a governance tool citing a regulation reference — must never be handed a
@@ -1301,8 +1309,9 @@ genuinely possible:
 
 Lexical name classes are enforced at exactly these raw-data doors, once, by the
 syntax tier's classifier (§3.2) — the one well-formedness authority for names,
-shared so no second definition exists. Canonicalization (§5.1) runs eagerly in
-every constructor, so the ergonomic path never yields a non-canonical value.
+shared so no second definition exists. Canonicalization (§5.1) runs eagerly at every
+constructor that takes a raw term, and the boolean-head fold at the ingest door
+(§5.1, §6.3), so the ergonomic path never yields a non-canonical value.
 
 ### 7.3 The two audiences, and exceeding the comparators
 
@@ -1981,10 +1990,11 @@ with what it proves and what it cannot (spec §10.2).
     associative, empty the identity), and the preservation law holds per
     content-class (nothing lost, nothing fabricated, §6.3).
   - **Unification:** soundness (`σ = mgu(a, b)` implies `aσ` and `bσ` are
-    syntactically equal), most-generality, the occurs check (no cyclic binding is
-    ever produced), matching as the degenerate case, and `signature_range` finding
-    exactly what a full scan finds; the `Ok(None)`-versus-`Err` distinction is
-    exercised on both.
+    syntactically equal), determinism, and `signature_range` finding exactly what a
+    full scan finds are pinned by proptest; most-generality, the occurs check (no
+    cyclic binding is ever produced), matching as the degenerate case, and the
+    `Ok(None)`-versus-`Err` distinction are pinned by example laws (`unify_laws.rs`,
+    `pattern_laws.rs`) — soundness, the property most in need of generation, carries it.
   - **Round-trip:** `raise(parse(render(P, d), d)) == P` up to provenance, over
     generated and corpus programs, with the named exceptions of §10.
 - **The differential** (feature-gated harness, out of band per milestone, the

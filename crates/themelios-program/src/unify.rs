@@ -670,6 +670,17 @@ fn collect_term(term: &Term, names: &mut Names) {
             Term::Function { name, .. } | Term::External { name, .. } => {
                 names.predicates.insert(name.clone());
             }
+            // A ground symbol is a leaf to `subterms`, but its own functors still share the
+            // predicate namespace (§9.2): a canonical program stores every fully-ground term
+            // as a `Symbolic`, so `p(f0(a))` hides the functor `f0` a fresh predicate must
+            // avoid. Descend the symbol and collect its function functors.
+            Term::Symbolic(symbol) => {
+                for subsymbol in symbol.subsymbols() {
+                    if let Symbol::Function { name, .. } = subsymbol {
+                        names.predicates.insert(name.clone());
+                    }
+                }
+            }
             _ => {}
         }
     }

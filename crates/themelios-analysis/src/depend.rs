@@ -35,7 +35,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use themelios_program::program::{Program, Statement};
+use themelios_program::program::{Atom, Program, Statement};
 
 // Three types reused from the program tier rather than redefined — the one
 // authority for each (program §4, §12.1): `Signature` (the node identity),
@@ -45,6 +45,19 @@ use themelios_program::program::{Program, Statement};
 pub use themelios_program::analyze::DependencyKind;
 pub use themelios_program::program::Rule;
 pub use themelios_program::symbol::Signature;
+
+/// The predicate signature of an atom — its sign, name, and arity, the node identity in
+/// the dependency graph (§4). The crate-local atom→signature the facets share (safety's
+/// §5, classify's §6), reading it the one way, matching the substrate's own (program §12.1).
+pub(crate) fn atom_signature(atom: &Atom) -> Signature {
+    Signature {
+        sign: atom.sign,
+        name: atom.name.clone(),
+        // A predicate carries no more arguments than a `Vec` holds, far under `u32::MAX`
+        // (the workspace `cast_possible_truncation` allowance).
+        arity: atom.arguments.len() as u32,
+    }
+}
 
 /// The predicate dependency graph (§4). Nodes are predicate signatures — `p` and
 /// its strong negation `-p` distinct (grammar §5.2); edges are tagged by

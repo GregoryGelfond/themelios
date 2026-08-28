@@ -284,8 +284,8 @@ fn nested_atom(depth: usize) -> Atom {
 #[test]
 fn mgu_is_near_linear_in_both_atoms() {
     // A deep ground symbol against its non-ground twin — the adversarial shape that was
-    // Θ(depth²) before the ground side was decomposed into the unification graph (§11.1,
-    // the Stop-B fix). Near-linear: the ratio tracks the depth, not its square. Both
+    // Θ(depth²) before the ground side was decomposed into the unification graph (§11.1).
+    // Near-linear: the ratio tracks the depth, not its square. Both
     // atoms unify, so the full decide-and-produce path (including reading out the
     // triangular substitution) is timed.
     const REPEAT: usize = 8;

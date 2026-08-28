@@ -4,7 +4,7 @@
 //! and kept, without a lifetime. The proof is **structural, not by inspection**: the generic
 //! `assert_owned_plain_data::<T>()` compiles only when `T: Send + Sync + 'static`, and this
 //! file instantiates it over the whole public surface, so a type that grew a borrow, an `Rc`,
-//! or a raw pointer would fail to compile here rather than pass a reviewer's eye. The
+//! or a raw pointer would fail to compile here rather than pass a maintainer's eye. The
 //! `'static` bound is the "holds no borrow" half; `Send + Sync` is the cross-thread half.
 //!
 //! Coverage is the *entire* surface, not a sample — a missed type is a silently unasserted

@@ -91,6 +91,15 @@ fn cycle(n: usize) -> Program {
     Program::of((0..n).map(|i| edge(i, (i + 1) % n)))
 }
 
+/// `n` self-loops `p0 :- p0. … p_{n-1} :- p_{n-1}.` — `n` predicates, `n` edges, and `n`
+/// recursive components, each a single node with a positive self-edge. The shape that
+/// stresses grounding finiteness (§5): it reads the rules deriving each recursive
+/// component, so a per-component rescan of the whole program is Θ(n²) here while the
+/// indexed pass is linear.
+fn self_loops(n: usize) -> Program {
+    Program::of((0..n).map(|i| edge(i, i)))
+}
+
 #[test]
 fn analysis_of_is_linear_in_the_program() {
     // The whole analysis is one shared-graph pass (§3): the construct scan and the
@@ -142,5 +151,34 @@ fn the_scc_decomposition_is_linear_in_the_graph() {
     assert!(
         ratio < LINEAR_CEILING * RATIO_SCALE,
         "the decomposition's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} graph; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[test]
+fn finiteness_is_linear_in_many_recursive_components() {
+    // Grounding finiteness (§5) reads the rules deriving each recursive component. Over
+    // `n` self-loops — `n` recursive components — a rescan of the whole program per
+    // component is Θ(n²); the indexed pass (each rule read once, off a head-signature
+    // index) is linear. `chain` and `cycle` cannot catch this: a chain has no recursive
+    // component and a cycle has exactly one, so neither exercises the many-components
+    // shape the quadratic needs — the shape a shape-blind tripwire lets through.
+    let small = self_loops(BASE);
+    let big = self_loops(BASE * SIZE_RATIO);
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(Analysis::of(&small));
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(Analysis::of(&big));
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "finiteness's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} recursive components; the linear shape allows at most x{LINEAR_CEILING}"
     );
 }

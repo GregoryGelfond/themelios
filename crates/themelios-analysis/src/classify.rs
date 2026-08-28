@@ -7,12 +7,12 @@
 
 use std::collections::BTreeSet;
 
-use themelios_program::program::{Atom, Disjunction, Head, LiteralInner, Program, Statement};
+use themelios_program::program::{Disjunction, Head, LiteralInner, Program, Statement};
 use themelios_program::provenance::WithProvenance;
 use themelios_program::symbol::Signature;
 
 use crate::construct::{Construct, Constructs};
-use crate::depend::{Component, DependencyGraph, Rule};
+use crate::depend::{Component, DependencyGraph, Rule, atom_signature};
 
 /// A sound approximation of a ground-program property, read at the predicate level
 /// (§6.1). `Holds` is **proven** — the property is guaranteed of the ground program.
@@ -175,9 +175,11 @@ impl Classes {
     }
 }
 
-/// Whether a program is stratified (§6.2): definite in both directions, since a solver
-/// safely specializes on either result — the perfect model when stratified, the general
-/// method otherwise.
+/// Whether a program is stratified (§6.2): **definite for negation** (a `Negative` cycle
+/// proves non-stratification, its absence proves stratification) and **conservative-safe
+/// for aggregates** (a `ThroughAggregate` cycle is reported `NotStratified` though it may
+/// be stratifiable) — so a solver safely specializes on either result, the perfect model
+/// when stratified, the general method otherwise.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Stratification {
     /// No recursion runs through a non-monotone dependency.
@@ -363,16 +365,4 @@ fn rule_has_negation(rule: &Rule) -> bool {
     let program = Program::of([WithProvenance::constructed(Statement::Rule(rule.clone()))]);
     let scan = Constructs::of(&program);
     scan.uses(Construct::DefaultNegation) || scan.uses(Construct::StrongNegation)
-}
-
-/// The predicate signature of an atom — its sign, name, and arity, the node identity in
-/// the dependency graph (§4).
-fn atom_signature(atom: &Atom) -> Signature {
-    Signature {
-        sign: atom.sign,
-        name: atom.name.clone(),
-        // A predicate carries no more arguments than a `Vec` holds, far under `u32::MAX`
-        // (the workspace `cast_possible_truncation` allowance).
-        arity: atom.arguments.len() as u32,
-    }
 }

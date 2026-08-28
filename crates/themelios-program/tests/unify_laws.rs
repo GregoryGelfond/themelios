@@ -173,6 +173,16 @@ fn a_fresh_predicate_avoids_a_functor_buried_in_a_term() {
 }
 
 #[test]
+fn a_fresh_predicate_avoids_a_ground_symbol_functor() {
+    // The ground twin of the previous law: p(f0(a)) — f0(a) is fully ground, so a canonical
+    // program stores it as a `Symbolic` leaf, not a `Term::Function`. Its functor f0 still
+    // shares the predicate namespace (§9.2), so the fresh source must avoid it just the same;
+    // a scan stopping at the ground leaf would return f0 and conflate two symbols downstream.
+    let mut fresh = fresh_over([atom("p", [func("f0", [konst("a")])])]);
+    assert_ne!(fresh.predicate("f"), name("f0"));
+}
+
+#[test]
 fn every_unifier_factors_through_the_most_general_one() {
     // σ = mgu(p(X, Y), p(Y, Z)) equates X, Y, Z. τ, a more specific unifier grounding them all
     // to c, factors through σ: applying σ then τ is the same as applying τ (§11.1).
@@ -487,8 +497,11 @@ fn a_deep_ground_symbol_unifies_with_its_non_ground_twin_in_near_linear_time() {
     let ground = Atom::new(name("p"), [nest(konst("a"), DEPTH)]);
     let non_ground = Atom::new(name("p"), [nest(tvar("X"), DEPTH)]);
     let s = unifier(&ground, &non_ground);
-    // X is bound (to the whole ground nest); the substitution is a single triangular binding.
-    assert_eq!(s.iter().count(), 1, "one binding: X ↦ the ground nest");
+    // The two nests have equal depth, so the f-spines match level by level and X meets the
+    // constant `a` at the bottom: the one binding is X ↦ a, a single triangular binding. (The
+    // read-out of a *deep* term for one binding — a top variable against a deep nest — is the
+    // depth proof's, tests/depth_proof.rs; what this witnesses is that the descent is near-linear.)
+    assert_eq!(s.iter().count(), 1, "one binding: X ↦ a");
 }
 
 // ---- canonical hard cases from the unification literature ----

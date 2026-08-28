@@ -230,6 +230,24 @@ fn raise_never_refuses_and_never_panics_on_a_heavily_recovered_program() {
     let _ = raised.program().statements().count();
 }
 
+#[test]
+fn an_absent_weak_constraint_weight_is_diagnosed_not_defaulted() {
+    // Grammar §5.7 makes the weight mandatory; a bracket the parser recovered with no
+    // weight term (`[@2]` — a priority, no weight) is a recovery hole, diagnosed with an
+    // `IncompleteTerm` beside a placeholder, exactly as every other absent required term
+    // is (§8) — never silently defaulted to `1`, which would repair a recovered value out
+    // of sight (§2, §5.2).
+    let raised = raised(":~ a. [@2]");
+    assert!(
+        raised
+            .diagnostics()
+            .iter()
+            .any(|error| matches!(error.kind(), LowerErrorKind::IncompleteTerm)),
+        "an absent weak-constraint weight is diagnosed as incomplete: {:?}",
+        raised.diagnostics(),
+    );
+}
+
 // ---- The `-p` corner: strong negation is positional (§8, §4.6) ----
 
 #[test]

@@ -667,3 +667,103 @@ fn finiteness_flags_growth_through_the_term_formers() {
         "deepening a non-recursive variable does not grow",
     );
 }
+
+#[test]
+fn finiteness_flags_equality_aliased_growth() {
+    // p(g(Y)) :- p(X), Y = X.  — Y is not carried by a body literal on p, but the
+    // equality Y = X aliases it to the recursive X, so g(Y) deepens the recursion just
+    // as p(g(X)) :- p(X) would. A growth scan blind to `=` aliasing reports a false
+    // `Holds` here (the ground program p(g(g(…(c)…))) is unbounded) — the direction §6.1
+    // rules out. So Unknown.
+    let head = Atom::new(
+        name("p"),
+        [Term::Function {
+            name: name("g"),
+            arguments: vec![var("Y")],
+        }],
+    );
+    let aliased = finiteness_of([Statement::Rule(Rule::new(
+        head,
+        vec![BodyElement::from(pred("p", &["X"])), assign("Y", var("X"))],
+    ))]);
+    assert!(
+        matches!(aliased, Verdict::Unknown { .. }),
+        "an equality aliasing a recursive variable carries the growth",
+    );
+
+    // p(g(Z)) :- p(X), Z = 0.  — Z is equated to a constant, not to the recursion, so it
+    // is not recursion-carried and the program does not grow: Holds. Pins that the `=`
+    // closure does not over-flag a variable merely because it is `=`-bound.
+    let bound_to_constant = finiteness_of([Statement::Rule(Rule::new(
+        Atom::new(
+            name("p"),
+            [Term::Function {
+                name: name("g"),
+                arguments: vec![var("Z")],
+            }],
+        ),
+        vec![BodyElement::from(pred("p", &["X"])), assign("Z", num(0))],
+    ))]);
+    assert_eq!(
+        bound_to_constant,
+        Verdict::Holds,
+        "an equality binding a constant does not carry the recursion",
+    );
+}
+
+#[test]
+fn finiteness_flags_aggregate_carried_growth() {
+    // p(f(X)) :- X = #max { Y : p(Y) }.  — X carries the aggregate's value over the
+    // recursive p to the head, deepened under f. The scan sees the recursion only inside
+    // the aggregate element's condition p(Y); the growth reaches the head through the
+    // aggregate's assignment guard X. A scan that walks only plain body literals misses
+    // it entirely (a false `Holds`); the sound reading is Unknown (§6.1's Unknown is
+    // always safe — only a false `Holds` is unsound). The syntactic analysis flags any
+    // aggregate-carried recursion conservatively, which is the whole point of `Unknown`.
+    let aggregate = BodyElement::Aggregate {
+        negation: DefaultNegation::None,
+        aggregate: Aggregate::Function(FunctionAggregate::new(
+            Some(Guard {
+                relation: Some(Relation::Eq),
+                term: var("X"),
+            }),
+            AggregateFunction::Max,
+            [BodyAggregateElement::new(
+                [var("Y")],
+                Condition::new([Literal::from(pred("p", &["Y"]))]),
+            )],
+            None,
+        )),
+    };
+    let grows = finiteness_of([Statement::Rule(Rule::new(
+        functional("f", var("X")),
+        vec![aggregate],
+    ))]);
+    assert!(
+        matches!(grows, Verdict::Unknown { .. }),
+        "an aggregate carrying the recursion to a deepened head variable grows",
+    );
+
+    // p(f(Z)) :- { p(X) } >= Z.  — a SET aggregate over the recursive p with a variable
+    // bound Z that the head deepens under f: the same carrying, through the set form's
+    // guard rather than a function aggregate's. Flagged Unknown, conservatively.
+    let set = BodyElement::Aggregate {
+        negation: DefaultNegation::None,
+        aggregate: Aggregate::Set(SetAggregate::new(
+            None,
+            [SetElement::Literal(Literal::from(pred("p", &["X"])))],
+            Some(Guard {
+                relation: Some(Relation::Ge),
+                term: var("Z"),
+            }),
+        )),
+    };
+    let grows_set = finiteness_of([Statement::Rule(Rule::new(
+        functional("f", var("Z")),
+        vec![set],
+    ))]);
+    assert!(
+        matches!(grows_set, Verdict::Unknown { .. }),
+        "a set aggregate carrying the recursion through its bound grows",
+    );
+}

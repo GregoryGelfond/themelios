@@ -211,8 +211,10 @@ fn assemble_tree(root: ast::Term, parse: &dyn Reads, errors: &mut Vec<LowerError
                 }
             }
             Step::Assemble(node, count) => {
-                let start = done.len().saturating_sub(count);
-                let children = done.split_off(start);
+                // Net-one-push invariant: entering a node pushed one `Enter` per child, and
+                // every subtree leaves exactly one result on `done`, so exactly `count`
+                // results sit atop `done` now — `done.len() - count` is exact, never underflows.
+                let children = done.split_off(done.len() - count);
                 let term = assemble(&node, children, parse, errors);
                 done.push(term);
             }
@@ -347,8 +349,11 @@ fn combine(left: Term, operator: SyntaxKind, right: Term) -> Term {
 }
 
 /// The `BinaryOp` of an operator token (grammar §5.1). `..` never reaches here (it is
-/// the interval former, handled in [`combine`]); the accessor yields only these kinds,
-/// so the fallback is unreachable and kept total.
+/// the interval former, handled in [`combine`]). The listed arms name the operators whose
+/// `BinaryOp` is not `Add`; `+` (`PLUS`) and any token kind the grammar's binary operators
+/// cannot yield both map to `Add` through the wildcard — so the wildcard is a **real arm,
+/// reached on every `+`**, not a dead fallback. Keep it total: a panic here would fault on
+/// a `+` (a public surface must not panic, §15).
 fn binary_operator(kind: SyntaxKind) -> BinaryOp {
     match kind {
         SyntaxKind::CARET => BinaryOp::BitXor,
@@ -1258,7 +1263,7 @@ fn raise_weak_constraint(
     errors: &mut Vec<LowerError>,
 ) -> Statement {
     let body = raise_body_node(weak.body(), weak.syntax().text_range(), parse, errors);
-    let weight = raise_weight(weak.weight(), weak.priority(), parse, errors);
+    let weight = raise_weight(weak.weight(), weak.priority(), weak.syntax(), parse, errors);
     let terms = raise_terms(weak.tuple(), parse, errors);
     Statement::WeakConstraint(WeakConstraint::from_nodes(body, weight, terms))
 }
@@ -1286,24 +1291,30 @@ fn raise_optimize_element(
     parse: &dyn Reads,
     errors: &mut Vec<LowerError>,
 ) -> OptimizeElement {
-    let weight = raise_weight(element.weight(), element.priority(), parse, errors);
+    let weight = raise_weight(
+        element.weight(),
+        element.priority(),
+        element.syntax(),
+        parse,
+        errors,
+    );
     let terms = raise_terms(element.tuple(), parse, errors);
     let condition = raise_condition(element.condition(), parse, errors);
     OptimizeElement::new(weight, terms, condition)
 }
 
-/// Raise a `weight@priority` (§4.7): the weight term, at an optional priority. A weight
-/// the recovery left absent stands in as `1`, the grounder's implicit default.
+/// Raise a `weight@priority` (§4.7): the weight term, at an optional priority. The weight
+/// is mandatory (grammar §5.7); one the recovery left absent is a placeholder beside an
+/// `IncompleteTerm`, exactly as every other required term is ([`step_term`], §8) — never
+/// silently defaulted, which would repair a recovered value out of sight (§2, §5.2).
 fn raise_weight(
     weight_term: Option<ast::Term>,
     priority: Option<ast::Term>,
+    at: &SyntaxNode,
     parse: &dyn Reads,
     errors: &mut Vec<LowerError>,
 ) -> Weight {
-    let base = match weight_term {
-        Some(term) => weight(raise_term_node(&term, parse, errors)),
-        None => weight(Term::Symbolic(Symbol::Number(1))),
-    };
+    let base = weight(step_term(weight_term, at, parse, errors));
     match priority {
         Some(term) => base.at_priority(raise_term_node(&term, parse, errors)),
         None => base,
@@ -1724,6 +1735,9 @@ fn raise_theory_opterm(
     let mut work = vec![TheoryStep::EnterOpTerm(opterm.clone())];
     let mut done: Vec<TheoryTerm> = Vec::new();
     while let Some(step) = work.pop() {
+        // Net-one-push invariant (as in `assemble_tree`): a parent's `count` is the number
+        // of child steps it pushed, and every child leaves exactly one result on `done`, so
+        // `done.len() - count` is exact at each assembly below — never underflows.
         match step {
             TheoryStep::EnterOpTerm(opterm) => enter_theory_opterm(&opterm, &mut work, &mut done),
             TheoryStep::EnterTerm(term) => {

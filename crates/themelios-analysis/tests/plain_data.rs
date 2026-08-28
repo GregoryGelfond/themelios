@@ -4,7 +4,7 @@
 //! lifetime — as a `Program` is. The proof is **structural, not by inspection**: the generic
 //! `assert_owned_plain_data::<T>()` compiles only when `T: Send + Sync + 'static`, and this
 //! file instantiates it over the whole surface this crate defines, so a facet that grew a
-//! borrow or a non-`Send` field would fail to compile here rather than pass a reviewer's eye.
+//! borrow or a non-`Send` field would fail to compile here rather than pass a maintainer's eye.
 //!
 //! Coverage is the whole surface this crate *defines* — the assembled `Analysis` and its four
 //! facets (`Constructs`, `DependencyGraph`, `Safety`, `Classes`) with their component, verdict,

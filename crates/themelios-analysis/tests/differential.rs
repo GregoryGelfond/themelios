@@ -35,7 +35,7 @@ use themelios_syntax::parse::parse;
 /// The pin (docs/grammar.md §3).
 const AUTHORITY_VERSION: &str = "5.8.2";
 
-/// The shared clingo driver lives in the program tier's tests (its Task-24 sibling); the
+/// The shared clingo driver lives in the program tier's tests (its `differential.rs` sibling); the
 /// analysis differential reaches it by path, as the program tier's round-trip law reaches
 /// the syntax tier's vendored corpus. One driver, both tiers.
 fn authority_py() -> PathBuf {
