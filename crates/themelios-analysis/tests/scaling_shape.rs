@@ -29,11 +29,12 @@ use std::time::Instant;
 use themelios_analysis::analysis::Analysis;
 use themelios_analysis::depend::DependencyGraph;
 use themelios_program::program::{
-    Atom, BodyElement, Comparison, Condition, DefaultNegation, Disjunction, DisjunctionElement,
-    Head, Literal, LiteralInner, Program, Relation, Rule, Statement,
+    Aggregate, AggregateFunction, Atom, BodyAggregateElement, BodyElement, Comparison, Condition,
+    DefaultNegation, Disjunction, DisjunctionElement, FunctionAggregate, Guard, Head, Literal,
+    LiteralInner, Program, Relation, Rule, Statement,
 };
 use themelios_program::provenance::WithProvenance;
-use themelios_program::symbol::{Name, VarName};
+use themelios_program::symbol::{Name, Symbol, VarName};
 use themelios_program::term::{Term, Variable};
 
 /// The data-size ratio between the small and large cases.
@@ -182,6 +183,103 @@ fn giant_recursive_component(n: usize) -> Program {
             Atom::new(name(&format!("p{}", (i + 1) % n)), [var.clone()]),
         )))
     }))
+}
+
+fn number(value: i32) -> Term {
+    Term::Symbolic(Symbol::Number(value))
+}
+
+fn indexed_var(index: usize) -> Term {
+    Term::Variable(Variable::Named(
+        VarName::new(format!("X{index}")).expect("a valid variable"),
+    ))
+}
+
+/// One rule `q(X0) :- q(Xn), X0 = f(X1), …, X_{n-1} = f(Xn).` — an `n`-link chain of `=`-deepenings
+/// carrying growth to the *bare* head `X0` (the re-derivation's P4). The finiteness deepening
+/// closure walks the chain once; re-resolving each link would be Θ(n²). Distinct from
+/// `equality_chain` (pure aliasing, no former) — this is the deepening the reread-2 fix added.
+fn deepening_chain(n: usize) -> Program {
+    let head = Atom::new(name("q"), [indexed_var(0)]);
+    let mut body: Vec<BodyElement> =
+        vec![BodyElement::from(Atom::new(name("q"), [indexed_var(n)]))];
+    for i in 0..n {
+        let deeper = Term::Function {
+            name: name("f"),
+            arguments: vec![indexed_var(i + 1)],
+        };
+        body.push(BodyElement::Literal(Literal {
+            negation: DefaultNegation::None,
+            inner: LiteralInner::Comparison(WithProvenance::constructed(Comparison::new(
+                indexed_var(i),
+                Relation::Eq,
+                deeper,
+            ))),
+        }));
+    }
+    Program::of([WithProvenance::constructed(Statement::Rule(Rule::new(
+        head, body,
+    )))])
+}
+
+/// One rule `result :- f(X1, …, Xn) = #sum { 1 : q1;  …;  1 : qn }.` — a compound aggregate guard
+/// of `n` variables over `n` element signatures. Carrying every guard variable to every ranged
+/// signature is Θ(n²) (Finding 2); a *lone-variable* guard carries nothing, so this stays linear.
+fn aggregate_guard_fan_out(n: usize) -> Program {
+    let guard = Guard {
+        relation: Some(Relation::Eq),
+        term: Term::Function {
+            name: name("f"),
+            arguments: (0..n).map(indexed_var).collect(),
+        },
+    };
+    let elements = (0..n).map(|i| {
+        BodyAggregateElement::new(
+            [number(1)],
+            Condition::new([Literal::from(Atom::constant(name(&format!("q{i}"))))]),
+        )
+    });
+    let aggregate = BodyElement::Aggregate {
+        negation: DefaultNegation::None,
+        aggregate: Aggregate::Function(FunctionAggregate::new(
+            Some(guard),
+            AggregateFunction::Sum,
+            elements,
+            None,
+        )),
+    };
+    Program::of([WithProvenance::constructed(Statement::Rule(Rule::new(
+        Atom::constant(name("result")),
+        vec![aggregate],
+    )))])
+}
+
+/// One rule `h :- b(X1), …, b(Xn), #count { 1 : c1;  …;  1 : cn }.` — `n` global binders and an
+/// aggregate of `n` elements, hence `n` local scopes. Cloning the global bound set once per local
+/// scope is Θ(n²) (Finding 3, in the safety fixpoint); consulting it as a read-only base is linear.
+fn many_local_scopes(n: usize) -> Program {
+    let mut body: Vec<BodyElement> = (0..n)
+        .map(|i| BodyElement::from(Atom::new(name("b"), [indexed_var(i)])))
+        .collect();
+    let elements = (0..n).map(|i| {
+        BodyAggregateElement::new(
+            [number(1)],
+            Condition::new([Literal::from(Atom::constant(name(&format!("c{i}"))))]),
+        )
+    });
+    body.push(BodyElement::Aggregate {
+        negation: DefaultNegation::None,
+        aggregate: Aggregate::Function(FunctionAggregate::new(
+            None,
+            AggregateFunction::Count,
+            elements,
+            None,
+        )),
+    });
+    Program::of([WithProvenance::constructed(Statement::Rule(Rule::new(
+        Atom::constant(name("h")),
+        body,
+    )))])
 }
 
 #[test]
@@ -348,5 +446,86 @@ fn finiteness_is_linear_in_a_giant_recursive_component() {
     assert!(
         ratio < LINEAR_CEILING * RATIO_SCALE,
         "finiteness's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} component members; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[test]
+fn finiteness_is_linear_in_a_deepening_chain() {
+    // The finiteness deepening closure (§5) walks a rule's `=`-assignment chain to carry growth to
+    // a bare head (reread-2 P3/P4). Over an `n`-link chain of `X = f(Y)` deepenings it is linear;
+    // re-resolving each link would be Θ(n²). `equality_chain` (pure aliasing, no former) does not
+    // exercise the deepening the fix added.
+    let small = deepening_chain(BASE);
+    let big = deepening_chain(BASE * SIZE_RATIO);
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(Analysis::of(&small));
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(Analysis::of(&big));
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "finiteness's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} deepening chain; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[test]
+fn finiteness_is_linear_in_an_aggregate_guard_fan_out() {
+    // A compound aggregate guard of `n` variables over `n` element signatures (§5): carrying every
+    // guard variable to every ranged signature is Θ(n²) (Finding 2). Only lone-variable guards
+    // carry, so the compound guard carries nothing and the pass is linear. No other tripwire builds
+    // an aggregate.
+    let small = aggregate_guard_fan_out(BASE);
+    let big = aggregate_guard_fan_out(BASE * SIZE_RATIO);
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(Analysis::of(&small));
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(Analysis::of(&big));
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "finiteness's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} aggregate guard fan-out; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[test]
+fn safety_is_linear_in_many_local_scopes() {
+    // The safety fixpoint (§5) closes each local scope over the global bound set. Over `n` global
+    // binders and `n` aggregate-element local scopes, cloning the global set per scope is Θ(n²)
+    // (Finding 3); consulting it as a read-only base is linear. The other tripwires build no
+    // multi-scope body, so this guards the safety half that `Analysis::of` also runs.
+    let small = many_local_scopes(BASE);
+    let big = many_local_scopes(BASE * SIZE_RATIO);
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(Analysis::of(&small));
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(Analysis::of(&big));
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "safety's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} local scopes; the linear shape allows at most x{LINEAR_CEILING}"
     );
 }

@@ -333,6 +333,25 @@ recursion classes do — `Holds` where this crate can prove grounding bounded,
 cannot. This is the same discipline the recursion classes carry (§6): assert only
 the property a consumer safely specializes on, and make the uncertainty a value.
 
+**The growth reading, and its soundness (no false `Holds`).** A recursive
+component's grounding is unbounded exactly when a rule deepens, on the recursion, a
+term the component carries — so `finiteness` proves `Holds` by finding *no* such
+deepening, and that proof is only as sound as its enumeration of **how** a head term
+can deepen a carried variable. Read at the predicate level, a head-atom argument
+deepens a carried variable when it is a term-former (`f`, a tuple, an arithmetic
+operation) over it — written directly (`q(f(Y)) :- q(Y)`), or reached through a body
+`=`-assignment that makes a variable deepen a carried one (`q(X) :- q(Y), X = f(Y)`,
+and transitively along a chain). The `=`-assignment case is the one to hold carefully:
+`X = f(Y)` embeds a successor — a Church numeral — so it *deepens*, where the aliasing
+`X = Y` does not; treating the two alike would miss an unbounded grounding, a **false
+`Holds`**. The term successor `X = f(Y)` and the arithmetic successor `X = Y + 1` are
+the same act — generating unbounded naturals — and both deepen. This enumeration, and
+the argument that each path is caught, is the soundness obligation `Holds` answers to;
+it is discharged by the growth laws (§10) and, ultimately, by the grounder differential
+the solve tier brings. The reading is a sound over-approximation: it may report
+`Unknown` where a ground program is in fact finite (an aggregate value that grows as an
+integer, not a term; a deepening a lower stratum in fact bounds), never the reverse.
+
 **Computational cost.** Safety is `O(rules · variables)` — one pass per rule
 collecting binding occurrences; finiteness reads the components (§4) and the
 term structure of the recursive rules, `O(program + edges)`.
@@ -621,6 +640,19 @@ witness. Clone is linear; equality, ordering, and hashing are structural. No wal
 recurses on the call stack (the graph decomposition is iterative, §4; the program
 walks are the program tier's iterative ones, program §13), so a pathological
 program cannot overflow one.
+
+**The `edges` term is the real cost driver, and it can be `Θ(program²)`.** A rule
+with an `h`-atom head over a `b`-atom body contributes `h · b` dependency edges, so a
+single wide rule `p1;…;pn :- q1,…,qn.` of size `Θ(n)` yields `Θ(n²)` edges, which every
+`O(nodes + edges)` reader then pays. This is *faithful*, not a defect: the graph
+genuinely has that many edges; `O(program + edges)` names `edges` separately precisely
+because it can exceed `program`; and clingo's own grounding is likewise super-linear on
+such a program. An adversary at the untrusted boundary (spec §12.4) can push the
+analysis to `Θ(program²)` only by handing it a program whose graph *is* that large — the
+work equals the output, never a multiplier on top of it. The linear commitments
+elsewhere in this crate (safety, finiteness, the SCC build) are `O(program + edges)` in
+exactly this sense: linear in the graph the program defines, with no term super-linear
+in the program on top of the edges the program spells out.
 
 ## 9. Failure semantics, consolidated
 

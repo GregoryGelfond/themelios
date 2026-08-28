@@ -355,6 +355,193 @@ fn finiteness_reads_structure_not_provenance() {
     );
 }
 
+// ---- Finiteness: growth carried by a body `=`-assignment (reread-2, the re-derivation P1–P7) ----
+//
+// The direct former `q(f(Y)) :- q(Y)` (P1) is `growing_rule` above. These pin the growth that
+// reaches the head through a body `=`-assignment — the false-`Holds` hole reread-2 found — and the
+// aliasing that must NOT be read as growth.
+
+fn function(name_text: &str, arg: &str) -> Term {
+    Term::Function {
+        name: name(name_text),
+        arguments: vec![var(arg)],
+    }
+}
+
+#[test]
+fn finiteness_flags_equality_assigned_growth() {
+    // P3: q(X) :- q(Y), X = f(Y).  The deepening is in the body `=`; the head carries X *bare*.
+    // Grounds infinitely (q(0), q(f(0)), q(f(f(0))), …) — must be Unknown, not a false Holds.
+    let rule = Rule::new(
+        pred("q", &["X"]),
+        vec![
+            BodyElement::from(pred("q", &["Y"])),
+            assign("X", function("f", "Y")),
+        ],
+    );
+    match finiteness_of([Statement::Rule(rule)]) {
+        Verdict::Unknown { witness } => assert!(
+            witness.members().any(|s| s.name.as_str() == "q"),
+            "the growing component is q",
+        ),
+        Verdict::Holds => panic!("`=`-assignment-carried growth (P3) must be Unknown, not Holds"),
+    }
+}
+
+#[test]
+fn finiteness_flags_an_assignment_deepening_chain() {
+    // P4: q(X0) :- q(X3), X0 = f(X1), X1 = f(X2), X2 = f(X3).  The deepening reaches the bare head
+    // X0 transitively along a chain of assignments.
+    let rule = Rule::new(
+        pred("q", &["X0"]),
+        vec![
+            BodyElement::from(pred("q", &["X3"])),
+            assign("X0", function("f", "X1")),
+            assign("X1", function("f", "X2")),
+            assign("X2", function("f", "X3")),
+        ],
+    );
+    assert!(
+        matches!(
+            finiteness_of([Statement::Rule(rule)]),
+            Verdict::Unknown { .. }
+        ),
+        "a chain of `=`-deepenings to a bare head (P4) must be Unknown",
+    );
+}
+
+#[test]
+fn finiteness_flags_arithmetic_successor_growth() {
+    // P7: q(X) :- q(Y), X = Y + 1.  The integer successor is the same act as the term successor —
+    // a Church numeral — and is flagged uniformly with `q(Y+1) :- q(Y)`.
+    let rule = Rule::new(
+        pred("q", &["X"]),
+        vec![
+            BodyElement::from(pred("q", &["Y"])),
+            assign("X", var("Y") + num(1)),
+        ],
+    );
+    assert!(
+        matches!(
+            finiteness_of([Statement::Rule(rule)]),
+            Verdict::Unknown { .. }
+        ),
+        "arithmetic successor growth (P7) must be Unknown",
+    );
+}
+
+#[test]
+fn finiteness_reads_equality_aliasing_precisely() {
+    // A bare `=`-aliased variable does NOT grow: p(X) :- p(Y), X = Y is the tautology p(Y) :- p(Y).
+    let bare = Rule::new(
+        pred("p", &["X"]),
+        vec![BodyElement::from(pred("p", &["Y"])), assign("X", var("Y"))],
+    );
+    assert_eq!(
+        finiteness_of([Statement::Rule(bare)]),
+        Verdict::Holds,
+        "a bare `=`-aliased variable does not grow (P2 alias): Holds",
+    );
+
+    // But an alias *under a head former* does grow: q(f(X)) :- q(Y), X = Y is q(f(Y)) :- q(Y).
+    let formed = Rule::new(
+        Atom::new(name("q"), [function("f", "X")]),
+        vec![BodyElement::from(pred("q", &["Y"])), assign("X", var("Y"))],
+    );
+    assert!(
+        matches!(
+            finiteness_of([Statement::Rule(formed)]),
+            Verdict::Unknown { .. }
+        ),
+        "an alias under a head former grows (P2): Unknown",
+    );
+}
+
+fn eq_literal(left: Term, right: Term) -> Literal {
+    Literal {
+        negation: DefaultNegation::None,
+        inner: LiteralInner::Comparison(WithProvenance::constructed(Comparison::new(
+            left,
+            Relation::Eq,
+            right,
+        ))),
+    }
+}
+
+#[test]
+fn finiteness_reads_the_reversed_assignment() {
+    // f(Y) = X is the same deepening as X = f(Y) (P3), with the former on the left.
+    let rule = Rule::new(
+        pred("q", &["X"]),
+        vec![
+            BodyElement::from(pred("q", &["Y"])),
+            BodyElement::Literal(eq_literal(function("f", "Y"), var("X"))),
+        ],
+    );
+    assert!(
+        matches!(
+            finiteness_of([Statement::Rule(rule)]),
+            Verdict::Unknown { .. }
+        ),
+        "`f(Y) = X` deepens like `X = f(Y)`",
+    );
+}
+
+#[test]
+fn finiteness_terminates_on_cyclic_deepening() {
+    // q(X) :- q(Y), X = f(Y), Y = f(X).  — mutually deepening; the closure's visited-set must
+    // terminate (no hang), and X deepening carried Y makes it Unknown.
+    let rule = Rule::new(
+        pred("q", &["X"]),
+        vec![
+            BodyElement::from(pred("q", &["Y"])),
+            assign("X", function("f", "Y")),
+            assign("Y", function("f", "X")),
+        ],
+    );
+    assert!(
+        matches!(
+            finiteness_of([Statement::Rule(rule)]),
+            Verdict::Unknown { .. }
+        ),
+        "cyclic deepening terminates as Unknown",
+    );
+}
+
+#[test]
+fn safety_binds_an_assignment_local_to_an_aggregate_element() {
+    // p :- #count { : q(W), X = f(W) } >= 1.  — the aggregate element is a local scope carrying a
+    // local `=`-assignment X = f(W); the fixpoint closes it over the (empty) global base. Exercises
+    // the assignment worklist of the scoped closure, not just the empty-scope path.
+    let element = BodyAggregateElement::new(
+        Vec::<Term>::new(),
+        Condition::new([
+            Literal::from(pred("q", &["W"])),
+            eq_literal(var("X"), function("f", "W")),
+        ]),
+    );
+    let aggregate = BodyElement::Aggregate {
+        negation: DefaultNegation::None,
+        aggregate: Aggregate::Function(FunctionAggregate::new(
+            None,
+            AggregateFunction::Count,
+            [element],
+            Some(Guard {
+                relation: Some(Relation::Ge),
+                term: num(1),
+            }),
+        )),
+    };
+    let safety = safety_of([Statement::Rule(Rule::new(
+        Atom::constant(name("p")),
+        vec![aggregate],
+    ))]);
+    assert!(
+        safety.is_safe(),
+        "a local `=`-assignment binds its variable within the element scope",
+    );
+}
+
 // ---- Performance: the binding fixpoint stays linear ----
 
 #[test]
