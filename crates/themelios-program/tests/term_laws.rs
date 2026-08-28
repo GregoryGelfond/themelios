@@ -523,6 +523,79 @@ fn a_tuple_is_kept_a_tuple_never_collapsed_to_its_element() {
     assert_eq!(non_ground.clone().canonicalize(), non_ground);
 }
 
+#[test]
+fn the_point_accessors_read_each_applied_form() {
+    let x = || Term::Variable(Variable::Named(VarName::new("X").expect("variable")));
+    let n = |t: &str| Name::new(t).expect("identifier");
+    // A function reads its name, its arguments, and its arity; a two-argument functor
+    // pins arity to 2 — neither 0 nor a constant 1.
+    let f = Term::Function {
+        name: n("f"),
+        arguments: vec![Term::from(1), x()],
+    };
+    assert_eq!(f.name(), Some(&n("f")));
+    assert_eq!(f.arguments(), &[Term::from(1), x()]);
+    assert_eq!(f.arity(), 2);
+    assert!(
+        !f.is_ground(),
+        "f(1, X) has a variable, so it is not ground"
+    );
+    // A tuple has no functor name but reads its elements as its arguments.
+    let tuple = Term::Tuple(vec![Term::from(1), Term::from(2)]);
+    assert_eq!(tuple.name(), None);
+    assert_eq!(tuple.arguments(), &[Term::from(1), Term::from(2)]);
+    // A ground function is ground; a bare variable is a non-applied form.
+    assert!(
+        Term::Function {
+            name: n("g"),
+            arguments: vec![Term::from(1)],
+        }
+        .is_ground()
+    );
+    assert_eq!(x().name(), None);
+    assert!(x().arguments().is_empty());
+    assert_eq!(x().arity(), 0);
+}
+
+#[test]
+fn structural_equality_separates_functor_arity_operator_and_call() {
+    let x = || Term::Variable(Variable::Named(VarName::new("X").expect("variable")));
+    let n = |t: &str| Name::new(t).expect("identifier");
+    let f = |functor: &str, arguments: Vec<Term>| Term::Function {
+        name: n(functor),
+        arguments,
+    };
+    // A shared functor name is not equality: a name match with a different arity, or a
+    // matching arity under a different name, are both unequal (§3.3).
+    assert_ne!(
+        f("p", vec![Term::from(1)]),
+        f("p", vec![Term::from(1), Term::from(2)])
+    );
+    assert_ne!(f("p", vec![Term::from(1)]), f("q", vec![Term::from(1)]));
+    // Two unary operations over one argument differ by operator alone: -X ≠ ~X.
+    let unary = |op| Term::UnaryOperation {
+        operator: op,
+        argument: Box::new(x()),
+    };
+    assert_ne!(unary(UnaryOp::Negate), unary(UnaryOp::BitwiseNot));
+    // Two binary operations over one pair differ by operator alone: X + 1 ≠ X - 1.
+    let binary = |op| Term::BinaryOperation {
+        operator: op,
+        left: Box::new(x()),
+        right: Box::new(Term::from(1)),
+    };
+    assert_ne!(binary(BinaryOp::Add), binary(BinaryOp::Sub));
+    // An @-call separates on arity as a function does: @f(1) ≠ @f(1, 2).
+    let call = |arguments: Vec<Term>| Term::External {
+        name: n("f"),
+        arguments,
+    };
+    assert_ne!(
+        call(vec![Term::from(1)]),
+        call(vec![Term::from(1), Term::from(2)])
+    );
+}
+
 /// A left-nested function `f(f(… 0 …))` of `depth` levels — all ground constructor
 /// terms, so canonicalization collapses the whole spine to one deep `Symbolic`.
 fn deep_via_function(depth: usize) -> Term {

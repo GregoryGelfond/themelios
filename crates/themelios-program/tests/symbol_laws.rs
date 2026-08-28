@@ -265,6 +265,25 @@ proptest! {
     }
 }
 
+#[test]
+fn arity_counts_arguments_and_two_strings_order_by_content() {
+    // A two-argument function has arity 2 — neither 0 nor a constant 1 (§3.2).
+    let f = Symbol::Function {
+        name: Name::new("f").expect("identifier"),
+        arguments: vec![Symbol::Number(1), Symbol::Number(2)],
+        sign: Sign::Positive,
+    };
+    assert_eq!(f.arity(), 2);
+    assert_eq!(Symbol::Number(0).arity(), 0, "an atomic symbol has arity 0");
+    // Two strings at the one String rank order by their content, not as equal (§3.1):
+    // a dropped String arm in the order would tie every pair of strings.
+    assert!(Symbol::String("apple".to_owned()) < Symbol::String("banana".to_owned()));
+    assert_ne!(
+        Symbol::String("a".to_owned()),
+        Symbol::String("b".to_owned())
+    );
+}
+
 /// A left-nested function `f(f(f(… c …)))` of `depth` levels — the shape a
 /// recursive construction produces (§13), built iteratively so the test does not
 /// overflow building it either.

@@ -483,6 +483,82 @@ fn safety_scopes_every_head_and_element_form() {
     );
 }
 
+#[test]
+fn safety_flags_an_unbound_variable_in_each_local_and_comparison_form() {
+    // The mirror of `safety_scopes_every_head_and_element_form`: the same local and
+    // comparison forms with an *unbound* variable, so each binding path is pinned on
+    // both sides — a dropped element form or a widened assignment guard would let one
+    // of these wrongly read safe.
+
+    // :- #count { X : q(Y) } >= 1.  — X is in the element term but the condition q(Y)
+    // binds Y, not X; X is purely local and unbound, distinguishing it from a variable
+    // shared with the rule global.
+    let aggregate = BodyElement::Aggregate {
+        negation: DefaultNegation::None,
+        aggregate: Aggregate::Function(FunctionAggregate::new(
+            None,
+            AggregateFunction::Count,
+            [BodyAggregateElement::new(
+                [var("X")],
+                Condition::new([Literal::from(pred("q", &["Y"]))]),
+            )],
+            Some(Guard {
+                relation: Some(Relation::Ge),
+                term: num(1),
+            }),
+        )),
+    };
+    assert!(
+        unbound_of(Rule::constraint(vec![aggregate])).contains(&named("X")),
+        "a purely-local unbound aggregate variable is flagged",
+    );
+
+    // s :- p(X) : r(Y).  — the conditional's literal p(X) needs X, but its condition
+    // r(Y) binds Y, not X: X is unbound and flagged.
+    let conditional = BodyElement::Conditional(ConditionalLiteral {
+        literal: Literal::from(pred("p", &["X"])),
+        condition: Condition::new([Literal::from(pred("r", &["Y"]))]),
+    });
+    assert!(
+        unbound_of(Rule::new(pred("s", &[]), vec![conditional])).contains(&named("X")),
+        "an unbound variable in a body conditional literal is flagged",
+    );
+
+    // p(X) :- X < 5.  — a single NON-equality comparison is not an assignment, so it
+    // binds nothing; X is unbound (only `X = t` binds, §5).
+    let comparison = BodyElement::Literal(Literal {
+        negation: DefaultNegation::None,
+        inner: LiteralInner::Comparison(WithProvenance::constructed(Comparison::new(
+            var("X"),
+            Relation::Lt,
+            num(5),
+        ))),
+    });
+    assert!(
+        unbound_of(Rule::new(pred("p", &["X"]), vec![comparison])).contains(&named("X")),
+        "a variable constrained only by a non-equality comparison is unbound",
+    );
+
+    // :- &diff(Y) { X : p(X) }.  — the theory atom's ordinary argument Y has no binding
+    // occurrence (the element condition p(X) binds only the theory-local X): Y is flagged.
+    let theory = BodyElement::TheoryAtom {
+        negation: DefaultNegation::None,
+        atom: TheoryAtom::new(
+            name("diff"),
+            [var("Y")],
+            [TheoryElement::new(
+                [TheoryTerm::Variable(named("X"))],
+                Some(Condition::new([Literal::from(pred("p", &["X"]))])),
+            )],
+            None,
+        ),
+    };
+    assert!(
+        unbound_of(Rule::constraint(vec![theory])).contains(&named("Y")),
+        "an unbound ordinary argument of a theory atom is flagged",
+    );
+}
+
 // ---- Breadth: finiteness through every term-former ----
 
 fn functional(name_text: &str, argument: Term) -> Atom {

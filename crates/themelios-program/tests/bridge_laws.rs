@@ -146,6 +146,54 @@ fn evaluate_handles_unary_and_absolute() {
 }
 
 #[test]
+fn evaluate_pins_every_operator_to_its_authority_value() {
+    // Division and modulo by a NON-zero divisor denote — the zero refusal above is
+    // the boundary, not the rule, so both sides of the guard are pinned (§3.5).
+    assert_eq!(
+        evaluate(&binop(BinaryOp::Div, num(6), num(2))),
+        Ok(Symbol::Number(3))
+    );
+    assert_eq!(
+        evaluate(&binop(BinaryOp::Mod, num(7), num(3))),
+        Ok(Symbol::Number(1))
+    );
+    // Power denotes for a non-negative exponent and refuses a negative one Undefined
+    // — the authority's boundary, never a wrapped or guessed value.
+    assert_eq!(
+        evaluate(&binop(BinaryOp::Pow, num(2), num(3))),
+        Ok(Symbol::Number(8))
+    );
+    assert_eq!(
+        evaluate(&binop(BinaryOp::Pow, num(2), num(0))),
+        Ok(Symbol::Number(1))
+    );
+    assert_eq!(
+        evaluate(&binop(BinaryOp::Pow, num(2), num(-1))),
+        Err(EvalError::Undefined)
+    );
+    // The three bitwise operators are distinct on 6 and 3: 6 & 3 = 2, 6 | 3 = 7,
+    // 6 ^ 3 = 5 — three values no pair of operators shares.
+    assert_eq!(
+        evaluate(&binop(BinaryOp::BitAnd, num(6), num(3))),
+        Ok(Symbol::Number(2))
+    );
+    assert_eq!(
+        evaluate(&binop(BinaryOp::BitOr, num(6), num(3))),
+        Ok(Symbol::Number(7))
+    );
+    assert_eq!(
+        evaluate(&binop(BinaryOp::BitXor, num(6), num(3))),
+        Ok(Symbol::Number(5))
+    );
+    // Bitwise complement inverts every bit: ~5 = -6 in two's complement, not the operand.
+    let complement = Term::UnaryOperation {
+        operator: UnaryOp::BitwiseNot,
+        argument: Box::new(num(5)),
+    };
+    assert_eq!(evaluate(&complement), Ok(Symbol::Number(-6)));
+}
+
+#[test]
 fn evaluate_refuses_variables_and_external_calls_carrying_the_offender() {
     let named = || Variable::Named(VarName::new("X").expect("variable"));
     assert_eq!(

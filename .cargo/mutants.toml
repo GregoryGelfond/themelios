@@ -14,6 +14,40 @@ minimum_test_timeout = 20
 # are added only from printed survivor descriptions at triage, never
 # authored in advance.
 exclude_re = [
+    # ---- The program and analysis tiers (stage 3): equivalent mutants ----
+    # A component of more than one member is strongly connected, so it always has an
+    # internal edge: `members.len() > 1` implies `!internal_edge_kinds.is_empty()`. The
+    # mutant `len() < 1` is always false, reducing `is_recursive` to the second disjunct,
+    # which agrees on every real component — no component distinguishes the two.
+    "depend\\.rs:187:28: replace > with < in Component::is_recursive",
+    # Union-by-rank is a balancing heuristic: the rank counter changes only which class
+    # becomes representative, never the substitution the read-out yields, and path halving
+    # keeps finds near-linear without it. No correctness law or scaling tripwire differs.
+    "unify\\.rs:1213:33: replace \\+= with \\*= in Nodes::union",
+    # Deleting the two-variable arm falls through to the bare-variable `link` arm, which
+    # merges the same two classes; the read-out names each class by its Ord-least variable,
+    # so which node is the representative is immaterial to the substitution (only the rank
+    # bump is lost — balance, as at 1213).
+    "unify\\.rs:1234:17: delete match arm \\(Cell::Variable\\(_\\), Cell::Variable\\(_\\)\\) in Nodes::unify",
+    # The guard chooses which nodes SEED the occurs-DFS. The original seeds every unvisited
+    # representative; the mutant seeds a superset (also non-representatives and coloured
+    # representatives), adding only redundant traversal — a re-entered node returns at the
+    # colour check, a non-representative descends to the same representatives. The occurs
+    # verdict is unchanged.
+    "unify\\.rs:1294:42: replace \\|\\| with && in Nodes::occurs_check_holds",
+    # `<` picks the Ord-least variable of a class; `<=` differs only when `variable ==
+    # least`, where the body reassigns `least` to an equal value — a no-op — so `<=`
+    # computes the identical canonical variable. (The `==` and `>` forms of this site
+    # change the canonical and are killed by `the_common_variable_is_the_ord_least_of_its_class`.)
+    "unify\\.rs:1349:33: replace < with <= in Nodes::read_out",
+    # `take_children` feeds the iterative `Drop` (§13); its arms are exercised only by a
+    # value deep enough to overflow a recursive drop — the depth proof's domain
+    # (tests/depth_proof.rs), held out of the mutation loop by `scale-proofs`. The deep
+    # `Symbol::Function` drop there proves the mechanism; the Tuple arm applies the identical
+    # `out.append` to the symmetric variant.
+    "symbol\\.rs:453:9: delete match arm Symbol::Tuple\\(elements\\) in take_children",
+
+    # ---- The syntax tier (stage 2): equivalent mutants ----
     # The peek cache (`self.peeked`) is set to None on every `bump`, `set_mode`,
     # and statement boundary in src/parse/machine.rs, so it is Some only while
     # the parser's offset, mode, and docs-are-trivia are unchanged since it was

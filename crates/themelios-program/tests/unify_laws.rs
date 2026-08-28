@@ -132,6 +132,25 @@ fn the_unifier_of_two_variables_is_a_renaming_not_a_grounding() {
 }
 
 #[test]
+fn the_common_variable_is_the_ord_least_of_its_class() {
+    // Unifying p(Z, Y) with p(Y, X) equates {X, Y, Z} into one class. The read-out names
+    // the class by its Ord-least member (§11.1) — X — regardless of the order the
+    // variables were first seen (Z, then Y, then X); so every member resolves to X, not
+    // to the first-seen Z nor the greatest Z.
+    let s = unifier(
+        &atom("p", [tvar("Z"), tvar("Y")]),
+        &atom("p", [tvar("Y"), tvar("X")]),
+    );
+    assert_eq!(
+        tvar("X").substitute(&s),
+        tvar("X"),
+        "the least is its own image"
+    );
+    assert_eq!(tvar("Y").substitute(&s), tvar("X"));
+    assert_eq!(tvar("Z").substitute(&s), tvar("X"));
+}
+
+#[test]
 fn the_unifier_binds_only_what_it_must() {
     // mgu(p(X), p(f(Y))) binds X ↦ f(Y) and leaves Y free — it invents no binding for Y.
     let s = unifier(
@@ -140,6 +159,17 @@ fn the_unifier_binds_only_what_it_must() {
     );
     assert_eq!(tvar("X").substitute(&s), func("f", [tvar("Y")]));
     assert_eq!(tvar("Y").substitute(&s), tvar("Y"), "Y is untouched");
+}
+
+#[test]
+fn a_fresh_predicate_avoids_a_functor_buried_in_a_term() {
+    // A program mentioning the functor `aux0` only inside a term — p(aux0(X)) — never as a
+    // head predicate. The argument is non-ground (aux0(X)), so it stays a `Term::Function`
+    // rather than canonicalizing to a ground symbol leaf, and its functor is collected: the
+    // fresh source must avoid it, functors and predicates sharing one namespace (§9.2). A
+    // fresh predicate colliding with a term's functor would conflate two symbols downstream.
+    let mut fresh = fresh_over([atom("p", [func("aux0", [tvar("X")])])]);
+    assert_ne!(fresh.predicate("aux"), name("aux0"));
 }
 
 #[test]
