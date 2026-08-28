@@ -29,8 +29,8 @@ use std::time::Instant;
 use themelios_analysis::analysis::Analysis;
 use themelios_analysis::depend::DependencyGraph;
 use themelios_program::program::{
-    Atom, BodyElement, Comparison, DefaultNegation, Literal, LiteralInner, Program, Relation, Rule,
-    Statement,
+    Atom, BodyElement, Comparison, Condition, DefaultNegation, Disjunction, DisjunctionElement,
+    Head, Literal, LiteralInner, Program, Relation, Rule, Statement,
 };
 use themelios_program::provenance::WithProvenance;
 use themelios_program::symbol::{Name, VarName};
@@ -135,6 +135,53 @@ fn equality_chain(n: usize) -> Program {
     Program::of([WithProvenance::constructed(Statement::Rule(Rule::new(
         head, body,
     )))])
+}
+
+/// One rule with an `n`-way disjunctive head over `n` self-loops:
+/// `p0 ; … ; p_{n-1} :- base.` plus `p0 :- p0. … p_{n-1} :- p_{n-1}.` — the disjunctive
+/// rule derives into all `n` recursive components, so a finiteness pass that re-scans the
+/// whole head once per component is Θ(n²) here; charging each rule O(|rule|) is linear.
+/// Neither `self_loops` (single-head) nor `equality_chain` (one rule, one component)
+/// exercises the multi-head fan-out.
+fn wide_head_over_self_loops(n: usize) -> Program {
+    let head = Head::Disjunction(Disjunction::new((0..n).map(|i| {
+        DisjunctionElement::new(
+            Literal::from(Atom::constant(name(&format!("p{i}")))),
+            Condition::empty(),
+        )
+    })));
+    let wide = Statement::Rule(head.when(Atom::constant(name("base"))));
+    let loops = (0..n).map(|i| {
+        Statement::Rule(Rule::new(
+            Atom::constant(name(&format!("p{i}"))),
+            Atom::constant(name(&format!("p{i}"))),
+        ))
+    });
+    Program::of(
+        std::iter::once(wide)
+            .chain(loops)
+            .map(WithProvenance::constructed),
+    )
+}
+
+/// A cycle of `n` predicates each carrying a variable — `p0(X) :- p1(X). … p_{n-1}(X) :- p0(X).`
+/// — one recursive component of size `n`, with no term growth (so the finiteness pass walks
+/// every rule rather than stopping at a witness). A pass that, for each rule deriving into the
+/// component, reads the component's whole member list is Θ(n²) here; charging each rule
+/// `O(|rule|)` — the carried variables grouped by component once off the body, not re-derived
+/// from the component's members per rule — is linear. Neither `self_loops` (`n` singleton
+/// components) nor `wide_head_over_self_loops` (one wide head, singleton components) exercises
+/// this shape: one big component with many rules deriving into it.
+fn giant_recursive_component(n: usize) -> Program {
+    let var = Term::Variable(Variable::Named(
+        VarName::new("X").expect("a valid variable"),
+    ));
+    Program::of((0..n).map(|i| {
+        WithProvenance::constructed(Statement::Rule(Rule::new(
+            Atom::new(name(&format!("p{i}")), [var.clone()]),
+            Atom::new(name(&format!("p{}", (i + 1) % n)), [var.clone()]),
+        )))
+    }))
 }
 
 #[test]
@@ -244,5 +291,62 @@ fn finiteness_is_linear_in_an_equality_chain() {
     assert!(
         ratio < LINEAR_CEILING * RATIO_SCALE,
         "finiteness's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} equality chain; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[test]
+fn finiteness_is_linear_in_a_wide_head_over_many_components() {
+    // A single rule whose `n`-way disjunctive head derives into `n` recursive components
+    // (§5): a finiteness pass that re-analyzes that rule — rebuilding its whole head — once
+    // per component is Θ(n²); charging each rule O(|rule|) total, examining each head atom
+    // once against its own component, is linear. This guards the multi-head fan-out that
+    // `self_loops` (single-head) and `equality_chain` (one component) cannot.
+    let small = wide_head_over_self_loops(BASE);
+    let big = wide_head_over_self_loops(BASE * SIZE_RATIO);
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(Analysis::of(&small));
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(Analysis::of(&big));
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "finiteness's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} wide head; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[test]
+fn finiteness_is_linear_in_a_giant_recursive_component() {
+    // One recursive component of size `n` with `n` rules deriving into it (§5): a finiteness
+    // pass that reads the component's whole member list once per rule deriving into it is
+    // Θ(n²); grouping each rule's carried variables by component once off the body, so a head
+    // atom's component is a lookup rather than a member scan, is linear. `self_loops` (singleton
+    // components) and `wide_head_over_self_loops` (one wide head over singletons) both leave this
+    // shape — many rules over one big component — uncovered.
+    let small = giant_recursive_component(BASE);
+    let big = giant_recursive_component(BASE * SIZE_RATIO);
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(Analysis::of(&small));
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(Analysis::of(&big));
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "finiteness's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} component members; the linear shape allows at most x{LINEAR_CEILING}"
     );
 }

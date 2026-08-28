@@ -397,107 +397,141 @@ fn close(
 /// term on the recursion — then `Unknown` carries that component (§5). Conservative:
 /// any recursive component with a growth witness is reported, never a false `Holds`.
 ///
-/// The rules that can grow a component are exactly those deriving one of its member
-/// predicates, so a single pass indexes every rule under its head signatures and each
-/// component reads only its own deriving rules. That keeps the whole pass
-/// `O(program + edges)`: a per-component rescan of the program would be
-/// `O(recursive-components · program)` — quadratic on a program of many small recursive
-/// components, an adversary-controlled cost the design's committed linear class rules out.
+/// Each rule is charged `O(rule)`: its body growth-context — the variables each recursive
+/// component's body occurrences carry, grouped by component, and the `=`-classes — is built
+/// once, and each head atom is a lookup against its own component. Grouping the carried
+/// variables *by component off the body* — never re-deriving them by scanning a component's
+/// member list per head atom — keeps the pass `O(program + edges)`: a rule deriving into a
+/// large component, or many rules deriving into one, would otherwise reread that component's
+/// members and turn quadratic, an adversary-controlled cost the committed class rules out.
 fn finiteness_verdict(program: &Program, graph: &DependencyGraph) -> Verdict {
-    let statements: Vec<&WithProvenance<Statement>> = program.statements().collect();
-    // Head signature → the indices of the rules deriving it.
-    let mut deriving: BTreeMap<Signature, Vec<usize>> = BTreeMap::new();
-    for (index, statement) in statements.iter().enumerate() {
-        if let Statement::Rule(rule) = statement.get() {
-            for signature in rule.head_signatures() {
-                deriving.entry(signature).or_default().push(index);
-            }
-        }
-    }
-    for component in graph.components() {
-        if component.is_recursive() && component_grows(component, &statements, &deriving) {
-            return Verdict::Unknown {
-                witness: component.clone(),
-            };
+    for statement in program.statements() {
+        if let Statement::Rule(rule) = statement.get()
+            && let Some(component) = growing_component(rule, graph)
+        {
+            return Verdict::Unknown { witness: component };
         }
     }
     Verdict::Holds
 }
 
-/// Whether a recursive component's rules introduce a deeper term on the recursion: a
-/// rule deriving a component predicate whose head wraps, under a term-former, a variable
-/// carried through the recursion (§5). Only the rules deriving a member predicate are
-/// examined — read off the `deriving` index, each once — so the pass stays linear.
-fn component_grows(
-    component: &Component,
-    statements: &[&WithProvenance<Statement>],
-    deriving: &BTreeMap<Signature, Vec<usize>>,
-) -> bool {
-    let members: BTreeSet<Signature> = component.members().cloned().collect();
-    let mut candidates: BTreeSet<usize> = BTreeSet::new();
-    for member in &members {
-        if let Some(indices) = deriving.get(member) {
-            candidates.extend(indices);
-        }
-    }
-    for &index in &candidates {
-        let Statement::Rule(rule) = statements[index].get() else {
+/// The recursive component a rule grows, if any (§5): a head atom on a member of a recursive
+/// component that deepens, under a term-former, a variable carried through that component's
+/// recursion. The rule's body growth-context is built once and each head atom is a lookup
+/// against its own component, so the rule costs `O(rule)`.
+fn growing_component(rule: &Rule, graph: &DependencyGraph) -> Option<Component> {
+    let context = BodyGrowth::of(rule, graph);
+    for atom in head_atoms(rule.head().get()) {
+        let signature = atom_signature(atom);
+        let Some(component) = graph.component_of(&signature) else {
             continue;
         };
-        let recursive_vars = recursive_body_vars(rule, &members);
-        if head_deepens(rule.head().get(), &members, &recursive_vars) {
-            return true;
+        if !component.is_recursive() {
+            continue;
+        }
+        let Some(key) = component.members().next() else {
+            continue;
+        };
+        let empty = BTreeSet::new();
+        let carried_roots = context.component_roots.get(key).unwrap_or(&empty);
+        if context.atom_deepens(atom, carried_roots) {
+            return Some(component.clone());
         }
     }
-    false
+    None
 }
 
-/// The named variables carried through the recursion — those that can hold a value drawn
-/// from a recursive body occurrence of a component predicate and reach the head (§5).
-/// Seeded from the arguments of every top-level body literal on a member predicate;
-/// widened by an aggregate whose element ranges over a member predicate (its guard
-/// variables carry the aggregate's value to the rule scope — the `X` in
-/// `X = #max { Y : p(Y) }`); and closed over the rule's `=` comparisons (an equality
-/// aliases a variable to whatever it equals — `Y = X` carries the recursion from `X` to
-/// `Y`). A body conditional binds no rule-global variable and theory terms are carried
-/// conservatively (§4.9), so neither adds a carrier here. The set is a sound
-/// over-approximation: it only grows, so a value reaching the head deepened is never
-/// missed — that miss would be the false `Holds` §6.1 rules out — while a variable
-/// equated to a constant, or drawn from a non-recursive predicate, stays out.
-fn recursive_body_vars(rule: &Rule, members: &BTreeSet<Signature>) -> BTreeSet<Variable> {
-    let mut carried = BTreeSet::new();
-    let mut equalities: Vec<BTreeSet<Variable>> = Vec::new();
-    for element in rule.body().get().elements() {
-        match element.get() {
-            BodyElement::Literal(literal) => match &literal.inner {
-                LiteralInner::Atom(atom) if members.contains(&atom_signature(atom.get())) => {
-                    for term in &atom.get().arguments {
-                        term_named_vars(term, &mut carried);
+/// A rule's body growth-context, built once (§5): the `=`-class roots of the variables each
+/// recursive component's body occurrences carry — a body atom's arguments, and the guard
+/// variables an aggregate over the signature carries (the `X` in `X = #max { Y : p(Y) }`) —
+/// grouped by the component (keyed by its least member), and the `=`-classes of the rule's
+/// variables (each variable → its class's canonical least member). A head atom's carried
+/// variables are then a lookup on its component, never a scan of that component's members.
+/// Sound over-approximation, in the `Holds`-safe direction of §6.1: a value reaching the head
+/// deepened is never missed.
+struct BodyGrowth {
+    component_roots: BTreeMap<Signature, BTreeSet<Variable>>,
+    equality_root: BTreeMap<Variable, Variable>,
+}
+
+impl BodyGrowth {
+    fn of(rule: &Rule, graph: &DependencyGraph) -> BodyGrowth {
+        // The variables each body signature carries, and the rule's `=` groups.
+        let mut carriers: BTreeMap<Signature, BTreeSet<Variable>> = BTreeMap::new();
+        let mut equalities: Vec<BTreeSet<Variable>> = Vec::new();
+        for element in rule.body().get().elements() {
+            match element.get() {
+                BodyElement::Literal(literal) => match &literal.inner {
+                    LiteralInner::Atom(atom) => {
+                        let entry = carriers.entry(atom_signature(atom.get())).or_default();
+                        for term in &atom.get().arguments {
+                            term_named_vars(term, entry);
+                        }
+                    }
+                    // A positive `=` comparison aliases variables; a *negated* one is a
+                    // disequality (`not X = Y` asserts X ≠ Y), so it aliases nothing.
+                    LiteralInner::Comparison(comparison)
+                        if literal.negation == DefaultNegation::None =>
+                    {
+                        collect_equalities(comparison.get(), &mut equalities);
+                    }
+                    _ => {}
+                },
+                // An aggregate carries its guard variables to every signature it ranges over
+                // (a conditional binds no rule-global variable; theory is carried
+                // conservatively, §4.9 — neither adds a carrier).
+                BodyElement::Aggregate { aggregate, .. } => {
+                    let mut guards = BTreeSet::new();
+                    collect_aggregate_guard_vars(aggregate, &mut guards);
+                    for signature in aggregate_signatures(aggregate) {
+                        carriers
+                            .entry(signature)
+                            .or_default()
+                            .extend(guards.iter().cloned());
                     }
                 }
-                // A positive `=` comparison aliases variables; a *negated* one is a
-                // disequality (`not X = Y` asserts X ≠ Y), so it aliases nothing.
-                LiteralInner::Comparison(comparison)
-                    if literal.negation == DefaultNegation::None =>
-                {
-                    collect_equalities(comparison.get(), &mut equalities);
-                }
-                // A non-member atom, a negated comparison, and the boolean literals
-                // carry nothing.
                 _ => {}
-            },
-            BodyElement::Aggregate { aggregate, .. }
-                if aggregate_ranges_over_member(aggregate, members) =>
-            {
-                collect_aggregate_guard_vars(aggregate, &mut carried);
             }
-            // A conditional's variables are element-local; a theory term is carried
-            // conservatively (§4.9); an aggregate over no member carries nothing.
-            _ => {}
+        }
+        // Group the carried variables by their component, off the body — each body signature
+        // visited once — so a head atom's carried set is a lookup on its component, never a
+        // per-atom scan of that component's member list.
+        let equality_root = equality_roots(&equalities);
+        let mut component_roots: BTreeMap<Signature, BTreeSet<Variable>> = BTreeMap::new();
+        for (signature, variables) in &carriers {
+            let Some(component) = graph.component_of(signature) else {
+                continue;
+            };
+            let Some(key) = component.members().next() else {
+                continue;
+            };
+            let roots = component_roots.entry(key.clone()).or_default();
+            for variable in variables {
+                roots.insert(equality_root.get(variable).unwrap_or(variable).clone());
+            }
+        }
+        BodyGrowth {
+            component_roots,
+            equality_root,
         }
     }
-    close_over_equalities(&mut carried, &equalities);
-    carried
+
+    /// The canonical (least) representative of a variable's `=`-class — the variable itself
+    /// when it is in no `=` comparison.
+    fn root<'a>(&'a self, variable: &'a Variable) -> &'a Variable {
+        self.equality_root.get(variable).unwrap_or(variable)
+    }
+
+    /// Whether a head atom deepens a carried variable: an argument that is a term-former
+    /// wrapping a variable whose `=`-class root is carried.
+    fn atom_deepens(&self, atom: &Atom, carried_roots: &BTreeSet<Variable>) -> bool {
+        atom.arguments.iter().any(|term| {
+            is_former(term)
+                && term.subterms().any(|subterm| {
+                    matches!(subterm, Term::Variable(variable) if carried_roots.contains(self.root(variable)))
+                })
+        })
+    }
 }
 
 /// The variable groups an `=` comparison equates: each `=` step contributes the named
@@ -522,59 +556,86 @@ fn collect_equalities(comparison: &Comparison, out: &mut Vec<BTreeSet<Variable>>
     }
 }
 
-/// Close a carried-variable set over the `=` groups: a group any of whose variables is
-/// already carried joins the set wholesale — the transitive `=`-alias closure. A group
-/// touching nothing carried (an equality to a constant, or between non-recursive
-/// variables) leaves the set unchanged, so the closure does not over-flag.
-///
-/// A worklist over the `=`-classes, each group **absorbed once** when a carried variable
-/// first reaches it, so the whole closure is near-linear in the equality content — not the
-/// `O(variables · groups)` of a re-scan fixpoint, the same trap the sibling `close` refuses
-/// (§5). An adversarial `=`-chain of `n` links is `O(n)`, not `O(n²)`.
-fn close_over_equalities(carried: &mut BTreeSet<Variable>, equalities: &[BTreeSet<Variable>]) {
-    // The groups each variable appears in, so reaching a variable reaches its groups in O(1).
-    let mut groups_of: BTreeMap<Variable, Vec<usize>> = BTreeMap::new();
-    for (index, group) in equalities.iter().enumerate() {
+/// The `=`-equivalence classes of a rule's variables, each variable mapped to its class's
+/// canonical (least) member — built once so a component's `=`-closure is a lookup, not a
+/// per-component re-scan of the groups. A variable in no `=` comparison is its own class
+/// (absent from the map). Union-find, near-linear in the equality content.
+fn equality_roots(equalities: &[BTreeSet<Variable>]) -> BTreeMap<Variable, Variable> {
+    // Index the variables of the `=` groups to `usize` for a cheap union-find.
+    let mut index: BTreeMap<Variable, usize> = BTreeMap::new();
+    let mut variables: Vec<Variable> = Vec::new();
+    for group in equalities {
         for variable in group {
-            groups_of.entry(variable.clone()).or_default().push(index);
+            index.entry(variable.clone()).or_insert_with(|| {
+                variables.push(variable.clone());
+                variables.len() - 1
+            });
         }
     }
-    let mut absorbed = vec![false; equalities.len()];
-    let mut worklist: Vec<Variable> = carried.iter().cloned().collect();
-    while let Some(variable) = worklist.pop() {
-        let Some(indices) = groups_of.get(&variable) else {
-            continue;
-        };
-        for &index in indices {
-            if absorbed[index] {
-                continue;
+    let mut parent: Vec<usize> = (0..variables.len()).collect();
+    for group in equalities {
+        let mut members = group.iter();
+        if let Some(first) = members.next() {
+            let root = union_find(&mut parent, index[first]);
+            for variable in members {
+                let other = union_find(&mut parent, index[variable]);
+                parent[other] = root;
             }
-            absorbed[index] = true;
-            for member in &equalities[index] {
-                if carried.insert(member.clone()) {
-                    worklist.push(member.clone());
+        }
+    }
+    // Each class's canonical member is its least, comparing the variables by value.
+    let mut least: Vec<Option<usize>> = vec![None; variables.len()];
+    for i in 0..variables.len() {
+        let root = union_find(&mut parent, i);
+        let better = match least[root] {
+            None => true,
+            Some(current) => variables[i] < variables[current],
+        };
+        if better {
+            least[root] = Some(i);
+        }
+    }
+    let mut roots = BTreeMap::new();
+    for i in 0..variables.len() {
+        let root = union_find(&mut parent, i);
+        let canonical = least[root].expect("every class has a least member");
+        roots.insert(variables[i].clone(), variables[canonical].clone());
+    }
+    roots
+}
+
+/// The representative of `index` in the union-find, with path halving.
+fn union_find(parent: &mut [usize], mut index: usize) -> usize {
+    while parent[index] != index {
+        parent[index] = parent[parent[index]];
+        index = parent[index];
+    }
+    index
+}
+
+/// The predicate signatures an aggregate's elements range over — every signature whose
+/// recursion the aggregate's guard variables therefore carry (§5).
+fn aggregate_signatures(aggregate: &Aggregate) -> BTreeSet<Signature> {
+    let mut signatures = BTreeSet::new();
+    match aggregate {
+        Aggregate::Function(function) => {
+            for element in function.elements() {
+                condition_signatures(element.get().condition(), &mut signatures);
+            }
+        }
+        Aggregate::Set(set) => {
+            for element in set.elements() {
+                match element.get() {
+                    SetElement::Literal(literal) => literal_signature(literal, &mut signatures),
+                    SetElement::ConditionalLiteral(conditional) => {
+                        literal_signature(&conditional.literal, &mut signatures);
+                        condition_signatures(&conditional.condition, &mut signatures);
+                    }
                 }
             }
         }
     }
-}
-
-/// Whether any of an aggregate's elements ranges over a member predicate — a member atom
-/// in an element's literal or condition, the occurrence that makes the aggregate carry
-/// the recursion.
-fn aggregate_ranges_over_member(aggregate: &Aggregate, members: &BTreeSet<Signature>) -> bool {
-    match aggregate {
-        Aggregate::Function(function) => function
-            .elements()
-            .any(|element| condition_mentions_member(element.get().condition(), members)),
-        Aggregate::Set(set) => set.elements().any(|element| match element.get() {
-            SetElement::Literal(literal) => literal_mentions_member(literal, members),
-            SetElement::ConditionalLiteral(conditional) => {
-                literal_mentions_member(&conditional.literal, members)
-                    || condition_mentions_member(&conditional.condition, members)
-            }
-        }),
-    }
+    signatures
 }
 
 /// The named variables of an aggregate's guards — the `X` in `X = #max { … }` and the
@@ -596,28 +657,16 @@ fn guard_vars(aggregate: &impl HasGuards, out: &mut BTreeSet<Variable>) {
     }
 }
 
-fn condition_mentions_member(condition: &Condition, members: &BTreeSet<Signature>) -> bool {
-    condition
-        .literals()
-        .any(|literal| literal_mentions_member(literal.get(), members))
+fn condition_signatures(condition: &Condition, out: &mut BTreeSet<Signature>) {
+    for literal in condition.literals() {
+        literal_signature(literal.get(), out);
+    }
 }
 
-fn literal_mentions_member(literal: &Literal, members: &BTreeSet<Signature>) -> bool {
-    matches!(&literal.inner, LiteralInner::Atom(atom) if members.contains(&atom_signature(atom.get())))
-}
-
-fn head_deepens(
-    head: &Head,
-    members: &BTreeSet<Signature>,
-    recursive_vars: &BTreeSet<Variable>,
-) -> bool {
-    head_atoms(head).into_iter().any(|atom| {
-        members.contains(&atom_signature(atom))
-            && atom
-                .arguments
-                .iter()
-                .any(|term| term_deepens(term, recursive_vars))
-    })
+fn literal_signature(literal: &Literal, out: &mut BTreeSet<Signature>) {
+    if let LiteralInner::Atom(atom) = &literal.inner {
+        out.insert(atom_signature(atom.get()));
+    }
 }
 
 fn head_atoms(head: &Head) -> Vec<&Atom> {
@@ -648,15 +697,6 @@ fn push_atom<'a>(literal: &'a Literal, atoms: &mut Vec<&'a Atom>) {
     if let LiteralInner::Atom(atom) = &literal.inner {
         atoms.push(atom.get());
     }
-}
-
-/// Whether a head argument deepens a recursive variable: it is a term-former (not a
-/// bare variable or ground symbol) and contains a variable carried by the recursion.
-fn term_deepens(term: &Term, recursive_vars: &BTreeSet<Variable>) -> bool {
-    is_former(term)
-        && term.subterms().any(|subterm| {
-            matches!(subterm, Term::Variable(variable) if recursive_vars.contains(variable))
-        })
 }
 
 fn is_former(term: &Term) -> bool {
