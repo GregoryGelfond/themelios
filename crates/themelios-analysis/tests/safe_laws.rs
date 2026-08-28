@@ -355,11 +355,11 @@ fn finiteness_reads_structure_not_provenance() {
     );
 }
 
-// ---- Finiteness: growth carried by a body `=`-assignment (reread-2, the re-derivation P1–P7) ----
+// ---- Finiteness: growth carried by a body `=`-assignment ----
 //
-// The direct former `q(f(Y)) :- q(Y)` (P1) is `growing_rule` above. These pin the growth that
-// reaches the head through a body `=`-assignment — the false-`Holds` hole reread-2 found — and the
-// aliasing that must NOT be read as growth.
+// The direct former `q(f(Y)) :- q(Y)` is `growing_rule` above. These pin the growth that reaches
+// the head through a body `=`-assignment — a false `Holds` if missed — and the aliasing that must
+// NOT be read as growth.
 
 fn function(name_text: &str, arg: &str) -> Term {
     Term::Function {
@@ -370,7 +370,7 @@ fn function(name_text: &str, arg: &str) -> Term {
 
 #[test]
 fn finiteness_flags_equality_assigned_growth() {
-    // P3: q(X) :- q(Y), X = f(Y).  The deepening is in the body `=`; the head carries X *bare*.
+    // q(X) :- q(Y), X = f(Y).  The deepening is in the body `=`; the head carries X *bare*.
     // Grounds infinitely (q(0), q(f(0)), q(f(f(0))), …) — must be Unknown, not a false Holds.
     let rule = Rule::new(
         pred("q", &["X"]),
@@ -384,13 +384,13 @@ fn finiteness_flags_equality_assigned_growth() {
             witness.members().any(|s| s.name.as_str() == "q"),
             "the growing component is q",
         ),
-        Verdict::Holds => panic!("`=`-assignment-carried growth (P3) must be Unknown, not Holds"),
+        Verdict::Holds => panic!("`=`-assignment-carried growth must be Unknown, not Holds"),
     }
 }
 
 #[test]
 fn finiteness_flags_an_assignment_deepening_chain() {
-    // P4: q(X0) :- q(X3), X0 = f(X1), X1 = f(X2), X2 = f(X3).  The deepening reaches the bare head
+    // q(X0) :- q(X3), X0 = f(X1), X1 = f(X2), X2 = f(X3).  The deepening reaches the bare head
     // X0 transitively along a chain of assignments.
     let rule = Rule::new(
         pred("q", &["X0"]),
@@ -406,13 +406,13 @@ fn finiteness_flags_an_assignment_deepening_chain() {
             finiteness_of([Statement::Rule(rule)]),
             Verdict::Unknown { .. }
         ),
-        "a chain of `=`-deepenings to a bare head (P4) must be Unknown",
+        "a chain of `=`-deepenings to a bare head must be Unknown",
     );
 }
 
 #[test]
 fn finiteness_flags_arithmetic_successor_growth() {
-    // P7: q(X) :- q(Y), X = Y + 1.  The integer successor is the same act as the term successor —
+    // q(X) :- q(Y), X = Y + 1.  The integer successor is the same act as the term successor —
     // a Church numeral — and is flagged uniformly with `q(Y+1) :- q(Y)`.
     let rule = Rule::new(
         pred("q", &["X"]),
@@ -426,7 +426,7 @@ fn finiteness_flags_arithmetic_successor_growth() {
             finiteness_of([Statement::Rule(rule)]),
             Verdict::Unknown { .. }
         ),
-        "arithmetic successor growth (P7) must be Unknown",
+        "arithmetic successor growth must be Unknown",
     );
 }
 
@@ -440,7 +440,7 @@ fn finiteness_reads_equality_aliasing_precisely() {
     assert_eq!(
         finiteness_of([Statement::Rule(bare)]),
         Verdict::Holds,
-        "a bare `=`-aliased variable does not grow (P2 alias): Holds",
+        "a bare `=`-aliased variable does not grow: Holds",
     );
 
     // But an alias *under a head former* does grow: q(f(X)) :- q(Y), X = Y is q(f(Y)) :- q(Y).
@@ -453,7 +453,7 @@ fn finiteness_reads_equality_aliasing_precisely() {
             finiteness_of([Statement::Rule(formed)]),
             Verdict::Unknown { .. }
         ),
-        "an alias under a head former grows (P2): Unknown",
+        "an alias under a head former grows: Unknown",
     );
 }
 
@@ -470,7 +470,7 @@ fn eq_literal(left: Term, right: Term) -> Literal {
 
 #[test]
 fn finiteness_reads_the_reversed_assignment() {
-    // f(Y) = X is the same deepening as X = f(Y) (P3), with the former on the left.
+    // f(Y) = X is the same deepening as X = f(Y), with the former on the left.
     let rule = Rule::new(
         pred("q", &["X"]),
         vec![
@@ -505,6 +505,69 @@ fn finiteness_terminates_on_cyclic_deepening() {
             Verdict::Unknown { .. }
         ),
         "cyclic deepening terminates as Unknown",
+    );
+}
+
+#[test]
+fn finiteness_flags_growth_carried_by_a_head_disjunction_condition() {
+    // p(f(X)) : p(X) :- base.  — the head element derives p(f(X)) under the condition p(X); the
+    // condition makes p recursive and carries X, deepened under f in the derived literal. The
+    // carrier is in the head element, not the body — grounds p(f^n(seed)), so Unknown, not Holds.
+    let head = Head::Disjunction(Disjunction::new([DisjunctionElement::new(
+        Literal::from(Atom::new(name("p"), [function("f", "X")])),
+        Condition::new([Literal::from(pred("p", &["X"]))]),
+    )]));
+    match finiteness_of([Statement::Rule(head.when(Atom::constant(name("base"))))]) {
+        Verdict::Unknown { witness } => assert!(
+            witness.members().any(|s| s.name.as_str() == "p"),
+            "the growing component is p",
+        ),
+        Verdict::Holds => panic!("growth carried by a head-element condition must be Unknown"),
+    }
+}
+
+#[test]
+fn finiteness_flags_growth_carried_by_a_choice_condition() {
+    // { p(f(X)) : p(X) } :- base.  — the same carrier, in a choice head element.
+    let head = Head::Choice(Choice::new(
+        None,
+        [ChoiceElement::new(
+            Literal::from(Atom::new(name("p"), [function("f", "X")])),
+            Condition::new([Literal::from(pred("p", &["X"]))]),
+        )],
+        None,
+    ));
+    assert!(
+        matches!(
+            finiteness_of([Statement::Rule(head.when(Atom::constant(name("base"))))]),
+            Verdict::Unknown { .. }
+        ),
+        "growth carried by a choice-element condition must be Unknown",
+    );
+}
+
+#[test]
+fn finiteness_flags_growth_carried_by_a_head_aggregate_condition() {
+    // #count { : p(f(X)) : p(X) } >= 1 :- base.  — the same carrier, in a head-aggregate element.
+    let head = Head::Aggregate(HeadAggregate::new(
+        None,
+        AggregateFunction::Count,
+        [HeadAggregateElement::new(
+            Vec::<Term>::new(),
+            Literal::from(Atom::new(name("p"), [function("f", "X")])),
+            Condition::new([Literal::from(pred("p", &["X"]))]),
+        )],
+        Some(Guard {
+            relation: Some(Relation::Ge),
+            term: num(1),
+        }),
+    ));
+    assert!(
+        matches!(
+            finiteness_of([Statement::Rule(head.when(Atom::constant(name("base"))))]),
+            Verdict::Unknown { .. }
+        ),
+        "growth carried by a head-aggregate element condition must be Unknown",
     );
 }
 

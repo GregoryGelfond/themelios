@@ -196,9 +196,9 @@ fn indexed_var(index: usize) -> Term {
 }
 
 /// One rule `q(X0) :- q(Xn), X0 = f(X1), …, X_{n-1} = f(Xn).` — an `n`-link chain of `=`-deepenings
-/// carrying growth to the *bare* head `X0` (the re-derivation's P4). The finiteness deepening
+/// carrying growth to the *bare* head `X0`. The finiteness deepening
 /// closure walks the chain once; re-resolving each link would be Θ(n²). Distinct from
-/// `equality_chain` (pure aliasing, no former) — this is the deepening the reread-2 fix added.
+/// `equality_chain` (pure aliasing, no former) — this exercises the deepening, not the aliasing.
 fn deepening_chain(n: usize) -> Program {
     let head = Atom::new(name("q"), [indexed_var(0)]);
     let mut body: Vec<BodyElement> =
@@ -224,7 +224,7 @@ fn deepening_chain(n: usize) -> Program {
 
 /// One rule `result :- f(X1, …, Xn) = #sum { 1 : q1;  …;  1 : qn }.` — a compound aggregate guard
 /// of `n` variables over `n` element signatures. Carrying every guard variable to every ranged
-/// signature is Θ(n²) (Finding 2); a *lone-variable* guard carries nothing, so this stays linear.
+/// signature is Θ(n²); a *lone-variable* guard carries nothing, so this stays linear.
 fn aggregate_guard_fan_out(n: usize) -> Program {
     let guard = Guard {
         relation: Some(Relation::Eq),
@@ -256,7 +256,7 @@ fn aggregate_guard_fan_out(n: usize) -> Program {
 
 /// One rule `h :- b(X1), …, b(Xn), #count { 1 : c1;  …;  1 : cn }.` — `n` global binders and an
 /// aggregate of `n` elements, hence `n` local scopes. Cloning the global bound set once per local
-/// scope is Θ(n²) (Finding 3, in the safety fixpoint); consulting it as a read-only base is linear.
+/// scope is Θ(n²) in the safety fixpoint; consulting it as a read-only base is linear.
 fn many_local_scopes(n: usize) -> Program {
     let mut body: Vec<BodyElement> = (0..n)
         .map(|i| BodyElement::from(Atom::new(name("b"), [indexed_var(i)])))
@@ -278,6 +278,42 @@ fn many_local_scopes(n: usize) -> Program {
     });
     Program::of([WithProvenance::constructed(Statement::Rule(Rule::new(
         Atom::constant(name("h")),
+        body,
+    )))])
+}
+
+/// One rule `result :- p0(Y), …, p_{n-1}(Y), Z1 = f(Y), Z2 = f(Z1), …, Zn = f(Z_{n-1}).` — `n`
+/// distinct carrier predicates sharing `Y`, and an `n`-link deepening chain rooted at `Y`. An eager
+/// per-component walk of the deepening graph re-walks the shared chain once per carrier component,
+/// Θ(n²) time and memory; a lazy, per-component-memoized deepening query — never run for a
+/// non-recursive head — is linear. Crosses the two axes (`deepening_chain` uses one component, the
+/// many-component tripwires build no chain) that a single-axis tripwire leaves uncovered.
+fn many_carriers_over_a_shared_chain(n: usize) -> Program {
+    let y = || {
+        Term::Variable(Variable::Named(
+            VarName::new("Y").expect("a valid variable"),
+        ))
+    };
+    let mut body: Vec<BodyElement> = (0..n)
+        .map(|i| BodyElement::from(Atom::new(name(&format!("p{i}")), [y()])))
+        .collect();
+    for i in 1..=n {
+        let source = if i == 1 { y() } else { indexed_var(i - 1) };
+        let deeper = Term::Function {
+            name: name("f"),
+            arguments: vec![source],
+        };
+        body.push(BodyElement::Literal(Literal {
+            negation: DefaultNegation::None,
+            inner: LiteralInner::Comparison(WithProvenance::constructed(Comparison::new(
+                indexed_var(i),
+                Relation::Eq,
+                deeper,
+            ))),
+        }));
+    }
+    Program::of([WithProvenance::constructed(Statement::Rule(Rule::new(
+        Atom::constant(name("result")),
         body,
     )))])
 }
@@ -452,7 +488,7 @@ fn finiteness_is_linear_in_a_giant_recursive_component() {
 #[test]
 fn finiteness_is_linear_in_a_deepening_chain() {
     // The finiteness deepening closure (§5) walks a rule's `=`-assignment chain to carry growth to
-    // a bare head (reread-2 P3/P4). Over an `n`-link chain of `X = f(Y)` deepenings it is linear;
+    // a bare head. Over an `n`-link chain of `X = f(Y)` deepenings it is linear;
     // re-resolving each link would be Θ(n²). `equality_chain` (pure aliasing, no former) does not
     // exercise the deepening the fix added.
     let small = deepening_chain(BASE);
@@ -479,7 +515,7 @@ fn finiteness_is_linear_in_a_deepening_chain() {
 #[test]
 fn finiteness_is_linear_in_an_aggregate_guard_fan_out() {
     // A compound aggregate guard of `n` variables over `n` element signatures (§5): carrying every
-    // guard variable to every ranged signature is Θ(n²) (Finding 2). Only lone-variable guards
+    // guard variable to every ranged signature is Θ(n²). Only lone-variable guards
     // carry, so the compound guard carries nothing and the pass is linear. No other tripwire builds
     // an aggregate.
     let small = aggregate_guard_fan_out(BASE);
@@ -507,7 +543,7 @@ fn finiteness_is_linear_in_an_aggregate_guard_fan_out() {
 fn safety_is_linear_in_many_local_scopes() {
     // The safety fixpoint (§5) closes each local scope over the global bound set. Over `n` global
     // binders and `n` aggregate-element local scopes, cloning the global set per scope is Θ(n²)
-    // (Finding 3); consulting it as a read-only base is linear. The other tripwires build no
+    //; consulting it as a read-only base is linear. The other tripwires build no
     // multi-scope body, so this guards the safety half that `Analysis::of` also runs.
     let small = many_local_scopes(BASE);
     let big = many_local_scopes(BASE * SIZE_RATIO);
@@ -527,5 +563,32 @@ fn safety_is_linear_in_many_local_scopes() {
     assert!(
         ratio < LINEAR_CEILING * RATIO_SCALE,
         "safety's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} local scopes; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[test]
+fn finiteness_is_linear_in_many_carriers_over_a_shared_chain() {
+    // `n` carrier predicates sharing a variable at the base of an `n`-link deepening chain (§5): an
+    // eager per-component walk of the deepening graph re-walks the shared chain once per component,
+    // Θ(n²); the lazy per-component-memoized query — not run for this non-recursive head — is
+    // linear. Crosses the many-components and one-chain axes no other tripwire crosses.
+    let small = many_carriers_over_a_shared_chain(BASE);
+    let big = many_carriers_over_a_shared_chain(BASE * SIZE_RATIO);
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(Analysis::of(&small));
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(Analysis::of(&big));
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "finiteness's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} carriers-over-a-chain; the linear shape allows at most x{LINEAR_CEILING}"
     );
 }

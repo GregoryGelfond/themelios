@@ -136,7 +136,7 @@ fn unbound_variables(rule: &Rule) -> BTreeSet<Variable> {
     let mut unbound: BTreeSet<Variable> =
         global.required.difference(&global_bound).cloned().collect();
     for local in &locals {
-        // `global_bound` is the read-only base — consulted, never cloned per scope (Finding 3):
+        // `global_bound` is the read-only base — consulted, never cloned per scope:
         // over many local scopes this keeps the rule `O(rule)`, not `O(scopes · global binders)`.
         let local_bound = close_within(&global_bound, local.binders.clone(), &local.assignments);
         for variable in &local.required {
@@ -398,7 +398,7 @@ fn close(
 /// bound set): the same worklist as `close`, but a right-side variable already in `base` counts
 /// as bound without `base` being copied into the working set. So a scope costs `O(local
 /// assignments + local binders)`, and a rule with many local scopes stays `O(rule)` rather than
-/// cloning the whole global set once per scope, `O(scopes · global binders)` (Finding 3). The
+/// cloning the whole global set once per scope, `O(scopes · global binders)`. The
 /// bound set it returns is the scope's *own* bindings; the caller reads a variable as bound iff
 /// it is in `base` or in this result.
 fn close_within(
@@ -446,19 +446,17 @@ fn close_within(
 
 // ---- Finiteness: the sound growth approximation (§5, §6.1) ----
 
-/// Grounding is proven finite (`Holds`) unless a recursive component's rules deepen a
-/// term on the recursion — a head former over a carried variable, or a carried variable a
-/// body `=`-assignment deepens (§5, the re-derivation's P1–P7) — then `Unknown` carries that
-/// component. Conservative: any recursive component with a growth witness is reported, never a
-/// false `Holds`.
+/// Grounding is proven finite (`Holds`) unless a recursive component's rules deepen a term on the
+/// recursion — a head former over a carried variable (`q(f(Y)) :- q(Y)`), or a carried variable an
+/// `=`-assignment deepens (`q(X) :- q(Y), X = f(Y)`), §5 — then `Unknown` carries that component.
+/// Conservative: any recursive component with a growth witness is reported, never a false `Holds`.
 ///
-/// Each rule is charged `O(rule)`: its body growth-context — the classes each recursive
-/// component carries, the classes that deepen them, and the `=`-aliases — is built once
-/// (`BodyGrowth`), and each head atom is a lookup against its own component. Grouping *by
-/// component off the body* — never re-deriving by scanning a component's member list per head
-/// atom — keeps the pass `O(program + edges)`: a rule deriving into a large component, or many
-/// rules deriving into one, would otherwise reread that component's members and turn quadratic,
-/// an adversary-controlled cost the committed class rules out.
+/// Each rule is charged `O(rule)`: its growth-context (`BodyGrowth`) — the classes each recursive
+/// component carries, the `=`-deepening graph, and the `=`-aliases — is built once, and each head
+/// atom is a lookup against its own component, the deepening query memoized and consulted lazily.
+/// The carrier walk is grouped by component and covers every position the dependency graph draws
+/// an edge from (§5, program §12.1), so the pass stays `O(program + edges)` and no variable the
+/// graph makes recursive is a carrier the growth check misses.
 fn finiteness_verdict(program: &Program, graph: &DependencyGraph) -> Verdict {
     for statement in program.statements() {
         if let Statement::Rule(rule) = statement.get()
@@ -473,11 +471,12 @@ fn finiteness_verdict(program: &Program, graph: &DependencyGraph) -> Verdict {
 /// The recursive component a rule grows, if any (§5): a head atom on a member of a recursive
 /// component that deepens, under a term-former, a variable *carried* through that component's
 /// recursion — written directly (`q(f(Y)) :- q(Y)`) or through a body `=`-assignment that makes a
-/// variable *deepen* a carried one (`q(X) :- q(Y), X = f(Y)`; the soundness re-derivation's P1–P7).
+/// variable *deepen* a carried one (`q(X) :- q(Y), X = f(Y)`), or a head-element condition (§5).
 /// The rule's body growth-context is built once and each head atom is a lookup against its own
 /// component, so the rule costs `O(rule)`.
 fn growing_component(rule: &Rule, graph: &DependencyGraph) -> Option<Component> {
     let context = BodyGrowth::of(rule, graph);
+    let mut reaches: BTreeMap<(Signature, Variable), bool> = BTreeMap::new();
     for atom in head_atoms(rule.head().get()) {
         let signature = atom_signature(atom);
         let Some(component) = graph.component_of(&signature) else {
@@ -491,52 +490,47 @@ fn growing_component(rule: &Rule, graph: &DependencyGraph) -> Option<Component> 
         };
         let empty = BTreeSet::new();
         let carried = context.component_roots.get(key).unwrap_or(&empty);
-        let deepening = context.deepening_roots.get(key).unwrap_or(&empty);
-        if context.atom_deepens(atom, carried, deepening) {
+        if context.atom_deepens(atom, carried, key, &mut reaches) {
             return Some(component.clone());
         }
     }
     None
 }
 
-/// A rule's body growth-context, built once (§5), the sound over-approximation of §6.1: three
-/// facts, keyed by a component's least member, so a head atom is a lookup on its component.
-/// - `component_roots` — the `=`-class roots *carried* through the component's recursion: the
-///   variables of a body atom on a component member, plus a lone-variable aggregate guard over
-///   such a member (the `M` in `M = #max { Y : p(Y) }`). These flow around the recursion at the
-///   same term depth.
-/// - `deepening_roots` — the `=`-class roots that *deepen* a carried one through a body
-///   `=`-assignment: `X` in `X = f(Y)` when `Y` is carried (transitively along a chain), so a
-///   head using `X` — even bare — grows the component. This closes the P3/P4 hole (the
-///   re-derivation): `X = f(Y)` deepens, where the aliasing `X = Y` does not.
-/// - `equality_root` — each variable → its `=`-alias class's canonical least member (`X = Y`),
-///   so carrying and deepening are read up to aliasing.
+/// A rule's growth-context, built once (§5), the sound over-approximation of §6.1:
+/// - `component_roots` — the `=`-class roots each **recursive** component *carries*: the variables
+///   of an atom on a component member, wherever the dependency graph reads one — a body literal, or
+///   a *head element's condition* (`p(f(X)) : p(X)` carries `X`, matching `head_dependencies`,
+///   program §12.1) — plus a lone-variable aggregate guard over a member. These flow around the
+///   recursion at the same term depth. Only recursive components are kept; a head atom is checked
+///   only when its component is recursive, so the rest is never read.
+/// - `assigned` — the deepening graph, keyed by `=`-class root: each `X` of a body `X = f(…)` mapped
+///   to the roots it is one term-former deeper than. A head variable that reaches a carried root
+///   through this graph *deepens* the recursion — the growth an `=`-assignment carries to a bare
+///   head (`q(X) :- q(Y), X = f(Y)`), where the aliasing `X = Y` does not.
+/// - `equality_root` — each variable → its `=`-alias class's canonical least member, so carrying
+///   and deepening are read up to aliasing.
 ///
-/// A value reaching the head deepened is never missed (no false `Holds`); the approximation errs
-/// only toward `Unknown` (§6.1).
+/// The carrier walk covers every position the dependency graph draws an edge from (program §12.1),
+/// so a variable the graph makes recursive is never a carrier the growth check misses: no false
+/// `Holds`, the approximation erring only toward `Unknown` (§6.1).
 struct BodyGrowth {
     component_roots: BTreeMap<Signature, BTreeSet<Variable>>,
-    deepening_roots: BTreeMap<Signature, BTreeSet<Variable>>,
+    assigned: BTreeMap<Variable, BTreeSet<Variable>>,
     equality_root: BTreeMap<Variable, Variable>,
 }
 
 impl BodyGrowth {
     fn of(rule: &Rule, graph: &DependencyGraph) -> BodyGrowth {
-        // Walk the body once: the variables each signature carries (a body atom's arguments, plus
-        // a lone-variable aggregate guard over the signature), the `=`-alias groups (`X = Y`), and
-        // the `=`-deepenings (`X = f(Y)`: X deepens f's variables).
+        // Collect, over the whole rule: the variables each signature carries, the `=`-alias groups
+        // (`X = Y`), and the `=`-deepenings (`X = f(Y)`: X deepens f's variables).
         let mut carriers: BTreeMap<Signature, BTreeSet<Variable>> = BTreeMap::new();
         let mut aliases: Vec<BTreeSet<Variable>> = Vec::new();
         let mut deepenings: Vec<(Variable, BTreeSet<Variable>)> = Vec::new();
         for element in rule.body().get().elements() {
             match element.get() {
                 BodyElement::Literal(literal) => match &literal.inner {
-                    LiteralInner::Atom(atom) => {
-                        let entry = carriers.entry(atom_signature(atom.get())).or_default();
-                        for term in &atom.get().arguments {
-                            term_named_vars(term, entry);
-                        }
-                    }
+                    LiteralInner::Atom(atom) => push_atom_carriers(atom.get(), &mut carriers),
                     // A positive `=` comparison aliases (`X = Y`) or deepens (`X = f(Y)`); a
                     // *negated* one is a disequality (`not X = Y` asserts X ≠ Y) — neither.
                     LiteralInner::Comparison(comparison)
@@ -546,12 +540,12 @@ impl BodyGrowth {
                     }
                     _ => {}
                 },
-                // An aggregate carries its *lone-variable* guards to every signature it ranges
-                // over (the `M` in `M = #max { Y : p(Y) }` is an existing member value). Only lone
-                // variables: a compound guard `f(X1,…,Xn) = #sum{…}` constrains, it does not bind
-                // the Xi, so bounding the guards to ≤ 2 keeps the carry `O(signatures)` (a
-                // conditional binds no rule-global variable; theory is carried conservatively,
-                // §4.9 — neither adds a carrier).
+                // An aggregate carries its *lone-variable* guards to every signature it ranges over
+                // (the `M` in `M = #max { Y : p(Y) }` is an existing member value). Only lone
+                // variables: a compound guard `f(X1,…,Xn) = #sum{…}` constrains without binding the
+                // Xi, so bounding the guards to ≤ 2 keeps the carry `O(signatures)`. A conditional
+                // and an aggregate element's own condition bind only element-local variables, which
+                // do not reach the head; theory is carried conservatively (§4.9) — none adds a carrier.
                 BodyElement::Aggregate { aggregate, .. } => {
                     let mut guards = BTreeSet::new();
                     collect_aggregate_guard_vars(aggregate, &mut guards);
@@ -567,14 +561,24 @@ impl BodyGrowth {
                 _ => {}
             }
         }
-        // Group the carried variables by their component, off the body — each body signature
-        // visited once — so a head atom's carried set is a lookup on its component, not a scan.
+        // A head element *derives* its literal but its *condition* is a dependency the graph reads
+        // (`head_dependencies`, program §12.1): `p(f(X)) : p(X)` makes `p` recursive through `p(X)`
+        // and carries `X` to the derived `p(f(X))`. Collect those carriers too, so the growth check
+        // is as wide as the graph that calls the predicate recursive.
+        collect_head_condition_carriers(rule.head().get(), &mut carriers);
+
+        // Group the carried variables by their **recursive** component — each signature visited
+        // once — so a head atom's carried set is a lookup. A non-recursive component is never read
+        // (a head atom is checked only when recursive), so it is dropped here.
         let equality_root = equality_roots(&aliases);
         let mut component_roots: BTreeMap<Signature, BTreeSet<Variable>> = BTreeMap::new();
         for (signature, variables) in &carriers {
             let Some(component) = graph.component_of(signature) else {
                 continue;
             };
+            if !component.is_recursive() {
+                continue;
+            }
             let Some(key) = component.members().next() else {
                 continue;
             };
@@ -583,12 +587,20 @@ impl BodyGrowth {
                 roots.insert(class_root(&equality_root, variable).clone());
             }
         }
-        // Propagate deepening up the `=`-assignment chains: a variable that deepens a carried
-        // class is itself deepening-for-that-component (P3/P4), a bare head use of which grows it.
-        let deepening_roots = deepen_closure(&deepenings, &equality_root, &component_roots);
+        // The deepening graph, keyed by `=`-class root — read on demand at the head check, so a rule
+        // whose deepenings never reach a recursive head pays nothing for it.
+        let mut assigned: BTreeMap<Variable, BTreeSet<Variable>> = BTreeMap::new();
+        for (deep, sources) in &deepenings {
+            let entry = assigned
+                .entry(class_root(&equality_root, deep).clone())
+                .or_default();
+            for source in sources {
+                entry.insert(class_root(&equality_root, source).clone());
+            }
+        }
         BodyGrowth {
             component_roots,
-            deepening_roots,
+            assigned,
             equality_root,
         }
     }
@@ -599,32 +611,75 @@ impl BodyGrowth {
         class_root(&self.equality_root, variable)
     }
 
-    /// Whether a head atom deepens the component's recursion (§5): an argument that is a
-    /// term-former over a *carried* variable's `=`-class (`q(f(Y)) :- q(Y)`), or that mentions —
-    /// former or bare — a variable whose class *deepens* a carried one through a body
-    /// `=`-assignment (`q(X) :- q(Y), X = f(Y)`; the re-derivation's P1–P7). A bare carried
-    /// variable does not deepen (`q(X) :- q(Y), X = Y` is finite); a bare *deepening* one does.
+    /// Whether a head atom deepens its component's recursion (§5): an argument that is a
+    /// term-former over a *carried* variable (`q(f(Y)) :- q(Y)`), or that mentions — former or bare
+    /// — a variable that *deepens* a carried one through the rule's `=`-assignments
+    /// (`q(X) :- q(Y), X = f(Y)`). A bare carried variable does not deepen (`X = Y` is finite); a
+    /// bare deepening one does. `reaches` memoizes the deepening query per (component, root).
     fn atom_deepens(
         &self,
         atom: &Atom,
         carried_roots: &BTreeSet<Variable>,
-        deepening_roots: &BTreeSet<Variable>,
+        key: &Signature,
+        reaches: &mut BTreeMap<(Signature, Variable), bool>,
     ) -> bool {
         atom.arguments.iter().any(|term| {
             let former = is_former(term);
             term.subterms().any(|subterm| {
                 matches!(subterm, Term::Variable(variable) if {
                     let root = self.root(variable);
-                    (former && carried_roots.contains(root)) || deepening_roots.contains(root)
+                    (former && carried_roots.contains(root))
+                        || self.deepens_carried(root, carried_roots, key, reaches)
                 })
             })
         })
+    }
+
+    /// Whether `root` reaches a carried root through the `=`-deepening graph — `root = f(…v…)` with
+    /// `v` carried, transitively along a chain. A memoized recursive walk (`reaches` keyed by the
+    /// component's `key`): each root is resolved once per component, and a tentative `false`
+    /// terminates a cyclic assignment (`X = f(Y), Y = f(X)`). Consulted lazily, so a rule whose
+    /// deepenings never reach a recursive head does no walk at all — the per-component `reaches`
+    /// keeps the whole pass `O(program + edges)` rather than re-walking a shared chain per component.
+    fn deepens_carried(
+        &self,
+        root: &Variable,
+        carried_roots: &BTreeSet<Variable>,
+        key: &Signature,
+        reaches: &mut BTreeMap<(Signature, Variable), bool>,
+    ) -> bool {
+        if let Some(&cached) = reaches.get(&(key.clone(), root.clone())) {
+            return cached;
+        }
+        // Iterative DFS over the `=`-deepening graph on a heap stack, never the call stack (§8,
+        // spec §5.2), so an adversarial chain cannot overflow; the `visited` set terminates a
+        // cyclic assignment, and a source already known-reaching short-circuits.
+        let mut result = false;
+        let mut visited: BTreeSet<Variable> = BTreeSet::from([root.clone()]);
+        let mut stack: Vec<Variable> = vec![root.clone()];
+        'search: while let Some(node) = stack.pop() {
+            if let Some(sources) = self.assigned.get(&node) {
+                for source in sources {
+                    if carried_roots.contains(source)
+                        || reaches.get(&(key.clone(), source.clone())) == Some(&true)
+                    {
+                        result = true;
+                        break 'search;
+                    }
+                    if visited.insert(source.clone()) {
+                        stack.push(source.clone());
+                    }
+                }
+            }
+        }
+        reaches.insert((key.clone(), root.clone()), result);
+        result
     }
 }
 
 /// Classify each `=` step of a comparison as an **alias** (`X = Y`, both lone variables — one
 /// class) or a **deepening** (`X = t` with `t` a term-former — `X` deepens `t`'s variables), the
-/// two ways a body `=` bears on term growth (the re-derivation). `X = c` (a constant) and
+/// two ways a body `=` bears on term growth. `X = c` (a constant) and
 /// `f(..) = g(..)` (a constraint, no lone-variable side) bear on neither. A non-`=` step (`<`,
 /// `!=`) contributes nothing.
 fn collect_equalities(
@@ -736,47 +791,54 @@ fn class_root<'a>(
     equality_root.get(variable).unwrap_or(variable)
 }
 
-/// The `=`-class roots that **deepen** each recursive component's carried classes (§5, the
-/// re-derivation's P3/P4): a variable `X` with a body deepening `X = f(…v…)` whose `v` is carried
-/// by the component, or which — transitively along an `=`-assignment chain — deepens one that is.
-/// Reverse the deepening edges (a carried source root → the roots one former deeper) and walk up
-/// from each component's carried roots; the roots reached are its deepening set. Component-scoped
-/// like `component_roots`, keyed by least member; the `reached` visited-set bounds a cyclic
-/// assignment (`X = f(Y), Y = f(X)`) — treated conservatively as deepening, the safe direction.
-fn deepen_closure(
-    deepenings: &[(Variable, BTreeSet<Variable>)],
-    equality_root: &BTreeMap<Variable, Variable>,
-    component_roots: &BTreeMap<Signature, BTreeSet<Variable>>,
-) -> BTreeMap<Signature, BTreeSet<Variable>> {
-    // Reverse deepening edges: a carried-source class → the classes one `=`-former deeper.
-    let mut deeper_than: BTreeMap<Variable, Vec<Variable>> = BTreeMap::new();
-    for (deep, sources) in deepenings {
-        let deep_root = class_root(equality_root, deep).clone();
-        for source in sources {
-            deeper_than
-                .entry(class_root(equality_root, source).clone())
-                .or_default()
-                .push(deep_root.clone());
-        }
+/// Push an atom's argument variables as carriers of its signature — the growth check's read of
+/// where a variable flows around the recursion, at the same term depth.
+fn push_atom_carriers(atom: &Atom, carriers: &mut BTreeMap<Signature, BTreeSet<Variable>>) {
+    let entry = carriers.entry(atom_signature(atom)).or_default();
+    for term in &atom.arguments {
+        term_named_vars(term, entry);
     }
-    let mut deepening_roots: BTreeMap<Signature, BTreeSet<Variable>> = BTreeMap::new();
-    for (key, carried) in component_roots {
-        let mut reached: BTreeSet<Variable> = BTreeSet::new();
-        let mut stack: Vec<Variable> = carried.iter().cloned().collect();
-        while let Some(current) = stack.pop() {
-            if let Some(deeper) = deeper_than.get(&current) {
-                for root in deeper {
-                    if reached.insert(root.clone()) {
-                        stack.push(root.clone());
-                    }
-                }
+}
+
+/// The carriers a head's element **conditions** contribute (§5): a head element `p(f(X)) : p(X)`
+/// derives `p(f(X))` but depends on the condition `p(X)` (`head_dependencies`, program §12.1), and
+/// `X` flows from the condition to the derived literal — so the condition's atoms carry, exactly as
+/// a body atom does. Covers disjunction, choice, and head-aggregate elements; a plain head literal
+/// has no condition, and a head theory atom is the §4.9 conservative boundary.
+fn collect_head_condition_carriers(
+    head: &Head,
+    carriers: &mut BTreeMap<Signature, BTreeSet<Variable>>,
+) {
+    match head {
+        Head::Disjunction(disjunction) => {
+            for element in disjunction.elements() {
+                condition_carriers(element.get().condition(), carriers);
             }
         }
-        if !reached.is_empty() {
-            deepening_roots.insert(key.clone(), reached);
+        Head::Choice(choice) => {
+            for element in choice.elements() {
+                condition_carriers(element.get().condition(), carriers);
+            }
+        }
+        Head::Aggregate(aggregate) => {
+            for element in aggregate.elements() {
+                condition_carriers(element.get().condition(), carriers);
+            }
+        }
+        Head::Literal(_) | Head::TheoryAtom(_) | Head::Falsum | Head::Verum => {}
+    }
+}
+
+/// The atoms of a condition, as carriers of their signatures.
+fn condition_carriers(
+    condition: &Condition,
+    carriers: &mut BTreeMap<Signature, BTreeSet<Variable>>,
+) {
+    for literal in condition.literals() {
+        if let LiteralInner::Atom(atom) = &literal.get().inner {
+            push_atom_carriers(atom.get(), carriers);
         }
     }
-    deepening_roots
 }
 
 /// The predicate signatures an aggregate's elements range over — every signature whose
@@ -821,7 +883,7 @@ fn guard_vars(aggregate: &impl HasGuards, out: &mut BTreeSet<Variable>) {
     {
         // Only a *lone-variable* guard binds a member value (`M = #max{…}`); a compound guard
         // (`f(X1,…,Xn) = #sum{…}`) constrains without binding the Xi, so it carries nothing —
-        // bounding the guards to ≤ 2 keeps the aggregate carry `O(signatures)` (Finding 2, P6).
+        // bounding the guards to ≤ 2 keeps the aggregate carry `O(signatures)`.
         if let Some(variable) = as_lone_variable(&guard.get().term) {
             out.insert(variable.clone());
         }

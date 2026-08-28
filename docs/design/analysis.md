@@ -334,23 +334,36 @@ cannot. This is the same discipline the recursion classes carry (§6): assert on
 the property a consumer safely specializes on, and make the uncertainty a value.
 
 **The growth reading, and its soundness (no false `Holds`).** A recursive
-component's grounding is unbounded exactly when a rule deepens, on the recursion, a
-term the component carries — so `finiteness` proves `Holds` by finding *no* such
-deepening, and that proof is only as sound as its enumeration of **how** a head term
-can deepen a carried variable. Read at the predicate level, a head-atom argument
-deepens a carried variable when it is a term-former (`f`, a tuple, an arithmetic
-operation) over it — written directly (`q(f(Y)) :- q(Y)`), or reached through a body
-`=`-assignment that makes a variable deepen a carried one (`q(X) :- q(Y), X = f(Y)`,
-and transitively along a chain). The `=`-assignment case is the one to hold carefully:
-`X = f(Y)` embeds a successor — a Church numeral — so it *deepens*, where the aliasing
-`X = Y` does not; treating the two alike would miss an unbounded grounding, a **false
-`Holds`**. The term successor `X = f(Y)` and the arithmetic successor `X = Y + 1` are
-the same act — generating unbounded naturals — and both deepen. This enumeration, and
-the argument that each path is caught, is the soundness obligation `Holds` answers to;
-it is discharged by the growth laws (§10) and, ultimately, by the grounder differential
-the solve tier brings. The reading is a sound over-approximation: it may report
-`Unknown` where a ground program is in fact finite (an aggregate value that grows as an
-integer, not a term; a deepening a lower stratum in fact bounds), never the reverse.
+component's grounding is unbounded — in **term depth** — exactly when a rule deepens,
+on the recursion, a term the component carries; so `finiteness` proves `Holds` by
+finding *no* such deepening, and that proof is only as sound as (a) its enumeration of
+**how** a head term can deepen a carried variable, and (b) its collecting carriers
+**wherever the dependency graph reads a dependency** (§4) — never a variable the graph
+makes recursive that the growth check cannot see. A head-atom argument deepens a carried
+variable when it is a term-former (`f`, a tuple, an arithmetic operation) over it:
+written directly (`q(f(Y)) :- q(Y)`), reached through a body `=`-assignment that makes a
+variable deepen a carried one (`q(X) :- q(Y), X = f(Y)`, transitively along a chain), or
+over a variable a **head element's own condition** carries (`p(f(X)) : p(X) :- base.` —
+the condition `p(X)` makes `p` recursive and carries `X` to the derived `p(f(X))`, so its
+carriers are read exactly as a body atom's are). The `=`-assignment case is the one to
+hold carefully: `X = f(Y)` embeds a successor — a Church numeral — so it *deepens*, where
+the aliasing `X = Y` does not; treating the two alike would miss an unbounded grounding, a
+**false `Holds`**. The term successor `X = f(Y)` and the arithmetic successor `X = Y + 1`
+are the same act — generating unbounded naturals — and both deepen. This enumeration, the
+carrier-graph congruence, and the argument that each path is caught, is the soundness
+obligation `Holds` answers to; it is discharged by the growth laws (§10) and, ultimately,
+by the grounder differential the solve tier brings.
+
+**Scope: term depth, not integer value.** `finiteness` proves finiteness of the
+**Herbrand term** instantiation — unbounded function-symbol nesting. A program can be
+Herbrand-depth-finite yet ground infinitely through an unbounded **integer** value
+(`q(M) :- M = #count { X : q(X) }` grows `q(0), q(1), …` without deepening any term), and
+this crate reports `Holds` for it: a *correct* statement of term-depth boundedness, and
+out of this facet's scope — integer-domain growth and its stratification are read
+elsewhere (§6). A consumer that needs full grounding finiteness conjoins `Holds` with
+those. Within its scope the reading is a sound over-approximation: it may report `Unknown`
+where the ground program is in fact finite (a deepening a lower stratum in fact bounds),
+never a false `Holds`.
 
 **Computational cost.** Safety is `O(rules · variables)` — one pass per rule
 collecting binding occurrences; finiteness reads the components (§4) and the
