@@ -268,15 +268,13 @@ fn collect_head(head: &Head, global: &mut Scope, locals: &mut Vec<Scope>) {
         Head::Literal(literal) => require_literal(global, literal),
         Head::Disjunction(disjunction) => {
             for element in disjunction.elements() {
-                require_literal(global, element.get().literal());
-                push_condition_scope(element.get().condition(), locals);
+                push_element_scope(element.get().literal(), element.get().condition(), locals);
             }
         }
         Head::Choice(choice) => {
             require_guard(choice.left_guard(), global);
             for element in choice.elements() {
-                require_literal(global, element.get().literal());
-                push_condition_scope(element.get().condition(), locals);
+                push_element_scope(element.get().literal(), element.get().condition(), locals);
             }
             require_guard(choice.right_guard(), global);
         }
@@ -348,8 +346,10 @@ fn collect_aggregate(aggregate: &Aggregate, global: &mut Scope, locals: &mut Vec
 }
 
 /// A theory atom's ordinary arguments are global; each element's condition is a local
-/// scope. The theory-term algebra (program §4.9) is carried conservatively — its own
-/// local variables are not analyzed here, a divergence the differential records (§10).
+/// scope. The theory-term algebra (program §4.9) is not descended, so a variable occurring
+/// *only* in a theory term is invisible here: for safety that is **liberal**, not conservative
+/// (`:- &t { X }.` reads safe though the grounder refuses `X`) — a characterized boundary the
+/// grounder itself catches and the solve-tier differential records (§5, §10), not a hidden gap.
 fn collect_theory_atom(atom: &TheoryAtom, global: &mut Scope, locals: &mut Vec<Scope>) {
     for term in atom.arguments() {
         term_named_vars(term, &mut global.required);
@@ -374,8 +374,14 @@ fn require_guard(guard: Option<&WithProvenance<Guard>>, scope: &mut Scope) {
     }
 }
 
-fn push_condition_scope(condition: &Condition, locals: &mut Vec<Scope>) {
+/// A disjunction/choice head element `l : condition` as one local scope: its literal's variables
+/// are required *within the element* and bound by the element's own condition, exactly as an
+/// aggregate element is (§5) — a choice/disjunction element variable is element-local, so a
+/// condition-bound one (`{ p(X) : q(X) }`) is safe. A variable also global (bound by the rule body)
+/// is still bound, since the local check consults `global_bound`.
+fn push_element_scope(literal: &Literal, condition: &Condition, locals: &mut Vec<Scope>) {
     let mut scope = Scope::default();
+    require_literal(&mut scope, literal);
     process_condition(&mut scope, condition);
     locals.push(scope);
 }
@@ -463,47 +469,14 @@ fn term_named_vars(term: &Term, out: &mut BTreeSet<Variable>) {
 }
 
 /// The binding fixpoint (§5): close a seed set of bound variables under the
-/// assignments, an assignment firing when its right side is wholly bound. A worklist
-/// keyed on each assignment's remaining unbound right-side variables, so it is
-/// `O(assignments + variables)` — not the `O(variables²)` of a re-scan.
+/// assignments, an assignment firing when its right side is wholly bound. The global-scope
+/// case of `close_within` with no read-only base, so the one worklist implementation cannot
+/// drift into two; `O(assignments + variables)`, not the `O(variables²)` of a re-scan.
 fn close(
     seed: BTreeSet<Variable>,
     assignments: &[(Variable, BTreeSet<Variable>)],
 ) -> BTreeSet<Variable> {
-    let mut bound = seed;
-    let mut remaining: Vec<usize> = assignments
-        .iter()
-        .map(|(_, rhs)| {
-            rhs.iter()
-                .filter(|variable| !bound.contains(variable))
-                .count()
-        })
-        .collect();
-    let mut waiting: BTreeMap<Variable, Vec<usize>> = BTreeMap::new();
-    for (index, (_, rhs)) in assignments.iter().enumerate() {
-        for variable in rhs {
-            if !bound.contains(variable) {
-                waiting.entry(variable.clone()).or_default().push(index);
-            }
-        }
-    }
-    let mut ready: Vec<usize> = (0..assignments.len())
-        .filter(|&i| remaining[i] == 0)
-        .collect();
-    while let Some(index) = ready.pop() {
-        let lhs = assignments[index].0.clone();
-        if bound.insert(lhs.clone())
-            && let Some(dependents) = waiting.get(&lhs)
-        {
-            for &dependent in dependents {
-                remaining[dependent] -= 1;
-                if remaining[dependent] == 0 {
-                    ready.push(dependent);
-                }
-            }
-        }
-    }
-    bound
+    close_within(&BTreeSet::new(), seed, assignments)
 }
 
 /// The binding fixpoint of an inner scope over a read-only `base` (the already-closed global

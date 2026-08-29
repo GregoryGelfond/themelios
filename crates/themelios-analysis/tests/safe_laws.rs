@@ -224,6 +224,8 @@ enum Elem {
     Positive(usize, Vec<Arg>),
     Negative(usize, Vec<Arg>),
     Assign(usize, Rhs),
+    // `_ = rhs` — the anonymous on the assigned side.
+    AssignAnon(Rhs),
 }
 
 // An atom argument: a named variable X0..X4, or the anonymous `_` (a distinct fresh variable).
@@ -239,6 +241,8 @@ enum Rhs {
     Var(usize),
     VarPlus(usize),
     Anon,
+    // `f(_)` — a `_` nested inside a former, never the lone side.
+    FunAnon,
 }
 
 const PREDS: [&str; 3] = ["p", "q", "r"];
@@ -258,21 +262,39 @@ fn build_atom(p: usize, args: &[Arg]) -> Atom {
     Atom::new(name(PREDS[p]), args.iter().map(arg_term))
 }
 
+fn rhs_term(rhs: &Rhs) -> Term {
+    match rhs {
+        Rhs::Const => num(0),
+        Rhs::Var(j) => var(&var_name(*j)),
+        Rhs::VarPlus(j) => var(&var_name(*j)) + num(1),
+        Rhs::Anon => Term::Variable(Variable::Anonymous),
+        Rhs::FunAnon => Term::Function {
+            name: name("f"),
+            arguments: vec![Term::Variable(Variable::Anonymous)],
+        },
+    }
+}
+
+// `lhs = rhs` as a body element, for an arbitrary left term (named or anonymous).
+fn assign_lhs(lhs: Term, rhs: Term) -> BodyElement {
+    BodyElement::Literal(Literal {
+        negation: DefaultNegation::None,
+        inner: LiteralInner::Comparison(WithProvenance::constructed(Comparison::new(
+            lhs,
+            Relation::Eq,
+            rhs,
+        ))),
+    })
+}
+
 fn build_body(elements: &[Elem]) -> Vec<BodyElement> {
     elements
         .iter()
         .map(|element| match element {
             Elem::Positive(p, args) => BodyElement::from(build_atom(*p, args)),
             Elem::Negative(p, args) => not(build_atom(*p, args)),
-            Elem::Assign(lhs, rhs) => {
-                let right = match rhs {
-                    Rhs::Const => num(0),
-                    Rhs::Var(j) => var(&var_name(*j)),
-                    Rhs::VarPlus(j) => var(&var_name(*j)) + num(1),
-                    Rhs::Anon => Term::Variable(Variable::Anonymous),
-                };
-                assign(&var_name(*lhs), right)
-            }
+            Elem::Assign(lhs, rhs) => assign_lhs(var(&var_name(*lhs)), rhs_term(rhs)),
+            Elem::AssignAnon(rhs) => assign_lhs(Term::Variable(Variable::Anonymous), rhs_term(rhs)),
         })
         .collect()
 }
@@ -288,20 +310,22 @@ fn any_atom_ref() -> impl Strategy<Value = (usize, Vec<Arg>)> {
     (0usize..3, prop::collection::vec(any_arg(), 0..3))
 }
 
+fn any_rhs() -> impl Strategy<Value = Rhs> {
+    prop_oneof![
+        Just(Rhs::Const),
+        (0usize..5).prop_map(Rhs::Var),
+        (0usize..5).prop_map(Rhs::VarPlus),
+        Just(Rhs::Anon),
+        Just(Rhs::FunAnon),
+    ]
+}
+
 fn any_rule() -> impl Strategy<Value = Rule> {
     let element = prop_oneof![
         any_atom_ref().prop_map(|(p, args)| Elem::Positive(p, args)),
         any_atom_ref().prop_map(|(p, args)| Elem::Negative(p, args)),
-        (
-            0usize..5,
-            prop_oneof![
-                Just(Rhs::Const),
-                (0usize..5).prop_map(Rhs::Var),
-                (0usize..5).prop_map(Rhs::VarPlus),
-                Just(Rhs::Anon),
-            ]
-        )
-            .prop_map(|(lhs, rhs)| Elem::Assign(lhs, rhs)),
+        (0usize..5, any_rhs()).prop_map(|(lhs, rhs)| Elem::Assign(lhs, rhs)),
+        any_rhs().prop_map(Elem::AssignAnon),
     ];
     let head_args = prop::collection::vec(any_arg(), 0..3);
     let body = prop::collection::vec(element, 0..6);
@@ -404,6 +428,56 @@ fn safety_reads_each_anonymous_as_a_distinct_fresh_variable() {
         unbound_of(Rule::new(
             Atom::new(name("p"), [anon()]),
             Atom::new(name("q"), [anon()]),
+        )),
+        [Variable::Anonymous].into_iter().collect(),
+    );
+
+    // p(X) :- q(X), _ = X.  → SAFE. The `_` is the lone assigned side and `X` is bound, so the
+    // `_` is bound — the assignment reads in either direction.
+    assert!(
+        unbound_of(Rule::new(
+            pred("p", &["X"]),
+            vec![
+                BodyElement::from(pred("q", &["X"])),
+                BodyElement::Literal(Literal {
+                    negation: DefaultNegation::None,
+                    inner: LiteralInner::Comparison(WithProvenance::constructed(Comparison::new(
+                        anon(),
+                        Relation::Eq,
+                        var("X"),
+                    ))),
+                }),
+            ],
+        ))
+        .is_empty(),
+    );
+
+    // p :- _ = 1.  → SAFE. The `_` is assigned a ground term.
+    assert!(
+        unbound_of(Rule::new(
+            pred("p", &[]),
+            BodyElement::Literal(Literal {
+                negation: DefaultNegation::None,
+                inner: LiteralInner::Comparison(WithProvenance::constructed(Comparison::new(
+                    anon(),
+                    Relation::Eq,
+                    num(1),
+                ))),
+            }),
+        ))
+        .is_empty(),
+    );
+
+    // p(X) :- q(X), X = f(_).  → unsafe. A `_` nested inside a former is not the lone side, so it
+    // is required-unbound (`=` does not decompose `f`), even though `X` is bound.
+    let f_of_anon = Term::Function {
+        name: name("f"),
+        arguments: vec![anon()],
+    };
+    assert_eq!(
+        unbound_of(Rule::new(
+            pred("p", &["X"]),
+            vec![BodyElement::from(pred("q", &["X"])), assign("X", f_of_anon),],
         )),
         [Variable::Anonymous].into_iter().collect(),
     );
@@ -1135,6 +1209,63 @@ fn safety_scopes_every_head_and_element_form() {
         unbound_of(mixed.when(pred("r", &["X"]))),
         [named("Y")].into_iter().collect(),
     );
+}
+
+#[test]
+fn safety_binds_a_choice_or_disjunction_element_by_its_condition() {
+    // { p(X) : q(X) } :- r.  — the canonical choice idiom; X is element-local, bound by its own
+    // condition q(X), not required at the rule's top level. A scan that promotes the element
+    // literal to the global scope reads it unsafe (a false `unsafe` — the whole choice-rule
+    // generate idiom); the sound reading is safe.
+    let choice_condition = Head::Choice(Choice::new(
+        None,
+        [ChoiceElement::new(
+            Literal::from(pred("p", &["X"])),
+            Condition::new([Literal::from(pred("q", &["X"]))]),
+        )],
+        None,
+    ));
+    assert!(unbound_of(choice_condition.when(pred("r", &[]))).is_empty());
+
+    // p(X) : q(X) :- r.  — the disjunctive analog; same element-local binding.
+    let disjunction_condition = Head::Disjunction(Disjunction::new([DisjunctionElement::new(
+        Literal::from(pred("p", &["X"])),
+        Condition::new([Literal::from(pred("q", &["X"]))]),
+    )]));
+    assert!(unbound_of(disjunction_condition.when(pred("r", &[]))).is_empty());
+
+    // { p(X) : q(Y) } :- r.  — the scoping stays precise: the condition binds Y, not X, so X is
+    // unbound (Y is element-local and bound). Not a blanket "condition present ⇒ safe".
+    let choice_wrong_var = Head::Choice(Choice::new(
+        None,
+        [ChoiceElement::new(
+            Literal::from(pred("p", &["X"])),
+            Condition::new([Literal::from(pred("q", &["Y"]))]),
+        )],
+        None,
+    ));
+    assert_eq!(
+        unbound_of(choice_wrong_var.when(pred("r", &[]))),
+        [named("X")].into_iter().collect(),
+    );
+
+    // { p(X) : q(X) ; s(Y) : t(Y) } :- r.  — two elements, each variable local to its own element;
+    // both bound within their element, so safe (a shared scope would be unsound cross-talk).
+    let choice_two = Head::Choice(Choice::new(
+        None,
+        [
+            ChoiceElement::new(
+                Literal::from(pred("p", &["X"])),
+                Condition::new([Literal::from(pred("q", &["X"]))]),
+            ),
+            ChoiceElement::new(
+                Literal::from(pred("s", &["Y"])),
+                Condition::new([Literal::from(pred("t", &["Y"]))]),
+            ),
+        ],
+        None,
+    ));
+    assert!(unbound_of(choice_two.when(pred("r", &[]))).is_empty());
 }
 
 #[test]

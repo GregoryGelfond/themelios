@@ -785,7 +785,16 @@ successor carries them.
   (grammar §3, §6); whether clingo's or clingcon's grounder admits a different
   notion is a differential obligation against the pinned binary and, if they
   differ materially, a dialect parameterization (§5) — recorded so the question is
-  pinned, not assumed.
+  pinned, not assumed. Each anonymous `_` is treated as the distinct fresh variable
+  the grounder sees (program §12.1): a `_` in a requiring position is unbound, an
+  `X = _` binds the `_` when `X` is bound, and a positive atom's `_` binds itself.
+  **Two boundaries are liberal, not conservative** — the fail-open direction — and are
+  characterized rather than hidden: a variable occurring *only* inside a **theory term**
+  (program §4.9, not descended) is invisible to safety, so `:- &t { X }.` reads safe
+  though the grounder refuses `X`; and safety scopes **rules** only, so an unbound
+  variable in a bodied directive (`:~ q. [W@1]`) is outside the facet. Both are caught
+  loudly by the grounder itself and are the solve-tier differential's to record; neither
+  is a silent gap.
 - **The dependency kind is the substrate's, not this crate's.** The edge tag is
   `DependencyKind` (program §12.1), reused here by `pub use` as `Signature` and `Rule`
   are, rather than a crate-local `EdgeKind`. The program substrate's edge accessor
