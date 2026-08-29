@@ -390,10 +390,12 @@ of **four** paths: written directly (`q(f(Y)) :- q(Y)`); reached through a body
 transitively along a chain); over a variable a **head element's own condition** carries
 (`p(f(X)) : p(X) :- base.` — the condition `p(X)` makes `p` recursive and carries `X` to
 the derived `p(f(X))`, so its carriers are read exactly as a body atom's are); or through a
-**`#max`/`#min` aggregate whose element value-term is a former** (`p(X) :- X = #max { f(Y)
-: p(Y) }.` — the extremum returns a member value-*term*, so `f(Y)` makes the guard `X` one
-former deeper than the members it maxes over, exactly the body `p(Y), X = f(Y)`; the member
-variables are carried so the deepening is reachable). The `=`-assignment case is the one to
+**`#max`/`#min` aggregate whose element value-term *is or aliases* a former** (`p(X) :- X =
+#max { f(Y) : p(Y) }.` — the extremum returns a member value-*term*, so `f(Y)` makes the guard
+`X` one former deeper than the members it maxes over, exactly the body `p(Y), X = f(Y)`; and the
+value's depth is read from the element's own `=`-relations, so the aliased spelling `X = #max { Z
+: p(Y), Z = f(Y) }` deepens the same way; the member variables are carried so the deepening is
+reachable). The `=`-assignment case is the one to
 hold carefully: `X = f(Y)` embeds a successor — a Church numeral — so it *deepens*, where
 the aliasing `X = Y` does not; treating the two alike would miss an unbounded grounding, a
 **false `Holds`**. The term successor `X = f(Y)` and the arithmetic successor `X = Y + 1`
@@ -883,10 +885,11 @@ successor carries them.
   unsafe) — sound but conservative, since the grounder binds a variable that binds in *every*
   pooled alternative (`q(X) :- p((X;X)).` safe); the faithful per-alternative reading arrives with
   the pool representation. Each is recorded against the pinned binary and is the trigger for the
-  dialect parameterization §5 reserves if it proves material. One directive position — an `#external` **value** (a carried, never-meaningful
-  ground truth-value, grammar §13) — is read **liberally** (its variable not vetted), the divergence
-  pinned as an open differential question, the same characterized-not-hidden discipline; the bare
-  `#show t.` is now **vetted** (a variable in the shown term is unsafe, agreeing with clingo). A
+  dialect parameterization §5 reserves if it proves material. The `#external` **value** bracket
+  (`#external p : q. [W]`, grammar §13) is now **vetted** — its variables are required and bound by the
+  body, exactly as the atom's are, agreeing with the grounder (which collects the value with `bound =
+  false`); an earlier reading left it liberal on the open question of whether the grounder checks it, and
+  it does. The bare `#show t.` is likewise now **vetted** (a variable in the shown term is unsafe). A
   `#const`'s value is variable-free by the
   grammar's constant-term subset (grammar §5.9), so a raised `#const` needs no vetting; a *constructed*
   out-of-subset `#const x = X.` reading safe is a well-formedness question of a different facet, not

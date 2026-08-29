@@ -144,9 +144,9 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
     ("project-body-unsafe", "#project p(X) : Z > 1.\n"),
     ("edge-body-binds", "#edge (X, Y) : q(X), r(Y).\n"),
     ("edge-empty-body-unbound", "#edge (X, Y).\n"),
-    // A `#heuristic` atom *domain-matches*: its variables bind its required bracket terms
-    // (bias/priority/modifier), so a bracket variable the atom carries is safe, while one it does not is
-    // not. Distinct from `#project`, whose atom is a pure wildcard.
+    // A `#heuristic` atom *domain-matches* (as a `#project` atom does): its variables bind its required
+    // bracket terms (bias/priority/modifier), so a bracket variable the atom carries is safe, while one
+    // it does not is not.
     (
         "heuristic-body-binds",
         "#heuristic p(X) : q(X). [1@1, true]\n",
@@ -164,6 +164,11 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
     ),
     ("external-body-binds", "#external p(X) : q(X).\n"),
     ("external-empty-body-unbound", "#external p(X).\n"),
+    // The `#external` truth-value bracket is required and bound by the body, like the atom (gringo's
+    // `ExternalHeadAtom::collect` collects it with `bound=false`): a variable there with no binder is
+    // unsafe, a bound one is safe.
+    ("external-value-unbound", "#external p(X) : q(X). [W]\n"),
+    ("external-value-bound", "#external p(X) : q(X). [X]\n"),
     (
         "minimize-element-binds",
         "#minimize { W@P, X : q(X, W, P) }.\n",
@@ -230,6 +235,12 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
     // A zero multiplier is not invertible (the grounder keeps `0*X` untouched): `X` is required, unbound.
     ("atom-multiply-by-zero-unbound", "r(X) :- p(X * 0).\n"),
     ("atom-zero-multiplier-unbound", "r(X) :- p(0 * X).\n"),
+    // A zero product (`0*3`) is likewise kept untouched *before* folding — it never becomes a constant
+    // that could bind through an enclosing linear form, so `X + 0*3` leaves X unbound.
+    (
+        "atom-zero-product-operand-unbound",
+        "r(X) :- p(X + 0 * 3).\n",
+    ),
     // An interval as an arithmetic operand introduces a range variable, so the arithmetic leaves two
     // variables — not invertible; `X` is unbound (a bare interval position is `atom-interval-position`).
     (
@@ -285,13 +296,25 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
         "equality-arithmetic-inversion",
         "p(X) :- q(Y), Y = X + 1.\n",
     ),
-    // ---- Arithmetic over two function terms (this tier's one fail-closed shape): clingo binds X in
-    // `f(X) * g(Y)` (a grounding-time type error); this tier's certain-occurrence rule binds neither.
-    // Recorded divergence, conservative side (never a false safe).
+    // ---- Arithmetic over a non-numeric (Herbrand) operand: the grounder reads `f(X)*g(Y)` and `-f(X)`
+    // safe — a type error it accepts vacuously, or unary `-` passing boundness through the function
+    // (gringo `UnOpTerm::collect`) — while this tier reads a non-numeric arithmetic operand as not
+    // invertible. Recorded divergences, the conservative side (never a false safe).
     (
         "atom-arith-over-functions",
         "r(X) :- p(f(X) * g(Y)), s(Y).\n",
     ),
+    ("atom-negate-over-function", "r(X) :- p(-f(X)).\n"),
+    // An overflowing constant fold: the grounder wraps (a non-zero coefficient stays invertible); this
+    // tier's ground evaluator refuses overflow, reading the operand as not invertible — a refusal can
+    // only push toward unsafe, never a false safe.
+    (
+        "atom-overflow-coefficient",
+        "r(X) :- p((1073741824 * 2) * X).\n",
+    ),
+    // A pooled directive atom: the grounder unpools `#project p((X;a))` per alternative (each safe); this
+    // tier reads the pool as not invertible, the same conservative pool boundary as a body atom's.
+    ("project-atom-pool", "#project p((X;a)).\n"),
 ];
 
 /// The recorded divergences (§5, §10): the labels where this tier's syntactic safety and
@@ -361,6 +384,18 @@ const RECORDED_DIVERGENCES: &[(&str, &str)] = &[
     (
         "atom-arith-over-functions",
         "clingo binds X in `f(X) * g(Y)`; this tier's certain-occurrence binding binds neither function operand",
+    ),
+    (
+        "atom-negate-over-function",
+        "clingo binds X in `-f(X)` (unary `-` passes boundness through the function); this tier reads a non-numeric arithmetic operand as not invertible",
+    ),
+    (
+        "atom-overflow-coefficient",
+        "clingo wraps an overflowing constant fold (a non-zero coefficient stays invertible); this tier's evaluator refuses overflow — a refusal only pushes toward unsafe",
+    ),
+    (
+        "project-atom-pool",
+        "clingo unpools `#project p((X;a))` per alternative; this tier reads a pool as not invertible, the same conservative boundary as a body atom's",
     ),
     // The head conditional `p(X) : q(X)` was once recorded here as a divergence — the tier read a
     // head literal's variables as rule-global. It no longer diverges: a disjunction/choice element

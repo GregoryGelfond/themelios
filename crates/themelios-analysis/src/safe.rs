@@ -524,8 +524,8 @@ fn push_element_scope(
 
 /// A positive standard atom's domain match: every argument variable is *required*, but only the
 /// variables in an invertible/matchable position are *bound* (`binding_analysis`). Shared by a positive
-/// body/condition literal and a `#heuristic` atom's domain match (`statement_binder`'s `Heuristic`), so
-/// the certain-occurrence rule stays congruent across both.
+/// body/condition literal and a `#project`/`#heuristic` atom's domain match (`statement_binder`'s
+/// `DomainAtom`), so the certain-occurrence rule stays congruent across all of them.
 fn bind_positive_atom(scope: &mut Scope, atom: &Atom) {
     for term in &atom.arguments {
         let (required, binding) = binding_analysis(term);
@@ -563,7 +563,7 @@ enum Arith {
 /// the rule never fires), which this reads unsafe instead; those are recorded divergences. `required` is
 /// one linear pass (`term_named_vars`); `binding` folds over the iterative `Term::fold`, merging
 /// small-into-large so a deeply nested term stays near-linear and bounded by the heap, not the call stack
-/// (§12.4).
+/// (spec §12.4).
 fn binding_analysis(term: &Term) -> (BTreeSet<Variable>, BTreeSet<Variable>) {
     let mut required = BTreeSet::new();
     term_named_vars(term, &mut required);
@@ -650,8 +650,8 @@ fn linear_binding(arith: &Arith) -> BTreeSet<Variable> {
 
 /// Combine two operand classes under a binary operator, following gringo's `BinOpTerm::simplify`:
 /// `+`/`-`/`*` of a constant and a linear form is linear (`*` only for a *non-zero* constant, gringo's
-/// `isZero` guard); two constants evaluate (through the tier's ground evaluator, so div/mod/pow,
-/// overflow, and division-by-zero match the grounder); everything else is not invertible.
+/// `isZero` guard, which is checked *before* folding); two constants evaluate (`eval_const`, whose
+/// conservative-on-refusal boundary its doc states); everything else is not invertible.
 fn combine_arith(operator: BinaryOp, left: Arith, right: Arith) -> Arith {
     match operator {
         BinaryOp::Add | BinaryOp::Sub => match (left, right) {
@@ -662,9 +662,12 @@ fn combine_arith(operator: BinaryOp, left: Arith, right: Arith) -> Arith {
             _ => Arith::Other,
         },
         BinaryOp::Mul => match (left, right) {
+            // A zero factor is not invertible — gringo's `isZero` guard keeps `0*_` untouched *before*
+            // folding (`term.cc` `BinOpTerm::simplify`), so a zero product never becomes a constant that
+            // could then bind through an enclosing linear form (`p(X + 0*3)` is unsafe).
+            (Arith::Const(0), _) | (_, Arith::Const(0)) => Arith::Other,
             (Arith::Const(a), Arith::Const(b)) => eval_const(operator, a, b),
-            // A zero constant is not invertible — gringo keeps `0*X` untouched (`isZero`).
-            (Arith::Const(c), Arith::Linear(x)) | (Arith::Linear(x), Arith::Const(c)) if c != 0 => {
+            (Arith::Const(_), Arith::Linear(x)) | (Arith::Linear(x), Arith::Const(_)) => {
                 Arith::Linear(x)
             }
             _ => Arith::Other,
@@ -682,8 +685,10 @@ fn combine_arith(operator: BinaryOp, left: Arith, right: Arith) -> Arith {
 }
 
 /// Evaluate a binary operation over two ground numeric constants through the program tier's ground
-/// evaluator (the one authority, so div/mod/pow, overflow, and division-by-zero match the grounder): a
-/// numeric result is a `Const`, anything else (an overflow, an undefined operation) is `Other`.
+/// evaluator (the one authority): a numeric result is a `Const`, anything else is `Other`. The div/mod
+/// truncation and sign follow the grounder's; where the evaluator refuses (an overflow the grounder
+/// wraps, a negative exponent it defines for a non-zero base), the operand reads as `Other` — the
+/// conservative direction, never a false `safe`, recorded differentially.
 fn eval_const(operator: BinaryOp, left: i32, right: i32) -> Arith {
     let term = Term::BinaryOperation {
         operator,
@@ -697,7 +702,7 @@ fn eval_const(operator: BinaryOp, left: i32, right: i32) -> Arith {
 }
 
 /// Union two variable sets, extending the larger with the smaller — small-into-large, so a `Term::fold`
-/// that merges at every Herbrand node stays near-linear on a deeply nested term (§12.4).
+/// that merges at every Herbrand node stays near-linear on a deeply nested term (spec §12.4).
 fn union_vars(mut a: BTreeSet<Variable>, mut b: BTreeSet<Variable>) -> BTreeSet<Variable> {
     if a.len() < b.len() {
         std::mem::swap(&mut a, &mut b);
@@ -843,14 +848,14 @@ fn process_condition(scope: &mut Scope, minted: &BTreeSet<Variable>, condition: 
 /// must be bound to evaluate (verified: `not q(f(_))` grounds, `not q(_/2)` does not). Only variables in
 /// `minted` (the freshened `_`) project; a genuine named variable under `not` is always required. Runs
 /// over the iterative `Term::fold`, so a deeply nested term is bounded by the heap, not the call stack
-/// (§3.6, §12.4).
+/// (program §3.6, spec §12.4).
 fn projected_anonymous(term: &Term, minted: &BTreeSet<Variable>) -> BTreeSet<Variable> {
     term.clone().fold(|parts| match parts {
         TermParts::Variable(variable @ Variable::Named(_)) if minted.contains(&variable) => {
             BTreeSet::from([variable])
         }
         // Constructor structure descends: a `_` under a function, tuple, or pool projects. Merge
-        // small-into-large so a deeply nested term stays near-linear (§12.4).
+        // small-into-large so a deeply nested term stays near-linear (spec §12.4).
         TermParts::Function { arguments, .. }
         | TermParts::Tuple(arguments)
         | TermParts::Pool(arguments) => {

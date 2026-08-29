@@ -496,7 +496,7 @@ fn safety_reads_each_anonymous_as_a_distinct_fresh_variable() {
     );
 }
 
-/// Finding E, verified against clingo: a `_` under default negation is *projected* — clingo rewrites
+/// Verified against clingo: a `_` under default negation is *projected* — clingo rewrites
 /// each `_` under `not` to a fresh existential, so it needs no binder. The projection follows Herbrand
 /// structure only — through a function, tuple, or pool former, but NOT through an evaluated term (`_/2`,
 /// an interval), whose `_` must be bound to evaluate — matching clingo's boundary exactly. A genuine
@@ -569,7 +569,7 @@ fn safety_projects_an_anonymous_under_negation() {
     );
 }
 
-/// Finding I, verified against clingo: a body conditional `l : cond` binds two-stage — the condition is
+/// Verified against clingo: a body conditional `l : cond` binds two-stage — the condition is
 /// instantiated first (binding its variables), then the literal is evaluated per instance, binding
 /// *locally*. A positive literal `p(X) : ...` matches its own instances (its variables local); an
 /// assignment `X = t : cond` binds `X` locally; a non-assignment comparison binds nothing; and a `_`
@@ -868,6 +868,46 @@ fn safety_reads_the_arithmetic_invertibility_corners() {
         .is_empty(),
         "a computed non-zero coefficient is invertible: safe",
     );
+
+    // q(X) :- p(X + 0 * 3).  → unsafe {X}. A zero product is kept as `Other` *before* folding (the
+    // grounder's `isZero` guard), so it never becomes a `Const(0)` that would bind X through the outer
+    // `+`.
+    assert_eq!(
+        unbound_of(Rule::new(
+            pred("q", &["X"]),
+            vec![p_of(&[binop(
+                BinaryOp::Add,
+                var("X"),
+                binop(BinaryOp::Mul, num(0), num(3)),
+            )])],
+        )),
+        [named("X")].into_iter().collect(),
+        "a zero product folded into a linear form does not bind: unsafe",
+    );
+}
+
+/// The `#external` truth-value bracket is required and bound by the body, exactly as the atom is
+/// (matching the grounder, which collects the value with `bound = false`).
+#[test]
+fn safety_vets_the_external_value_bracket() {
+    let external = |value: Term| {
+        Statement::External(External::new(
+            pred("p", &["X"]),
+            Body::new([BodyElement::from(pred("q", &["X"]))]),
+            Some(value),
+        ))
+    };
+    // #external p(X) : q(X). [W]  → unsafe {W}. The value bracket's variable is required and unbound.
+    assert_eq!(
+        statement_unbound(external(var("W"))),
+        [named("W")].into_iter().collect(),
+        "an #external value-bracket variable with no binder is unsafe",
+    );
+    // #external p(X) : q(X). [X]  → SAFE. The body binds the value's X.
+    assert!(
+        statement_unbound(external(var("X"))).is_empty(),
+        "an #external value-bracket variable bound by the body is safe",
+    );
 }
 
 /// A `#project`/`#heuristic` atom domain-matches with the same invertible-position rule a body atom uses:
@@ -901,7 +941,7 @@ fn safety_domain_matches_a_project_atom_in_invertible_positions() {
     );
 }
 
-/// A stack-safety tripwire (§12.4): a positive atom whose argument is a deeply nested arithmetic term is
+/// A stack-safety tripwire (spec §12.4): a positive atom whose argument is a deeply nested arithmetic term is
 /// analyzed over the iterative `Term::fold` and `Clone`, so it does not overflow the call stack — the
 /// depth (100_000) is well past what a recursive walk survives. The invertible `+1` chain binds `X`
 /// (safe); the non-invertible `/2` chain does not (unsafe). A constructed program can carry a term this
@@ -944,6 +984,52 @@ fn safety_analyzes_a_deeply_nested_arithmetic_term_without_overflow() {
         )),
         [named("X")].into_iter().collect(),
         "a deep non-invertible arithmetic chain does not bind X: unsafe (and no stack overflow)",
+    );
+}
+
+/// A scaling tripwire on the binding fold's set merge (spec §12.4): a deeply nested *constructor* term carries
+/// a distinct variable at every level, so the `Function` arm merges `n` growing sets — the shape the
+/// arithmetic tripwire above never reaches. `union_vars` merges small-into-large, so this stays
+/// near-linear; a cloning merge would be `O(n²)` and not finish at this depth. Both callers of the merge
+/// are covered — `binding_analysis` (a positive atom's argument) and `projected_anonymous` (a `_` under
+/// `not`).
+#[test]
+fn safety_merges_deeply_nested_constructor_bindings_near_linearly() {
+    const DEPTH: usize = 100_000;
+
+    // p(f(X0, f(X1, … f(X_{n-1}, 0)…))) — q :- that.  → SAFE: the atom binds every X_i by matching.
+    let mut nested = num(0);
+    for i in (0..DEPTH).rev() {
+        nested = Term::Function {
+            name: name("f"),
+            arguments: vec![var(&format!("X{i}")), nested],
+        };
+    }
+    assert!(
+        unbound_of(Rule::new(
+            pred("q", &[]),
+            vec![BodyElement::from(Atom::new(name("p"), [nested]))],
+        ))
+        .is_empty(),
+        "a deep nested-constructor term binds all its variables near-linearly (no quadratic merge)",
+    );
+
+    // p :- not q(f(_, f(_, … f(_, 0)…))).  → SAFE: every `_` under `not` projects; the projection walk
+    // merges the minted set the same small-into-large way.
+    let mut nested_anon = num(0);
+    for _ in 0..DEPTH {
+        nested_anon = Term::Function {
+            name: name("f"),
+            arguments: vec![Term::Variable(Variable::Anonymous), nested_anon],
+        };
+    }
+    assert!(
+        unbound_of(Rule::new(
+            pred("p", &[]),
+            vec![not(Atom::new(name("q"), [nested_anon]))],
+        ))
+        .is_empty(),
+        "a deep nested-constructor of `_` under `not` projects near-linearly (no quadratic merge)",
     );
 }
 
@@ -1517,7 +1603,7 @@ fn finiteness_is_a_sound_approximation() {
     }
 }
 
-/// Finding A, verified against clingo (`p(a). q(X):-p(X). #external p(f(X)):q(X).` grounds unbounded): a
+/// Verified against clingo (`p(a). q(X):-p(X). #external p(f(X)):q(X).` grounds unbounded): a
 /// `#external` *generates* atoms, so a domain-extending external that closes a generation loop grows the
 /// Herbrand universe though no rule derives it. Finiteness reads it through the generation graph (the
 /// external as a pseudo-rule `atom :- body`) — Unknown, witnessed by the recursive component. A

@@ -742,8 +742,17 @@ pub fn statement_binder(statement: &Statement) -> StatementBinder<'_> {
             required: heuristic_brackets(heuristic),
             body: heuristic.body().get(),
         },
+        // A `#external a : body. [value]` requires both the atom's arguments and the truth-value term
+        // (gringo's `ExternalHeadAtom::collect` collects both with `bound=false`, `input/aggregates.cc`),
+        // bound by the body — so `#external p(X) : q(X). [W]` is unsafe on `W`.
         Statement::External(external) => StatementBinder::BodiedDirective {
-            required: external.atom().get().arguments.iter().collect(),
+            required: external
+                .atom()
+                .get()
+                .arguments
+                .iter()
+                .chain(external.value())
+                .collect(),
             body: Some(external.body().get()),
         },
         // No variable-binding obligation: the grammar admits no variable in these positions (signatures,
