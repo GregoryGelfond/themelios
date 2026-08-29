@@ -480,3 +480,56 @@ fn theory_atom_dependencies(
         }
     }
 }
+
+// ---- Growth-carrier positions (analysis §5): the finiteness congruence, compiler-checked ----
+//
+// The grounding-finiteness reading (analysis §5) must collect a growth carrier at every position
+// the dependency graph reads a dependency to a head atom, or it can report a false `Holds`. The
+// classification lives *here*, in the crate that owns the AST, so the `match`es are **exhaustive** —
+// a new `BodyElement` or `Head` kind is a compile error here and cannot be silently dropped by the
+// (downstream, non-exhaustive-blocked) growth walk in `themelios-analysis`.
+
+/// How a body element carries variables toward a head atom for the growth reading — classified
+/// exhaustively over `BodyElement`, congruent with the positions `body_dependencies` reads.
+pub enum BodyCarrier<'a> {
+    /// A plain literal — an atom (carrier) or a comparison (`=`-relation).
+    Literal(&'a Literal),
+    /// An aggregate — its guards, and (for `#max`/`#min`) its element value terms, carry; the
+    /// analysis reads them.
+    Aggregate(&'a Aggregate),
+    /// A conditional or theory atom — binds only element-local variables (§4.9); nothing reaches a
+    /// head atom (a head variable is global).
+    Inert,
+}
+
+/// Classify a body element's growth-carrying role (analysis §5), exhaustively.
+pub fn body_carrier(element: &BodyElement) -> BodyCarrier<'_> {
+    match element {
+        BodyElement::Literal(literal) => BodyCarrier::Literal(literal),
+        BodyElement::Aggregate { aggregate, .. } => BodyCarrier::Aggregate(aggregate),
+        BodyElement::Conditional(_) | BodyElement::TheoryAtom { .. } => BodyCarrier::Inert,
+    }
+}
+
+/// The element **conditions** of a head, whose variables reach the derived element literal
+/// (`head_dependencies` reads them as dependencies, §4.4) — classified exhaustively over `Head`,
+/// so a new head kind bearing a condition cannot be silently dropped by the growth walk.
+pub fn head_carrier_conditions(head: &Head) -> Vec<&Condition> {
+    match head {
+        Head::Disjunction(disjunction) => disjunction
+            .elements()
+            .map(|element| element.get().condition())
+            .collect(),
+        Head::Choice(choice) => choice
+            .elements()
+            .map(|element| element.get().condition())
+            .collect(),
+        Head::Aggregate(aggregate) => aggregate
+            .elements()
+            .map(|element| element.get().condition())
+            .collect(),
+        // A plain head literal has no condition; a head theory atom is the §4.9 boundary and derives
+        // no ordinary head atom (never a growth target).
+        Head::Literal(_) | Head::TheoryAtom(_) | Head::Falsum | Head::Verum => Vec::new(),
+    }
+}

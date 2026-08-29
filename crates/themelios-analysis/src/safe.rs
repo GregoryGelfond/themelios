@@ -12,9 +12,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use themelios_program::analyze::{BodyCarrier, body_carrier, head_carrier_conditions};
 use themelios_program::program::{
-    Aggregate, Atom, Body, BodyElement, Comparison, Condition, DefaultNegation, Guard, HasGuards,
-    Head, Literal, LiteralInner, Program, Relation, Rule, SetElement, Statement, TheoryAtom,
+    Aggregate, AggregateFunction, Atom, Body, BodyElement, Comparison, Condition, DefaultNegation,
+    Guard, HasGuards, Head, Literal, LiteralInner, Program, Relation, Rule, SetElement, Statement,
+    TheoryAtom,
 };
 use themelios_program::provenance::WithProvenance;
 use themelios_program::symbol::Signature;
@@ -535,40 +537,24 @@ impl BodyGrowth {
         let mut aliases: Vec<BTreeSet<Variable>> = Vec::new();
         let mut deepenings: Vec<(Variable, BTreeSet<Variable>)> = Vec::new();
         for element in rule.body().get().elements() {
-            match element.get() {
-                BodyElement::Literal(literal) => {
+            // Each body element's carrier role is classified exhaustively in the program tier
+            // (`body_carrier`), so a new body kind is a compile error there — never a silent drop.
+            match body_carrier(element.get()) {
+                BodyCarrier::Literal(literal) => {
                     collect_literal(literal, &mut carriers, &mut aliases, &mut deepenings);
                 }
-                // An aggregate carries its *lone-variable* guards to every signature it ranges over
-                // (the `M` in `M = #max { Y : p(Y) }` is an existing member value); a compound guard
-                // binds no variable, so ≤ 2 guards keep the carry `O(signatures)`. An aggregate
-                // element's own condition binds only element-local variables (skipped below).
-                BodyElement::Aggregate { aggregate, .. } => {
-                    let mut guards = BTreeSet::new();
-                    collect_aggregate_guard_vars(aggregate, &mut guards);
-                    if !guards.is_empty() {
-                        for signature in aggregate_signatures(aggregate) {
-                            carriers
-                                .entry(signature)
-                                .or_default()
-                                .extend(guards.iter().cloned());
-                        }
-                    }
+                BodyCarrier::Aggregate(aggregate) => {
+                    collect_aggregate_growth(aggregate, &mut carriers, &mut deepenings);
                 }
-                // A body conditional and a theory atom bind only element-local variables, which
-                // cannot reach a head atom (a head variable is global) — soundly skipped.
-                _ => {}
+                BodyCarrier::Inert => {}
             }
         }
-        // Every head-element condition is a dependency the graph reads (`head_dependencies`, program
-        // §12.1) and carries its variables to the derived literal, so process it with the same
-        // literal walk as the body — atoms *and* `=`-relations.
-        collect_head_conditions(
-            rule.head().get(),
-            &mut carriers,
-            &mut aliases,
-            &mut deepenings,
-        );
+        // Every head-element condition carries its variables to the derived literal
+        // (`head_carrier_conditions`, exhaustive over `Head`); process each with the same literal
+        // walk as the body — atoms *and* `=`-relations.
+        for condition in head_carrier_conditions(rule.head().get()) {
+            collect_condition(condition, &mut carriers, &mut aliases, &mut deepenings);
+        }
 
         // Group the carried variables by their **recursive** component — each signature visited
         // once — so a head atom's carried set is a lookup. A non-recursive component is never read
@@ -620,18 +606,23 @@ impl BodyGrowth {
     /// recursive component the head derives into and reused across its head atoms, so the pass stays
     /// `O(program + edges)`; a component whose head never queries it pays nothing. Forward
     /// reachability from a fixed seed, so a cyclic assignment (`X = f(Y), Y = f(X)`) terminates on
-    /// the `seen` set with no tentative-`false` hazard.
+    /// the `visited` set with no tentative-`false` hazard. Every node reached as the *target* of a
+    /// deepening edge is a strict deepener of a carried root, so it is recorded — **including a
+    /// carried root reached that way**: when the deepened value is itself a carrier (an aggregate
+    /// guard, `M = #max { f(Y) : p(Y) }`, which both carries `p` and is `f`-deeper than its members),
+    /// that carried root is genuine growth, and excluding it would be a false `Holds`.
     fn reaching(&self, carried_roots: &BTreeSet<Variable>) -> BTreeSet<Variable> {
         let mut deepening: BTreeSet<Variable> = BTreeSet::new();
-        let mut seen: BTreeSet<Variable> = carried_roots.clone();
+        let mut visited: BTreeSet<Variable> = BTreeSet::new();
         let mut stack: Vec<Variable> = carried_roots.iter().cloned().collect();
         while let Some(node) = stack.pop() {
+            if !visited.insert(node.clone()) {
+                continue;
+            }
             if let Some(deepeners) = self.deepens_into.get(&node) {
                 for deepener in deepeners {
-                    if seen.insert(deepener.clone()) {
-                        deepening.insert(deepener.clone());
-                        stack.push(deepener.clone());
-                    }
+                    deepening.insert(deepener.clone());
+                    stack.push(deepener.clone());
                 }
             }
         }
@@ -814,34 +805,84 @@ fn collect_condition(
     }
 }
 
-/// Every head-element condition, processed with the same literal walk as the body (§5): a head
-/// element `p(f(X)) : p(X)` derives `p(f(X))` but depends on its condition (`head_dependencies`,
-/// program §12.1), which carries `X` — and any `=`-relation among its variables — to the derived
-/// literal. Disjunction, choice, and head-aggregate elements; a plain head literal has no condition,
-/// and a head theory atom is the §4.9 boundary (and never a growth target — `head_atoms` skips it).
-fn collect_head_conditions(
-    head: &Head,
+/// An aggregate's carriers and deepenings for growth (§5): its lone-variable guards carry to every
+/// signature it ranges over (the `M` in `M = #max { Y : p(Y) }` — an existing member value). For a
+/// `#max`/`#min` the value returned is a member's value-term, so a *former* value-term makes the
+/// guard one former deeper than the members it ranges over (`M = #max { f(Y) : p(Y) }` is
+/// `M = f(Y)`-deep): the aggregate is exactly the body `p(Y), M = f(Y)`, so its member variables are
+/// registered as carriers of the signatures it ranges over — restoring the carried-member ≠
+/// deepening-guard asymmetry the growth seed needs — and the guard **deepens** them. Without the
+/// member as a carried root, the guard's deepening edge is dead (the seed from the guard's own root
+/// never traverses it) and a `#max` over a former element term is a false `Holds`. `#count`/`#sum`/
+/// `#sum+` return an integer, out of the term-depth scope (§5), so their element terms do not
+/// deepen; a set aggregate has no value-term. A compound guard binds no variable and carries
+/// nothing.
+fn collect_aggregate_growth(
+    aggregate: &Aggregate,
     carriers: &mut BTreeMap<Signature, BTreeSet<Variable>>,
-    aliases: &mut Vec<BTreeSet<Variable>>,
     deepenings: &mut Vec<(Variable, BTreeSet<Variable>)>,
 ) {
-    match head {
-        Head::Disjunction(disjunction) => {
-            for element in disjunction.elements() {
-                collect_condition(element.get().condition(), carriers, aliases, deepenings);
+    let mut guards = BTreeSet::new();
+    collect_aggregate_guard_vars(aggregate, &mut guards);
+    if guards.is_empty() {
+        return;
+    }
+    let signatures = aggregate_signatures(aggregate);
+    for signature in &signatures {
+        carriers
+            .entry(signature.clone())
+            .or_default()
+            .extend(guards.iter().cloned());
+    }
+    if is_extremum(aggregate) {
+        for value in aggregate_value_terms(aggregate) {
+            if !is_former(value) {
+                continue;
+            }
+            let mut members = BTreeSet::new();
+            term_named_vars(value, &mut members);
+            if members.is_empty() {
+                continue;
+            }
+            // The member variables the guard deepens must themselves be carried roots, or the
+            // deepening edge is never traversed (the guard is not reached from its own root). The
+            // aggregate ranges over these members, so they are carriers of its signatures.
+            for signature in &signatures {
+                carriers
+                    .entry(signature.clone())
+                    .or_default()
+                    .extend(members.iter().cloned());
+            }
+            for guard in &guards {
+                deepenings.push((guard.clone(), members.clone()));
             }
         }
-        Head::Choice(choice) => {
-            for element in choice.elements() {
-                collect_condition(element.get().condition(), carriers, aliases, deepenings);
-            }
-        }
-        Head::Aggregate(aggregate) => {
-            for element in aggregate.elements() {
-                collect_condition(element.get().condition(), carriers, aliases, deepenings);
-            }
-        }
-        Head::Literal(_) | Head::TheoryAtom(_) | Head::Falsum | Head::Verum => {}
+    }
+}
+
+/// Whether the aggregate is `#max`/`#min` — the functions returning a member's value-*term* (not an
+/// integer), so a former value-term is term-depth growth (§5). The match is exhaustive over
+/// `AggregateFunction` (not a `matches!` with a silent fallthrough), so a new function forces a
+/// term-vs-integer decision here rather than defaulting to a non-growth `false` — a false `Holds`.
+fn is_extremum(aggregate: &Aggregate) -> bool {
+    match aggregate {
+        Aggregate::Function(function) => match function.function() {
+            AggregateFunction::Max | AggregateFunction::Min => true,
+            AggregateFunction::Count | AggregateFunction::Sum | AggregateFunction::SumPlus => false,
+        },
+        Aggregate::Set(_) => false,
+    }
+}
+
+/// The value-terms an aggregate compares — the first term of each element; empty for a set
+/// aggregate (whose elements are literals, not value tuples).
+fn aggregate_value_terms(aggregate: &Aggregate) -> Vec<&Term> {
+    match aggregate {
+        Aggregate::Function(function) => function
+            .elements()
+            .filter_map(|element| element.get().terms().next())
+            .collect(),
+        Aggregate::Set(_) => Vec::new(),
     }
 }
 

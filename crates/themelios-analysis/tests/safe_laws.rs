@@ -24,7 +24,7 @@ use themelios_program::program::{
 };
 use themelios_program::provenance::{Origin, Provenance, TransformTag, WithProvenance};
 use themelios_program::symbol::{Name, Symbol, VarName};
-use themelios_program::term::{Term, Variable};
+use themelios_program::term::{BinaryOp, Term, Variable};
 
 // ---- helpers ----
 
@@ -618,12 +618,76 @@ fn finiteness_flags_a_head_condition_alias_under_a_former() {
 
 // ---- Differential: a program that grows by construction is never a false `Holds` (§6.1) ----
 //
-// The soundness net for the carrier/graph congruence: a recursive rule whose growth — a term-former
-// over a variable carried around the recursion — is injected at a randomized position (a head
-// former, a body `=`, a `=`-chain, a head-element-condition atom, a head-element-condition `=`).
-// Each grounds unboundedly by construction, so finiteness MUST return `Unknown`; a `Holds` is a
-// growth position the carrier walk missed — a false `Holds`, which no per-position audit is trusted
-// to rule out.
+// The soundness net for the carrier/graph congruence: a recursive program whose growth — a
+// term-former over a variable carried around the recursion — is injected at a randomized position
+// (a head former, a body `=`, a `=`-chain, a head-element-condition atom or `=` in any head kind, a
+// `#max` aggregate element term, and across mutual recursion), under a randomized former (function
+// or arithmetic). Each grounds unboundedly by construction, so finiteness MUST return `Unknown`; a
+// `Holds` is a growth position the carrier walk missed — a false `Holds`, which no per-position
+// audit is trusted to rule out, and whose blind spots are widened here to the positions prior
+// versions missed (aggregate element terms, cross-predicate recursion, choice/head-aggregate heads).
+
+#[derive(Clone, Debug)]
+enum Former {
+    Function,
+    Arithmetic,
+}
+
+fn apply_former(former: &Former, inner: Term) -> Term {
+    match former {
+        Former::Function => Term::Function {
+            name: name("f"),
+            arguments: vec![inner],
+        },
+        Former::Arithmetic => Term::BinaryOperation {
+            operator: BinaryOp::Add,
+            left: Box::new(inner),
+            right: Box::new(num(1)),
+        },
+    }
+}
+
+fn nested_former(depth: u8, former: &Former, inner: Term) -> Term {
+    let mut term = inner;
+    for _ in 0..depth.max(1) {
+        term = apply_former(former, term);
+    }
+    term
+}
+
+#[derive(Clone, Debug)]
+enum HeadKind {
+    Disjunction,
+    Choice,
+    HeadAggregate,
+}
+
+// A head deriving one element `literal : condition`, in the chosen head kind.
+fn single_element_head(kind: &HeadKind, literal: Literal, condition: Condition) -> Head {
+    match kind {
+        HeadKind::Disjunction => Head::Disjunction(Disjunction::new([DisjunctionElement::new(
+            literal, condition,
+        )])),
+        HeadKind::Choice => Head::Choice(Choice::new(
+            None,
+            [ChoiceElement::new(literal, condition)],
+            None,
+        )),
+        HeadKind::HeadAggregate => Head::Aggregate(HeadAggregate::new(
+            None,
+            AggregateFunction::Count,
+            [HeadAggregateElement::new(
+                Vec::<Term>::new(),
+                literal,
+                condition,
+            )],
+            Some(Guard {
+                relation: Some(Relation::Ge),
+                term: num(1),
+            }),
+        )),
+    }
+}
 
 #[derive(Clone, Debug)]
 enum Grow {
@@ -632,35 +696,28 @@ enum Grow {
     BodyEqualityChain(u8),
     HeadConditionAtom,
     HeadConditionEquality,
+    AggregateExtremum,
+    MutualRecursion,
 }
 
-fn nested_former(depth: u8, inner: Term) -> Term {
-    let mut term = inner;
-    for _ in 0..depth.max(1) {
-        term = Term::Function {
-            name: name("f"),
-            arguments: vec![term],
-        };
-    }
-    term
-}
-
-// A rule that grows the recursion of `p`, injecting the growth at `grow`'s position.
-fn injected_growth(grow: &Grow, depth: u8) -> Rule {
-    match grow {
+// The statements that grow the recursion of `p`, injecting the growth at `grow`'s position under
+// `former`, using `kind` for any head-element position.
+fn injected_growth(grow: &Grow, former: &Former, kind: &HeadKind, depth: u8) -> Vec<Statement> {
+    let deeper = |variable: &str| nested_former(depth, former, var(variable));
+    let rules = match grow {
         // p(f(Y)) :- p(Y).
-        Grow::HeadFormer => Rule::new(
-            Atom::new(name("p"), [nested_former(depth, var("Y"))]),
+        Grow::HeadFormer => vec![Rule::new(
+            Atom::new(name("p"), [deeper("Y")]),
             pred("p", &["Y"]),
-        ),
+        )],
         // p(X) :- p(Y), X = f(Y).
-        Grow::BodyEquality => Rule::new(
+        Grow::BodyEquality => vec![Rule::new(
             pred("p", &["X"]),
             vec![
                 BodyElement::from(pred("p", &["Y"])),
-                assign("X", nested_former(depth, var("Y"))),
+                assign("X", deeper("Y")),
             ],
-        ),
+        )],
         // p(X0) :- p(Xn), X0 = f(X1), …, X_{n-1} = f(Xn).
         Grow::BodyEqualityChain(links) => {
             let n = (*links as usize).max(1);
@@ -669,32 +726,62 @@ fn injected_growth(grow: &Grow, depth: u8) -> Rule {
             for i in 0..n {
                 body.push(assign(
                     &format!("X{i}"),
-                    nested_former(depth, var(&format!("X{}", i + 1))),
+                    nested_former(depth, former, var(&format!("X{}", i + 1))),
                 ));
             }
-            Rule::new(pred("p", &["X0"]), body)
+            vec![Rule::new(pred("p", &["X0"]), body)]
         }
-        // p(f(X)) : p(X) :- base.
-        Grow::HeadConditionAtom => Head::Disjunction(Disjunction::new([DisjunctionElement::new(
-            Literal::from(Atom::new(name("p"), [nested_former(depth, var("X"))])),
-            Condition::new([Literal::from(pred("p", &["X"]))]),
-        )]))
-        .when(Atom::constant(name("base"))),
-        // p(X) : X = f(Y), p(Y) :- base.  — the deepening `=` lives inside the head condition.
-        Grow::HeadConditionEquality => {
-            Head::Disjunction(Disjunction::new([DisjunctionElement::new(
+        // p(f(X)) : p(X) :- base.  (in the chosen head kind)
+        Grow::HeadConditionAtom => vec![
+            single_element_head(
+                kind,
+                Literal::from(Atom::new(name("p"), [deeper("X")])),
+                Condition::new([Literal::from(pred("p", &["X"]))]),
+            )
+            .when(Atom::constant(name("base"))),
+        ],
+        // p(X) : X = f(Y), p(Y) :- base.  — the deepening `=` inside the head condition.
+        Grow::HeadConditionEquality => vec![
+            single_element_head(
+                kind,
                 Literal::from(pred("p", &["X"])),
                 Condition::new([
-                    eq_literal(var("X"), nested_former(depth, var("Y"))),
+                    eq_literal(var("X"), deeper("Y")),
                     Literal::from(pred("p", &["Y"])),
                 ]),
-            )]))
-            .when(Atom::constant(name("base")))
+            )
+            .when(Atom::constant(name("base"))),
+        ],
+        // p(X) :- X = #max { f(Y) : p(Y) }.  — a former element term to a bare head.
+        Grow::AggregateExtremum => {
+            let element = BodyAggregateElement::new(
+                [deeper("Y")],
+                Condition::new([Literal::from(pred("p", &["Y"]))]),
+            );
+            let aggregate = BodyElement::Aggregate {
+                negation: DefaultNegation::None,
+                aggregate: Aggregate::Function(FunctionAggregate::new(
+                    Some(Guard {
+                        relation: Some(Relation::Eq),
+                        term: var("X"),
+                    }),
+                    AggregateFunction::Max,
+                    [element],
+                    None,
+                )),
+            };
+            vec![Rule::new(pred("p", &["X"]), vec![aggregate])]
         }
-    }
+        // p(f(Y)) :- q(Y).  q(X) :- p(X).  — mutual recursion; growth in p over q's carried Y.
+        Grow::MutualRecursion => vec![
+            Rule::new(Atom::new(name("p"), [deeper("Y")]), pred("q", &["Y"])),
+            Rule::new(pred("q", &["X"]), pred("p", &["X"])),
+        ],
+    };
+    rules.into_iter().map(Statement::Rule).collect()
 }
 
-fn any_grow() -> impl Strategy<Value = (Grow, u8)> {
+fn any_grow() -> impl Strategy<Value = (Grow, Former, HeadKind, u8)> {
     (
         prop_oneof![
             Just(Grow::HeadFormer),
@@ -702,6 +789,14 @@ fn any_grow() -> impl Strategy<Value = (Grow, u8)> {
             (1u8..8).prop_map(Grow::BodyEqualityChain),
             Just(Grow::HeadConditionAtom),
             Just(Grow::HeadConditionEquality),
+            Just(Grow::AggregateExtremum),
+            Just(Grow::MutualRecursion),
+        ],
+        prop_oneof![Just(Former::Function), Just(Former::Arithmetic)],
+        prop_oneof![
+            Just(HeadKind::Disjunction),
+            Just(HeadKind::Choice),
+            Just(HeadKind::HeadAggregate),
         ],
         1u8..4,
     )
@@ -709,11 +804,13 @@ fn any_grow() -> impl Strategy<Value = (Grow, u8)> {
 
 proptest! {
     #[test]
-    fn a_constructed_growth_is_never_a_false_holds((grow, depth) in any_grow()) {
-        let verdict = finiteness_of([Statement::Rule(injected_growth(&grow, depth))]);
+    fn a_constructed_growth_is_never_a_false_holds(
+        (grow, former, kind, depth) in any_grow()
+    ) {
+        let verdict = finiteness_of(injected_growth(&grow, &former, &kind, depth));
         prop_assert!(
             matches!(verdict, Verdict::Unknown { .. }),
-            "finiteness must be Unknown for a program that grows by construction: {grow:?} depth {depth}",
+            "finiteness must be Unknown for a program that grows by construction: {grow:?} / {former:?} / {kind:?} / depth {depth}",
         );
     }
 }
@@ -1195,5 +1292,66 @@ fn finiteness_flags_aggregate_carried_growth() {
     assert!(
         matches!(grows_set, Verdict::Unknown { .. }),
         "a set aggregate carrying the recursion through its bound grows",
+    );
+}
+
+#[test]
+fn finiteness_flags_a_max_over_a_former() {
+    // p(X) :- X = #max { f(Y) : p(Y) }.  — the former lives INSIDE the aggregate, and the head
+    // is the bare guard `p(X)`. The `#max` returns a *member value-term*, so `f(Y)` makes the
+    // guard X one former deeper than the p-members it maxes over: if p holds m then f(m) is a
+    // candidate, X = f(m), p(f(m)), f(f(m)), … — unbounded. Distinct from the head-former shape
+    // (`p(f(X)) :- X = #max{Y:p(Y)}`) whose growth the head atom carries: here the growth is a
+    // former ELEMENT term, which a scan reading only the head atom and body `=` misses (a false
+    // `Holds`). The sound reading is Unknown (§6.1).
+    let aggregate = BodyElement::Aggregate {
+        negation: DefaultNegation::None,
+        aggregate: Aggregate::Function(FunctionAggregate::new(
+            Some(Guard {
+                relation: Some(Relation::Eq),
+                term: var("X"),
+            }),
+            AggregateFunction::Max,
+            [BodyAggregateElement::new(
+                [function("f", "Y")],
+                Condition::new([Literal::from(pred("p", &["Y"]))]),
+            )],
+            None,
+        )),
+    };
+    let grows = finiteness_of([Statement::Rule(Rule::new(
+        pred("p", &["X"]),
+        vec![aggregate],
+    ))]);
+    assert!(
+        matches!(grows, Verdict::Unknown { .. }),
+        "a #max over a former element term deepens the guard and grows",
+    );
+
+    // p(X) :- X = #max { Y : p(Y) }.  — the precision twin: a BARE element term, so X is an
+    // existing member value, not deeper. This grounds finitely — `Holds` must be preserved (a
+    // conservative `Unknown` here would be sound but needlessly imprecise, and the fix must not
+    // reach for it).
+    let bounded = BodyElement::Aggregate {
+        negation: DefaultNegation::None,
+        aggregate: Aggregate::Function(FunctionAggregate::new(
+            Some(Guard {
+                relation: Some(Relation::Eq),
+                term: var("X"),
+            }),
+            AggregateFunction::Max,
+            [BodyAggregateElement::new(
+                [var("Y")],
+                Condition::new([Literal::from(pred("p", &["Y"]))]),
+            )],
+            None,
+        )),
+    };
+    let bounded_verdict =
+        finiteness_of([Statement::Rule(Rule::new(pred("p", &["X"]), vec![bounded]))]);
+    assert_eq!(
+        bounded_verdict,
+        Verdict::Holds,
+        "a #max over a bare element term is an existing member value and does not grow",
     );
 }
