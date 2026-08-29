@@ -16,11 +16,13 @@ use themelios_analysis::classify::Verdict;
 use themelios_analysis::safe::Safety;
 use themelios_program::construct::not;
 use themelios_program::program::{
-    Aggregate, AggregateFunction, Atom, BodyAggregateElement, BodyElement, Choice, ChoiceElement,
-    Comparison, Condition, ConditionalLiteral, DefaultNegation, Disjunction, DisjunctionElement,
-    FunctionAggregate, Guard, Head, HeadAggregate, HeadAggregateElement, Literal, LiteralInner,
-    Program, Relation, Rule, SetAggregate, SetElement, Statement, TheoryAtom, TheoryElement,
-    TheoryTerm,
+    Aggregate, AggregateFunction, Atom, Body, BodyAggregateElement, BodyElement, Choice,
+    ChoiceElement, Comparison, Condition, ConditionalLiteral, Const, DefaultNegation, Direction,
+    Disjunction, DisjunctionElement, Edge, External, FunctionAggregate, Guard, Head, HeadAggregate,
+    HeadAggregateElement, Heuristic, Literal, LiteralInner, Optimize, OptimizeElement, Program,
+    Project,
+    Relation, Rule, SetAggregate, SetElement, Show, Statement, TheoryAtom, TheoryElement,
+    TheoryGuard, TheoryOperator, TheoryTerm, WeakConstraint, weight,
 };
 use themelios_program::provenance::{Origin, Provenance, TransformTag, WithProvenance};
 use themelios_program::symbol::{Name, Symbol, VarName};
@@ -67,11 +69,16 @@ fn safety_of(statements: impl IntoIterator<Item = Statement>) -> Safety {
 }
 
 fn unbound_of(rule: Rule) -> BTreeSet<Variable> {
-    let safety = safety_of([Statement::Rule(rule)]);
-    let mut unsafe_rules = safety.unsafe_rules();
-    unsafe_rules
+    statement_unbound(Statement::Rule(rule))
+}
+
+// The unbound variables of any single statement — a rule or a bodied directive (§5).
+fn statement_unbound(statement: Statement) -> BTreeSet<Variable> {
+    let safety = safety_of([statement]);
+    safety
+        .unsafe_statements()
         .next()
-        .map(|r| r.unbound().cloned().collect())
+        .map(|s| s.unbound().cloned().collect())
         .unwrap_or_default()
 }
 
@@ -320,15 +327,18 @@ fn any_rhs() -> impl Strategy<Value = Rhs> {
     ]
 }
 
-fn any_rule() -> impl Strategy<Value = Rule> {
-    let element = prop_oneof![
+fn any_element() -> impl Strategy<Value = Elem> {
+    prop_oneof![
         any_atom_ref().prop_map(|(p, args)| Elem::Positive(p, args)),
         any_atom_ref().prop_map(|(p, args)| Elem::Negative(p, args)),
         (0usize..5, any_rhs()).prop_map(|(lhs, rhs)| Elem::Assign(lhs, rhs)),
         any_rhs().prop_map(Elem::AssignAnon),
-    ];
+    ]
+}
+
+fn any_rule() -> impl Strategy<Value = Rule> {
     let head_args = prop::collection::vec(any_arg(), 0..3);
-    let body = prop::collection::vec(element, 0..6);
+    let body = prop::collection::vec(any_element(), 0..6);
     (head_args, body)
         .prop_map(|(head_args, body)| Rule::new(build_atom(0, &head_args), build_body(&body)))
 }
@@ -510,6 +520,274 @@ fn an_aggregate_local_binding_does_not_leak_to_a_rule_global_variable() {
     );
 }
 
+// ---- Correctness: the theory-term-local close (§5, §4.9) ----
+
+#[test]
+fn safety_vets_theory_term_variables() {
+    // A theory atom `&t { element_term : condition }` (optionally guarded), in a constraint body.
+    let theory =
+        |element_term: TheoryTerm, condition: Option<Condition>, guard: Option<TheoryGuard>| {
+            BodyElement::TheoryAtom {
+                negation: DefaultNegation::None,
+                atom: TheoryAtom::new(
+                    name("t"),
+                    Vec::<Term>::new(),
+                    [TheoryElement::new([element_term], condition)],
+                    guard,
+                ),
+            }
+        };
+
+    // :- &t { X }.  — X occurs only in a theory element term. A theory term binds no ordinary
+    // variable, so X is unbound and the grounder refuses it: the theory-term-local close descends the
+    // shared leaves (§4.9) and flags X, where the old liberal boundary read it safe.
+    assert_eq!(
+        unbound_of(Rule::constraint(vec![theory(
+            TheoryTerm::Variable(named("X")),
+            None,
+            None,
+        )])),
+        [named("X")].into_iter().collect(),
+        "a variable only in a theory term is unsafe",
+    );
+
+    // :- &t { X : q(X) }.  — the element condition binds X within the element: safe.
+    assert!(
+        unbound_of(Rule::constraint(vec![theory(
+            TheoryTerm::Variable(named("X")),
+            Some(Condition::new([Literal::from(pred("q", &["X"]))])),
+            None,
+        )]))
+        .is_empty(),
+        "an element condition binds the theory-term variable: safe",
+    );
+
+    // :- &t { X }, q(X).  — the ordinary body binds X globally: safe.
+    assert!(
+        unbound_of(Rule::constraint(vec![
+            theory(TheoryTerm::Variable(named("X")), None, None),
+            BodyElement::from(pred("q", &["X"])),
+        ]))
+        .is_empty(),
+        "an ordinary body atom binds the theory-term variable: safe",
+    );
+
+    // :- &t { 0 } >= Y.  — the guard's theory term Y is at the atom scope, unbound: unsafe.
+    assert_eq!(
+        unbound_of(Rule::constraint(vec![theory(
+            TheoryTerm::Symbolic(Symbol::Number(0)),
+            None,
+            Some(TheoryGuard {
+                operator: TheoryOperator::new(">="),
+                term: TheoryTerm::Variable(named("Y")),
+            }),
+        )])),
+        [named("Y")].into_iter().collect(),
+        "a theory guard variable is unbound at the atom scope: unsafe",
+    );
+
+    // :- &t { _ }.  — a constructed anonymous theory-term leaf can never be bound (§8), so unsafe;
+    // the witness names `_`.
+    assert_eq!(
+        unbound_of(Rule::constraint(vec![theory(
+            TheoryTerm::Variable(Variable::Anonymous),
+            None,
+            None,
+        )])),
+        [Variable::Anonymous].into_iter().collect(),
+        "an anonymous theory-term leaf is unbindable, so unsafe",
+    );
+}
+
+// ---- Correctness: the bodied-directive close (§5) ----
+
+#[test]
+fn safety_vets_bodied_directives() {
+    // :~ q. [W@1]  — the weak-constraint weight W has no binder (`q` binds nothing): unsafe.
+    assert_eq!(
+        statement_unbound(Statement::WeakConstraint(WeakConstraint::new(
+            Body::new([BodyElement::from(pred("q", &[]))]),
+            weight(var("W")).at_priority(num(1)),
+            Vec::<Term>::new(),
+        ))),
+        [named("W")].into_iter().collect(),
+        "a weak-constraint weight variable with no binder is unsafe",
+    );
+
+    // :~ q(W). [W@1]  — the body binds W: safe.
+    assert!(
+        statement_unbound(Statement::WeakConstraint(WeakConstraint::new(
+            Body::new([BodyElement::from(pred("q", &["W"]))]),
+            weight(var("W")).at_priority(num(1)),
+            Vec::<Term>::new(),
+        )))
+        .is_empty(),
+        "the body binds the weight variable: safe",
+    );
+
+    // #show f(X) : q(X).  — safe (the body binds the shown term's X).
+    assert!(
+        statement_unbound(Statement::Show(Show::term_body(
+            function("f", "X"),
+            Body::new([BodyElement::from(pred("q", &["X"]))]),
+        )))
+        .is_empty(),
+        "the body binds the shown term's variable: safe",
+    );
+
+    // #show f(X) : q(Y).  — X unbound (the body binds only Y): unsafe.
+    assert_eq!(
+        statement_unbound(Statement::Show(Show::term_body(
+            function("f", "X"),
+            Body::new([BodyElement::from(pred("q", &["Y"]))]),
+        ))),
+        [named("X")].into_iter().collect(),
+        "the shown term's X is unbound when the body binds only Y: unsafe",
+    );
+
+    // #project p(X) : q(X).  — safe (the body binds the projected atom's X).
+    assert!(
+        statement_unbound(Statement::Project(Project::atom_body(
+            pred("p", &["X"]),
+            Body::new([BodyElement::from(pred("q", &["X"]))]),
+        )))
+        .is_empty(),
+        "the body binds the projected atom's variable: safe",
+    );
+
+    // #external p(X).  — an empty body binds nothing, so X is unsafe (the empty-body form, grammar §5.9).
+    assert_eq!(
+        statement_unbound(Statement::External(External::new(
+            pred("p", &["X"]),
+            Body::empty(),
+            None,
+        ))),
+        [named("X")].into_iter().collect(),
+        "an #external atom variable with an empty body is unsafe",
+    );
+
+    // #edge (X, Y) : q(X), r(Y).  — safe (the body binds both node terms).
+    assert!(
+        statement_unbound(Statement::Edge(Edge::new(
+            [(var("X"), var("Y"))],
+            Body::new([
+                BodyElement::from(pred("q", &["X"])),
+                BodyElement::from(pred("r", &["Y"])),
+            ]),
+        )))
+        .is_empty(),
+        "the body binds the edge node terms: safe",
+    );
+
+    // #edge (X, Y).  — an empty body binds nothing: X and Y unsafe.
+    assert_eq!(
+        statement_unbound(Statement::Edge(Edge::new(
+            [(var("X"), var("Y"))],
+            Body::empty(),
+        ))),
+        [named("X"), named("Y")].into_iter().collect(),
+        "an #edge with variable node terms and an empty body is unsafe",
+    );
+
+    // #heuristic p(X) : q(X). [1, 1]  — safe (the body binds the atom's X).
+    assert!(
+        statement_unbound(Statement::Heuristic(Heuristic::new(
+            pred("p", &["X"]),
+            Body::new([BodyElement::from(pred("q", &["X"]))]),
+            num(1),
+            None,
+            num(1),
+        )))
+        .is_empty(),
+        "the body binds the heuristic atom's variable: safe",
+    );
+
+    // #heuristic p(0) : . [W@V, M]  — the bias W, priority V, and modifier M are required and, with an
+    // empty body and a ground atom, unbound: unsafe.
+    assert_eq!(
+        statement_unbound(Statement::Heuristic(Heuristic::new(
+            Atom::new(name("p"), [num(0)]),
+            Body::empty(),
+            var("W"),
+            Some(var("V")),
+            var("M"),
+        ))),
+        [named("W"), named("V"), named("M")].into_iter().collect(),
+        "the heuristic bias, priority, and modifier are required and unbound with an empty body",
+    );
+
+    // #minimize { W@P, X : q(X) }.  — the element condition binds X only; the weight W and priority P
+    // are element-required and unbound: unsafe.
+    let unbound = statement_unbound(Statement::Optimize(Optimize::new(
+        Direction::Minimize,
+        [OptimizeElement::new(
+            weight(var("W")).at_priority(var("P")),
+            [var("X")],
+            Condition::new([Literal::from(pred("q", &["X"]))]),
+        )],
+    )));
+    assert!(
+        unbound.contains(&named("W")) && unbound.contains(&named("P")),
+        "an optimize element's unbound weight and priority are flagged; got {unbound:?}",
+    );
+
+    // #minimize { W@P, X : q(X, W, P) }.  — the element condition binds W, P, X: safe.
+    assert!(
+        statement_unbound(Statement::Optimize(Optimize::new(
+            Direction::Minimize,
+            [OptimizeElement::new(
+                weight(var("W")).at_priority(var("P")),
+                [var("X")],
+                Condition::new([Literal::from(pred("q", &["X", "W", "P"]))]),
+            )],
+        )))
+        .is_empty(),
+        "an optimize element condition binds its weight, priority, and terms: safe",
+    );
+
+    // #const x = 1.  — a no-obligation directive: no variable, safe.
+    assert!(
+        statement_unbound(Statement::Const(Const {
+            name: name("x"),
+            value: num(1),
+            policy: None,
+        }))
+        .is_empty(),
+        "a #const with a ground value is safe (no binding obligation)",
+    );
+}
+
+#[test]
+fn safety_vets_a_directive_borne_anonymous_variable() {
+    // :~ q. [_@1]  — the weight is `_`. A directive-borne `_` in a requiring position must be
+    // freshened (over the whole *statement*, not just a rule) and reported unbound. Extending the scan
+    // to directives without generalizing the freshener would read this safe — the anonymous false-`safe`
+    // (a `_` invisible to the binding scan because it is not a named variable) reopened one statement
+    // kind over. The witness names `_`.
+    assert_eq!(
+        statement_unbound(Statement::WeakConstraint(WeakConstraint::new(
+            Body::new([BodyElement::from(pred("q", &[]))]),
+            weight(Term::Variable(Variable::Anonymous)).at_priority(num(1)),
+            Vec::<Term>::new(),
+        ))),
+        [Variable::Anonymous].into_iter().collect(),
+        "a directive-borne anonymous weight is unsafe (the freshener generalizes to statements)",
+    );
+
+    // #show f(_) : q(X).  — the shown term's `_` is required and unbindable by the body's X: unsafe.
+    assert_eq!(
+        statement_unbound(Statement::Show(Show::term_body(
+            Term::Function {
+                name: name("f"),
+                arguments: vec![Term::Variable(Variable::Anonymous)],
+            },
+            Body::new([BodyElement::from(pred("q", &["X"]))]),
+        ))),
+        [Variable::Anonymous].into_iter().collect(),
+        "an anonymous in a #show term, unbindable by the body, is unsafe",
+    );
+}
+
 proptest! {
     /// Safety agrees with the naive brute-force-fixpoint reference on generated
     /// aggregate-free rules — the load-bearing binding fixpoint (§5, §10).
@@ -517,6 +795,83 @@ proptest! {
     fn safety_agrees_with_the_naive_reference(rule in any_rule()) {
         let expected = naive_unbound(&rule);
         let actual = unbound_of(rule.clone());
+        prop_assert_eq!(actual, expected);
+    }
+
+    /// A weak constraint's safety reduces exactly to a rule's: its weight, priority, and tuple terms
+    /// are required and bound by its body, just as a rule's head is bound by its body. So it agrees
+    /// with the trusted rule reference on the reduced rule `pseudo(weight, priority, tuple) :- body` —
+    /// the bodied-directive close's universal random-shape coverage, through the same oracle (§10). The
+    /// generated arguments include the anonymous `_` (via `any_arg`), so the directive `_` is fuzzed.
+    #[test]
+    fn a_weak_constraint_agrees_with_the_reduced_rule_reference(
+        head_args in prop::collection::vec(any_arg(), 1..4),
+        body in prop::collection::vec(any_element(), 0..6),
+    ) {
+        let reduced = Rule::new(build_atom(0, &head_args), build_body(&body));
+        let expected = naive_unbound(&reduced);
+
+        let terms: Vec<Term> = head_args.iter().map(arg_term).collect();
+        let (weight_term, rest) = terms.split_first().expect("1..4 args, so at least one");
+        let mut w = weight(weight_term.clone());
+        let tuple: Vec<Term> = match rest.split_first() {
+            Some((priority, tail)) => {
+                w = w.at_priority(priority.clone());
+                tail.to_vec()
+            }
+            None => Vec::new(),
+        };
+        let weak =
+            Statement::WeakConstraint(WeakConstraint::new(Body::new(build_body(&body)), w, tuple));
+        prop_assert_eq!(statement_unbound(weak), expected);
+    }
+
+    /// A theory atom's ordinary variable leaves are safe iff bound: an element-term variable by its
+    /// element condition or the global body, a guard variable by the global body alone (§5, §4.9). The
+    /// universal law over theory-term variables (§10), checked against an independent reading of the
+    /// shape — the element/guard scoping distinction (local vs global) read directly, not via the
+    /// production. (The anonymous theory leaf is a unit case; here the leaves are named.)
+    #[test]
+    fn a_theory_term_variable_is_safe_iff_bound(
+        element_var in 0usize..3,
+        cond_var in prop::option::of(0usize..3),
+        guard_var in prop::option::of(0usize..3),
+        body_vars in prop::collection::vec(0usize..3, 0..3),
+    ) {
+        let element = TheoryElement::new(
+            [TheoryTerm::Variable(named(&var_name(element_var)))],
+            cond_var.map(|c| Condition::new([Literal::from(pred("p", &[&var_name(c)]))])),
+        );
+        let guard = guard_var.map(|g| TheoryGuard {
+            operator: TheoryOperator::new(">="),
+            term: TheoryTerm::Variable(named(&var_name(g))),
+        });
+        let theory = BodyElement::TheoryAtom {
+            negation: DefaultNegation::None,
+            atom: TheoryAtom::new(name("t"), Vec::<Term>::new(), [element], guard),
+        };
+        let mut body: Vec<BodyElement> = vec![theory];
+        for v in &body_vars {
+            body.push(BodyElement::from(pred("q", &[&var_name(*v)])));
+        }
+        let actual = unbound_of(Rule::constraint(body));
+
+        // Independent oracle: the global body binds a variable everywhere; the element condition binds
+        // its element-local variable only. The guard variable is global (bound by the body alone).
+        let global_bound: BTreeSet<usize> = body_vars.iter().copied().collect();
+        let mut element_bound = global_bound.clone();
+        if let Some(c) = cond_var {
+            element_bound.insert(c);
+        }
+        let mut expected = BTreeSet::new();
+        if !element_bound.contains(&element_var) {
+            expected.insert(named(&var_name(element_var)));
+        }
+        if let Some(g) = guard_var
+            && !global_bound.contains(&g)
+        {
+            expected.insert(named(&var_name(g)));
+        }
         prop_assert_eq!(actual, expected);
     }
 }

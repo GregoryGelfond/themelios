@@ -713,9 +713,9 @@ proptest! {
         let analysis = Analysis::of(&program);
         let flagged: BTreeSet<Variable> = analysis
             .safety()
-            .unsafe_rules()
+            .unsafe_statements()
             .next()
-            .map(|unsafe_rule| unsafe_rule.unbound().cloned().collect())
+            .map(|unsafe_statement| unsafe_statement.unbound().cloned().collect())
             .unwrap_or_default();
         prop_assert_eq!(flagged, naive_unbound(&rule));
     }

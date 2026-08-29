@@ -12,25 +12,28 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use themelios_program::analyze::{BodyCarrier, body_carrier, head_carrier_conditions};
+use themelios_program::analyze::{
+    BodyBinder, BodyCarrier, StatementBinder, body_binder, body_carrier, head_carrier_conditions,
+    statement_binder,
+};
 use themelios_program::program::{
-    Aggregate, AggregateFunction, Atom, Body, BodyElement, Comparison, Condition, DefaultNegation,
-    Guard, HasGuards, Head, Literal, LiteralInner, Program, Relation, Rule, SetElement, Statement,
-    TheoryAtom,
+    Aggregate, AggregateFunction, Atom, Body, Comparison, Condition, DefaultNegation, Guard,
+    HasGuards, Head, Literal, LiteralInner, Program, Relation, Rule, SetElement, Statement,
+    TheoryAtom, TheoryTerm,
 };
 use themelios_program::provenance::{TransformTag, WithProvenance};
 use themelios_program::symbol::{Signature, VarName};
 use themelios_program::term::{Term, Variable};
-use themelios_program::transform::Rewrite;
+use themelios_program::transform::{Rewrite, Visit};
 
 use crate::classify::Verdict;
 use crate::depend::{Component, DependencyGraph, atom_signature};
 
-/// Two facts about grounding a program (§5): which rules are not safe, and whether
+/// Two facts about grounding a program (§5): which statements are not safe, and whether
 /// grounding is finite.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Safety {
-    unsafe_rules: Vec<UnsafeRule>,
+    unsafe_statements: Vec<UnsafeStatement>,
     finiteness: Verdict,
 }
 
@@ -46,36 +49,35 @@ impl Safety {
     /// the door the assembled `Analysis` (§3) calls so the graph is built once and
     /// shared across the facets rather than rebuilt per facet. `Safety::of` is this
     /// with a freshly built graph; safety consults the graph only for `finiteness`,
-    /// since `unsafe_rules` is a program walk.
+    /// since `unsafe_statements` is a program walk.
     pub(crate) fn from_graph(program: &Program, graph: &DependencyGraph) -> Safety {
-        let mut unsafe_rules = Vec::new();
+        let mut unsafe_statements = Vec::new();
         for statement in program.statements() {
-            if let Statement::Rule(rule) = statement.get() {
-                let unbound = unbound_variables(rule);
-                if !unbound.is_empty() {
-                    unsafe_rules.push(UnsafeRule {
-                        rule: rule.clone(),
-                        unbound,
-                    });
-                }
+            let unbound = unbound_variables(statement.get());
+            if !unbound.is_empty() {
+                unsafe_statements.push(UnsafeStatement {
+                    statement: statement.clone(),
+                    unbound,
+                });
             }
         }
         let finiteness = finiteness_verdict(program, graph);
         Safety {
-            unsafe_rules,
+            unsafe_statements,
             finiteness,
         }
     }
 
-    /// The rules that are not safe — empty when every rule is safe (§5). An unsafe rule
-    /// cannot be grounded, so this is a well-formedness fact a grounder needs.
-    pub fn unsafe_rules(&self) -> impl Iterator<Item = &UnsafeRule> {
-        self.unsafe_rules.iter()
+    /// The statements that are not safe — empty when every statement is safe (§5). A rule or a
+    /// bodied directive whose variables lack a binding occurrence cannot be grounded, so this is a
+    /// well-formedness fact a grounder needs.
+    pub fn unsafe_statements(&self) -> impl Iterator<Item = &UnsafeStatement> {
+        self.unsafe_statements.iter()
     }
 
-    /// Whether every rule is safe (§5).
+    /// Whether every statement is safe (§5).
     pub fn is_safe(&self) -> bool {
-        self.unsafe_rules.is_empty()
+        self.unsafe_statements.is_empty()
     }
 
     /// Whether grounding is finite — a sound approximation (§6.1): `Holds` (proven
@@ -95,20 +97,20 @@ impl Safety {
     }
 }
 
-/// An unsafe rule and why (§5): the rule by structural value (so it names a rule of
-/// any program), and the variables with no binding occurrence — the witness, not a
-/// bare "unsafe". A source span, when wanted, is read from the rule's own provenance
-/// (program §6).
+/// An unsafe statement and why (§5): the statement — by structural value with its provenance, so it
+/// names a rule or bodied directive of any program — and the variables with no binding occurrence, the
+/// witness rather than a bare "unsafe". A source span, when wanted, is read from the statement's own
+/// provenance (program §6). Equality is provenance-blind (`WithProvenance`), as everywhere in this tier.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct UnsafeRule {
-    rule: Rule,
+pub struct UnsafeStatement {
+    statement: WithProvenance<Statement>,
     unbound: BTreeSet<Variable>,
 }
 
-impl UnsafeRule {
-    /// The unsafe rule, by structural value (§5).
-    pub fn rule(&self) -> &Rule {
-        &self.rule
+impl UnsafeStatement {
+    /// The unsafe statement, by structural value with its provenance (§5).
+    pub fn statement(&self) -> &WithProvenance<Statement> {
+        &self.statement
     }
 
     /// The variables with no binding occurrence — the witness (§5).
@@ -136,39 +138,41 @@ struct Scope {
     assignments: Vec<(Variable, BTreeSet<Variable>)>,
 }
 
-/// The variables of a rule with no binding occurrence in their scope — empty iff the
-/// rule is safe (§5).
+/// The variables of a statement with no binding occurrence in their scope — empty iff the
+/// statement is safe (§5). Scopes every statement that can bind a variable — a rule and the bodied
+/// directives — classified exhaustively in the program tier (`statement_binder`).
 ///
-/// Each anonymous `_` is a **distinct** fresh variable, as the grounder reads it (program
-/// `Rule::variables`), so the scan first renames every `_` to a distinct named variable and
-/// then runs the ordinary binding fixpoint over it. This is exact where a single "anonymous"
-/// marker cannot be: a `_` in a requiring position (a head, a negated literal, a non-lone `=`
-/// side) is unbound, while `X = _` binds the `_` when `X` is bound — just like `X = Y` — rather
-/// than being read as always-unbound. The witness collapses the minted names back to the
-/// anonymous variable. (The finiteness carrier walk keeps the `_` as-is: a single-occurrence
-/// anonymous cannot carry recursion between two positions, so renaming it there would be noise.)
-fn unbound_variables(rule: &Rule) -> BTreeSet<Variable> {
-    let mut freshener = FreshenAnonymous::over(rule);
-    // The common rule has no `_`; only rebuild it when one is present (the rebuild is O(rule)).
+/// Each anonymous `_` in an **ordinary** term is a **distinct** fresh variable, as the grounder reads
+/// it (program §12.1), so the scan first renames every ordinary `_` to a distinct named variable —
+/// over the whole statement, not just a rule — and then runs the ordinary binding fixpoint over it.
+/// This is exact where a single "anonymous" marker cannot be: a `_` in a requiring position (a head, a
+/// weak-constraint weight, a negated literal, a non-lone `=` side) is unbound, while `X = _` binds the
+/// `_` when `X` is bound — just like `X = Y`. A `_` inside a **theory term** binds nothing and cannot
+/// be bound, so it needs no renaming: it is collected as required and reported unbound, the witness
+/// naming `_` (`collect_theory_atom`). The witness collapses the minted names back to the anonymous
+/// variable. (The finiteness carrier walk keeps the `_` as-is: a single-occurrence anonymous cannot
+/// carry recursion between two positions, so renaming it there would be noise.)
+fn unbound_variables(statement: &Statement) -> BTreeSet<Variable> {
+    let mut freshener = FreshenAnonymous::over(statement);
+    // The common statement has no `_`; only rebuild it when one is present (the rebuild is O(size)).
     let renamed;
-    let scanned: &Rule = if freshener.has_anonymous {
-        renamed = freshener.rewrite_rule(rule.clone());
+    let scanned: &Statement = if freshener.has_anonymous {
+        renamed = freshener.rewrite_statement(statement.clone());
         &renamed
     } else {
-        rule
+        statement
     };
 
     let mut global = Scope::default();
     let mut locals: Vec<Scope> = Vec::new();
-    collect_head(scanned.head().get(), &mut global, &mut locals);
-    collect_body(scanned.body().get(), &mut global, &mut locals);
+    collect_statement(scanned, &mut global, &mut locals);
 
     let global_bound = close(global.binders.clone(), &global.assignments);
     let mut unbound: BTreeSet<Variable> =
         global.required.difference(&global_bound).cloned().collect();
     for local in &locals {
         // `global_bound` is the read-only base — consulted, never cloned per scope:
-        // over many local scopes this keeps the rule `O(rule)`, not `O(scopes · global binders)`.
+        // over many local scopes this keeps the scan `O(statement)`, not `O(scopes · global binders)`.
         let local_bound = close_within(&global_bound, local.binders.clone(), &local.assignments);
         for variable in &local.required {
             if !global.required.contains(variable)
@@ -183,11 +187,73 @@ fn unbound_variables(rule: &Rule) -> BTreeSet<Variable> {
     unbound
 }
 
-/// Rename every anonymous `_` in a rule to a distinct fresh named variable, so the safety scan can
-/// treat each as the distinct variable the grounder sees. The fresh names avoid the rule's own
-/// named variables (so they cannot be spuriously bound by, or bind, a real one), and are recorded
-/// to collapse the witness back to the anonymous variable. A `Rewrite` whose `rewrite_term` maps
-/// each `_` leaf; the bottom-up fold reaches every occurrence and is stack-safe (program §3.6).
+/// Collect a statement's binding scopes (§5) via its program-tier binding-role classification
+/// (`statement_binder`, exhaustive over `Statement` — a new statement kind is a compile error there,
+/// never a silent fail-open here): a rule scopes its head (requiring) and body (binding); a bodied
+/// directive requires its non-body term positions and binds them through its body; an optimize
+/// statement scopes each element like an aggregate element (its weight and terms required, its own
+/// condition binding); a no-obligation statement (a signature, an include, a query — grammar §6.1)
+/// scopes nothing.
+fn collect_statement(statement: &Statement, global: &mut Scope, locals: &mut Vec<Scope>) {
+    match statement_binder(statement) {
+        StatementBinder::Rule(rule) => {
+            collect_head(rule.head().get(), global, locals);
+            collect_body(rule.body().get(), global, locals);
+        }
+        StatementBinder::BodiedDirective { required, body } => {
+            for term in required {
+                term_named_vars(term, &mut global.required);
+            }
+            collect_body(body, global, locals);
+        }
+        StatementBinder::OptimizeElements(optimize) => {
+            for element in optimize.elements() {
+                let element = element.get();
+                let mut scope = Scope::default();
+                term_named_vars(element.weight().term(), &mut scope.required);
+                if let Some(priority) = element.weight().priority() {
+                    term_named_vars(priority, &mut scope.required);
+                }
+                for term in element.terms() {
+                    term_named_vars(term, &mut scope.required);
+                }
+                process_condition(&mut scope, element.condition());
+                locals.push(scope);
+            }
+        }
+        StatementBinder::NoObligation => {}
+    }
+}
+
+/// A `Visit` collector of a statement's **ordinary-term** variables — its theory terms are the §4.9
+/// peer algebra, which `Visit` does not descend (only a rule carries them, reached by its own
+/// `variables` walk). Seeds the anonymous freshener's used-name set for a directive.
+#[derive(Default)]
+struct OrdinaryVariables {
+    used: BTreeSet<String>,
+    has_anonymous: bool,
+}
+
+impl Visit for OrdinaryVariables {
+    fn visit_term(&mut self, term: &Term) {
+        if let Term::Variable(variable) = term {
+            match variable {
+                Variable::Named(name) => {
+                    self.used.insert(name.as_str().to_string());
+                }
+                Variable::Anonymous => self.has_anonymous = true,
+            }
+        }
+    }
+}
+
+/// Rename every anonymous `_` in a statement's ordinary terms to a distinct fresh named variable, so
+/// the safety scan can treat each as the distinct variable the grounder sees. The fresh names avoid
+/// the statement's own named variables (so they cannot be spuriously bound by, or bind, a real one),
+/// and are recorded to collapse the witness back to the anonymous variable. A `Rewrite` whose
+/// `rewrite_term` maps each `_` leaf; the bottom-up fold reaches every occurrence and is stack-safe
+/// (program §3.6). A theory-term `_` is left as-is (`collect_theory_atom` reports it unbound; it binds
+/// nothing, so it needs no distinct identity).
 struct FreshenAnonymous {
     next: u32,
     used: BTreeSet<String>,
@@ -197,17 +263,32 @@ struct FreshenAnonymous {
 }
 
 impl FreshenAnonymous {
-    fn over(rule: &Rule) -> FreshenAnonymous {
-        let mut used = BTreeSet::new();
-        let mut has_anonymous = false;
-        for variable in rule.variables() {
-            match variable {
-                Variable::Named(name) => {
-                    used.insert(name.as_str().to_string());
+    fn over(statement: &Statement) -> FreshenAnonymous {
+        // A rule's `variables` walk descends its theory terms (program §12.1), so a minted name avoids
+        // a theory-term variable too; a directive carries no theory atom, so its ordinary-term
+        // variables (the `Visit` walk, which does not descend the theory peer algebra, §4.9) are all
+        // of them. Either way the used set is complete, so a minted `Anonymous{n}` can neither be
+        // spuriously bound by, nor bind, a real variable.
+        let (used, has_anonymous) = match statement {
+            Statement::Rule(rule) => {
+                let mut used = BTreeSet::new();
+                let mut has_anonymous = false;
+                for variable in rule.variables() {
+                    match variable {
+                        Variable::Named(name) => {
+                            used.insert(name.as_str().to_string());
+                        }
+                        Variable::Anonymous => has_anonymous = true,
+                    }
                 }
-                Variable::Anonymous => has_anonymous = true,
+                (used, has_anonymous)
             }
-        }
+            other => {
+                let mut collector = OrdinaryVariables::default();
+                collector.visit_statement(other);
+                (collector.used, collector.has_anonymous)
+            }
+        };
         FreshenAnonymous {
             next: 0,
             used,
@@ -297,20 +378,20 @@ fn collect_head(head: &Head, global: &mut Scope, locals: &mut Vec<Scope>) {
 
 fn collect_body(body: &Body, global: &mut Scope, locals: &mut Vec<Scope>) {
     for element in body.elements() {
-        match element.get() {
-            BodyElement::Literal(literal) => bind_literal(global, literal),
-            BodyElement::Conditional(conditional) => {
+        // Each body element's binding role is classified exhaustively in the program tier
+        // (`body_binder`), so a new body kind is a compile error there — never a silent fail-open here.
+        match body_binder(element.get()) {
+            BodyBinder::Literal(literal) => bind_literal(global, literal),
+            BodyBinder::Conditional(conditional) => {
                 let mut scope = Scope::default();
                 require_literal(&mut scope, &conditional.literal);
                 process_condition(&mut scope, &conditional.condition);
                 locals.push(scope);
             }
-            BodyElement::Aggregate { aggregate, .. } => {
+            BodyBinder::Aggregate(aggregate) => {
                 collect_aggregate(aggregate, global, locals);
             }
-            BodyElement::TheoryAtom { atom, .. } => collect_theory_atom(atom, global, locals),
-            // `BodyElement` is non-exhaustive; a future kind binds nothing until named.
-            _ => {}
+            BodyBinder::TheoryAtom(atom) => collect_theory_atom(atom, global, locals),
         }
     }
 }
@@ -345,21 +426,42 @@ fn collect_aggregate(aggregate: &Aggregate, global: &mut Scope, locals: &mut Vec
     }
 }
 
-/// A theory atom's ordinary arguments are global; each element's condition is a local
-/// scope. The theory-term algebra (program §4.9) is not descended, so a variable occurring
-/// *only* in a theory term is invisible here: for safety that is **liberal**, not conservative
-/// (`:- &t { X }.` reads safe though the grounder refuses `X`) — a characterized boundary the
-/// grounder itself catches and the solve-tier differential records (§5, §10), not a hidden gap.
+/// A theory atom's ordinary arguments are global; each element's theory terms are element-local and its
+/// condition binds within the element; the guard's theory term is global. The theory-term algebra
+/// (program §4.9) is descended only for its **ordinary variable leaves** — the shared leaves the peer
+/// algebra meets the ordinary term algebra at ("a variable and a ground symbol", §4.9) — collected as
+/// *required, never binding*: a theory term binds no ordinary variable, so a variable occurring only in
+/// one is unbound unless the rule's ordinary body binds it (`:- &t { X }.` is unsafe, agreeing with the
+/// grounder). An anonymous `_` leaf is collected too — it can never be bound, so it is reported unbound
+/// and the witness names `_`.
 fn collect_theory_atom(atom: &TheoryAtom, global: &mut Scope, locals: &mut Vec<Scope>) {
     for term in atom.arguments() {
         term_named_vars(term, &mut global.required);
     }
     for element in atom.elements() {
         let mut scope = Scope::default();
+        for theory_term in element.get().terms() {
+            theory_term_vars(theory_term, &mut scope.required);
+        }
         if let Some(condition) = element.get().condition() {
             process_condition(&mut scope, condition);
         }
         locals.push(scope);
+    }
+    if let Some(guard) = atom.guard() {
+        theory_term_vars(&guard.term, &mut global.required);
+    }
+}
+
+/// The variables of a theory term — the ordinary variable leaves the theory-term algebra shares with
+/// the ordinary term algebra (§4.9), walked by the theory term's own iterative `subterms`. Both named
+/// and anonymous are collected: a theory term binds no ordinary variable, so every variable it carries
+/// is required, and an anonymous leaf (never bindable) is reported unbound, the witness naming `_`.
+fn theory_term_vars(term: &TheoryTerm, out: &mut BTreeSet<Variable>) {
+    for subterm in term.subterms() {
+        if let TheoryTerm::Variable(variable) = subterm {
+            out.insert(variable.clone());
+        }
     }
 }
 

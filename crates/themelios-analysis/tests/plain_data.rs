@@ -18,7 +18,7 @@ use themelios_analysis::classify::{
 };
 use themelios_analysis::construct::{Construct, Constructs};
 use themelios_analysis::depend::{Component, DependencyGraph};
-use themelios_analysis::safe::{Safety, UnsafeRule};
+use themelios_analysis::safe::{Safety, UnsafeStatement};
 
 /// Compiles only for an owned, thread-safe, borrow-free type. Instantiating it *is* the
 /// assertion (§8): the bound is checked at monomorphization, so the whole file compiling is
@@ -38,9 +38,9 @@ fn every_public_value_type_is_owned_plain_data() {
     assert_owned_plain_data::<DependencyGraph>();
     assert_owned_plain_data::<Component>();
 
-    // Safety and finiteness, and the witness a flagged rule carries (§5).
+    // Safety and finiteness, and the witness a flagged statement carries (§5).
     assert_owned_plain_data::<Safety>();
-    assert_owned_plain_data::<UnsafeRule>();
+    assert_owned_plain_data::<UnsafeStatement>();
 
     // The program classes and their verdicts (§6).
     assert_owned_plain_data::<Classes>();

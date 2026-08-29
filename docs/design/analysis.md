@@ -18,7 +18,7 @@ specification governs and the disagreement is a defect here.
 
 `themelios-analysis` reads a `Program` (program §4) and reports what is
 *structurally true* of it: which constructs it uses, how its predicates depend on
-one another, whether its rules are safe, whether it will ground finitely, and
+one another, whether its statements are safe, whether it will ground finitely, and
 which classes of the literature it falls in — tight, stratified,
 head-cycle-free, normal, Horn, disjunctive, choice. It is the syntactic
 **analysis** a solver's algorithm selection, a formatter's lints, and a program
@@ -78,7 +78,7 @@ The postcondition, stated so a maintainer can check drift against it:
 
 > themelios-analysis gives every consumer a **typed model of a program's
 > structural facts** — its constructs, its predicate dependency structure and the
-> strongly-connected components of it, its rules' safety and its grounding
+> strongly-connected components of it, its statements' safety and its grounding
 > finiteness, and its membership in the classes of the literature — computed as a
 > **pure, total** function of the `Program` alone, at the **predicate level and
 > before grounding**, where the **recursion-class** verdicts (tightness,
@@ -283,11 +283,11 @@ Two facts about whether a program can be ground, and ground finitely.
 pub struct Safety { /* private: unsafe rules, finiteness */ }
 
 impl Safety {
-    /// The rules that are not safe — empty when every rule is safe. Safety is the
+    /// The statements that are not safe — empty when every statement is safe. Safety is the
     /// ASP-Core-2 standard's condition (below): every variable has a *binding*
-    /// occurrence. An unsafe rule cannot be grounded, so this is a well-formedness
-    /// fact a grounder needs before it runs.
-    pub fn unsafe_rules(&self) -> impl Iterator<Item = &UnsafeRule>;
+    /// occurrence. An unsafe statement — a rule or a bodied directive — cannot be grounded, so
+    /// this is a well-formedness fact a grounder needs before it runs.
+    pub fn unsafe_statements(&self) -> impl Iterator<Item = &UnsafeStatement>;
     pub fn is_safe(&self) -> bool;
     /// Whether grounding is finite — a sound approximation (§6.1), so it is the same
     /// `Verdict` the recursion classes carry: `Holds` (proven finite), or `Unknown`
@@ -298,12 +298,13 @@ impl Safety {
     pub fn finiteness(&self) -> &Verdict;
 }
 
-/// An unsafe rule and why: the rule — by structural value (§8), so it names a
-/// rule of any program — and the variables with no binding occurrence, the
-/// witness rather than a bare "unsafe". A source span, when wanted, is read from
-/// the rule's own provenance (program §6).
+/// An unsafe statement and why: the statement — by structural value with its provenance
+/// (§8), so it names a rule or bodied directive of any program — and the variables with no
+/// binding occurrence, the witness rather than a bare "unsafe". A source span, when wanted,
+/// is read from the statement's own provenance (program §6). Equality is provenance-blind,
+/// as everywhere in this tier — the witness reads uniformly with the construct scan's (§7).
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct UnsafeRule { /* private: rule: Rule, unbound: BTreeSet<Variable> */ }
+pub struct UnsafeStatement { /* private: statement: WithProvenance<Statement>, unbound: BTreeSet<Variable> */ }
 
 // Grounding finiteness has no bespoke type: it is a `Verdict` (§6.1) like tightness
 // and head-cycle-freeness — `Holds` (proven finite) or `Unknown` carrying the
@@ -313,13 +314,25 @@ pub struct UnsafeRule { /* private: rule: Rule, unbound: BTreeSet<Variable> */ }
 
 **Safety is definite; finiteness is approximate.** Safety is a *syntactic* check —
 decidable, a variable is safe or it is not — so `Safety` reports it exactly, with
-the unsafe rule and its unbound variables as the witness. The condition is the
+the unsafe statement and its unbound variables as the witness. The condition is the
 **ASP-Core-2 standard's** (the working group's, grammar §3, §6): a variable is
 safe when it occurs in a positive body literal, and the definition's cases are
 each honored so that "definite" is earned rather than glossed — a global variable
 bound by the body, an aggregate- or condition-*local* variable bound within its
 own element, and a variable bound by an assignment `X = t` whose right side is
-itself bound. One question is named and pinned, not assumed: **clingo's grounder
+itself bound. Safety scopes **every statement that can bind a variable** — a
+derivation rule (head requiring, body binding) and the **bodied directives** (a
+weak constraint, `#show t : body`, `#project`, `#edge`, `#heuristic`, `#external`,
+and an optimize element, whose non-body term positions the body binds) — classified
+exhaustively over `Statement` in the program tier (`statement_binder`), so a new
+statement kind is a compile error there, never a silent fail-open here; a directive
+that admits no variable (a signature, an include, a query — grammar §6.1) carries no
+obligation. A variable occurring only in a **theory term** is descended for its
+ordinary variable leaves — the shared leaves the theory peer algebra meets the
+ordinary term algebra at (program §4.9: "a variable and a ground symbol") — and
+required, never binding, since a theory term binds no ordinary variable
+(`:- &t { X }.` is unsafe, agreeing with the grounder). One question is named and
+pinned, not assumed: **clingo's grounder
 may admit a safety notion that differs from the strict standard**, so this crate
 takes the standard as the authority, records any divergence against the pinned
 binary differentially (§10, as the grammar records its own, grammar §11), and —
@@ -708,8 +721,10 @@ what it proves and what it cannot (spec §10.2).
   - **Definite verdicts, both directions:** `stratification` is `Stratified` iff
     the graph has no cycle through a `Negative` **or** `ThroughAggregate` edge (§5,
     §6.2 — the conservative-safe reading, so a recursive negated aggregate is
-    `NotStratified`), and `safety` flags a rule iff a variable has no binding
-    occurrence — each checked against a naive reference on generated programs.
+    `NotStratified`), and `safety` flags a statement — a rule or a bodied directive —
+    iff a variable has no binding occurrence, descending a theory term for its ordinary
+    variable leaves — each checked against a naive reference on generated programs whose
+    shapes include bodied directives, theory-term variables, and the anonymous `_`.
   - **The approximations are sound, and their witnesses real:** whenever
     `tightness`/`head_cycle_free` is `Holds`, the *ground* program (ground on a
     bounded generated program by a naive reference grounder) has the property; and
@@ -785,16 +800,25 @@ successor carries them.
   (grammar §3, §6); whether clingo's or clingcon's grounder admits a different
   notion is a differential obligation against the pinned binary and, if they
   differ materially, a dialect parameterization (§5) — recorded so the question is
-  pinned, not assumed. Each anonymous `_` is treated as the distinct fresh variable
-  the grounder sees (program §12.1): a `_` in a requiring position is unbound, an
-  `X = _` binds the `_` when `X` is bound, and a positive atom's `_` binds itself.
-  **Two boundaries are liberal, not conservative** — the fail-open direction — and are
-  characterized rather than hidden: a variable occurring *only* inside a **theory term**
-  (program §4.9, not descended) is invisible to safety, so `:- &t { X }.` reads safe
-  though the grounder refuses `X`; and safety scopes **rules** only, so an unbound
-  variable in a bodied directive (`:~ q. [W@1]`) is outside the facet. Both are caught
-  loudly by the grounder itself and are the solve-tier differential's to record; neither
-  is a silent gap.
+  pinned, not assumed. Each anonymous `_` in an ordinary term is treated as the distinct
+  fresh variable the grounder sees (program §12.1): a `_` in a requiring position is unbound,
+  an `X = _` binds the `_` when `X` is bound, and a positive atom's `_` binds itself; the
+  freshening runs over the whole **statement**, not just a rule, so a directive-borne `_`
+  (`:~ q. [_@1]`) is read the same way. The two once-liberal boundaries are now **closed**:
+  a variable only inside a **theory term** is descended for its ordinary variable leaves
+  (program §4.9's shared leaves, required-never-binding), and a **bodied directive** is vetted
+  like a rule (the witness generalized to `WithProvenance<Statement>`). What remains a
+  **characterized dialect boundary** — the standard-vs-engine divergence, not a hidden gap — is
+  the **matching-`=`** notion (clingo decomposes `Z = (X, Y)` to bind `X`, `Y`; the strict
+  standard does not — §5, with the chained `X = Y = 1` a candidate) and the **aggregate-result
+  assignment** (clingo binds `N = #count { … }`'s guard, the standard does not); each is recorded
+  against the pinned binary and is the trigger for the dialect parameterization §5 reserves if it
+  proves material. A few directive positions — a bare `#show t`, an `#external` value — are read
+  **liberally** (their variables not vetted), the divergence pinned as an open differential
+  question, the same characterized-not-hidden discipline. A `#const`'s value is variable-free by the
+  grammar's constant-term subset (grammar §5.9), so a raised `#const` needs no vetting; a *constructed*
+  out-of-subset `#const x = X.` reading safe is a well-formedness question of a different facet, not
+  safety's charter, deliberately.
 - **The dependency kind is the substrate's, not this crate's.** The edge tag is
   `DependencyKind` (program §12.1), reused here by `pub use` as `Signature` and `Rule`
   are, rather than a crate-local `EdgeKind`. The program substrate's edge accessor

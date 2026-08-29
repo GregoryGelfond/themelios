@@ -15,8 +15,9 @@ use std::collections::BTreeSet;
 
 use crate::program::{
     Aggregate, Atom, Body, BodyElement, Choice, Comparison, Condition, ConditionalLiteral,
-    DefaultNegation, Disjunction, FunctionAggregate, HasGuards, Head, HeadAggregate, Literal,
-    LiteralInner, Rule, SetAggregate, SetElement, TheoryAtom, TheoryTerm,
+    DefaultNegation, Disjunction, Edge, FunctionAggregate, HasGuards, Head, HeadAggregate,
+    Heuristic, Literal, LiteralInner, Optimize, Project, Rule, SetAggregate, SetElement, Show,
+    Statement, TheoryAtom, TheoryTerm, WeakConstraint,
 };
 use crate::symbol::Signature;
 use crate::term::{Term, Variable};
@@ -532,4 +533,134 @@ pub fn head_carrier_conditions(head: &Head) -> Vec<&Condition> {
         // no ordinary head atom (never a growth target).
         Head::Literal(_) | Head::TheoryAtom(_) | Head::Falsum | Head::Verum => Vec::new(),
     }
+}
+
+// ---- Binding-role positions (analysis §5): the safety congruence, compiler-checked ----
+//
+// Safety (analysis §5) collects binding and requiring occurrences over a program's statements. Like
+// the growth-carrier classification above, the per-kind match lives *here*, in the crate that owns the
+// AST, so it is **exhaustive** — a new `BodyElement` or `Statement` kind is a compile error here and
+// cannot be silently dropped by the (downstream, non-exhaustive-blocked) safety walk in
+// `themelios-analysis`. Each classifier returns a **closed** enum the analysis crate matches without a
+// wildcard, so the closure of the guarantee crosses the crate boundary.
+
+/// How a body element binds and requires variables for the safety reading — classified exhaustively
+/// over `BodyElement`, so a new kind is a compile error here rather than a silent fail-open in the
+/// safety walk. A closed mirror of the binding-relevant `BodyElement` payloads (distinct from
+/// [`BodyCarrier`], which collapses the non-carrying kinds to `Inert`; safety scopes all four).
+pub enum BodyBinder<'a> {
+    /// A plain literal — a positive atom or an `=`-assignment binds; every variable is required.
+    Literal(&'a Literal),
+    /// A conditional literal — an element-local scope: the literal is required, its condition binds.
+    Conditional(&'a ConditionalLiteral),
+    /// An aggregate — its guards are required globally, its elements are element-local scopes.
+    Aggregate(&'a Aggregate),
+    /// A theory atom — its ordinary and theory-term arguments are required, its elements' conditions
+    /// bind locally (§4.9).
+    TheoryAtom(&'a TheoryAtom),
+}
+
+/// Classify a body element's binding role for safety (analysis §5), exhaustively over `BodyElement`.
+pub fn body_binder(element: &BodyElement) -> BodyBinder<'_> {
+    match element {
+        BodyElement::Literal(literal) => BodyBinder::Literal(literal),
+        BodyElement::Conditional(conditional) => BodyBinder::Conditional(conditional),
+        BodyElement::Aggregate { aggregate, .. } => BodyBinder::Aggregate(aggregate),
+        BodyElement::TheoryAtom { atom, .. } => BodyBinder::TheoryAtom(atom),
+    }
+}
+
+/// How a statement binds and requires variables for the safety reading — classified exhaustively over
+/// `Statement`, so a new statement kind is a compile error here rather than a silent fail-open in the
+/// safety walk. Safety scopes every statement that can bind a variable: a derivation rule (head
+/// requires, body binds), and the bodied directives whose non-body term positions a body binds. A
+/// statement admitting no variable — a signature, an include, a query (grammar §6.1) — carries none.
+pub enum StatementBinder<'a> {
+    /// A derivation rule — the head requires, the body binds (analysis §5).
+    Rule(&'a Rule),
+    /// A bodied directive — the `required` term positions must be bound by `body`. Covers weak
+    /// constraints, `#show t : body`, `#project a : body`, `#edge : body`, `#heuristic : body`, and
+    /// `#external : body`; the empty-body form (`conditional-dot ::= "."`, grammar §5.9) binds nothing,
+    /// so a required term with a variable is then unsafe.
+    BodiedDirective {
+        /// The term positions whose variables the body must bind.
+        required: Vec<&'a Term>,
+        /// The body that binds them.
+        body: &'a Body,
+    },
+    /// An optimize statement — each element is aggregate-element-like: its weight and terms are
+    /// required and its own condition binds them (`#minimize`/`#maximize`, grammar §5.7).
+    OptimizeElements(&'a Optimize),
+    /// A statement that binds and requires no variable: a signature (`#defined`, `#show p/1`,
+    /// `#project p/1`), an include, a script, or a theory definition (the grammar admits no variable);
+    /// a query, whose variables are answer variables, not a grounder obligation (grammar §6.1); or a
+    /// bare `#show t` / a `#const`, read liberally with any divergence pinned by the differential.
+    NoObligation,
+}
+
+/// Classify a statement's binding role for safety (analysis §5), exhaustively over `Statement`.
+pub fn statement_binder(statement: &Statement) -> StatementBinder<'_> {
+    match statement {
+        Statement::Rule(rule) => StatementBinder::Rule(rule),
+        Statement::WeakConstraint(weak) => StatementBinder::BodiedDirective {
+            required: weak_constraint_required(weak),
+            body: weak.body().get(),
+        },
+        Statement::Optimize(optimize) => StatementBinder::OptimizeElements(optimize),
+        Statement::Show(Show::TermBody { term, body }) => StatementBinder::BodiedDirective {
+            required: vec![term],
+            body: body.get(),
+        },
+        Statement::Project(Project::Atom { atom, body }) => StatementBinder::BodiedDirective {
+            required: atom.get().arguments.iter().collect(),
+            body: body.get(),
+        },
+        Statement::Edge(edge) => StatementBinder::BodiedDirective {
+            required: edge_required(edge),
+            body: edge.body().get(),
+        },
+        Statement::Heuristic(heuristic) => StatementBinder::BodiedDirective {
+            required: heuristic_required(heuristic),
+            body: heuristic.body().get(),
+        },
+        Statement::External(external) => StatementBinder::BodiedDirective {
+            required: external.atom().get().arguments.iter().collect(),
+            body: external.body().get(),
+        },
+        // No variable-binding obligation: the grammar admits no variable in these positions, or the
+        // position is read liberally with the divergence pinned by the differential (a bare `#show t`,
+        // a `#const`), or the variables are answer variables (a query, grammar §6.1).
+        Statement::Show(Show::All | Show::Signature(_) | Show::Term(_))
+        | Statement::Project(Project::Signature(_))
+        | Statement::Defined(_)
+        | Statement::Const(_)
+        | Statement::Include(_)
+        | Statement::Script(_)
+        | Statement::TheoryDefinition(_)
+        | Statement::Query(_) => StatementBinder::NoObligation,
+    }
+}
+
+/// The term positions a weak constraint requires bound — its weight, optional priority, and tuple
+/// terms (grammar §5.7); its body binds them.
+fn weak_constraint_required(weak: &WeakConstraint) -> Vec<&Term> {
+    let mut required = vec![weak.weight().term()];
+    required.extend(weak.weight().priority());
+    required.extend(weak.terms());
+    required
+}
+
+/// The node-pair terms an `#edge` requires bound (grammar §5.9); its body binds them.
+fn edge_required(edge: &Edge) -> Vec<&Term> {
+    edge.pairs().flat_map(|(from, to)| [from, to]).collect()
+}
+
+/// The term positions a `#heuristic` requires bound — its atom's arguments, its bias, optional
+/// priority, and modifier (grammar §5.9); its body binds them.
+fn heuristic_required(heuristic: &Heuristic) -> Vec<&Term> {
+    let mut required: Vec<&Term> = heuristic.atom().get().arguments.iter().collect();
+    required.push(heuristic.bias());
+    required.extend(heuristic.priority());
+    required.push(heuristic.modifier());
+    required
 }

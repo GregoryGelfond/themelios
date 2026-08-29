@@ -142,12 +142,12 @@ fn view(analysis: &Analysis) -> String {
     out.push_str("safety:\n");
     writeln!(out, "  safe: {}", analysis.safety().is_safe())
         .expect("writing to a String never fails");
-    for unsafe_rule in analysis.safety().unsafe_rules() {
-        let unbound: Vec<String> = unsafe_rule.unbound().map(variable).collect();
+    for unsafe_statement in analysis.safety().unsafe_statements() {
+        let unbound: Vec<String> = unsafe_statement.unbound().map(variable).collect();
         writeln!(
             out,
             "  unsafe: {} [unbound: {}]",
-            render_rule(unsafe_rule.rule()),
+            render_statement(unsafe_statement.statement().get().clone()),
             unbound.join(", ")
         )
         .expect("writing to a String never fails");

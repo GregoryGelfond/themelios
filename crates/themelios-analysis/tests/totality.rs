@@ -68,9 +68,9 @@ fn exercise_every_accessor(analysis: &Analysis) {
     let safety = analysis.safety();
     let _safe = safety.is_safe();
     let _finite = safety.finiteness();
-    for unsafe_rule in safety.unsafe_rules() {
-        let _rule = unsafe_rule.rule();
-        let _unbound = unsafe_rule.unbound().count();
+    for unsafe_statement in safety.unsafe_statements() {
+        let _statement = unsafe_statement.statement();
+        let _unbound = unsafe_statement.unbound().count();
     }
 
     // §6 — the program classes and their verdicts.
@@ -135,9 +135,9 @@ fn the_accessors_return_real_facts_not_merely_avoid_panicking() {
     );
     let flagged = unsafe_program
         .safety()
-        .unsafe_rules()
+        .unsafe_statements()
         .next()
-        .expect("the unsafe rule is flagged");
+        .expect("the unsafe statement is flagged");
     assert!(
         flagged.unbound().count() > 0,
         "the flag names the unbound variables",
