@@ -1269,6 +1269,103 @@ fn safety_binds_a_choice_or_disjunction_element_by_its_condition() {
 }
 
 #[test]
+fn safety_flags_the_unsafe_side_of_every_head_form() {
+    // { p(X) : q(X) ; s(X) } :- r.  — cross-element isolation: element 2's s(X) has no condition,
+    // and element 1's q(X) is LOCAL to element 1, so it cannot discharge element 2's X. A merged
+    // head scope would read this safe (unsound cross-talk); the sound reading flags X.
+    let cross_element = Head::Choice(Choice::new(
+        None,
+        [
+            ChoiceElement::new(
+                Literal::from(pred("p", &["X"])),
+                Condition::new([Literal::from(pred("q", &["X"]))]),
+            ),
+            ChoiceElement::new(Literal::from(pred("s", &["X"])), Condition::empty()),
+        ],
+        None,
+    ));
+    assert_eq!(
+        unbound_of(cross_element.when(pred("r", &[]))),
+        [named("X")].into_iter().collect(),
+    );
+
+    // #count { : a(X) : q(Y) } >= 1 :- r.  — the derived literal's X is unbound (the condition
+    // binds Y). A `require`→`bind` slip on the head-aggregate literal would read it safe.
+    let aggregate_literal = Head::Aggregate(HeadAggregate::new(
+        None,
+        AggregateFunction::Count,
+        [HeadAggregateElement::new(
+            Vec::<Term>::new(),
+            Literal::from(pred("a", &["X"])),
+            Condition::new([Literal::from(pred("q", &["Y"]))]),
+        )],
+        Some(Guard {
+            relation: Some(Relation::Ge),
+            term: num(1),
+        }),
+    ));
+    assert_eq!(
+        unbound_of(aggregate_literal.when(pred("r", &[]))),
+        [named("X")].into_iter().collect(),
+    );
+
+    // #count { Z : a : } >= 1 :- r.  — the element tuple term Z is unbound.
+    let aggregate_tuple = Head::Aggregate(HeadAggregate::new(
+        None,
+        AggregateFunction::Count,
+        [HeadAggregateElement::new(
+            [var("Z")],
+            Literal::from(pred("a", &[])),
+            Condition::empty(),
+        )],
+        Some(Guard {
+            relation: Some(Relation::Ge),
+            term: num(1),
+        }),
+    ));
+    assert_eq!(
+        unbound_of(aggregate_tuple.when(pred("r", &[]))),
+        [named("Z")].into_iter().collect(),
+    );
+
+    // #count { X : a(X) : q(X) } = W :- r.  — the head-aggregate guard W is required, never bound.
+    let aggregate_guard = Head::Aggregate(HeadAggregate::new(
+        None,
+        AggregateFunction::Count,
+        [HeadAggregateElement::new(
+            [var("X")],
+            Literal::from(pred("a", &["X"])),
+            Condition::new([Literal::from(pred("q", &["X"]))]),
+        )],
+        Some(Guard {
+            relation: Some(Relation::Eq),
+            term: var("W"),
+        }),
+    ));
+    assert_eq!(
+        unbound_of(aggregate_guard.when(pred("r", &[]))),
+        [named("W")].into_iter().collect(),
+    );
+
+    // W { p(X) : q(X) } :- r.  — the choice guard W is required, never bound.
+    let choice_guard = Head::Choice(Choice::new(
+        Some(Guard {
+            relation: Some(Relation::Le),
+            term: var("W"),
+        }),
+        [ChoiceElement::new(
+            Literal::from(pred("p", &["X"])),
+            Condition::new([Literal::from(pred("q", &["X"]))]),
+        )],
+        None,
+    ));
+    assert_eq!(
+        unbound_of(choice_guard.when(pred("r", &[]))),
+        [named("W")].into_iter().collect(),
+    );
+}
+
+#[test]
 fn safety_flags_an_unbound_variable_in_each_local_and_comparison_form() {
     // The mirror of `safety_scopes_every_head_and_element_form`: the same local and
     // comparison forms with an *unbound* variable, so each binding path is pinned on

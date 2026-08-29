@@ -119,6 +119,11 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
         "aggregate-guard-unbound",
         "q :- #count { Y : p(Y) } >= X.\n",
     ),
+    // A choice element is scoped to itself: element two's `s(X)` is unbound though element one's
+    // `q(X)` binds a same-named X — no cross-element discharge.
+    ("choice-cross-element", "{ p(X) : q(X); s(X) } :- r.\n"),
+    // A choice cardinality guard variable is required, never bound.
+    ("choice-guard-unbound", "W { p(X) : q(X) } :- r.\n"),
     // The constructions where the two notions may part — the recorded boundaries.
     ("head-aggregate-bare", "#count { X : p(X) } :- q.\n"),
     ("interval-binds", "p(X) :- X = 1..3.\n"),
@@ -139,14 +144,11 @@ const RECORDED_DIVERGENCES: &[(&str, &str)] = &[
         "aggregate-assignment-guard",
         "clingo's aggregate-result assignment binds the guard variable; the strict standard does not",
     ),
-    // clingo binds a head conditional literal's variable through its own condition
-    // (`p(X) : q(X)`). This tier requires a head literal's variables globally and keeps a
-    // condition's binding local to its element, so it reports unsafe — again the sound
-    // direction, the conservative reading of a head conditional.
-    (
-        "condition-binds-head",
-        "clingo binds a head literal's variable through its condition; this tier keeps that binding local",
-    ),
+    // The head conditional `p(X) : q(X)` was once recorded here as a divergence — the tier read a
+    // head literal's variables as rule-global. It no longer diverges: a disjunction/choice element
+    // is scoped to itself, its literal bound by its own condition, so the tier now agrees with
+    // clingo that the idiom is safe. The `condition-binds-head` corpus row stays below as an
+    // agreement case.
 ];
 
 #[test]
