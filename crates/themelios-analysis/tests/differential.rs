@@ -127,6 +127,62 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
     // The constructions where the two notions may part — the recorded boundaries.
     ("head-aggregate-bare", "#count { X : p(X) } :- q.\n"),
     ("interval-binds", "p(X) :- X = 1..3.\n"),
+    // ---- Bodied directives (the directive-scope close, §5): a directive's non-body term positions
+    // are bound by its body, exactly as a rule's head is — vetted like a rule, agreeing with clingo.
+    ("weak-constraint-body-binds", ":~ q(W). [W@1]\n"),
+    ("weak-constraint-weight-unbound", ":~ q. [W@1]\n"),
+    ("show-term-body-binds", "#show f(X) : q(X).\n"),
+    ("show-term-body-unbound", "#show f(X) : q(Y).\n"),
+    // `#project`/`#heuristic` treat their atom's variables as a schema wildcard (ranging over the
+    // atom's instances), so a bare-variable atom is safe; only the body's own variables must be safe.
+    ("project-atom-body-binds", "#project p(X) : q(X).\n"),
+    ("project-atom-wildcard", "#project p(X).\n"),
+    ("project-body-unsafe", "#project p(X) : Z > 1.\n"),
+    ("edge-body-binds", "#edge (X, Y) : q(X), r(Y).\n"),
+    ("edge-empty-body-unbound", "#edge (X, Y).\n"),
+    // A `#heuristic` atom is a wildcard like `#project`'s, but its bracket terms (bias/priority/
+    // modifier) are required and bound by the body.
+    (
+        "heuristic-body-binds",
+        "#heuristic p(X) : q(X). [1@1, true]\n",
+    ),
+    ("heuristic-atom-wildcard", "#heuristic p(X). [1@1, true]\n"),
+    (
+        "heuristic-bias-unbound",
+        "#heuristic p(a) : q(a). [W@1, true]\n",
+    ),
+    ("external-body-binds", "#external p(X) : q(X).\n"),
+    ("external-empty-body-unbound", "#external p(X).\n"),
+    (
+        "minimize-element-binds",
+        "#minimize { W@P, X : q(X, W, P) }.\n",
+    ),
+    ("minimize-element-unbound", "#minimize { W@P, X : q(X) }.\n"),
+    // ---- Theory-term-local close (§4.9): a theory atom's ordinary variable leaves are required and
+    // bound like a rule's, agreeing with clingo. Each row carries a minimal `#theory` definition, or
+    // clingo errors on *admission* (not safety) and the "safe = absence of an unsafe report" reading
+    // would misread it.
+    (
+        "theory-element-unbound",
+        "#theory t { term { }; &t/0 : term, {>=}, term, any }.\n:- &t { X }.\n",
+    ),
+    (
+        "theory-element-bound",
+        "#theory t { term { }; &t/0 : term, {>=}, term, any }.\n:- &t { X }, q(X).\n",
+    ),
+    (
+        "theory-element-condition-binds",
+        "#theory t { term { }; &t/0 : term, {>=}, term, any }.\n:- &t { X : q(X) }.\n",
+    ),
+    (
+        "theory-guard-unbound",
+        "#theory t { term { }; &t/0 : term, {>=}, term, any }.\n:- &t { 0 } >= Y.\n",
+    ),
+    // ---- The matching-`=` dialect boundary (§5): clingo decomposes an `=` against a tuple, and chains
+    // a multi-step `=`, to bind — where the strict ASP-Core-2 standard does not. Recorded divergences;
+    // this tier is the conservative side (never a false safe).
+    ("tuple-decomposition", "p(X, Y) :- q(Z), Z = (X, Y).\n"),
+    ("chained-equality", "p(X, Y) :- X = Y = 1.\n"),
 ];
 
 /// The recorded divergences (§5, §10): the labels where this tier's syntactic safety and
@@ -143,6 +199,22 @@ const RECORDED_DIVERGENCES: &[(&str, &str)] = &[
     (
         "aggregate-assignment-guard",
         "clingo's aggregate-result assignment binds the guard variable; the strict standard does not",
+    ),
+    // clingo decomposes an `=` against a tuple to bind the tuple's variables (`Z = (X, Y)` binds X, Y
+    // when Z is bound); the strict ASP-Core-2 standard binds only the lone side (Z), so this tier
+    // reports X, Y unsafe — the conservative direction, never a false safe. The matching-`=` boundary
+    // §5 names, a candidate for the dialect parameterization.
+    (
+        "tuple-decomposition",
+        "clingo decomposes `Z = (X, Y)` to bind X, Y; the strict standard binds only the lone side",
+    ),
+    // clingo binds through a chained comparison `X = Y = 1` (each step an assignment); this tier reads
+    // a multi-step comparison as a single non-binding constraint (only a single-step `X = t` binds),
+    // so it reports X, Y unsafe — again the conservative side. The chained-`=` candidate for the
+    // dialect parameterization (§5).
+    (
+        "chained-equality",
+        "clingo binds through a chained `X = Y = 1`; this tier's `=` binds only as a single step",
     ),
     // The head conditional `p(X) : q(X)` was once recorded here as a divergence — the tier read a
     // head literal's variables as rule-global. It no longer diverges: a disjunction/choice element

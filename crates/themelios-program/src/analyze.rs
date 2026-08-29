@@ -611,8 +611,12 @@ pub fn statement_binder(statement: &Statement) -> StatementBinder<'_> {
             required: vec![term],
             body: body.get(),
         },
-        Statement::Project(Project::Atom { atom, body }) => StatementBinder::BodiedDirective {
-            required: atom.get().arguments.iter().collect(),
+        // A `#project` atom's variables are a schema wildcard — they range over the atom's instances,
+        // not bound by the rule — so only the body's own variables must be safe (clingo reads
+        // `#project p(X).` safe, `#project p(X) : Z > 1.` unsafe on `Z`). Distinct from `#edge` and
+        // `#external`, whose terms clingo requires ground.
+        Statement::Project(Project::Atom { atom: _, body }) => StatementBinder::BodiedDirective {
+            required: Vec::new(),
             body: body.get(),
         },
         Statement::Edge(edge) => StatementBinder::BodiedDirective {
@@ -655,11 +659,12 @@ fn edge_required(edge: &Edge) -> Vec<&Term> {
     edge.pairs().flat_map(|(from, to)| [from, to]).collect()
 }
 
-/// The term positions a `#heuristic` requires bound — its atom's arguments, its bias, optional
-/// priority, and modifier (grammar §5.9); its body binds them.
+/// The term positions a `#heuristic` requires bound — its bias, optional priority, and modifier
+/// (grammar §5.9); its body binds them. The atom's variables are a schema wildcard (not required),
+/// like a `#project` atom's, so `#heuristic p(X).` is safe but `#heuristic p(a). [W@1, true]` is not
+/// (its bias `W` is unbound).
 fn heuristic_required(heuristic: &Heuristic) -> Vec<&Term> {
-    let mut required: Vec<&Term> = heuristic.atom().get().arguments.iter().collect();
-    required.push(heuristic.bias());
+    let mut required = vec![heuristic.bias()];
     required.extend(heuristic.priority());
     required.push(heuristic.modifier());
     required

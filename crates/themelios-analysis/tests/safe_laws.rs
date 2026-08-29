@@ -20,8 +20,7 @@ use themelios_program::program::{
     ChoiceElement, Comparison, Condition, ConditionalLiteral, Const, DefaultNegation, Direction,
     Disjunction, DisjunctionElement, Edge, External, FunctionAggregate, Guard, Head, HeadAggregate,
     HeadAggregateElement, Heuristic, Literal, LiteralInner, Optimize, OptimizeElement, Program,
-    Project,
-    Relation, Rule, SetAggregate, SetElement, Show, Statement, TheoryAtom, TheoryElement,
+    Project, Relation, Rule, SetAggregate, SetElement, Show, Statement, TheoryAtom, TheoryElement,
     TheoryGuard, TheoryOperator, TheoryTerm, WeakConstraint, weight,
 };
 use themelios_program::provenance::{Origin, Provenance, TransformTag, WithProvenance};
@@ -655,6 +654,50 @@ fn safety_vets_bodied_directives() {
         "the body binds the projected atom's variable: safe",
     );
 
+    // #project p(X).  — the atom is a schema wildcard (ranges over instances), not required: safe,
+    // agreeing with clingo (a `#project`/`#heuristic` atom variable is not a binding obligation).
+    assert!(
+        statement_unbound(Statement::Project(Project::atom_body(
+            pred("p", &["X"]),
+            Body::empty(),
+        )))
+        .is_empty(),
+        "a #project atom variable is a schema wildcard, not required: safe",
+    );
+
+    // #project p(X) : Z > 1.  — the atom is a wildcard, but the body's own Z is required and unbound.
+    assert_eq!(
+        statement_unbound(Statement::Project(Project::atom_body(
+            pred("p", &["X"]),
+            Body::new([BodyElement::Literal(Literal {
+                negation: DefaultNegation::None,
+                inner: LiteralInner::Comparison(WithProvenance::constructed(Comparison::new(
+                    var("Z"),
+                    Relation::Gt,
+                    num(1),
+                ))),
+            })]),
+        ))),
+        [named("Z")].into_iter().collect(),
+        "a #project body's own unbound variable is unsafe though the atom is a wildcard",
+    );
+
+    // #heuristic p(X). [1, 1]  — the atom is a wildcard; the bias and modifier are ground: safe.
+    assert!(
+        statement_unbound(Statement::Heuristic(Heuristic::new(
+            pred("p", &["X"]),
+            Body::empty(),
+            num(1),
+            None,
+            num(1),
+        )))
+        .is_empty(),
+        "a #heuristic atom variable is a schema wildcard; ground bias/modifier: safe",
+    );
+}
+
+#[test]
+fn safety_vets_more_bodied_directives() {
     // #external p(X).  — an empty body binds nothing, so X is unsafe (the empty-body form, grammar §5.9).
     assert_eq!(
         statement_unbound(Statement::External(External::new(

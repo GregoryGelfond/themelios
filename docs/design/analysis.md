@@ -327,7 +327,11 @@ and an optimize element, whose non-body term positions the body binds) — class
 exhaustively over `Statement` in the program tier (`statement_binder`), so a new
 statement kind is a compile error there, never a silent fail-open here; a directive
 that admits no variable (a signature, an include, a query — grammar §6.1) carries no
-obligation. A variable occurring only in a **theory term** is descended for its
+obligation. Two engine-specific positions the differential (§10) settles against the
+authority for these clingo-only directives: a `#project`/`#heuristic` **atom** is a
+schema wildcard — its variables range over the atom's instances and are not required
+bound (`#project p(X).` is safe) — where a `#external` or `#edge` term must be ground,
+and a `#heuristic`'s bracket terms (bias/priority/modifier) are required. A variable occurring only in a **theory term** is descended for its
 ordinary variable leaves — the shared leaves the theory peer algebra meets the
 ordinary term algebra at (program §4.9: "a variable and a ground symbol") — and
 required, never binding, since a theory term binds no ordinary variable
