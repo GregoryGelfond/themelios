@@ -1811,6 +1811,17 @@ pub enum DependencyKind {
 }
 ```
 
+Alongside these, the substrate carries the **binding-role and growth-carrier classifiers** the
+analysis companion's safety and finiteness (analysis §5) are written on — free functions over the
+`#[non_exhaustive]` AST enums, placed here because only the crate that owns the AST can match them
+exhaustively (so a new statement or body kind is a compile error, never a silent fail-open in the
+consumer): `statement_variables` (a statement's variables, the rule companion of `Rule::variables`);
+`statement_binder`/`StatementBinder` (each statement's binding role — a rule, a bodied directive, a
+domain-matching atom directive, an optimize, or none); `body_binder`/`BodyBinder` (each body element's
+binding role); and `body_carrier`/`BodyCarrier` with `head_carrier_conditions` (the growth-carrier
+classification finiteness reads). Each is a pure structural reading of the value, `O(nodes)`; the
+analysis companion consumes the closed classifications rather than re-matching the open enums.
+
 ### 12.2 `themelios-analysis`
 
 `themelios-analysis` is a distinct crate — engine-free, reading only the program

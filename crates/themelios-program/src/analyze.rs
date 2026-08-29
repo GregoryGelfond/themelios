@@ -679,16 +679,18 @@ pub enum StatementBinder<'a> {
         /// The body that binds them, if the form has one (`#show t.` has none).
         body: Option<&'a Body>,
     },
-    /// A `#heuristic` (grammar §5.9): its **atom** domain-matches — its variables bind, as clingo reads
-    /// them, so they can bind the bracket terms — its bracket terms (bias, optional priority, modifier)
-    /// are required, and its body binds too. So `#heuristic p(X). [X@1, true]` is safe (the atom binds
-    /// the bracket `X`), while `#heuristic p(a). [W@1, true]` is not (`W` is unbound). The atom's own
-    /// variables are not required, like a `#project` atom's.
-    Heuristic {
-        /// The atom whose variables domain-match (and so bind the bracket terms).
+    /// A directive whose **atom** domain-matches — its variables bind in their invertible positions, as
+    /// the grounder reads them (`#project`, `#heuristic`, grammar §5.9) — plus `required` bracket terms
+    /// the atom or body must bind, and a body that also binds. A `#project` has no bracket terms; a
+    /// `#heuristic`'s are its bias, optional priority, and modifier. So `#project p(X).` and
+    /// `#heuristic p(X). [X@1, true]` are safe (the atom binds `X`), while `#project p(X/2).` and
+    /// `#heuristic p(a). [W@1, true]` are not.
+    DomainAtom {
+        /// The atom whose variables domain-match (binding themselves and the required terms).
         atom: &'a Atom,
-        /// The bracket terms — bias, optional priority, modifier — required.
-        brackets: Vec<&'a Term>,
+        /// Extra term positions the atom or body must bind — a `#heuristic`'s bracket (bias, optional
+        /// priority, modifier); empty for `#project`.
+        required: Vec<&'a Term>,
         /// The body, which also binds.
         body: &'a Body,
     },
@@ -722,21 +724,22 @@ pub fn statement_binder(statement: &Statement) -> StatementBinder<'_> {
             required: vec![term],
             body: None,
         },
-        // A `#project` atom's variables are a schema wildcard — they range over the atom's instances,
-        // not bound by the rule — so only the body's own variables must be safe (clingo reads
-        // `#project p(X).` safe, `#project p(X) : Z > 1.` unsafe on `Z`). Distinct from `#edge` and
-        // `#external`, whose terms clingo requires ground.
-        Statement::Project(Project::Atom { atom: _, body }) => StatementBinder::BodiedDirective {
+        // A `#project` atom domain-matches — its variables bind in their invertible positions (the
+        // grounder reads `#project p(X).` safe, `#project p(X/2).` unsafe), and the body's own variables
+        // must be safe too (`#project p(X) : Z > 1.` unsafe on `Z`). Distinct from `#edge` and
+        // `#external`, whose terms the grounder requires ground.
+        Statement::Project(Project::Atom { atom, body }) => StatementBinder::DomainAtom {
+            atom: atom.get(),
             required: Vec::new(),
-            body: Some(body.get()),
+            body: body.get(),
         },
         Statement::Edge(edge) => StatementBinder::BodiedDirective {
             required: edge_required(edge),
             body: Some(edge.body().get()),
         },
-        Statement::Heuristic(heuristic) => StatementBinder::Heuristic {
+        Statement::Heuristic(heuristic) => StatementBinder::DomainAtom {
             atom: heuristic.atom().get(),
-            brackets: heuristic_brackets(heuristic),
+            required: heuristic_brackets(heuristic),
             body: heuristic.body().get(),
         },
         Statement::External(external) => StatementBinder::BodiedDirective {

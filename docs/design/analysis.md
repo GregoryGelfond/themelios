@@ -318,13 +318,17 @@ the unsafe statement and its unbound variables as the witness. The condition is 
 **ASP-Core-2 standard's** (the working group's, grammar §3, §6): a variable is
 safe when it has a *binding occurrence*, and the definition's cases are each
 honored so that "definite" is earned rather than glossed. A **positive body atom**
-binds a variable in a *matchable position* — one the grounder solves for by
-unifying a ground instance against the term: through the Herbrand constructors (a
-function or tuple argument) and invertible arithmetic (unary `-`; `+`/`-`/`*` with
-the other operand ground), but **not** through a non-invertible former (`/`, `\`,
-`**`, bitwise, an interval, an absolute value, a `@`-call), whose variable must be
-bound elsewhere — so `p(X)`, `p(f(X))`, and `p(X+1)` bind `X`, while `p(X/2)`,
-`p(|X|)`, and `p(X..3)` require it without binding it. A global variable is bound by
+binds a variable where it sits in an **invertible** position, exactly as the
+grounder's `simplify` reads it (`libgringo` `term.cc`): through a Herbrand
+constructor (a function or tuple argument, whose match unifies) or a **linear**
+arithmetic form `m·x+n` — built from `+`/`-`/`*` of one numeric constant and one
+linear operand, `*` requiring a *non-zero* constant. Every other former is **not
+invertible** and binds nothing: `/`, `\`, `**`, a bitwise operator, `~`, `|·|`, a
+`@`-call, an interval, a pool, `*` by zero, an interval or pool *as an arithmetic
+operand*, and any arithmetic that leaves two variables — the variable there must be
+bound elsewhere. So `p(X)`, `p(f(X))`, `p(X+1)`, and `p(2*X)` bind `X`, while
+`p(X/2)`, `p(|X|)`, `p(X..3)`, `p(X+(1..3))`, `p(0*X)`, and `p((X;a))` require it
+without binding it. A global variable is bound by
 the body; an aggregate- or condition-*local* variable within its own element; a
 variable by an assignment `X = t` whose right side is itself bound. A
 **default-negated** literal binds nothing, but the grounder projects each anonymous
@@ -345,12 +349,12 @@ exhaustively over `Statement` in the program tier (`statement_binder`), so a new
 statement kind is a compile error there, never a silent fail-open here; a directive
 that admits no variable (a signature, an include, a query — grammar §6.1) carries no
 obligation. Engine-specific directive positions the differential (§10) settles against the
-authority for these clingo-only directives: a `#project` **atom** is a schema wildcard — its
-variables range over the atom's instances, not required bound (`#project p(X).` is safe) —
-while a `#heuristic` **atom** *domain-matches*, its variables binding its required bracket
-terms (bias/priority/modifier), so `#heuristic p(X). [X@1, sign]` is safe (the atom binds the
-bracket `X`) but `#heuristic p(a). [W@1, sign]` is not (`W` is unbound); a `#external` or
-`#edge` term must be ground. A body-less `#show t.` binds nothing, so a variable in its shown
+authority for these clingo-only directives: a `#project` and a `#heuristic` **atom** both
+*domain-match* — their variables bind in the same invertible positions a body atom's do — so
+`#project p(X).` and `#heuristic p(X). [X@1, sign]` are safe, while `#project p(X/2).` and
+`#heuristic p(a). [W@1, sign]` are not (`X` sits under a non-invertible `/2`; `W` is unbound). A
+`#heuristic`'s bracket terms (bias/priority/modifier) are then bound by the atom's domain match
+or its body, and a `#external` or `#edge` term must be ground. A body-less `#show t.` binds nothing, so a variable in its shown
 term is unsafe (`#show f(X).`, agreeing with clingo) — the once-liberal bare-show boundary now
 closed. A variable occurring only in a **theory term** is descended for its
 ordinary variable leaves — the shared leaves the theory peer algebra meets the
@@ -849,13 +853,18 @@ successor carries them.
   and takes clingo as the authority for its extensions** — the ratified doctrine
   (grammar §3, §6). Where the standard is silent or stricter than the grounder, safety
   adopts clingo's reading, verified against the pinned binary (§10): a positive atom
-  binds only in an **invertible/matchable position** (not through `/`, `|·|`, an
-  interval), the grounder **projects an anonymous `_` under `not`** (existential), a
-  **body conditional binds two-stage** (element-locally), and the clingo-only directive
-  readings hold (a `#heuristic` atom binds its bracket; a `#project` atom is a wildcard;
-  a body-less `#show t.` is vetted). The one divergence safety does **not** adopt — the
-  **matching-`=`** permissive gap — it characterizes differentially (below), because
-  adopting it would risk a false `Holds` (§5's direction-sensitive deepening). Whether
+  binds only in an **invertible/matchable position** — mirroring the grounder's own
+  `simplify` (a Herbrand constructor or a linear `m·x+n` form), never through `/`, `\`,
+  `**`, bitwise, `~`, `|·|`, an interval, a pool, `*` by zero, or an interval/pool as an
+  arithmetic operand; the grounder **projects an anonymous `_` under `not`**
+  (existential); a **body conditional binds two-stage** (element-locally, in the same
+  invertible positions); and the clingo-only directive readings hold (a `#project` and a
+  `#heuristic` atom both **domain-match**, a `#heuristic`'s bracket bound by the atom or
+  body, a body-less `#show t.` vetted). The divergences safety does **not** adopt — the
+  **matching-`=`** permissive gap, and the pool's precise per-alternative reading — it
+  characterizes differentially (below), the matching-`=` because adopting it would risk a
+  false `Holds` (§5's direction-sensitive deepening), the pool because its faithful
+  representation is scheduled work. Whether
   clingcon's grounder admits a further notion stays a differential obligation and, if
   material, a dialect parameterization (§5) — recorded so the question is pinned, not
   assumed. Each anonymous `_` in an ordinary term is treated as the distinct
@@ -868,10 +877,13 @@ successor carries them.
   like a rule (the witness generalized to `WithProvenance<Statement>`). What remains a
   **characterized dialect boundary** — the standard-vs-engine divergence, not a hidden gap — is
   the **matching-`=`** notion (clingo decomposes `Z = (X, Y)` to bind `X`, `Y`; the strict
-  standard does not — §5, with the chained `X = Y = 1` a candidate) and the **aggregate-result
-  assignment** (clingo binds `N = #count { … }`'s guard, the standard does not); each is recorded
-  against the pinned binary and is the trigger for the dialect parameterization §5 reserves if it
-  proves material. One directive position — an `#external` **value** (a carried, never-meaningful
+  standard does not — §5, with the chained `X = Y = 1` a candidate); the **aggregate-result
+  assignment** (clingo binds `N = #count { … }`'s guard, the standard does not); and the **pool**,
+  which this tier reads *not invertible* (a pooled position binds nothing, `q(X) :- p((a;X)).`
+  unsafe) — sound but conservative, since the grounder binds a variable that binds in *every*
+  pooled alternative (`q(X) :- p((X;X)).` safe); the faithful per-alternative reading arrives with
+  the pool representation. Each is recorded against the pinned binary and is the trigger for the
+  dialect parameterization §5 reserves if it proves material. One directive position — an `#external` **value** (a carried, never-meaningful
   ground truth-value, grammar §13) — is read **liberally** (its variable not vetted), the divergence
   pinned as an open differential question, the same characterized-not-hidden discipline; the bare
   `#show t.` is now **vetted** (a variable in the shown term is unsafe, agreeing with clingo). A

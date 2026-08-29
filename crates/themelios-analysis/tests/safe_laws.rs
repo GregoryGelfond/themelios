@@ -148,7 +148,7 @@ fn naive_anonymous_unbound(rule: &Rule, bound: &BTreeSet<Variable>) -> bool {
                 comparison_anon_unbound(comparison.get(), bound)
             }
             // A `_` in an atom body literal is never unbound: a positive atom binds it, and a `_`
-            // under default negation is projected (existential) by the grounder — finding E, verified
+            // under default negation is projected (existential) by the grounder — verified
             // against clingo (`p :- not q(_).` grounds). A boolean carries no variable. Named variables
             // are handled by the `all − bound` difference in `naive_unbound`. (The generator's negated
             // atoms are positive-sign with flat `_` arguments, exactly the projected shape.)
@@ -421,7 +421,7 @@ fn safety_reads_each_anonymous_as_a_distinct_fresh_variable() {
     );
 
     // p(X) :- q(X), not r(_).  → SAFE. A `_` under default negation is *projected* — clingo rewrites
-    // each `_` under `not` to a fresh existential, so it needs no binder (finding E, verified: clingo
+    // each `_` under `not` to a fresh existential, so it needs no binder (verified: clingo
     // grounds this). A genuine named variable under `not` is still required (see the `not r(Y)` case in
     // `safety_projects_an_anonymous_under_negation`).
     assert!(
@@ -573,7 +573,7 @@ fn safety_projects_an_anonymous_under_negation() {
 /// instantiated first (binding its variables), then the literal is evaluated per instance, binding
 /// *locally*. A positive literal `p(X) : ...` matches its own instances (its variables local); an
 /// assignment `X = t : cond` binds `X` locally; a non-assignment comparison binds nothing; and a `_`
-/// under a negated conditional literal projects (finding E), while a named one is required.
+/// under a negated conditional literal projects, while a named one is required.
 #[test]
 fn safety_binds_a_conditional_literal_two_stage() {
     let anon = || Term::Variable(Variable::Anonymous);
@@ -636,7 +636,7 @@ fn safety_binds_a_conditional_literal_two_stage() {
         "a non-assignment conditional comparison binds nothing: unsafe",
     );
 
-    // h :- not p(_) : q(Y).  → SAFE. A `_` under a negated conditional literal projects (finding E).
+    // h :- not p(_) : q(Y).  → SAFE. A `_` under a negated conditional literal projects.
     assert!(
         unbound_of(Rule::new(
             pred("h", &[]),
@@ -662,13 +662,32 @@ fn safety_binds_a_conditional_literal_two_stage() {
         .contains(&named("X")),
         "a named variable under a negated conditional literal is required: unsafe",
     );
+
+    // s :- p(X / 2) : r.  → unsafe {X}. A positive conditional literal binds locally only in its
+    // invertible positions, exactly as a body atom — a non-invertible position leaves X unbound.
+    let x_over_two = Term::BinaryOperation {
+        operator: BinaryOp::Div,
+        left: Box::new(var("X")),
+        right: Box::new(num(2)),
+    };
+    assert!(
+        unbound_of(Rule::new(
+            pred("s", &[]),
+            vec![cond(
+                Literal::from(Atom::new(name("p"), [x_over_two])),
+                vec![Literal::from(pred("r", &[]))],
+            )],
+        ))
+        .contains(&named("X")),
+        "a positive conditional literal in a non-invertible position does not bind: unsafe",
+    );
 }
 
-/// Finding C, verified against clingo: a positive atom binds a variable only in an invertible/matchable
-/// position. It binds through the Herbrand constructors and invertible arithmetic (`X`, `f(X)`, `X+1`,
-/// `-X`), but a variable under a non-invertible former — division, absolute value, an interval — is
-/// required without being bound, so relying on such a position for binding is unsafe. A variable also
-/// present in a bindable position elsewhere is still bound (`p(X/2, X)` binds `X`).
+/// A positive atom binds a variable only in an invertible/matchable position, following the grounder's
+/// `simplify`: through the Herbrand constructors and a linear arithmetic form (`X`, `f(X)`, `X+1`, `-X`),
+/// but a variable under a non-invertible former — division, absolute value, an interval — is required
+/// without being bound, so relying on such a position for binding is unsafe. A variable also present in a
+/// bindable position elsewhere is still bound (`p(X/2, X)` binds `X`).
 #[test]
 fn safety_binds_only_invertible_positive_atom_positions() {
     let neg = |t: Term| Term::UnaryOperation {
@@ -762,6 +781,123 @@ fn safety_binds_only_invertible_positive_atom_positions() {
         ))
         .is_empty(),
         "a variable bound in a direct position is safe though another position is non-invertible",
+    );
+}
+
+/// The grounder's arithmetic-invertibility corners a positive atom binds through, verified against it: a
+/// non-zero multiplier binds (a linear form), a zero multiplier does not (the grounder keeps `0*X`
+/// untouched), and an interval as an arithmetic operand does not (it introduces a range variable, so "no
+/// named variable" is not "a ground constant").
+#[test]
+fn safety_reads_the_arithmetic_invertibility_corners() {
+    let binop = |op: BinaryOp, l: Term, r: Term| Term::BinaryOperation {
+        operator: op,
+        left: Box::new(l),
+        right: Box::new(r),
+    };
+    let interval = |l: Term, u: Term| Term::Interval {
+        lower: Box::new(l),
+        upper: Box::new(u),
+    };
+    let p_of = |terms: &[Term]| BodyElement::from(Atom::new(name("p"), terms.to_vec()));
+
+    // q(X) :- p(2 * X).  → SAFE. A non-zero multiplier is invertible (a linear form).
+    assert!(
+        unbound_of(Rule::new(
+            pred("q", &["X"]),
+            vec![p_of(&[binop(BinaryOp::Mul, num(2), var("X"))])],
+        ))
+        .is_empty(),
+        "a variable multiplied by a non-zero constant is bound: safe",
+    );
+
+    // q(X) :- p(X * 0).  and  p(0 * X).  → unsafe {X}. A zero multiplier is not invertible — the grounder
+    // keeps `0*X` untouched, so X cannot be recovered.
+    for zero_mul in [
+        binop(BinaryOp::Mul, var("X"), num(0)),
+        binop(BinaryOp::Mul, num(0), var("X")),
+    ] {
+        assert_eq!(
+            unbound_of(Rule::new(pred("q", &["X"]), vec![p_of(&[zero_mul])])),
+            [named("X")].into_iter().collect(),
+            "a variable multiplied by zero is not bound: unsafe",
+        );
+    }
+
+    // q(X) :- p(X + (1 .. 3)).  → unsafe {X}. An interval as an arithmetic operand introduces a range
+    // variable, so the arithmetic leaves two variables and is not invertible — "no named variable" is
+    // not "ground".
+    assert_eq!(
+        unbound_of(Rule::new(
+            pred("q", &["X"]),
+            vec![p_of(&[binop(
+                BinaryOp::Add,
+                var("X"),
+                interval(num(1), num(3))
+            )])],
+        )),
+        [named("X")].into_iter().collect(),
+        "a variable added to an interval is not bound: unsafe",
+    );
+
+    // q(X) :- p((1 - 1) * X).  → unsafe {X}. A computed constant folds through the ground evaluator: the
+    // coefficient is 0, so the multiplier is not invertible (the same reading as a literal `0`).
+    assert_eq!(
+        unbound_of(Rule::new(
+            pred("q", &["X"]),
+            vec![p_of(&[binop(
+                BinaryOp::Mul,
+                binop(BinaryOp::Sub, num(1), num(1)),
+                var("X"),
+            )])],
+        )),
+        [named("X")].into_iter().collect(),
+        "a computed zero coefficient is not invertible: unsafe",
+    );
+
+    // q(X) :- p((1 + 1) * X).  → SAFE. The coefficient folds to 2, a non-zero constant — invertible.
+    assert!(
+        unbound_of(Rule::new(
+            pred("q", &["X"]),
+            vec![p_of(&[binop(
+                BinaryOp::Mul,
+                binop(BinaryOp::Add, num(1), num(1)),
+                var("X"),
+            )])],
+        ))
+        .is_empty(),
+        "a computed non-zero coefficient is invertible: safe",
+    );
+}
+
+/// A `#project`/`#heuristic` atom domain-matches with the same invertible-position rule a body atom uses:
+/// a variable in a direct position is bound, one under a non-invertible former is not.
+#[test]
+fn safety_domain_matches_a_project_atom_in_invertible_positions() {
+    // #project p(X).  → SAFE. The atom domain-matches, binding X in a direct position.
+    assert!(
+        statement_unbound(Statement::Project(Project::atom_body(
+            pred("p", &["X"]),
+            Body::empty(),
+        )))
+        .is_empty(),
+        "a #project atom binds a variable in a direct position: safe",
+    );
+
+    // #project p(X / 2).  → unsafe {X}. A variable under a non-invertible former is not bound by the
+    // domain match, exactly as a body atom's is not.
+    let x_over_two = Term::BinaryOperation {
+        operator: BinaryOp::Div,
+        left: Box::new(var("X")),
+        right: Box::new(num(2)),
+    };
+    assert_eq!(
+        statement_unbound(Statement::Project(Project::atom_body(
+            Atom::new(name("p"), [x_over_two]),
+            Body::empty(),
+        ))),
+        [named("X")].into_iter().collect(),
+        "a #project atom variable in a non-invertible position is unsafe",
     );
 }
 
@@ -1121,13 +1257,13 @@ fn safety_vets_more_bodied_directives() {
     );
 }
 
-/// The (C)/(D)-round directive-binding fixes, each a clingo-verified divergence the round found (see the
-/// SAFETY_CORPUS rows). A body-less `#show t.` binds nothing (finding D — was a false `safe`), and a
-/// `#heuristic` atom's domain match binds its bracket terms (finding F — was a false `unsafe`).
+/// Two directive-binding readings, each pinned by a `SAFETY_CORPUS` row against the grounder: a body-less
+/// `#show t.` binds nothing (a variable in the shown term is unsafe), and a `#heuristic` atom's domain
+/// match binds its bracket terms (`#heuristic p(X). [X@1, true]` is safe).
 #[test]
 fn safety_vets_body_less_show_and_heuristic_bracket_binding() {
     // #show f(X).  — a body-less show binds nothing, so the shown term's X is unbound: unsafe. clingo
-    // flags `#show f(X).`; the old `NoObligation` reading was a false `safe` (finding D).
+    // flags `#show f(X).`; the old `NoObligation` reading was a false `safe`.
     assert_eq!(
         statement_unbound(Statement::Show(Show::Term(function("f", "X")))),
         [named("X")].into_iter().collect(),
@@ -1146,7 +1282,7 @@ fn safety_vets_body_less_show_and_heuristic_bracket_binding() {
 
     // #heuristic p(X). [X@1, 1]  — the atom domain-matches, binding X, so the bracket bias X is bound
     // even with an empty body: safe. clingo reads the atom as binding the bracket; the old wildcard
-    // model read this unsafe (finding F).
+    // model read this unsafe.
     assert!(
         statement_unbound(Statement::Heuristic(Heuristic::new(
             pred("p", &["X"]),
@@ -2614,5 +2750,45 @@ fn finiteness_flags_a_max_over_a_former() {
         bounded_verdict,
         Verdict::Holds,
         "a #max over a bare element term is an existing member value and does not grow",
+    );
+}
+
+#[test]
+fn finiteness_flags_a_max_over_an_aliased_former() {
+    // p(X) :- X = #max { Z : p(Y), Z = f(Y) }.  — the same growth as the inline `f(Y)` element, but the
+    // value-term is the bare variable `Z`, made a former only by the element's own condition `Z = f(Y)`.
+    // The extremum value is still `f(Y)`-deep over the p-members, so X = f(m), p(f(m)), f(f(m)), … grows
+    // unbounded (verified: the grounder does not terminate on it). A growth check reading the value-term
+    // *syntactically* misses it — the sound reading is Unknown (§6.1), from the element's `=`-relations.
+    let z_is_f_y = Literal {
+        negation: DefaultNegation::None,
+        inner: LiteralInner::Comparison(WithProvenance::constructed(Comparison::new(
+            var("Z"),
+            Relation::Eq,
+            function("f", "Y"),
+        ))),
+    };
+    let aggregate = BodyElement::Aggregate {
+        negation: DefaultNegation::None,
+        aggregate: Aggregate::Function(FunctionAggregate::new(
+            Some(Guard {
+                relation: Some(Relation::Eq),
+                term: var("X"),
+            }),
+            AggregateFunction::Max,
+            [BodyAggregateElement::new(
+                [var("Z")],
+                Condition::new([Literal::from(pred("p", &["Y"])), z_is_f_y]),
+            )],
+            None,
+        )),
+    };
+    let grows = finiteness_of([Statement::Rule(Rule::new(
+        pred("p", &["X"]),
+        vec![aggregate],
+    ))]);
+    assert!(
+        matches!(grows, Verdict::Unknown { .. }),
+        "a #max whose value-term is aliased to a former by the element condition deepens and grows",
     );
 }

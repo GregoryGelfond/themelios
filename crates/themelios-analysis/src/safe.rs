@@ -22,8 +22,8 @@ use themelios_program::program::{
     TheoryAtom, TheoryTerm,
 };
 use themelios_program::provenance::{TransformTag, WithProvenance};
-use themelios_program::symbol::{Sign, Signature, VarName};
-use themelios_program::term::{BinaryOp, Term, TermParts, UnaryOp, Variable};
+use themelios_program::symbol::{Sign, Signature, Symbol, VarName};
+use themelios_program::term::{BinaryOp, Term, TermParts, UnaryOp, Variable, evaluate};
 use themelios_program::transform::Rewrite;
 
 use crate::classify::Verdict;
@@ -216,16 +216,17 @@ fn collect_statement(
                 collect_body(body, minted, global, locals);
             }
         }
-        StatementBinder::Heuristic {
+        StatementBinder::DomainAtom {
             atom,
-            brackets,
+            required,
             body,
         } => {
-            // The atom domain-matches — its variables bind, like a positive body atom — so it can bind
-            // the required bracket terms; the body binds too. So `#heuristic p(X). [X@1, true]` is safe
-            // (the atom binds `X`) but `#heuristic p(a). [W@1, true]` is not (`W` is bound by neither).
+            // The atom domain-matches — its variables bind in their invertible positions, like a
+            // positive body atom — so it can bind the required bracket terms; the body binds too. So
+            // `#project p(X).` and `#heuristic p(X). [X@1, true]` are safe (the atom binds `X`), while
+            // `#project p(X/2).` and `#heuristic p(a). [W@1, true]` are not.
             bind_positive_atom(global, atom);
-            for term in brackets {
+            for term in required {
                 term_named_vars(term, &mut global.required);
             }
             collect_body(body, minted, global, locals);
@@ -533,109 +534,182 @@ fn bind_positive_atom(scope: &mut Scope, atom: &Atom) {
     }
 }
 
+/// A term's class as an arithmetic operand, following gringo's `simplify` (`libgringo` `term.cc`): a
+/// ground numeric constant, a linear form over a single variable (invertible — it binds the variable),
+/// or anything else (not invertible).
+enum Arith {
+    /// A ground numeric constant with its value (`ValTerm`, `CONSTANT`).
+    Const(i32),
+    /// `m·x+n` over the single variable — invertible, so a positive atom binds it (`LinearTerm`,
+    /// `INVERTIBLE`).
+    Linear(Variable),
+    /// Not invertible (`NOT_INVERTIBLE`): a function or tuple as an *arithmetic* operand, an interval, a
+    /// pool, `/`, `\`, `**`, a bitwise operator, `~`, `|·|`, a `@`-call, `*` by zero, or arithmetic that
+    /// leaves two variables.
+    Other,
+}
+
 /// Analyse a positive-atom argument for safety: `(required, binding)` — every variable it carries, and
-/// the subset in an *invertible/matchable* position a positive atom actually binds. A positive atom
-/// binds a variable by matching a ground instance only where clingo can solve for it: through the
-/// Herbrand constructors (function, tuple) and invertible arithmetic (unary `-`; binary `+`/`-`/`*` with
-/// the *other* operand variable-free), never through a non-invertible former — `/`, `\`, `**`, bitwise,
-/// `~`, an interval, an absolute value, or a `@`-call — whose variable must be bound elsewhere to
-/// evaluate. So `p(X)`, `p(f(X))`, and `p(X+1)` bind `X`, while `p(X/2)`, `p(|X|)`, and `p(X..3)` require
-/// it without binding it (finding C, verified against clingo). The rule is a sound *subset* of clingo's:
-/// the one shape it is stricter on is arithmetic over two function terms (`f(X)*g(Y)`, a grounding-time
-/// type error), where it binds neither — a recorded fail-closed divergence. A `Pool` is left liberal
-/// (every variable it carries binds) pending the faithful-pool representation (finding B) — the one
-/// known over-approximation. Runs over the iterative `Term::fold`, so a deeply nested term is bounded by
-/// the heap, not the call stack (§3.6, §12.4).
+/// the subset in an *invertible/matchable* position a positive atom actually binds. This mirrors gringo's
+/// grounder (`libgringo` `term.cc`, `simplify`/`getInvertibility`): a variable binds where it sits in an
+/// **invertible** position — through a Herbrand constructor (a function or tuple argument, whose match
+/// unifies), or a **linear** arithmetic form `m·x+n` (built from `+`/`-`/`*` of one numeric constant and
+/// one linear operand, `*` requiring a *non-zero* constant). Every other former is `NOT_INVERTIBLE` and
+/// binds nothing: an interval (`X..3`), a pool (`(X;a)`), `/`, `\`, `**`, a bitwise operator, `~`, `|·|`,
+/// a `@`-call, `*` by zero, and any arithmetic that leaves two variables. So `p(X)`, `p(f(X))`, `p(X+1)`,
+/// and `p(2*X)` bind `X`, while `p(X/2)`, `p(|X|)`, `p(X..3)`, `p(X+(1..3))`, `p(0*X)`, and `p((X;a))`
+/// require it without binding it. The rule is a sound *subset* of the grounder's — stricter only where
+/// the grounder accepts arithmetic over a non-numeric operand *vacuously* (the operation is undefined, so
+/// the rule never fires), which this reads unsafe instead; those are recorded divergences. `required` is
+/// one linear pass (`term_named_vars`); `binding` folds over the iterative `Term::fold`, merging
+/// small-into-large so a deeply nested term stays near-linear and bounded by the heap, not the call stack
+/// (§12.4).
 fn binding_analysis(term: &Term) -> (BTreeSet<Variable>, BTreeSet<Variable>) {
-    term.clone().fold(|parts| match parts {
+    let mut required = BTreeSet::new();
+    term_named_vars(term, &mut required);
+    let (binding, _) = term.clone().fold(classify_arith);
+    (required, binding)
+}
+
+/// One `Term::fold` step of [`binding_analysis`] — the gringo classification bottom-up. Returns the
+/// subterm's binding variables (its invertible-position variables) and its [`Arith`] class.
+fn classify_arith(parts: TermParts<(BTreeSet<Variable>, Arith)>) -> (BTreeSet<Variable>, Arith) {
+    match parts {
         TermParts::Variable(variable @ Variable::Named(_)) => {
-            let set = BTreeSet::from([variable]);
-            (set.clone(), set)
+            (BTreeSet::from([variable.clone()]), Arith::Linear(variable))
         }
-        TermParts::Variable(Variable::Anonymous) | TermParts::Symbolic(_) => {
-            (BTreeSet::new(), BTreeSet::new())
+        TermParts::Symbolic(symbol) => {
+            let arith = match symbol {
+                Symbol::Number(value) => Arith::Const(value),
+                _ => Arith::Other,
+            };
+            (BTreeSet::new(), arith)
         }
-        // Herbrand constructors: each child is an independent matching position.
+        // A Herbrand constructor binds by matching: each child's binding propagates up.
         TermParts::Function { arguments, .. } | TermParts::Tuple(arguments) => {
-            let mut required = BTreeSet::new();
             let mut binding = BTreeSet::new();
-            for (child_required, child_binding) in arguments {
-                required.extend(child_required);
-                binding.extend(child_binding);
+            for (child_binding, _) in arguments {
+                binding = union_vars(binding, child_binding);
             }
-            (required, binding)
+            (binding, Arith::Other)
         }
-        TermParts::Pool(items) => {
-            // finding B: a pool is left liberal — every variable it carries is taken as a binder, a
-            // known over-approximation (clingo does not bind through a pool), closed with the faithful
-            // pool representation.
-            let mut required = BTreeSet::new();
-            for (child_required, _child_binding) in items {
-                required.extend(child_required);
-            }
-            (required.clone(), required)
-        }
+        // A pool and an interval are `NOT_INVERTIBLE` (`PoolTerm`/`DotsTerm`), a `@`-call is (`LuaTerm`),
+        // and an anonymous `_` is a fresh variable, not a numeric operand — all bind nothing and are not
+        // an arithmetic constant.
+        TermParts::Variable(Variable::Anonymous)
+        | TermParts::Pool(_)
+        | TermParts::Interval { .. }
+        | TermParts::External { .. } => (BTreeSet::new(), Arith::Other),
+        // Unary `-` preserves linearity (`-(m·x+n)` is linear); `~` and `|·|` do not.
         TermParts::UnaryOperation {
             operator: UnaryOp::Negate,
-            argument: (required, binding),
-        } => (required, binding),
-        // Neither `~` nor `|·|` is invertible: the variable is required but binds nothing.
+            argument: (_, argument),
+        } => {
+            let arith = match argument {
+                Arith::Const(value) => value.checked_neg().map_or(Arith::Other, Arith::Const),
+                Arith::Linear(variable) => Arith::Linear(variable),
+                Arith::Other => Arith::Other,
+            };
+            (linear_binding(&arith), arith)
+        }
         TermParts::UnaryOperation {
             operator: UnaryOp::BitwiseNot,
-            argument: (required, _),
+            argument: (_, argument),
+        } => {
+            let arith = match argument {
+                Arith::Const(value) => Arith::Const(!value),
+                _ => Arith::Other,
+            };
+            (BTreeSet::new(), arith)
         }
-        | TermParts::Absolute((required, _)) => (required, BTreeSet::new()),
+        TermParts::Absolute((_, argument)) => {
+            let arith = match argument {
+                Arith::Const(value) => value.checked_abs().map_or(Arith::Other, Arith::Const),
+                _ => Arith::Other,
+            };
+            (BTreeSet::new(), arith)
+        }
         TermParts::BinaryOperation {
             operator,
-            left: (left_required, left_binding),
-            right: (right_required, right_binding),
+            left: (_, left),
+            right: (_, right),
         } => {
-            let mut required = left_required.clone();
-            required.extend(right_required.iter().cloned());
-            let binding = match operator {
-                // Invertible only when exactly one operand bears a variable (the other is ground), so
-                // clingo can solve for it; `X + Y` and `X + X` bind neither.
-                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul => {
-                    if !left_required.is_empty() && right_required.is_empty() {
-                        left_binding
-                    } else if !right_required.is_empty() && left_required.is_empty() {
-                        right_binding
-                    } else {
-                        BTreeSet::new()
-                    }
-                }
-                // `/`, `\`, `**`, and the bitwise operators are not invertible.
-                BinaryOp::Div
-                | BinaryOp::Mod
-                | BinaryOp::Pow
-                | BinaryOp::BitAnd
-                | BinaryOp::BitOr
-                | BinaryOp::BitXor => BTreeSet::new(),
-            };
-            (required, binding)
+            let arith = combine_arith(operator, left, right);
+            (linear_binding(&arith), arith)
         }
-        // Non-invertible formers: the variable is required, but binds nothing here.
-        TermParts::Interval {
-            lower: (mut required, _),
-            upper: (upper_required, _),
-        } => {
-            required.extend(upper_required);
-            (required, BTreeSet::new())
-        }
-        TermParts::External { arguments, .. } => {
-            let mut required = BTreeSet::new();
-            for (child_required, _child_binding) in arguments {
-                required.extend(child_required);
+    }
+}
+
+/// The variable an [`Arith`] binds — the single linear variable, or none.
+fn linear_binding(arith: &Arith) -> BTreeSet<Variable> {
+    match arith {
+        Arith::Linear(variable) => BTreeSet::from([variable.clone()]),
+        Arith::Const(_) | Arith::Other => BTreeSet::new(),
+    }
+}
+
+/// Combine two operand classes under a binary operator, following gringo's `BinOpTerm::simplify`:
+/// `+`/`-`/`*` of a constant and a linear form is linear (`*` only for a *non-zero* constant, gringo's
+/// `isZero` guard); two constants evaluate (through the tier's ground evaluator, so div/mod/pow,
+/// overflow, and division-by-zero match the grounder); everything else is not invertible.
+fn combine_arith(operator: BinaryOp, left: Arith, right: Arith) -> Arith {
+    match operator {
+        BinaryOp::Add | BinaryOp::Sub => match (left, right) {
+            (Arith::Const(a), Arith::Const(b)) => eval_const(operator, a, b),
+            (Arith::Const(_), Arith::Linear(x)) | (Arith::Linear(x), Arith::Const(_)) => {
+                Arith::Linear(x)
             }
-            (required, BTreeSet::new())
-        }
-    })
+            _ => Arith::Other,
+        },
+        BinaryOp::Mul => match (left, right) {
+            (Arith::Const(a), Arith::Const(b)) => eval_const(operator, a, b),
+            // A zero constant is not invertible — gringo keeps `0*X` untouched (`isZero`).
+            (Arith::Const(c), Arith::Linear(x)) | (Arith::Linear(x), Arith::Const(c)) if c != 0 => {
+                Arith::Linear(x)
+            }
+            _ => Arith::Other,
+        },
+        BinaryOp::Div
+        | BinaryOp::Mod
+        | BinaryOp::Pow
+        | BinaryOp::BitAnd
+        | BinaryOp::BitOr
+        | BinaryOp::BitXor => match (left, right) {
+            (Arith::Const(a), Arith::Const(b)) => eval_const(operator, a, b),
+            _ => Arith::Other,
+        },
+    }
+}
+
+/// Evaluate a binary operation over two ground numeric constants through the program tier's ground
+/// evaluator (the one authority, so div/mod/pow, overflow, and division-by-zero match the grounder): a
+/// numeric result is a `Const`, anything else (an overflow, an undefined operation) is `Other`.
+fn eval_const(operator: BinaryOp, left: i32, right: i32) -> Arith {
+    let term = Term::BinaryOperation {
+        operator,
+        left: Box::new(Term::Symbolic(Symbol::Number(left))),
+        right: Box::new(Term::Symbolic(Symbol::Number(right))),
+    };
+    match evaluate(&term) {
+        Ok(Symbol::Number(value)) => Arith::Const(value),
+        _ => Arith::Other,
+    }
+}
+
+/// Union two variable sets, extending the larger with the smaller — small-into-large, so a `Term::fold`
+/// that merges at every Herbrand node stays near-linear on a deeply nested term (§12.4).
+fn union_vars(mut a: BTreeSet<Variable>, mut b: BTreeSet<Variable>) -> BTreeSet<Variable> {
+    if a.len() < b.len() {
+        std::mem::swap(&mut a, &mut b);
+    }
+    a.extend(b);
+    a
 }
 
 /// A binding literal (a body or condition literal): a positive standard atom binds its
 /// variables; a positive `=` comparison is an assignment; every variable is required. A
 /// default-negated positive atom requires its variables *except* the minted `_` it projects —
-/// clingo existentially rewrites each `_` under `not` (`p :- not q(_).` is safe, §5, finding E).
+/// clingo existentially rewrites each `_` under `not` (`p :- not q(_).` is safe, §5).
 fn bind_literal(scope: &mut Scope, literal: &Literal, minted: &BTreeSet<Variable>) {
     match &literal.inner {
         LiteralInner::Atom(atom) => {
@@ -645,7 +719,7 @@ fn bind_literal(scope: &mut Scope, literal: &Literal, minted: &BTreeSet<Variable
             } else if atom.sign == Sign::Positive {
                 // A default-negated positive atom (`not q(..)`) requires its variables, but a minted
                 // `_` is projected — clingo rewrites each `_` under `not` to a fresh existential, so it
-                // needs no binder (finding E). The `_` is reachable only through constructor structure
+                // needs no binder. The `_` is reachable only through constructor structure
                 // (function/tuple/pool), never an evaluated term (`projected_anonymous`).
                 let mut vars = BTreeSet::new();
                 let mut projected = BTreeSet::new();
@@ -692,11 +766,12 @@ fn require_literal(scope: &mut Scope, literal: &Literal) {
 
 /// A body conditional's own literal (left of `:`), per the grounder's two-stage element reading: the
 /// condition is instantiated first, so a condition variable is bound by the condition or globally —
-/// never by this literal; the literal is then evaluated per instance (finding I, `h :- X = 1 : q.` is
-/// safe). A positive atom is matched against its own instances, so its variables need no other binder
-/// (it contributes nothing); a negated atom requires its variables (a minted `_` is projected as in any
-/// negated atom, finding E); a comparison requires its variables, and a positive `=` assigns — but
-/// never to a variable the condition mentions (the condition binds that, not the assignment).
+/// never by this literal; the literal is then evaluated per instance (`h :- X = 1 : q.` is
+/// safe). A positive atom is matched against its own instances, so its variables bind *locally* in the
+/// invertible positions and are required, exactly as a body atom (`bind_positive_atom`) — `p(X) : r` is
+/// safe, `p(X/2) : r` is not; a negated atom requires its variables (a minted `_` is projected, as in
+/// any negated atom); a comparison requires its variables, and a positive `=` assigns — but never to a
+/// variable the condition mentions (the condition binds that, not the assignment).
 fn bind_conditional_literal(
     scope: &mut Scope,
     literal: &Literal,
@@ -707,7 +782,11 @@ fn bind_conditional_literal(
         LiteralInner::Atom(atom) => {
             let atom = atom.get();
             if literal.negation == DefaultNegation::None {
-                // Positive: bound by matching its own instances — nothing required, nothing bound.
+                // Positive: matched against its own instances, so its variables bind *locally* in the
+                // invertible positions and are required — exactly as a body atom, not a blanket pass. So
+                // `p(X) : r` binds `X` locally (safe), while `p(X/2) : r` leaves `X` required and unbound
+                // (unsafe), matching the grounder.
+                bind_positive_atom(scope, atom);
             } else if atom.sign == Sign::Positive {
                 let mut vars = BTreeSet::new();
                 let mut projected = BTreeSet::new();
@@ -770,13 +849,14 @@ fn projected_anonymous(term: &Term, minted: &BTreeSet<Variable>) -> BTreeSet<Var
         TermParts::Variable(variable @ Variable::Named(_)) if minted.contains(&variable) => {
             BTreeSet::from([variable])
         }
-        // Constructor structure descends: a `_` under a function, tuple, or pool projects.
+        // Constructor structure descends: a `_` under a function, tuple, or pool projects. Merge
+        // small-into-large so a deeply nested term stays near-linear (§12.4).
         TermParts::Function { arguments, .. }
         | TermParts::Tuple(arguments)
         | TermParts::Pool(arguments) => {
             let mut projected = BTreeSet::new();
             for child in arguments {
-                projected.extend(child);
+                projected = union_vars(projected, child);
             }
             projected
         }
@@ -927,7 +1007,7 @@ fn finiteness_verdict(program: &Program, graph: &DependencyGraph) -> Verdict {
             // head over a variable carried around a generation cycle deepens exactly as a rule head, so
             // the same check reports it (§6.1). A non-deepening external (`p(X) : q(X)`) or one on a
             // finite body (a non-recursive component) grows nothing — no false `Unknown`.
-            Statement::External(external) if has_external => {
+            Statement::External(external) => {
                 if let Some(component) = growing_component(&external_pseudo_rule(external), graph) {
                     return Verdict::Unknown { witness: component };
                 }
@@ -1316,18 +1396,16 @@ fn collect_aggregate_growth(
             .extend(guards.iter().cloned());
     }
     if is_extremum(aggregate) {
-        for value in aggregate_value_terms(aggregate) {
-            if !is_former(value) {
-                continue;
-            }
-            let mut members = BTreeSet::new();
-            term_named_vars(value, &mut members);
+        // A `#max`/`#min` element's value-term is a member value; a *former* value makes the guard one
+        // former deeper than the members it ranges over — written directly (`f(Y)`) or aliased through
+        // the element's own condition (`Z : ..., Z = f(Y)` is `f(Y)`-deep over `Y`). Either way the
+        // guard deepens over those member variables, which must also be carried roots (they range over
+        // the aggregate's signatures) or the deepening edge is never traversed from the guard's root.
+        for (value, condition) in extremum_element_values(aggregate) {
+            let members = former_members(value, condition);
             if members.is_empty() {
                 continue;
             }
-            // The member variables the guard deepens must themselves be carried roots, or the
-            // deepening edge is never traversed (the guard is not reached from its own root). The
-            // aggregate ranges over these members, so they are carriers of its signatures.
             for signature in &signatures {
                 carriers
                     .entry(signature.clone())
@@ -1355,16 +1433,58 @@ fn is_extremum(aggregate: &Aggregate) -> bool {
     }
 }
 
-/// The value-terms an aggregate compares — the first term of each element; empty for a set
-/// aggregate (whose elements are literals, not value tuples).
-fn aggregate_value_terms(aggregate: &Aggregate) -> Vec<&Term> {
+/// The `(value-term, condition)` of each `#max`/`#min` element — the value it compares and the
+/// condition it ranges over; empty for a set aggregate (whose elements are literals, not value tuples).
+fn extremum_element_values(aggregate: &Aggregate) -> Vec<(&Term, &Condition)> {
     match aggregate {
         Aggregate::Function(function) => function
             .elements()
-            .filter_map(|element| element.get().terms().next())
+            .filter_map(|element| {
+                let element = element.get();
+                element
+                    .terms()
+                    .next()
+                    .map(|value| (value, element.condition()))
+            })
             .collect(),
         Aggregate::Set(_) => Vec::new(),
     }
+}
+
+/// The member variables a `#max`/`#min` value-term is one former deeper than (§5): the value's own
+/// variables when it *is* a former (`f(Y)`), or — when the value is a variable — the variables of a
+/// former its `=`-class is deepened by in the element's own condition (`Z : ..., Z = f(Y)` is `f(Y)`-deep
+/// over `Y`, the alias closure resolving `Z = W, W = f(Y)` too). Empty when the value neither is nor
+/// aliases a former: the guard does not deepen. This is what makes the aliased spelling as sound as the
+/// inline one — reading the value's depth from the element's own `=`-relations, not its syntax alone.
+fn former_members(value: &Term, condition: &Condition) -> BTreeSet<Variable> {
+    if is_former(value) {
+        let mut members = BTreeSet::new();
+        term_named_vars(value, &mut members);
+        return members;
+    }
+    let Some(value_var) = as_lone_variable(value) else {
+        return BTreeSet::new();
+    };
+    let mut aliases = Vec::new();
+    let mut deepenings = Vec::new();
+    for literal in condition.literals() {
+        let literal = literal.get();
+        if let LiteralInner::Comparison(comparison) = &literal.inner
+            && literal.negation == DefaultNegation::None
+        {
+            collect_equalities(comparison.get(), &mut aliases, &mut deepenings);
+        }
+    }
+    let roots = equality_roots(&aliases);
+    let value_root = class_root(&roots, value_var);
+    let mut members = BTreeSet::new();
+    for (lone, rhs) in &deepenings {
+        if class_root(&roots, lone) == value_root {
+            members.extend(rhs.iter().cloned());
+        }
+    }
+    members
 }
 
 /// The predicate signatures an aggregate's elements range over — every signature whose

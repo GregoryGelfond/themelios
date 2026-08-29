@@ -136,14 +136,15 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
     ("weak-constraint-weight-unbound", ":~ q. [W@1]\n"),
     ("show-term-body-binds", "#show f(X) : q(X).\n"),
     ("show-term-body-unbound", "#show f(X) : q(Y).\n"),
-    // `#project`/`#heuristic` treat their atom's variables as a schema wildcard (ranging over the
-    // atom's instances), so a bare-variable atom is safe; only the body's own variables must be safe.
+    // A `#project`/`#heuristic` atom domain-matches: its variables bind in the same invertible
+    // positions a body atom's do (a bare-variable atom is safe; `#project p(X/2).` is not, below);
+    // the body's own variables must be safe too.
     ("project-atom-body-binds", "#project p(X) : q(X).\n"),
-    ("project-atom-wildcard", "#project p(X).\n"),
+    ("project-atom-binds", "#project p(X).\n"),
     ("project-body-unsafe", "#project p(X) : Z > 1.\n"),
     ("edge-body-binds", "#edge (X, Y) : q(X), r(Y).\n"),
     ("edge-empty-body-unbound", "#edge (X, Y).\n"),
-    // A `#heuristic` atom *domain-matches* (finding F): its variables bind its required bracket terms
+    // A `#heuristic` atom *domain-matches*: its variables bind its required bracket terms
     // (bias/priority/modifier), so a bracket variable the atom carries is safe, while one it does not is
     // not. Distinct from `#project`, whose atom is a pure wildcard.
     (
@@ -188,11 +189,11 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
         "theory-guard-unbound",
         "#theory t { term { }; &t/0 : term, {>=}, term, any }.\n:- &t { 0 } >= Y.\n",
     ),
-    // ---- Body-less `#show` (finding D): `#show t.` has no body, so a variable in its shown term has
+    // ---- Body-less `#show`: `#show t.` has no body, so a variable in its shown term has
     // no binder and is unsafe — clingo flags `#show f(X).`. (The bodied `#show t : body.` is above.)
     ("show-bare-term-unbound", "#show f(X).\n"),
     ("show-bare-term-ground", "#show f(a).\n"),
-    // ---- Anonymous `_` projected under default negation (finding E): the grounder rewrites each `_`
+    // ---- Anonymous `_` projected under default negation: the grounder rewrites each `_`
     // under `not` to a fresh existential, so a `_` there (reachable through constructor structure only)
     // needs no binder, while a genuine named variable under `not` is required, and a `_` under an
     // evaluated term (division) is not projected.
@@ -204,7 +205,7 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
         "neg-anon-evaluated-required",
         "p(X) :- q(X), not r(_ / 2).\n",
     ),
-    // ---- Body-conditional two-stage binding (finding I): a conditional's condition instantiates
+    // ---- Body-conditional two-stage binding: a conditional's condition instantiates
     // first, then its literal binds *locally* — a positive literal by matching, an assignment by its
     // lone side — so `X = 1 : q` is safe and `s :- p(X) : r(Y)` is safe (X local), while a global X the
     // conditional binds only locally (`s(X) :- p(X) : r(Y)`) is unsafe.
@@ -212,24 +213,61 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
     ("cond-positive-binds-local", "s :- p(X) : r(Y).\n"),
     ("cond-comparison-unbound", "h :- X < 5 : q(_).\n"),
     ("cond-global-not-bound", "s(X) :- p(X) : r(Y).\n"),
-    // ---- Certain-occurrence positive-atom binding (finding C): a positive atom binds a variable only
-    // in an invertible/matchable position — through the Herbrand constructors and invertible arithmetic
-    // — not through a non-invertible former (division, absolute, interval), whose variable it requires
-    // without binding. A variable also present in a bindable position elsewhere is still bound.
+    // ---- Positive-atom binding, following the grounder's `simplify` (§5): a positive atom binds a
+    // variable only in an invertible/matchable position — through the Herbrand constructors and a linear
+    // arithmetic form (`+`/`-`/`*` of a numeric constant and a linear operand, `*` non-zero) — not
+    // through a non-invertible former (division, absolute, interval, a zero multiplier, an interval as an
+    // arithmetic operand). A variable also present in a bindable position elsewhere is still bound.
     ("atom-function-binds", "r(X) :- p(f(X)).\n"),
     ("atom-invertible-add-binds", "r(X) :- p(X + 1).\n"),
     ("atom-negation-binds", "r(X) :- p(-X).\n"),
+    ("atom-multiplier-binds", "r(X) :- p(2 * X).\n"),
     ("atom-division-unbound", "r(X) :- p(X / 2).\n"),
     ("atom-absolute-unbound", "r(X) :- p(|X|).\n"),
     ("atom-interval-position-unbound", "r(X) :- p(X .. 3).\n"),
     ("atom-two-variable-arith-unbound", "r(X, Y) :- p(X + Y).\n"),
     ("atom-bindable-elsewhere", "r(X) :- p(X / 2, X).\n"),
+    // A zero multiplier is not invertible (the grounder keeps `0*X` untouched): `X` is required, unbound.
+    ("atom-multiply-by-zero-unbound", "r(X) :- p(X * 0).\n"),
+    ("atom-zero-multiplier-unbound", "r(X) :- p(0 * X).\n"),
+    // An interval as an arithmetic operand introduces a range variable, so the arithmetic leaves two
+    // variables — not invertible; `X` is unbound (a bare interval position is `atom-interval-position`).
+    (
+        "atom-interval-operand-unbound",
+        "r(X) :- p(X + (1 .. 3)).\n",
+    ),
+    // A `#project`/`#heuristic` atom domain-matches with the same invertible-position rule: a variable in
+    // a non-invertible atom position is required and unbound.
+    (
+        "project-atom-non-invertible-unbound",
+        "#project p(X / 2).\n",
+    ),
+    (
+        "heuristic-atom-non-invertible-unbound",
+        "#heuristic p(X / 2). [1@1, true]\n",
+    ),
+    // A positive conditional literal binds locally in its invertible positions, so a non-invertible one
+    // is unsafe just as a body atom is (the head-element path already requires all its variables).
+    ("cond-non-invertible-unbound", "t :- p(X / 2) : r.\n"),
+    // ---- A pool (a single term argument) is not invertible (§5): a pooled position binds nothing, so a
+    // variable there is unsafe unless an alternative that omits it never exists — `p((a;X))` unfolds to
+    // `p(a)` (no `X`), unsafe to both. The conservative reading over-reports on `p((X;X))` (safe to the
+    // grounder — both alternatives bind `X`); that is a recorded divergence pending the faithful
+    // per-alternative reading.
+    ("atom-pool-position-unbound", "q(X) :- p((a;X)).\n"),
+    ("pool-every-alternative-binds", "q(X) :- p((X;X)).\n"),
+    // KNOWN FALSE-SAFE, recorded: an *argument-list* pool `p(X; a)` (a pool of whole argument tuples,
+    // not one term) is truncated to its first alternative by the raise (program tier), so analysis never
+    // sees the `p(a)` alternative that leaves `X` unbound — this tier reads it safe, the grounder unsafe.
+    // The safety tier is correct for the (truncated) program it receives; the fix is the faithful pool
+    // representation in the raise. Named openly here, not hidden, pending that work.
+    ("atom-argument-list-pool-truncated", "q(X) :- p(X; a).\n"),
     // ---- The matching-`=` dialect boundary (§5): clingo decomposes an `=` against a tuple, and chains
     // a multi-step `=`, to bind — where the strict ASP-Core-2 standard does not. Recorded divergences;
     // this tier is the conservative side (never a false safe).
     ("tuple-decomposition", "p(X, Y) :- q(Z), Z = (X, Y).\n"),
     ("chained-equality", "p(X, Y) :- X = Y = 1.\n"),
-    // ---- Formers on both sides of `=` (finding G, the matching-`=` family). With neither side bound,
+    // ---- Formers on both sides of `=` (the matching-`=` family). With neither side bound,
     // `f(X) = f(Y)` is unsafe to both — decomposition to `X = Y` binds nothing without a value.
     ("equality-formers-both-sides", "p(X, Y) :- f(X) = f(Y).\n"),
     // But with one side bound, clingo decomposes `f(X) = f(Y)` to bind the other (`q(X)` binds X, so Y
@@ -239,7 +277,7 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
         "equality-former-decomposition",
         "p(Y) :- q(X), f(X) = f(Y).\n",
     ),
-    // ---- Arithmetic inversion in an assignment (finding H): clingo inverts `Y = X + 1` (Y bound by
+    // ---- Arithmetic inversion in an assignment: clingo inverts `Y = X + 1` (Y bound by
     // q(Y)) to bind X; the strict standard binds only a lone-variable side. Recorded divergence. A
     // safety-only fix here would OPEN a false `Holds` (the deepening graph is direction-sensitive, §5),
     // so it stays characterized, not adopted.
@@ -247,7 +285,7 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
         "equality-arithmetic-inversion",
         "p(X) :- q(Y), Y = X + 1.\n",
     ),
-    // ---- Arithmetic over two function terms (finding C's one fail-closed shape): clingo binds X in
+    // ---- Arithmetic over two function terms (this tier's one fail-closed shape): clingo binds X in
     // `f(X) * g(Y)` (a grounding-time type error); this tier's certain-occurrence rule binds neither.
     // Recorded divergence, conservative side (never a false safe).
     (
@@ -287,24 +325,39 @@ const RECORDED_DIVERGENCES: &[(&str, &str)] = &[
         "chained-equality",
         "clingo binds through a chained `X = Y = 1`; this tier's `=` binds only as a single step",
     ),
+    // clingo binds a variable that binds in *every* pooled alternative (`(X;X)` unfolds to `p(X)` and
+    // `p(X)`, both binding X); this tier reads a pool as not invertible, binding nothing — the
+    // conservative side, never a false safe. The faithful per-alternative reading is scheduled work.
+    (
+        "pool-every-alternative-binds",
+        "clingo binds a variable that binds in every pooled alternative; this tier reads a pool as not invertible",
+    ),
+    // A KNOWN false-safe (the one recorded here that is not conservative), rooted in the program tier's
+    // raise: an argument-list pool `p(X; a)` is truncated to its first alternative, so analysis never
+    // sees the alternative that leaves `X` unbound. Recorded openly, pending the faithful pool raise.
+    (
+        "atom-argument-list-pool-truncated",
+        "the raise truncates an argument-list pool `p(X; a)` to its first alternative, hiding the unsafe alternative from analysis",
+    ),
     // clingo decomposes a former on both sides of `=` when one side is bound (`q(X)` binds X, so
     // `f(X) = f(Y)` binds Y); the strict standard binds only a lone side, so this tier reports Y unsafe
-    // — the matching-`=` family (finding G), the conservative side, never a false safe.
+    // — the matching-`=` family, the conservative side, never a false safe.
     (
         "equality-former-decomposition",
         "clingo decomposes `f(X) = f(Y)` with X bound to bind Y; the strict standard binds only a lone side",
     ),
     // clingo inverts arithmetic in an assignment (`Y = X + 1`, Y bound, binds X); this tier binds only a
-    // lone-variable side, so it reports X unsafe (finding H). Characterized, NOT adopted: a safety-only
+    // lone-variable side, so it reports X unsafe. Characterized, NOT adopted: a safety-only
     // fix would open a false `Holds`, since the finiteness deepening graph is direction-sensitive (§5) —
     // any future fix must first add the inverse-deepening edge.
     (
         "equality-arithmetic-inversion",
         "clingo inverts `Y = X + 1` to bind X; this tier binds only a lone-variable side (a false `Holds` risk if adopted)",
     ),
-    // clingo binds a variable inside arithmetic over two function terms (`f(X) * g(Y)`, a grounding-time
-    // type error); this tier's certain-occurrence rule binds neither operand's variables (finding C's
-    // one fail-closed shape), so it reports the arithmetic-only variable unsafe — the conservative side.
+    // clingo accepts arithmetic over a non-numeric operand *vacuously* (`f(X) * g(Y)` is a
+    // grounding-time type error, so the rule never fires) and reads its variables safe; this tier's
+    // binding rule reads a non-numeric arithmetic operand as not invertible, so it reports the
+    // arithmetic-only variable unsafe — the conservative side, never a false safe.
     (
         "atom-arith-over-functions",
         "clingo binds X in `f(X) * g(Y)`; this tier's certain-occurrence binding binds neither function operand",
@@ -435,7 +488,7 @@ const FINITENESS_HOLDS_CORPUS: &[(&str, &str)] = &[
         "recursive-aliasing-not-growth",
         "p(a).\np(X) :- p(Y), X = Y.\n",
     ),
-    // A domain-extending `#external` on a **finite** body (finding A): it generates only p(f(1)), p(f(2))
+    // A domain-extending `#external` on a **finite** body: it generates only p(f(1)), p(f(2))
     // — a non-recursive generation component — so grounding is finite (`Holds`), precisely, not the blunt
     // over-conservative `Unknown`. Grounds within the cap.
     (
@@ -450,13 +503,18 @@ const FINITENESS_HOLDS_CORPUS: &[(&str, &str)] = &[
 /// not passing vacuously.
 const FINITENESS_INFINITE_CONTROLS: &[(&str, &str)] = &[
     ("recursive-former-grows", "p(a).\np(f(X)) :- p(X).\n"),
-    // External-borne generation growth (finding A): the external generates p(f(a)), p(f(f(a))), … and q
-    // derives around the loop, so grounding is unbounded — `Unknown` here, and clingo hits the cap
-    // (through the `external` observer, the A2 blind spot the counter now covers).
+    // External-borne generation growth: the external generates p(f(a)), p(f(f(a))), … and q derives
+    // around the loop, so grounding is unbounded — `Unknown` here, and clingo hits the cap through the
+    // `external` observer (the external-only-growth path the counter now covers).
     (
         "external-generation-grows",
         "p(a).\nq(X) :- p(X).\n#external p(f(X)) : q(X).\n",
     ),
+    // NB: extremum growth aliased through an element-local `=` (`X = #max { Z : p(Y), Z = f(Y) }`) is a
+    // genuine unbounded grounding this tier reads `Unknown` (regression-guarded by a unit law in
+    // safe_laws), but it grows through `#max` *re-evaluation* — O(cap²) grounding work — so it does not
+    // reach the rule/external cap fast enough for the bounded backstop here. Its ground truth was
+    // established directly against the grounder.
 ];
 
 /// The bounded finiteness backstop (§5, §6.1, §10): the ground-truth net for a false `Holds`, the one
