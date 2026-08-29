@@ -572,6 +572,153 @@ fn finiteness_flags_growth_carried_by_a_head_aggregate_condition() {
 }
 
 #[test]
+fn finiteness_flags_a_head_condition_equality_deepening() {
+    // p(g(X)) : X = f(Y), p(Y) :- base.  — the head-element condition carries Y (via p(Y)) AND
+    // deepens X (via X = f(Y)); the derived p(g(X)) grows. The `=` is INSIDE the head condition, the
+    // position the atom-only carrier walk dropped.
+    let head = Head::Disjunction(Disjunction::new([DisjunctionElement::new(
+        Literal::from(Atom::new(name("p"), [function("g", "X")])),
+        Condition::new([
+            eq_literal(var("X"), function("f", "Y")),
+            Literal::from(pred("p", &["Y"])),
+        ]),
+    )]));
+    match finiteness_of([Statement::Rule(head.when(Atom::constant(name("base"))))]) {
+        Verdict::Unknown { witness } => assert!(
+            witness.members().any(|s| s.name.as_str() == "p"),
+            "the growing component is p",
+        ),
+        Verdict::Holds => panic!("a head-element condition `=`-deepening must be Unknown"),
+    }
+}
+
+#[test]
+fn finiteness_flags_a_head_condition_alias_under_a_former() {
+    // { p(g(X)) : X = Y, p(Y) } :- base.  — the head condition aliases X = Y (not a former); the
+    // derived p(g(X)) = p(g(Y)) deepens the aliased carried Y. A choice head.
+    let head = Head::Choice(Choice::new(
+        None,
+        [ChoiceElement::new(
+            Literal::from(Atom::new(name("p"), [function("g", "X")])),
+            Condition::new([
+                eq_literal(var("X"), var("Y")),
+                Literal::from(pred("p", &["Y"])),
+            ]),
+        )],
+        None,
+    ));
+    assert!(
+        matches!(
+            finiteness_of([Statement::Rule(head.when(Atom::constant(name("base"))))]),
+            Verdict::Unknown { .. }
+        ),
+        "a head-element condition alias under a head former must be Unknown",
+    );
+}
+
+// ---- Differential: a program that grows by construction is never a false `Holds` (§6.1) ----
+//
+// The soundness net for the carrier/graph congruence: a recursive rule whose growth — a term-former
+// over a variable carried around the recursion — is injected at a randomized position (a head
+// former, a body `=`, a `=`-chain, a head-element-condition atom, a head-element-condition `=`).
+// Each grounds unboundedly by construction, so finiteness MUST return `Unknown`; a `Holds` is a
+// growth position the carrier walk missed — a false `Holds`, which no per-position audit is trusted
+// to rule out.
+
+#[derive(Clone, Debug)]
+enum Grow {
+    HeadFormer,
+    BodyEquality,
+    BodyEqualityChain(u8),
+    HeadConditionAtom,
+    HeadConditionEquality,
+}
+
+fn nested_former(depth: u8, inner: Term) -> Term {
+    let mut term = inner;
+    for _ in 0..depth.max(1) {
+        term = Term::Function {
+            name: name("f"),
+            arguments: vec![term],
+        };
+    }
+    term
+}
+
+// A rule that grows the recursion of `p`, injecting the growth at `grow`'s position.
+fn injected_growth(grow: &Grow, depth: u8) -> Rule {
+    match grow {
+        // p(f(Y)) :- p(Y).
+        Grow::HeadFormer => Rule::new(
+            Atom::new(name("p"), [nested_former(depth, var("Y"))]),
+            pred("p", &["Y"]),
+        ),
+        // p(X) :- p(Y), X = f(Y).
+        Grow::BodyEquality => Rule::new(
+            pred("p", &["X"]),
+            vec![
+                BodyElement::from(pred("p", &["Y"])),
+                assign("X", nested_former(depth, var("Y"))),
+            ],
+        ),
+        // p(X0) :- p(Xn), X0 = f(X1), …, X_{n-1} = f(Xn).
+        Grow::BodyEqualityChain(links) => {
+            let n = (*links as usize).max(1);
+            let mut body: Vec<BodyElement> =
+                vec![BodyElement::from(pred("p", &[format!("X{n}").as_str()]))];
+            for i in 0..n {
+                body.push(assign(
+                    &format!("X{i}"),
+                    nested_former(depth, var(&format!("X{}", i + 1))),
+                ));
+            }
+            Rule::new(pred("p", &["X0"]), body)
+        }
+        // p(f(X)) : p(X) :- base.
+        Grow::HeadConditionAtom => Head::Disjunction(Disjunction::new([DisjunctionElement::new(
+            Literal::from(Atom::new(name("p"), [nested_former(depth, var("X"))])),
+            Condition::new([Literal::from(pred("p", &["X"]))]),
+        )]))
+        .when(Atom::constant(name("base"))),
+        // p(X) : X = f(Y), p(Y) :- base.  — the deepening `=` lives inside the head condition.
+        Grow::HeadConditionEquality => {
+            Head::Disjunction(Disjunction::new([DisjunctionElement::new(
+                Literal::from(pred("p", &["X"])),
+                Condition::new([
+                    eq_literal(var("X"), nested_former(depth, var("Y"))),
+                    Literal::from(pred("p", &["Y"])),
+                ]),
+            )]))
+            .when(Atom::constant(name("base")))
+        }
+    }
+}
+
+fn any_grow() -> impl Strategy<Value = (Grow, u8)> {
+    (
+        prop_oneof![
+            Just(Grow::HeadFormer),
+            Just(Grow::BodyEquality),
+            (1u8..8).prop_map(Grow::BodyEqualityChain),
+            Just(Grow::HeadConditionAtom),
+            Just(Grow::HeadConditionEquality),
+        ],
+        1u8..4,
+    )
+}
+
+proptest! {
+    #[test]
+    fn a_constructed_growth_is_never_a_false_holds((grow, depth) in any_grow()) {
+        let verdict = finiteness_of([Statement::Rule(injected_growth(&grow, depth))]);
+        prop_assert!(
+            matches!(verdict, Verdict::Unknown { .. }),
+            "finiteness must be Unknown for a program that grows by construction: {grow:?} depth {depth}",
+        );
+    }
+}
+
+#[test]
 fn safety_binds_an_assignment_local_to_an_aggregate_element() {
     // p :- #count { : q(W), X = f(W) } >= 1.  — the aggregate element is a local scope carrying a
     // local `=`-assignment X = f(W); the fixpoint closes it over the (empty) global base. Exercises
