@@ -143,13 +143,20 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
     ("project-body-unsafe", "#project p(X) : Z > 1.\n"),
     ("edge-body-binds", "#edge (X, Y) : q(X), r(Y).\n"),
     ("edge-empty-body-unbound", "#edge (X, Y).\n"),
-    // A `#heuristic` atom is a wildcard like `#project`'s, but its bracket terms (bias/priority/
-    // modifier) are required and bound by the body.
+    // A `#heuristic` atom *domain-matches* (finding F): its variables bind its required bracket terms
+    // (bias/priority/modifier), so a bracket variable the atom carries is safe, while one it does not is
+    // not. Distinct from `#project`, whose atom is a pure wildcard.
     (
         "heuristic-body-binds",
         "#heuristic p(X) : q(X). [1@1, true]\n",
     ),
-    ("heuristic-atom-wildcard", "#heuristic p(X). [1@1, true]\n"),
+    ("heuristic-ground-bracket", "#heuristic p(X). [1@1, true]\n"),
+    // The discriminating row: the bracket bias is `X`, bound by the atom's domain match — safe under the
+    // domain-match reading, unsafe under the old wildcard reading.
+    (
+        "heuristic-atom-binds-bracket",
+        "#heuristic p(X). [X@1, true]\n",
+    ),
     (
         "heuristic-bias-unbound",
         "#heuristic p(a) : q(a). [W@1, true]\n",
@@ -181,11 +188,72 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
         "theory-guard-unbound",
         "#theory t { term { }; &t/0 : term, {>=}, term, any }.\n:- &t { 0 } >= Y.\n",
     ),
+    // ---- Body-less `#show` (finding D): `#show t.` has no body, so a variable in its shown term has
+    // no binder and is unsafe — clingo flags `#show f(X).`. (The bodied `#show t : body.` is above.)
+    ("show-bare-term-unbound", "#show f(X).\n"),
+    ("show-bare-term-ground", "#show f(a).\n"),
+    // ---- Anonymous `_` projected under default negation (finding E): the grounder rewrites each `_`
+    // under `not` to a fresh existential, so a `_` there (reachable through constructor structure only)
+    // needs no binder, while a genuine named variable under `not` is required, and a `_` under an
+    // evaluated term (division) is not projected.
+    ("neg-anon-projected", "p :- not q(_).\n"),
+    ("neg-anon-nested-projected", "p :- not q(f(_)).\n"),
+    ("neg-anon-beside-bound", "p(X) :- q(X), not r(X, _).\n"),
+    ("neg-named-required", "p :- not q(Y).\n"),
+    (
+        "neg-anon-evaluated-required",
+        "p(X) :- q(X), not r(_ / 2).\n",
+    ),
+    // ---- Body-conditional two-stage binding (finding I): a conditional's condition instantiates
+    // first, then its literal binds *locally* — a positive literal by matching, an assignment by its
+    // lone side — so `X = 1 : q` is safe and `s :- p(X) : r(Y)` is safe (X local), while a global X the
+    // conditional binds only locally (`s(X) :- p(X) : r(Y)`) is unsafe.
+    ("cond-assignment-binds-local", "h :- X = 1 : q(_).\n"),
+    ("cond-positive-binds-local", "s :- p(X) : r(Y).\n"),
+    ("cond-comparison-unbound", "h :- X < 5 : q(_).\n"),
+    ("cond-global-not-bound", "s(X) :- p(X) : r(Y).\n"),
+    // ---- Certain-occurrence positive-atom binding (finding C): a positive atom binds a variable only
+    // in an invertible/matchable position — through the Herbrand constructors and invertible arithmetic
+    // — not through a non-invertible former (division, absolute, interval), whose variable it requires
+    // without binding. A variable also present in a bindable position elsewhere is still bound.
+    ("atom-function-binds", "r(X) :- p(f(X)).\n"),
+    ("atom-invertible-add-binds", "r(X) :- p(X + 1).\n"),
+    ("atom-negation-binds", "r(X) :- p(-X).\n"),
+    ("atom-division-unbound", "r(X) :- p(X / 2).\n"),
+    ("atom-absolute-unbound", "r(X) :- p(|X|).\n"),
+    ("atom-interval-position-unbound", "r(X) :- p(X .. 3).\n"),
+    ("atom-two-variable-arith-unbound", "r(X, Y) :- p(X + Y).\n"),
+    ("atom-bindable-elsewhere", "r(X) :- p(X / 2, X).\n"),
     // ---- The matching-`=` dialect boundary (§5): clingo decomposes an `=` against a tuple, and chains
     // a multi-step `=`, to bind — where the strict ASP-Core-2 standard does not. Recorded divergences;
     // this tier is the conservative side (never a false safe).
     ("tuple-decomposition", "p(X, Y) :- q(Z), Z = (X, Y).\n"),
     ("chained-equality", "p(X, Y) :- X = Y = 1.\n"),
+    // ---- Formers on both sides of `=` (finding G, the matching-`=` family). With neither side bound,
+    // `f(X) = f(Y)` is unsafe to both — decomposition to `X = Y` binds nothing without a value.
+    ("equality-formers-both-sides", "p(X, Y) :- f(X) = f(Y).\n"),
+    // But with one side bound, clingo decomposes `f(X) = f(Y)` to bind the other (`q(X)` binds X, so Y
+    // binds); the strict standard binds only a lone side, so this tier reports Y unsafe. Recorded
+    // divergence, conservative side.
+    (
+        "equality-former-decomposition",
+        "p(Y) :- q(X), f(X) = f(Y).\n",
+    ),
+    // ---- Arithmetic inversion in an assignment (finding H): clingo inverts `Y = X + 1` (Y bound by
+    // q(Y)) to bind X; the strict standard binds only a lone-variable side. Recorded divergence. A
+    // safety-only fix here would OPEN a false `Holds` (the deepening graph is direction-sensitive, §5),
+    // so it stays characterized, not adopted.
+    (
+        "equality-arithmetic-inversion",
+        "p(X) :- q(Y), Y = X + 1.\n",
+    ),
+    // ---- Arithmetic over two function terms (finding C's one fail-closed shape): clingo binds X in
+    // `f(X) * g(Y)` (a grounding-time type error); this tier's certain-occurrence rule binds neither.
+    // Recorded divergence, conservative side (never a false safe).
+    (
+        "atom-arith-over-functions",
+        "r(X) :- p(f(X) * g(Y)), s(Y).\n",
+    ),
 ];
 
 /// The recorded divergences (§5, §10): the labels where this tier's syntactic safety and
@@ -218,6 +286,28 @@ const RECORDED_DIVERGENCES: &[(&str, &str)] = &[
     (
         "chained-equality",
         "clingo binds through a chained `X = Y = 1`; this tier's `=` binds only as a single step",
+    ),
+    // clingo decomposes a former on both sides of `=` when one side is bound (`q(X)` binds X, so
+    // `f(X) = f(Y)` binds Y); the strict standard binds only a lone side, so this tier reports Y unsafe
+    // — the matching-`=` family (finding G), the conservative side, never a false safe.
+    (
+        "equality-former-decomposition",
+        "clingo decomposes `f(X) = f(Y)` with X bound to bind Y; the strict standard binds only a lone side",
+    ),
+    // clingo inverts arithmetic in an assignment (`Y = X + 1`, Y bound, binds X); this tier binds only a
+    // lone-variable side, so it reports X unsafe (finding H). Characterized, NOT adopted: a safety-only
+    // fix would open a false `Holds`, since the finiteness deepening graph is direction-sensitive (§5) —
+    // any future fix must first add the inverse-deepening edge.
+    (
+        "equality-arithmetic-inversion",
+        "clingo inverts `Y = X + 1` to bind X; this tier binds only a lone-variable side (a false `Holds` risk if adopted)",
+    ),
+    // clingo binds a variable inside arithmetic over two function terms (`f(X) * g(Y)`, a grounding-time
+    // type error); this tier's certain-occurrence rule binds neither operand's variables (finding C's
+    // one fail-closed shape), so it reports the arithmetic-only variable unsafe — the conservative side.
+    (
+        "atom-arith-over-functions",
+        "clingo binds X in `f(X) * g(Y)`; this tier's certain-occurrence binding binds neither function operand",
     ),
     // The head conditional `p(X) : q(X)` was once recorded here as a divergence — the tier read a
     // head literal's variables as rule-global. It no longer diverges: a disjunction/choice element
@@ -345,14 +435,29 @@ const FINITENESS_HOLDS_CORPUS: &[(&str, &str)] = &[
         "recursive-aliasing-not-growth",
         "p(a).\np(X) :- p(Y), X = Y.\n",
     ),
+    // A domain-extending `#external` on a **finite** body (finding A): it generates only p(f(1)), p(f(2))
+    // — a non-recursive generation component — so grounding is finite (`Holds`), precisely, not the blunt
+    // over-conservative `Unknown`. Grounds within the cap.
+    (
+        "external-finite-body-holds",
+        "q(1). q(2).\n#external p(f(X)) : q(X).\n",
+    ),
 ];
 
 /// A program this tier reports `Unknown` and that grounds unboundedly (a term former deepens the
 /// recursion): the control that proves the backstop is **live** — the cap fires on an infinite
 /// grounding, and this tier's `Unknown` correctly flags the infinity, so the `Holds` corpus above is
 /// not passing vacuously.
-const FINITENESS_INFINITE_CONTROL: (&str, &str) =
-    ("recursive-former-grows", "p(a).\np(f(X)) :- p(X).\n");
+const FINITENESS_INFINITE_CONTROLS: &[(&str, &str)] = &[
+    ("recursive-former-grows", "p(a).\np(f(X)) :- p(X).\n"),
+    // External-borne generation growth (finding A): the external generates p(f(a)), p(f(f(a))), … and q
+    // derives around the loop, so grounding is unbounded — `Unknown` here, and clingo hits the cap
+    // (through the `external` observer, the A2 blind spot the counter now covers).
+    (
+        "external-generation-grows",
+        "p(a).\nq(X) :- p(X).\n#external p(f(X)) : q(X).\n",
+    ),
+];
 
 /// The bounded finiteness backstop (§5, §6.1, §10): the ground-truth net for a false `Holds`, the one
 /// failure §6.1 forbids. The full ground-level *classification* differential (exact tightness /
@@ -376,16 +481,18 @@ fn a_holds_verdict_grounds_within_the_bound() {
         );
     }
 
-    // The control: this tier says Unknown, and the authority hits the cap — so the backstop can fire.
-    let (label, control) = FINITENESS_INFINITE_CONTROL;
-    assert!(
-        !our_holds(control),
-        "[{label}] the infinite control must be Unknown, not Holds: {control:?}",
-    );
-    let (grounded, capped) = authority_ground(control);
-    assert!(
-        capped && !grounded,
-        "[{label}] the infinite control must hit the cap, or the backstop is vacuous \
-         (grounded={grounded}, capped={capped}): {control:?}",
-    );
+    // The controls: this tier says Unknown, and the authority hits the cap — so the backstop can fire.
+    // Both a rule-borne and an external-borne growth, so the cap is proven live on each observer path.
+    for (label, control) in FINITENESS_INFINITE_CONTROLS {
+        assert!(
+            !our_holds(control),
+            "[{label}] the infinite control must be Unknown, not Holds: {control:?}",
+        );
+        let (grounded, capped) = authority_ground(control);
+        assert!(
+            capped && !grounded,
+            "[{label}] the infinite control must hit the cap, or the backstop is vacuous \
+             (grounded={grounded}, capped={capped}): {control:?}",
+        );
+    }
 }

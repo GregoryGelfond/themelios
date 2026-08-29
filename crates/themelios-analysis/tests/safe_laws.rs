@@ -25,7 +25,7 @@ use themelios_program::program::{
 };
 use themelios_program::provenance::{Origin, Provenance, TransformTag, WithProvenance};
 use themelios_program::symbol::{Name, Symbol, VarName};
-use themelios_program::term::{BinaryOp, Term, Variable};
+use themelios_program::term::{BinaryOp, Term, UnaryOp, Variable};
 
 // ---- helpers ----
 
@@ -144,14 +144,15 @@ fn naive_anonymous_unbound(rule: &Rule, bound: &BTreeSet<Variable>) -> bool {
             return false;
         };
         match &literal.inner {
-            LiteralInner::Atom(atom) => {
-                literal.negation != DefaultNegation::None
-                    && atom.get().arguments.iter().any(term_has_anon)
-            }
             LiteralInner::Comparison(comparison) => {
                 comparison_anon_unbound(comparison.get(), bound)
             }
-            LiteralInner::True | LiteralInner::False => false,
+            // A `_` in an atom body literal is never unbound: a positive atom binds it, and a `_`
+            // under default negation is projected (existential) by the grounder — finding E, verified
+            // against clingo (`p :- not q(_).` grounds). A boolean carries no variable. Named variables
+            // are handled by the `all − bound` difference in `naive_unbound`. (The generator's negated
+            // atoms are positive-sign with flat `_` arguments, exactly the projected shape.)
+            LiteralInner::Atom(_) | LiteralInner::True | LiteralInner::False => false,
         }
     });
     head_anon || body_anon
@@ -419,16 +420,19 @@ fn safety_reads_each_anonymous_as_a_distinct_fresh_variable() {
         .is_empty(),
     );
 
-    // p(X) :- q(X), not r(_).  → unsafe. A `_` in a negated literal is required, never bound.
-    assert_eq!(
+    // p(X) :- q(X), not r(_).  → SAFE. A `_` under default negation is *projected* — clingo rewrites
+    // each `_` under `not` to a fresh existential, so it needs no binder (finding E, verified: clingo
+    // grounds this). A genuine named variable under `not` is still required (see the `not r(Y)` case in
+    // `safety_projects_an_anonymous_under_negation`).
+    assert!(
         unbound_of(Rule::new(
             pred("p", &["X"]),
             vec![
                 BodyElement::from(pred("q", &["X"])),
                 not(Atom::new(name("r"), [anon()])),
             ],
-        )),
-        [Variable::Anonymous].into_iter().collect(),
+        ))
+        .is_empty(),
     );
 
     // p(_) :- q(_).  → unsafe. The head `_` and the body `_` are *distinct*; the body one binds
@@ -489,6 +493,321 @@ fn safety_reads_each_anonymous_as_a_distinct_fresh_variable() {
             vec![BodyElement::from(pred("q", &["X"])), assign("X", f_of_anon),],
         )),
         [Variable::Anonymous].into_iter().collect(),
+    );
+}
+
+/// Finding E, verified against clingo: a `_` under default negation is *projected* — clingo rewrites
+/// each `_` under `not` to a fresh existential, so it needs no binder. The projection follows Herbrand
+/// structure only — through a function, tuple, or pool former, but NOT through an evaluated term (`_/2`,
+/// an interval), whose `_` must be bound to evaluate — matching clingo's boundary exactly. A genuine
+/// named variable under `not` is always required.
+#[test]
+fn safety_projects_an_anonymous_under_negation() {
+    let anon = || Term::Variable(Variable::Anonymous);
+
+    // p :- not q(_).  → SAFE. The bare `_` under `not` is projected (clingo grounds it).
+    assert!(
+        unbound_of(Rule::new(
+            pred("p", &[]),
+            vec![not(Atom::new(name("q"), [anon()]))]
+        ))
+        .is_empty(),
+        "a bare _ under not is projected: safe",
+    );
+
+    // p :- not q(f(_)).  → SAFE. The `_` projects through a function former.
+    let f_of_anon = Term::Function {
+        name: name("f"),
+        arguments: vec![anon()],
+    };
+    assert!(
+        unbound_of(Rule::new(
+            pred("p", &[]),
+            vec![not(Atom::new(name("q"), [f_of_anon]))]
+        ))
+        .is_empty(),
+        "a _ nested in a function under not is projected: safe",
+    );
+
+    // p(X) :- q(X), not r(X, _).  → SAFE. `X` is bound by q(X); the `_` projects; the two are independent.
+    assert!(
+        unbound_of(Rule::new(
+            pred("p", &["X"]),
+            vec![
+                BodyElement::from(pred("q", &["X"])),
+                not(Atom::new(name("r"), [var("X"), anon()])),
+            ],
+        ))
+        .is_empty(),
+        "a bound named var beside a projected _ under not: safe",
+    );
+
+    // p :- not q(Y).  → unsafe {Y}. A genuine named variable under `not` is required, never projected.
+    assert_eq!(
+        unbound_of(Rule::new(pred("p", &[]), vec![not(pred("q", &["Y"]))])),
+        [named("Y")].into_iter().collect(),
+        "a named variable under not is required, not projected",
+    );
+
+    // p(X) :- q(X), not r(_ / 2).  → unsafe {_}. A `_` under an evaluated term (division) is NOT
+    // projected — clingo must bind it to evaluate — so it is required and unbound (matches clingo).
+    let anon_div_2 = Term::BinaryOperation {
+        operator: BinaryOp::Div,
+        left: Box::new(anon()),
+        right: Box::new(num(2)),
+    };
+    assert_eq!(
+        unbound_of(Rule::new(
+            pred("p", &["X"]),
+            vec![
+                BodyElement::from(pred("q", &["X"])),
+                not(Atom::new(name("r"), [anon_div_2])),
+            ],
+        )),
+        [Variable::Anonymous].into_iter().collect(),
+        "a _ under an evaluated term (division) is not projected: unsafe",
+    );
+}
+
+/// Finding I, verified against clingo: a body conditional `l : cond` binds two-stage — the condition is
+/// instantiated first (binding its variables), then the literal is evaluated per instance, binding
+/// *locally*. A positive literal `p(X) : ...` matches its own instances (its variables local); an
+/// assignment `X = t : cond` binds `X` locally; a non-assignment comparison binds nothing; and a `_`
+/// under a negated conditional literal projects (finding E), while a named one is required.
+#[test]
+fn safety_binds_a_conditional_literal_two_stage() {
+    let anon = || Term::Variable(Variable::Anonymous);
+    let cond = |literal: Literal, condition: Vec<Literal>| {
+        BodyElement::Conditional(ConditionalLiteral {
+            literal,
+            condition: Condition::new(condition),
+        })
+    };
+    let comparison = |lhs: Term, relation: Relation, rhs: Term| Literal {
+        negation: DefaultNegation::None,
+        inner: LiteralInner::Comparison(WithProvenance::constructed(Comparison::new(
+            lhs, relation, rhs,
+        ))),
+    };
+    let negated = |atom: Atom| Literal {
+        negation: DefaultNegation::Not,
+        inner: LiteralInner::Atom(WithProvenance::constructed(atom)),
+    };
+
+    // s :- p(X) : r(Y).  → SAFE. The positive conditional literal binds X locally (matched against p);
+    // X is purely local. (`s(X) :- p(X) : r(Y).` is unsafe — the head's global X is not bound; pinned
+    // in `safety_flags_an_unbound_variable_in_each_local_and_comparison_form`.)
+    assert!(
+        unbound_of(Rule::new(
+            pred("s", &[]),
+            vec![cond(
+                Literal::from(pred("p", &["X"])),
+                vec![Literal::from(pred("r", &["Y"]))],
+            )],
+        ))
+        .is_empty(),
+        "a positive conditional literal binds its variable locally: safe",
+    );
+
+    // h :- X = 1 : q(_).  → SAFE. The conditional assignment binds X locally (X is not in the condition).
+    assert!(
+        unbound_of(Rule::new(
+            pred("h", &[]),
+            vec![cond(
+                comparison(var("X"), Relation::Eq, num(1)),
+                vec![Literal::from(Atom::new(name("q"), [anon()]))],
+            )],
+        ))
+        .is_empty(),
+        "a conditional assignment binds its lone side locally: safe",
+    );
+
+    // h :- X < 5 : q(_).  → unsafe {X}. A non-assignment comparison binds nothing, and the condition
+    // does not bind X, so X is unbound (matches clingo).
+    assert!(
+        unbound_of(Rule::new(
+            pred("h", &[]),
+            vec![cond(
+                comparison(var("X"), Relation::Lt, num(5)),
+                vec![Literal::from(Atom::new(name("q"), [anon()]))],
+            )],
+        ))
+        .contains(&named("X")),
+        "a non-assignment conditional comparison binds nothing: unsafe",
+    );
+
+    // h :- not p(_) : q(Y).  → SAFE. A `_` under a negated conditional literal projects (finding E).
+    assert!(
+        unbound_of(Rule::new(
+            pred("h", &[]),
+            vec![cond(
+                negated(Atom::new(name("p"), [anon()])),
+                vec![Literal::from(pred("q", &["Y"]))],
+            )],
+        ))
+        .is_empty(),
+        "a projected _ under a negated conditional literal: safe",
+    );
+
+    // h :- not p(X) : q(Y).  → unsafe {X}. A genuine named variable under a negated conditional literal
+    // is required (the condition binds Y, not X).
+    assert!(
+        unbound_of(Rule::new(
+            pred("h", &[]),
+            vec![cond(
+                negated(pred("p", &["X"])),
+                vec![Literal::from(pred("q", &["Y"]))],
+            )],
+        ))
+        .contains(&named("X")),
+        "a named variable under a negated conditional literal is required: unsafe",
+    );
+}
+
+/// Finding C, verified against clingo: a positive atom binds a variable only in an invertible/matchable
+/// position. It binds through the Herbrand constructors and invertible arithmetic (`X`, `f(X)`, `X+1`,
+/// `-X`), but a variable under a non-invertible former — division, absolute value, an interval — is
+/// required without being bound, so relying on such a position for binding is unsafe. A variable also
+/// present in a bindable position elsewhere is still bound (`p(X/2, X)` binds `X`).
+#[test]
+fn safety_binds_only_invertible_positive_atom_positions() {
+    let neg = |t: Term| Term::UnaryOperation {
+        operator: UnaryOp::Negate,
+        argument: Box::new(t),
+    };
+    let binop = |op: BinaryOp, l: Term, r: Term| Term::BinaryOperation {
+        operator: op,
+        left: Box::new(l),
+        right: Box::new(r),
+    };
+    let abs = |t: Term| Term::Absolute(Box::new(t));
+    let interval = |l: Term, u: Term| Term::Interval {
+        lower: Box::new(l),
+        upper: Box::new(u),
+    };
+    let p_of = |terms: &[Term]| BodyElement::from(Atom::new(name("p"), terms.to_vec()));
+
+    // q(X) :- p(X / 2).  → unsafe {X}. Division is not invertible: X is required but not bound.
+    assert_eq!(
+        unbound_of(Rule::new(
+            pred("q", &["X"]),
+            vec![p_of(&[binop(BinaryOp::Div, var("X"), num(2))])],
+        )),
+        [named("X")].into_iter().collect(),
+        "a variable under division in a positive atom is not bound: unsafe",
+    );
+
+    // q(X) :- p(|X|).  → unsafe {X}. Absolute value is not invertible.
+    assert_eq!(
+        unbound_of(Rule::new(pred("q", &["X"]), vec![p_of(&[abs(var("X"))])])),
+        [named("X")].into_iter().collect(),
+        "a variable under absolute value is not bound: unsafe",
+    );
+
+    // q(X) :- p(X .. 3).  → unsafe {X}. An interval is not invertible.
+    assert_eq!(
+        unbound_of(Rule::new(
+            pred("q", &["X"]),
+            vec![p_of(&[interval(var("X"), num(3))])],
+        )),
+        [named("X")].into_iter().collect(),
+        "a variable under an interval is not bound: unsafe",
+    );
+
+    // q(X, Y) :- p(X + Y).  → unsafe {X, Y}. Two-variable arithmetic binds neither (matches clingo).
+    assert_eq!(
+        unbound_of(Rule::new(
+            pred("q", &["X", "Y"]),
+            vec![p_of(&[binop(BinaryOp::Add, var("X"), var("Y"))])],
+        )),
+        [named("X"), named("Y")].into_iter().collect(),
+        "two-variable arithmetic in a positive atom binds neither: unsafe",
+    );
+
+    // q(X) :- p(X + 1).  → SAFE. Addition by a ground term is invertible.
+    assert!(
+        unbound_of(Rule::new(
+            pred("q", &["X"]),
+            vec![p_of(&[binop(BinaryOp::Add, var("X"), num(1))])],
+        ))
+        .is_empty(),
+        "a variable under invertible addition is bound: safe",
+    );
+
+    // q(X) :- p(-X).  → SAFE. Negation is invertible.
+    assert!(
+        unbound_of(Rule::new(pred("q", &["X"]), vec![p_of(&[neg(var("X"))])])).is_empty(),
+        "a variable under negation is bound: safe",
+    );
+
+    // q(X) :- p(f(X)).  → SAFE. A function argument is a matching position.
+    assert!(
+        unbound_of(Rule::new(
+            pred("q", &["X"]),
+            vec![p_of(&[Term::Function {
+                name: name("f"),
+                arguments: vec![var("X")],
+            }])],
+        ))
+        .is_empty(),
+        "a variable under a function former is bound: safe",
+    );
+
+    // q(X) :- p(X / 2, X).  → SAFE. X is bound by the direct second argument, even though the first
+    // (X/2) does not bind it — a variable binds if *any* of its positions is invertible.
+    assert!(
+        unbound_of(Rule::new(
+            pred("q", &["X"]),
+            vec![p_of(&[binop(BinaryOp::Div, var("X"), num(2)), var("X")])],
+        ))
+        .is_empty(),
+        "a variable bound in a direct position is safe though another position is non-invertible",
+    );
+}
+
+/// A stack-safety tripwire (§12.4): a positive atom whose argument is a deeply nested arithmetic term is
+/// analyzed over the iterative `Term::fold` and `Clone`, so it does not overflow the call stack — the
+/// depth (100_000) is well past what a recursive walk survives. The invertible `+1` chain binds `X`
+/// (safe); the non-invertible `/2` chain does not (unsafe). A constructed program can carry a term this
+/// deep, so the DoS-gate analysis must stay bounded by the heap, not the stack.
+#[test]
+fn safety_analyzes_a_deeply_nested_arithmetic_term_without_overflow() {
+    const DEPTH: usize = 100_000;
+
+    let mut invertible = var("X");
+    for _ in 0..DEPTH {
+        invertible = Term::BinaryOperation {
+            operator: BinaryOp::Add,
+            left: Box::new(invertible),
+            right: Box::new(num(1)),
+        };
+    }
+    // q(X) :- p((..((X+1)+1)..+1)).  → SAFE: X binds through the invertible chain.
+    assert!(
+        unbound_of(Rule::new(
+            pred("q", &["X"]),
+            vec![BodyElement::from(Atom::new(name("p"), [invertible]))],
+        ))
+        .is_empty(),
+        "a deep invertible arithmetic chain binds X: safe (and no stack overflow)",
+    );
+
+    let mut non_invertible = var("X");
+    for _ in 0..DEPTH {
+        non_invertible = Term::BinaryOperation {
+            operator: BinaryOp::Div,
+            left: Box::new(non_invertible),
+            right: Box::new(num(2)),
+        };
+    }
+    // q(X) :- p((..((X/2)/2)..)).  → unsafe {X}: no position is invertible.
+    assert_eq!(
+        unbound_of(Rule::new(
+            pred("q", &["X"]),
+            vec![BodyElement::from(Atom::new(name("p"), [non_invertible]))],
+        )),
+        [named("X")].into_iter().collect(),
+        "a deep non-invertible arithmetic chain does not bind X: unsafe (and no stack overflow)",
     );
 }
 
@@ -655,7 +974,8 @@ fn safety_vets_bodied_directives() {
     );
 
     // #project p(X).  — the atom is a schema wildcard (ranges over instances), not required: safe,
-    // agreeing with clingo (a `#project`/`#heuristic` atom variable is not a binding obligation).
+    // agreeing with clingo (a `#project` atom variable is not a binding obligation; a `#heuristic`
+    // atom, by contrast, binds its bracket — see below).
     assert!(
         statement_unbound(Statement::Project(Project::atom_body(
             pred("p", &["X"]),
@@ -682,7 +1002,8 @@ fn safety_vets_bodied_directives() {
         "a #project body's own unbound variable is unsafe though the atom is a wildcard",
     );
 
-    // #heuristic p(X). [1, 1]  — the atom is a wildcard; the bias and modifier are ground: safe.
+    // #heuristic p(X). [1, 1]  — the atom domain-matches (binding its own X), and the bias and
+    // modifier are ground, so nothing is unbound: safe.
     assert!(
         statement_unbound(Statement::Heuristic(Heuristic::new(
             pred("p", &["X"]),
@@ -692,7 +1013,7 @@ fn safety_vets_bodied_directives() {
             num(1),
         )))
         .is_empty(),
-        "a #heuristic atom variable is a schema wildcard; ground bias/modifier: safe",
+        "a #heuristic atom binds its own variable; ground bias/modifier: safe",
     );
 }
 
@@ -800,6 +1121,59 @@ fn safety_vets_more_bodied_directives() {
     );
 }
 
+/// The (C)/(D)-round directive-binding fixes, each a clingo-verified divergence the round found (see the
+/// SAFETY_CORPUS rows). A body-less `#show t.` binds nothing (finding D — was a false `safe`), and a
+/// `#heuristic` atom's domain match binds its bracket terms (finding F — was a false `unsafe`).
+#[test]
+fn safety_vets_body_less_show_and_heuristic_bracket_binding() {
+    // #show f(X).  — a body-less show binds nothing, so the shown term's X is unbound: unsafe. clingo
+    // flags `#show f(X).`; the old `NoObligation` reading was a false `safe` (finding D).
+    assert_eq!(
+        statement_unbound(Statement::Show(Show::Term(function("f", "X")))),
+        [named("X")].into_iter().collect(),
+        "a body-less #show with a variable in the shown term is unsafe",
+    );
+
+    // #show f(1).  — a body-less show with a ground term: no variable, safe.
+    assert!(
+        statement_unbound(Statement::Show(Show::Term(Term::Function {
+            name: name("f"),
+            arguments: vec![num(1)],
+        })))
+        .is_empty(),
+        "a body-less #show with a ground shown term is safe",
+    );
+
+    // #heuristic p(X). [X@1, 1]  — the atom domain-matches, binding X, so the bracket bias X is bound
+    // even with an empty body: safe. clingo reads the atom as binding the bracket; the old wildcard
+    // model read this unsafe (finding F).
+    assert!(
+        statement_unbound(Statement::Heuristic(Heuristic::new(
+            pred("p", &["X"]),
+            Body::empty(),
+            var("X"),
+            Some(num(1)),
+            num(1),
+        )))
+        .is_empty(),
+        "the heuristic atom's domain match binds the bracket bias X: safe",
+    );
+
+    // #heuristic p(X). [Y@1, 1]  — the atom binds only its own X, not the unrelated bracket Y, and the
+    // body is empty: Y is unbound: unsafe. (The atom is a binder, not a blanket pass.)
+    assert_eq!(
+        statement_unbound(Statement::Heuristic(Heuristic::new(
+            pred("p", &["X"]),
+            Body::empty(),
+            var("Y"),
+            Some(num(1)),
+            num(1),
+        ))),
+        [named("Y")].into_iter().collect(),
+        "the heuristic atom binds only its own variable, not an unrelated bracket variable: unsafe",
+    );
+}
+
 #[test]
 fn safety_vets_a_directive_borne_anonymous_variable() {
     // :~ q. [_@1]  — the weight is `_`. A directive-borne `_` in a requiring position must be
@@ -828,6 +1202,40 @@ fn safety_vets_a_directive_borne_anonymous_variable() {
         ))),
         [Variable::Anonymous].into_iter().collect(),
         "an anonymous in a #show term, unbindable by the body, is unsafe",
+    );
+}
+
+#[test]
+fn safety_freshens_a_directive_anonymous_apart_from_a_theory_term_name() {
+    // :~ q(_), &t { Anonymous0 }. [1@1]  — the ordinary `_` (in `q(_)`) and the theory-term variable
+    // literally named `Anonymous0` are DISTINCT variables. The scan freshens the `_` to a name drawn
+    // apart from every variable the *whole statement* mentions — theory terms included, since a
+    // directive body may carry a theory atom — so the minted `_` does not collide with `Anonymous0`
+    // and read it bound. `Anonymous0` has no binding occurrence, so the statement is unsafe on it.
+    // (A used-name set that missed the theory-term name would mint `Anonymous0` for the `_`, `q`
+    // would bind it, and the theory `Anonymous0` would read bound — a false `safe`.)
+    let anonymous_atom = Atom::new(name("q"), [Term::Variable(Variable::Anonymous)]);
+    let theory = BodyElement::TheoryAtom {
+        negation: DefaultNegation::None,
+        atom: TheoryAtom::new(
+            name("t"),
+            Vec::<Term>::new(),
+            [TheoryElement::new(
+                [TheoryTerm::Variable(named("Anonymous0"))],
+                None,
+            )],
+            None,
+        ),
+    };
+    let weak = Statement::WeakConstraint(WeakConstraint::new(
+        Body::new([BodyElement::from(anonymous_atom), theory]),
+        weight(num(1)).at_priority(num(1)),
+        Vec::<Term>::new(),
+    ));
+    assert_eq!(
+        statement_unbound(weak),
+        [named("Anonymous0")].into_iter().collect(),
+        "a directive-borne theory variable named like a mint is not bound by the freshened `_`",
     );
 }
 
@@ -971,6 +1379,71 @@ fn finiteness_is_a_sound_approximation() {
         }
         Verdict::Holds => panic!("a term-growing recursion is not proven finite"),
     }
+}
+
+/// Finding A, verified against clingo (`p(a). q(X):-p(X). #external p(f(X)):q(X).` grounds unbounded): a
+/// `#external` *generates* atoms, so a domain-extending external that closes a generation loop grows the
+/// Herbrand universe though no rule derives it. Finiteness reads it through the generation graph (the
+/// external as a pseudo-rule `atom :- body`) — Unknown, witnessed by the recursive component. A
+/// finite-body external, or a non-deepening one, still grounds finitely (Holds): the fix is precise.
+#[test]
+fn finiteness_flags_external_borne_generation_growth() {
+    let p_f_x = || {
+        Atom::new(
+            name("p"),
+            [Term::Function {
+                name: name("f"),
+                arguments: vec![var("X")],
+            }],
+        )
+    };
+    let over_q = |atom: Atom| {
+        Statement::External(External::new(
+            atom,
+            Body::new([BodyElement::from(pred("q", &["X"]))]),
+            None,
+        ))
+    };
+
+    // q(X):-p(X). #external p(f(X)):q(X).  → Unknown: the external generates p(f(X)) for each q(X), and
+    // q derives from p, so the universe grows without bound — a false Holds before the fix.
+    match finiteness_of([
+        Statement::Rule(Rule::new(pred("q", &["X"]), pred("p", &["X"]))),
+        over_q(p_f_x()),
+    ]) {
+        Verdict::Unknown { witness } => assert!(
+            witness.is_recursive(),
+            "external-borne growth is witnessed by a recursive component",
+        ),
+        Verdict::Holds => panic!("external-borne generation growth is not proven finite"),
+    }
+
+    // #external p(f(X)):q(X). q(1). q(2).  → Holds: q is a fact (finite), the external's component is not
+    // recursive, so only finitely many p(f(·)) are generated — precise, not over-conservative.
+    assert_eq!(
+        finiteness_of([
+            over_q(p_f_x()),
+            Statement::Rule(Rule::fact(Atom::new(name("q"), [num(1)]))),
+            Statement::Rule(Rule::fact(Atom::new(name("q"), [num(2)]))),
+        ]),
+        Verdict::Holds,
+        "a finite-body domain-extending external grounds finitely",
+    );
+
+    // #external p(X):q(X). q(X):-p(X).  → Holds: the external does not deepen (p(X), a bare variable), so
+    // even in a generation cycle the universe does not grow.
+    assert_eq!(
+        finiteness_of([
+            Statement::External(External::new(
+                pred("p", &["X"]),
+                Body::new([BodyElement::from(pred("q", &["X"]))]),
+                None,
+            )),
+            Statement::Rule(Rule::new(pred("q", &["X"]), pred("p", &["X"]))),
+        ]),
+        Verdict::Holds,
+        "a non-deepening external in a generation cycle grounds finitely",
+    );
 }
 
 #[test]
@@ -1793,15 +2266,17 @@ fn safety_flags_an_unbound_variable_in_each_local_and_comparison_form() {
         "a purely-local unbound aggregate variable is flagged",
     );
 
-    // s :- p(X) : r(Y).  — the conditional's literal p(X) needs X, but its condition
-    // r(Y) binds Y, not X: X is unbound and flagged.
+    // s(X) :- p(X) : r(Y).  — the conditional's positive literal p(X) binds X only *locally* (matched
+    // against p's instances), never globally, so the head's global X has no binder and is flagged. (A
+    // bare `s :- p(X) : r(Y).` is safe — X is then purely local; both verified against clingo, finding
+    // I. See `safety_binds_a_conditional_literal_two_stage`.)
     let conditional = BodyElement::Conditional(ConditionalLiteral {
         literal: Literal::from(pred("p", &["X"])),
         condition: Condition::new([Literal::from(pred("r", &["Y"]))]),
     });
     assert!(
-        unbound_of(Rule::new(pred("s", &[]), vec![conditional])).contains(&named("X")),
-        "an unbound variable in a body conditional literal is flagged",
+        unbound_of(Rule::new(pred("s", &["X"]), vec![conditional])).contains(&named("X")),
+        "a global variable that a body conditional binds only locally is flagged",
     );
 
     // p(X) :- X < 5.  — a single NON-equality comparison is not an assignment, so it

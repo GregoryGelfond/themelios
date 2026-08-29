@@ -17,7 +17,7 @@ use crate::program::{
     Aggregate, Atom, Body, BodyElement, Choice, Comparison, Condition, ConditionalLiteral,
     DefaultNegation, Disjunction, Edge, FunctionAggregate, HasGuards, Head, HeadAggregate,
     Heuristic, Literal, LiteralInner, Optimize, Project, Rule, SetAggregate, SetElement, Show,
-    Statement, TheoryAtom, TheoryTerm, WeakConstraint,
+    Statement, TheoryAtom, TheoryTerm, WeakConstraint, Weight,
 };
 use crate::symbol::Signature;
 use crate::term::{Term, Variable};
@@ -112,6 +112,90 @@ impl Rule {
         body_variables(self.body().get(), &mut variables);
         variables
     }
+}
+
+/// Every variable occurrence in a **statement**, in document order (with repeats) — the
+/// statement-level companion to [`Rule::variables`], sharing its walkers so the two cannot diverge.
+/// A rule's occurrences are its head's and body's; a bodied directive's are its non-body term
+/// positions' and its body's, and a body descends theory terms for their ordinary variable leaves
+/// (§4.9), so a variable only in a directive-borne theory atom is not missed. The match is
+/// **exhaustive over `Statement`** (no wildcard), so a new statement kind is a compile error here,
+/// never silently unscanned — the one authority a client reading "which variable names does a
+/// statement mention" consumes (the safety scan's anonymous freshener, analysis §5). Each `_` occurs
+/// as a distinct `Anonymous` (as the grounder reads it); a named variable repeats per occurrence.
+/// O(nodes).
+pub fn statement_variables(statement: &Statement) -> Vec<&Variable> {
+    let mut variables = Vec::new();
+    match statement {
+        Statement::Rule(rule) => {
+            head_variables(rule.head().get(), &mut variables);
+            body_variables(rule.body().get(), &mut variables);
+        }
+        Statement::WeakConstraint(weak) => {
+            body_variables(weak.body().get(), &mut variables);
+            push_weight_variables(weak.weight(), &mut variables);
+            for term in weak.terms() {
+                push_term_variables(term, &mut variables);
+            }
+        }
+        Statement::Optimize(optimize) => {
+            for element in optimize.elements() {
+                let element = element.get();
+                push_weight_variables(element.weight(), &mut variables);
+                for term in element.terms() {
+                    push_term_variables(term, &mut variables);
+                }
+                push_condition_variables(element.condition(), &mut variables);
+            }
+        }
+        Statement::Show(show) => match show {
+            Show::All | Show::Signature(_) => {}
+            Show::Term(term) => push_term_variables(term, &mut variables),
+            Show::TermBody { term, body } => {
+                push_term_variables(term, &mut variables);
+                body_variables(body.get(), &mut variables);
+            }
+        },
+        Statement::Project(project) => match project {
+            Project::Signature(_) => {}
+            Project::Atom { atom, body } => {
+                push_atom_variables(atom.get(), &mut variables);
+                body_variables(body.get(), &mut variables);
+            }
+        },
+        Statement::Edge(edge) => {
+            for (from, to) in edge.pairs() {
+                push_term_variables(from, &mut variables);
+                push_term_variables(to, &mut variables);
+            }
+            body_variables(edge.body().get(), &mut variables);
+        }
+        Statement::Heuristic(heuristic) => {
+            push_atom_variables(heuristic.atom().get(), &mut variables);
+            body_variables(heuristic.body().get(), &mut variables);
+            push_term_variables(heuristic.bias(), &mut variables);
+            if let Some(priority) = heuristic.priority() {
+                push_term_variables(priority, &mut variables);
+            }
+            push_term_variables(heuristic.modifier(), &mut variables);
+        }
+        Statement::External(external) => {
+            push_atom_variables(external.atom().get(), &mut variables);
+            body_variables(external.body().get(), &mut variables);
+            if let Some(value) = external.value() {
+                push_term_variables(value, &mut variables);
+            }
+        }
+        Statement::Const(constant) => push_term_variables(&constant.value, &mut variables),
+        Statement::Query(query) => push_atom_variables(query.atom().get(), &mut variables),
+        // No ordinary variable: a signature, an include target, a script body, a theory definition
+        // (§4.8, §4.9).
+        Statement::Defined(_)
+        | Statement::Include(_)
+        | Statement::Script(_)
+        | Statement::TheoryDefinition(_) => {}
+    }
+    variables
 }
 
 // ---- The signature of an atom ----
@@ -245,6 +329,13 @@ fn push_theory_atom_variables<'a>(atom: &'a TheoryAtom, out: &mut Vec<&'a Variab
     }
     if let Some(guard) = atom.guard() {
         push_theory_term_variables(&guard.term, out);
+    }
+}
+
+fn push_weight_variables<'a>(weight: &'a Weight, out: &mut Vec<&'a Variable>) {
+    push_term_variables(weight.term(), out);
+    if let Some(priority) = weight.priority() {
+        push_term_variables(priority, out);
     }
 }
 
@@ -578,14 +669,27 @@ pub fn body_binder(element: &BodyElement) -> BodyBinder<'_> {
 pub enum StatementBinder<'a> {
     /// A derivation rule — the head requires, the body binds (analysis §5).
     Rule(&'a Rule),
-    /// A bodied directive — the `required` term positions must be bound by `body`. Covers weak
-    /// constraints, `#show t : body`, `#project a : body`, `#edge : body`, `#heuristic : body`, and
-    /// `#external : body`; the empty-body form (`conditional-dot ::= "."`, grammar §5.9) binds nothing,
-    /// so a required term with a variable is then unsafe.
+    /// A bodied directive — the `required` term positions must be bound by `body` when it has one. A
+    /// body-less form (`#show t.`, an empty `conditional-dot ::= "."`, grammar §5.9) binds nothing, so a
+    /// required term with a variable is then unsafe. Covers weak constraints, `#show t : body` and the
+    /// body-less `#show t.`, `#project a : body`, `#edge : body`, and `#external : body`.
     BodiedDirective {
         /// The term positions whose variables the body must bind.
         required: Vec<&'a Term>,
-        /// The body that binds them.
+        /// The body that binds them, if the form has one (`#show t.` has none).
+        body: Option<&'a Body>,
+    },
+    /// A `#heuristic` (grammar §5.9): its **atom** domain-matches — its variables bind, as clingo reads
+    /// them, so they can bind the bracket terms — its bracket terms (bias, optional priority, modifier)
+    /// are required, and its body binds too. So `#heuristic p(X). [X@1, true]` is safe (the atom binds
+    /// the bracket `X`), while `#heuristic p(a). [W@1, true]` is not (`W` is unbound). The atom's own
+    /// variables are not required, like a `#project` atom's.
+    Heuristic {
+        /// The atom whose variables domain-match (and so bind the bracket terms).
+        atom: &'a Atom,
+        /// The bracket terms — bias, optional priority, modifier — required.
+        brackets: Vec<&'a Term>,
+        /// The body, which also binds.
         body: &'a Body,
     },
     /// An optimize statement — each element is aggregate-element-like: its weight and terms are
@@ -594,7 +698,8 @@ pub enum StatementBinder<'a> {
     /// A statement that binds and requires no variable: a signature (`#defined`, `#show p/1`,
     /// `#project p/1`), an include, a script, or a theory definition (the grammar admits no variable);
     /// a query, whose variables are answer variables, not a grounder obligation (grammar §6.1); or a
-    /// bare `#show t` / a `#const`, read liberally with any divergence pinned by the differential.
+    /// `#const`, whose value is variable-free by the constant-term subset (a constructed out-of-subset
+    /// one is a different facet's well-formedness question, not safety's).
     NoObligation,
 }
 
@@ -604,12 +709,18 @@ pub fn statement_binder(statement: &Statement) -> StatementBinder<'_> {
         Statement::Rule(rule) => StatementBinder::Rule(rule),
         Statement::WeakConstraint(weak) => StatementBinder::BodiedDirective {
             required: weak_constraint_required(weak),
-            body: weak.body().get(),
+            body: Some(weak.body().get()),
         },
         Statement::Optimize(optimize) => StatementBinder::OptimizeElements(optimize),
         Statement::Show(Show::TermBody { term, body }) => StatementBinder::BodiedDirective {
             required: vec![term],
-            body: body.get(),
+            body: Some(body.get()),
+        },
+        // `#show t.` (no body) requires the shown term's variables with nothing to bind them, so a
+        // variable in it is unsafe — clingo flags `#show f(X).`.
+        Statement::Show(Show::Term(term)) => StatementBinder::BodiedDirective {
+            required: vec![term],
+            body: None,
         },
         // A `#project` atom's variables are a schema wildcard — they range over the atom's instances,
         // not bound by the rule — so only the body's own variables must be safe (clingo reads
@@ -617,24 +728,25 @@ pub fn statement_binder(statement: &Statement) -> StatementBinder<'_> {
         // `#external`, whose terms clingo requires ground.
         Statement::Project(Project::Atom { atom: _, body }) => StatementBinder::BodiedDirective {
             required: Vec::new(),
-            body: body.get(),
+            body: Some(body.get()),
         },
         Statement::Edge(edge) => StatementBinder::BodiedDirective {
             required: edge_required(edge),
-            body: edge.body().get(),
+            body: Some(edge.body().get()),
         },
-        Statement::Heuristic(heuristic) => StatementBinder::BodiedDirective {
-            required: heuristic_required(heuristic),
+        Statement::Heuristic(heuristic) => StatementBinder::Heuristic {
+            atom: heuristic.atom().get(),
+            brackets: heuristic_brackets(heuristic),
             body: heuristic.body().get(),
         },
         Statement::External(external) => StatementBinder::BodiedDirective {
             required: external.atom().get().arguments.iter().collect(),
-            body: external.body().get(),
+            body: Some(external.body().get()),
         },
-        // No variable-binding obligation: the grammar admits no variable in these positions, or the
-        // position is read liberally with the divergence pinned by the differential (a bare `#show t`,
-        // a `#const`), or the variables are answer variables (a query, grammar §6.1).
-        Statement::Show(Show::All | Show::Signature(_) | Show::Term(_))
+        // No variable-binding obligation: the grammar admits no variable in these positions (signatures,
+        // include target, script text, theory definition, `#const`'s constant-term-subset value), or the
+        // variables are answer variables (a query, grammar §6.1).
+        Statement::Show(Show::All | Show::Signature(_))
         | Statement::Project(Project::Signature(_))
         | Statement::Defined(_)
         | Statement::Const(_)
@@ -659,13 +771,13 @@ fn edge_required(edge: &Edge) -> Vec<&Term> {
     edge.pairs().flat_map(|(from, to)| [from, to]).collect()
 }
 
-/// The term positions a `#heuristic` requires bound — its bias, optional priority, and modifier
-/// (grammar §5.9); its body binds them. The atom's variables are a schema wildcard (not required),
-/// like a `#project` atom's, so `#heuristic p(X).` is safe but `#heuristic p(a). [W@1, true]` is not
-/// (its bias `W` is unbound).
-fn heuristic_required(heuristic: &Heuristic) -> Vec<&Term> {
-    let mut required = vec![heuristic.bias()];
-    required.extend(heuristic.priority());
-    required.push(heuristic.modifier());
-    required
+/// The bracket terms of a `#heuristic` — its bias, optional priority, and modifier (grammar §5.9).
+/// They are required, and are bound by the atom's domain match (its variables) or the body: so
+/// `#heuristic p(X). [X@1, true]` is safe (the atom binds the bracket `X`) but
+/// `#heuristic p(a). [W@1, true]` is not (its bias `W` is bound by neither).
+fn heuristic_brackets(heuristic: &Heuristic) -> Vec<&Term> {
+    let mut brackets = vec![heuristic.bias()];
+    brackets.extend(heuristic.priority());
+    brackets.push(heuristic.modifier());
+    brackets
 }

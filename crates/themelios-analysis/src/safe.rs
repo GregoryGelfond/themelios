@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use themelios_program::analyze::{
     BodyBinder, BodyCarrier, StatementBinder, body_binder, body_carrier, head_carrier_conditions,
-    statement_binder,
+    statement_binder, statement_variables,
 };
 use themelios_program::program::{
     Aggregate, AggregateFunction, Atom, Body, Comparison, Condition, DefaultNegation, Guard,
@@ -22,12 +22,12 @@ use themelios_program::program::{
     TheoryAtom, TheoryTerm,
 };
 use themelios_program::provenance::{TransformTag, WithProvenance};
-use themelios_program::symbol::{Signature, VarName};
-use themelios_program::term::{Term, Variable};
-use themelios_program::transform::{Rewrite, Visit};
+use themelios_program::symbol::{Sign, Signature, VarName};
+use themelios_program::term::{BinaryOp, Term, TermParts, UnaryOp, Variable};
+use themelios_program::transform::Rewrite;
 
 use crate::classify::Verdict;
-use crate::depend::{Component, DependencyGraph, atom_signature};
+use crate::depend::{Component, DependencyGraph, atom_signature, external_pseudo_rule};
 
 /// Two facts about grounding a program (§5): which statements are not safe, and whether
 /// grounding is finite.
@@ -165,7 +165,7 @@ fn unbound_variables(statement: &Statement) -> BTreeSet<Variable> {
 
     let mut global = Scope::default();
     let mut locals: Vec<Scope> = Vec::new();
-    collect_statement(scanned, &mut global, &mut locals);
+    collect_statement(scanned, &freshener.minted, &mut global, &mut locals);
 
     let global_bound = close(global.binders.clone(), &global.assignments);
     let mut unbound: BTreeSet<Variable> =
@@ -190,21 +190,45 @@ fn unbound_variables(statement: &Statement) -> BTreeSet<Variable> {
 /// Collect a statement's binding scopes (§5) via its program-tier binding-role classification
 /// (`statement_binder`, exhaustive over `Statement` — a new statement kind is a compile error there,
 /// never a silent fail-open here): a rule scopes its head (requiring) and body (binding); a bodied
-/// directive requires its non-body term positions and binds them through its body; an optimize
-/// statement scopes each element like an aggregate element (its weight and terms required, its own
-/// condition binding); a no-obligation statement (a signature, an include, a query — grammar §6.1)
-/// scopes nothing.
-fn collect_statement(statement: &Statement, global: &mut Scope, locals: &mut Vec<Scope>) {
+/// directive requires its non-body term positions and binds them through its body, if it has one (a
+/// body-less `#show t.` binds nothing, so a variable there is unbound); a `#heuristic` binds its
+/// bracket through the atom's domain match and its body; an optimize statement scopes each element like
+/// an aggregate element (its weight and terms required, its own condition binding); a no-obligation
+/// statement (a signature, an include, a query — grammar §6.1) scopes nothing.
+fn collect_statement(
+    statement: &Statement,
+    minted: &BTreeSet<Variable>,
+    global: &mut Scope,
+    locals: &mut Vec<Scope>,
+) {
     match statement_binder(statement) {
         StatementBinder::Rule(rule) => {
-            collect_head(rule.head().get(), global, locals);
-            collect_body(rule.body().get(), global, locals);
+            collect_head(rule.head().get(), minted, global, locals);
+            collect_body(rule.body().get(), minted, global, locals);
         }
         StatementBinder::BodiedDirective { required, body } => {
             for term in required {
                 term_named_vars(term, &mut global.required);
             }
-            collect_body(body, global, locals);
+            // A body-less directive (`#show t.`) binds nothing, so a variable in its required term is
+            // then unbound — clingo flags `#show f(X).` unsafe.
+            if let Some(body) = body {
+                collect_body(body, minted, global, locals);
+            }
+        }
+        StatementBinder::Heuristic {
+            atom,
+            brackets,
+            body,
+        } => {
+            // The atom domain-matches — its variables bind, like a positive body atom — so it can bind
+            // the required bracket terms; the body binds too. So `#heuristic p(X). [X@1, true]` is safe
+            // (the atom binds `X`) but `#heuristic p(a). [W@1, true]` is not (`W` is bound by neither).
+            bind_positive_atom(global, atom);
+            for term in brackets {
+                term_named_vars(term, &mut global.required);
+            }
+            collect_body(body, minted, global, locals);
         }
         StatementBinder::OptimizeElements(optimize) => {
             for element in optimize.elements() {
@@ -217,33 +241,11 @@ fn collect_statement(statement: &Statement, global: &mut Scope, locals: &mut Vec
                 for term in element.terms() {
                     term_named_vars(term, &mut scope.required);
                 }
-                process_condition(&mut scope, element.condition());
+                process_condition(&mut scope, minted, element.condition());
                 locals.push(scope);
             }
         }
         StatementBinder::NoObligation => {}
-    }
-}
-
-/// A `Visit` collector of a statement's **ordinary-term** variables — its theory terms are the §4.9
-/// peer algebra, which `Visit` does not descend (only a rule carries them, reached by its own
-/// `variables` walk). Seeds the anonymous freshener's used-name set for a directive.
-#[derive(Default)]
-struct OrdinaryVariables {
-    used: BTreeSet<String>,
-    has_anonymous: bool,
-}
-
-impl Visit for OrdinaryVariables {
-    fn visit_term(&mut self, term: &Term) {
-        if let Term::Variable(variable) = term {
-            match variable {
-                Variable::Named(name) => {
-                    self.used.insert(name.as_str().to_string());
-                }
-                Variable::Anonymous => self.has_anonymous = true,
-            }
-        }
     }
 }
 
@@ -264,31 +266,22 @@ struct FreshenAnonymous {
 
 impl FreshenAnonymous {
     fn over(statement: &Statement) -> FreshenAnonymous {
-        // A rule's `variables` walk descends its theory terms (program §12.1), so a minted name avoids
-        // a theory-term variable too; a directive carries no theory atom, so its ordinary-term
-        // variables (the `Visit` walk, which does not descend the theory peer algebra, §4.9) are all
-        // of them. Either way the used set is complete, so a minted `Anonymous{n}` can neither be
-        // spuriously bound by, nor bind, a real variable.
-        let (used, has_anonymous) = match statement {
-            Statement::Rule(rule) => {
-                let mut used = BTreeSet::new();
-                let mut has_anonymous = false;
-                for variable in rule.variables() {
-                    match variable {
-                        Variable::Named(name) => {
-                            used.insert(name.as_str().to_string());
-                        }
-                        Variable::Anonymous => has_anonymous = true,
-                    }
+        // Seed the used-name set from the program tier's one statement-variable authority
+        // (`statement_variables`, exhaustive over `Statement` and theory-descending), so a minted
+        // `Anonymous{n}` avoids every variable the statement mentions — an ordinary one, and a
+        // theory-term one a directive body may carry (analysis §5). A `_` sets `has_anonymous` (the
+        // ordinary rewrite fires); a theory `_` cannot be renamed but `collect_theory_atom` reports
+        // it, so an incidental `has_anonymous` from one costs only a no-op rewrite.
+        let mut used = BTreeSet::new();
+        let mut has_anonymous = false;
+        for variable in statement_variables(statement) {
+            match variable {
+                Variable::Named(name) => {
+                    used.insert(name.as_str().to_string());
                 }
-                (used, has_anonymous)
+                Variable::Anonymous => has_anonymous = true,
             }
-            other => {
-                let mut collector = OrdinaryVariables::default();
-                collector.visit_statement(other);
-                (collector.used, collector.has_anonymous)
-            }
-        };
+        }
         FreshenAnonymous {
             next: 0,
             used,
@@ -344,18 +337,33 @@ impl Rewrite for FreshenAnonymous {
     }
 }
 
-fn collect_head(head: &Head, global: &mut Scope, locals: &mut Vec<Scope>) {
+fn collect_head(
+    head: &Head,
+    minted: &BTreeSet<Variable>,
+    global: &mut Scope,
+    locals: &mut Vec<Scope>,
+) {
     match head {
         Head::Literal(literal) => require_literal(global, literal),
         Head::Disjunction(disjunction) => {
             for element in disjunction.elements() {
-                push_element_scope(element.get().literal(), element.get().condition(), locals);
+                push_element_scope(
+                    element.get().literal(),
+                    element.get().condition(),
+                    minted,
+                    locals,
+                );
             }
         }
         Head::Choice(choice) => {
             require_guard(choice.left_guard(), global);
             for element in choice.elements() {
-                push_element_scope(element.get().literal(), element.get().condition(), locals);
+                push_element_scope(
+                    element.get().literal(),
+                    element.get().condition(),
+                    minted,
+                    locals,
+                );
             }
             require_guard(choice.right_guard(), global);
         }
@@ -367,36 +375,51 @@ fn collect_head(head: &Head, global: &mut Scope, locals: &mut Vec<Scope>) {
                     term_named_vars(term, &mut scope.required);
                 }
                 require_literal(&mut scope, element.get().literal());
-                process_condition(&mut scope, element.get().condition());
+                process_condition(&mut scope, minted, element.get().condition());
                 locals.push(scope);
             }
         }
-        Head::TheoryAtom(atom) => collect_theory_atom(atom, global, locals),
+        Head::TheoryAtom(atom) => collect_theory_atom(atom, minted, global, locals),
         Head::Falsum | Head::Verum => {}
     }
 }
 
-fn collect_body(body: &Body, global: &mut Scope, locals: &mut Vec<Scope>) {
+fn collect_body(
+    body: &Body,
+    minted: &BTreeSet<Variable>,
+    global: &mut Scope,
+    locals: &mut Vec<Scope>,
+) {
     for element in body.elements() {
         // Each body element's binding role is classified exhaustively in the program tier
         // (`body_binder`), so a new body kind is a compile error there — never a silent fail-open here.
         match body_binder(element.get()) {
-            BodyBinder::Literal(literal) => bind_literal(global, literal),
+            BodyBinder::Literal(literal) => bind_literal(global, literal, minted),
             BodyBinder::Conditional(conditional) => {
                 let mut scope = Scope::default();
-                require_literal(&mut scope, &conditional.literal);
-                process_condition(&mut scope, &conditional.condition);
+                bind_conditional_literal(
+                    &mut scope,
+                    &conditional.literal,
+                    &conditional.condition,
+                    minted,
+                );
+                process_condition(&mut scope, minted, &conditional.condition);
                 locals.push(scope);
             }
             BodyBinder::Aggregate(aggregate) => {
-                collect_aggregate(aggregate, global, locals);
+                collect_aggregate(aggregate, minted, global, locals);
             }
-            BodyBinder::TheoryAtom(atom) => collect_theory_atom(atom, global, locals),
+            BodyBinder::TheoryAtom(atom) => collect_theory_atom(atom, minted, global, locals),
         }
     }
 }
 
-fn collect_aggregate(aggregate: &Aggregate, global: &mut Scope, locals: &mut Vec<Scope>) {
+fn collect_aggregate(
+    aggregate: &Aggregate,
+    minted: &BTreeSet<Variable>,
+    global: &mut Scope,
+    locals: &mut Vec<Scope>,
+) {
     match aggregate {
         Aggregate::Function(function) => {
             collect_guards(function, global);
@@ -405,7 +428,7 @@ fn collect_aggregate(aggregate: &Aggregate, global: &mut Scope, locals: &mut Vec
                 for term in element.get().terms() {
                     term_named_vars(term, &mut scope.required);
                 }
-                process_condition(&mut scope, element.get().condition());
+                process_condition(&mut scope, minted, element.get().condition());
                 locals.push(scope);
             }
         }
@@ -414,10 +437,10 @@ fn collect_aggregate(aggregate: &Aggregate, global: &mut Scope, locals: &mut Vec
             for element in set.elements() {
                 let mut scope = Scope::default();
                 match element.get() {
-                    SetElement::Literal(literal) => bind_literal(&mut scope, literal),
+                    SetElement::Literal(literal) => bind_literal(&mut scope, literal, minted),
                     SetElement::ConditionalLiteral(conditional) => {
-                        bind_literal(&mut scope, &conditional.literal);
-                        process_condition(&mut scope, &conditional.condition);
+                        bind_literal(&mut scope, &conditional.literal, minted);
+                        process_condition(&mut scope, minted, &conditional.condition);
                     }
                 }
                 locals.push(scope);
@@ -434,7 +457,12 @@ fn collect_aggregate(aggregate: &Aggregate, global: &mut Scope, locals: &mut Vec
 /// one is unbound unless the rule's ordinary body binds it (`:- &t { X }.` is unsafe, agreeing with the
 /// grounder). An anonymous `_` leaf is collected too — it can never be bound, so it is reported unbound
 /// and the witness names `_`.
-fn collect_theory_atom(atom: &TheoryAtom, global: &mut Scope, locals: &mut Vec<Scope>) {
+fn collect_theory_atom(
+    atom: &TheoryAtom,
+    minted: &BTreeSet<Variable>,
+    global: &mut Scope,
+    locals: &mut Vec<Scope>,
+) {
     for term in atom.arguments() {
         term_named_vars(term, &mut global.required);
     }
@@ -444,7 +472,7 @@ fn collect_theory_atom(atom: &TheoryAtom, global: &mut Scope, locals: &mut Vec<S
             theory_term_vars(theory_term, &mut scope.required);
         }
         if let Some(condition) = element.get().condition() {
-            process_condition(&mut scope, condition);
+            process_condition(&mut scope, minted, condition);
         }
         locals.push(scope);
     }
@@ -481,25 +509,159 @@ fn require_guard(guard: Option<&WithProvenance<Guard>>, scope: &mut Scope) {
 /// aggregate element is (§5) — a choice/disjunction element variable is element-local, so a
 /// condition-bound one (`{ p(X) : q(X) }`) is safe. A variable also global (bound by the rule body)
 /// is still bound, since the local check consults `global_bound`.
-fn push_element_scope(literal: &Literal, condition: &Condition, locals: &mut Vec<Scope>) {
+fn push_element_scope(
+    literal: &Literal,
+    condition: &Condition,
+    minted: &BTreeSet<Variable>,
+    locals: &mut Vec<Scope>,
+) {
     let mut scope = Scope::default();
     require_literal(&mut scope, literal);
-    process_condition(&mut scope, condition);
+    process_condition(&mut scope, minted, condition);
     locals.push(scope);
 }
 
+/// A positive standard atom's domain match: every argument variable is *required*, but only the
+/// variables in an invertible/matchable position are *bound* (`binding_analysis`). Shared by a positive
+/// body/condition literal and a `#heuristic` atom's domain match (`statement_binder`'s `Heuristic`), so
+/// the certain-occurrence rule stays congruent across both.
+fn bind_positive_atom(scope: &mut Scope, atom: &Atom) {
+    for term in &atom.arguments {
+        let (required, binding) = binding_analysis(term);
+        scope.required.extend(required);
+        scope.binders.extend(binding);
+    }
+}
+
+/// Analyse a positive-atom argument for safety: `(required, binding)` — every variable it carries, and
+/// the subset in an *invertible/matchable* position a positive atom actually binds. A positive atom
+/// binds a variable by matching a ground instance only where clingo can solve for it: through the
+/// Herbrand constructors (function, tuple) and invertible arithmetic (unary `-`; binary `+`/`-`/`*` with
+/// the *other* operand variable-free), never through a non-invertible former — `/`, `\`, `**`, bitwise,
+/// `~`, an interval, an absolute value, or a `@`-call — whose variable must be bound elsewhere to
+/// evaluate. So `p(X)`, `p(f(X))`, and `p(X+1)` bind `X`, while `p(X/2)`, `p(|X|)`, and `p(X..3)` require
+/// it without binding it (finding C, verified against clingo). The rule is a sound *subset* of clingo's:
+/// the one shape it is stricter on is arithmetic over two function terms (`f(X)*g(Y)`, a grounding-time
+/// type error), where it binds neither — a recorded fail-closed divergence. A `Pool` is left liberal
+/// (every variable it carries binds) pending the faithful-pool representation (finding B) — the one
+/// known over-approximation. Runs over the iterative `Term::fold`, so a deeply nested term is bounded by
+/// the heap, not the call stack (§3.6, §12.4).
+fn binding_analysis(term: &Term) -> (BTreeSet<Variable>, BTreeSet<Variable>) {
+    term.clone().fold(|parts| match parts {
+        TermParts::Variable(variable @ Variable::Named(_)) => {
+            let set = BTreeSet::from([variable]);
+            (set.clone(), set)
+        }
+        TermParts::Variable(Variable::Anonymous) | TermParts::Symbolic(_) => {
+            (BTreeSet::new(), BTreeSet::new())
+        }
+        // Herbrand constructors: each child is an independent matching position.
+        TermParts::Function { arguments, .. } | TermParts::Tuple(arguments) => {
+            let mut required = BTreeSet::new();
+            let mut binding = BTreeSet::new();
+            for (child_required, child_binding) in arguments {
+                required.extend(child_required);
+                binding.extend(child_binding);
+            }
+            (required, binding)
+        }
+        TermParts::Pool(items) => {
+            // finding B: a pool is left liberal — every variable it carries is taken as a binder, a
+            // known over-approximation (clingo does not bind through a pool), closed with the faithful
+            // pool representation.
+            let mut required = BTreeSet::new();
+            for (child_required, _child_binding) in items {
+                required.extend(child_required);
+            }
+            (required.clone(), required)
+        }
+        TermParts::UnaryOperation {
+            operator: UnaryOp::Negate,
+            argument: (required, binding),
+        } => (required, binding),
+        // Neither `~` nor `|·|` is invertible: the variable is required but binds nothing.
+        TermParts::UnaryOperation {
+            operator: UnaryOp::BitwiseNot,
+            argument: (required, _),
+        }
+        | TermParts::Absolute((required, _)) => (required, BTreeSet::new()),
+        TermParts::BinaryOperation {
+            operator,
+            left: (left_required, left_binding),
+            right: (right_required, right_binding),
+        } => {
+            let mut required = left_required.clone();
+            required.extend(right_required.iter().cloned());
+            let binding = match operator {
+                // Invertible only when exactly one operand bears a variable (the other is ground), so
+                // clingo can solve for it; `X + Y` and `X + X` bind neither.
+                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul => {
+                    if !left_required.is_empty() && right_required.is_empty() {
+                        left_binding
+                    } else if !right_required.is_empty() && left_required.is_empty() {
+                        right_binding
+                    } else {
+                        BTreeSet::new()
+                    }
+                }
+                // `/`, `\`, `**`, and the bitwise operators are not invertible.
+                BinaryOp::Div
+                | BinaryOp::Mod
+                | BinaryOp::Pow
+                | BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor => BTreeSet::new(),
+            };
+            (required, binding)
+        }
+        // Non-invertible formers: the variable is required, but binds nothing here.
+        TermParts::Interval {
+            lower: (mut required, _),
+            upper: (upper_required, _),
+        } => {
+            required.extend(upper_required);
+            (required, BTreeSet::new())
+        }
+        TermParts::External { arguments, .. } => {
+            let mut required = BTreeSet::new();
+            for (child_required, _child_binding) in arguments {
+                required.extend(child_required);
+            }
+            (required, BTreeSet::new())
+        }
+    })
+}
+
 /// A binding literal (a body or condition literal): a positive standard atom binds its
-/// variables; a positive `=` comparison is an assignment; every variable is required.
-fn bind_literal(scope: &mut Scope, literal: &Literal) {
+/// variables; a positive `=` comparison is an assignment; every variable is required. A
+/// default-negated positive atom requires its variables *except* the minted `_` it projects —
+/// clingo existentially rewrites each `_` under `not` (`p :- not q(_).` is safe, §5, finding E).
+fn bind_literal(scope: &mut Scope, literal: &Literal, minted: &BTreeSet<Variable>) {
     match &literal.inner {
         LiteralInner::Atom(atom) => {
-            let mut vars = BTreeSet::new();
-            for term in &atom.get().arguments {
-                term_named_vars(term, &mut vars);
-            }
-            scope.required.extend(vars.iter().cloned());
+            let atom = atom.get();
             if literal.negation == DefaultNegation::None {
-                scope.binders.extend(vars);
+                bind_positive_atom(scope, atom);
+            } else if atom.sign == Sign::Positive {
+                // A default-negated positive atom (`not q(..)`) requires its variables, but a minted
+                // `_` is projected — clingo rewrites each `_` under `not` to a fresh existential, so it
+                // needs no binder (finding E). The `_` is reachable only through constructor structure
+                // (function/tuple/pool), never an evaluated term (`projected_anonymous`).
+                let mut vars = BTreeSet::new();
+                let mut projected = BTreeSet::new();
+                for term in &atom.arguments {
+                    term_named_vars(term, &mut vars);
+                    projected.extend(projected_anonymous(term, minted));
+                }
+                scope.required.extend(vars.difference(&projected).cloned());
+            } else {
+                // A default-negated classically-negated atom (`not -q(..)`) requires all its variables:
+                // the conservative reading, never projecting (§5).
+                let mut vars = BTreeSet::new();
+                for term in &atom.arguments {
+                    term_named_vars(term, &mut vars);
+                }
+                scope.required.extend(vars);
             }
         }
         LiteralInner::Comparison(comparison) => {
@@ -528,10 +690,100 @@ fn require_literal(scope: &mut Scope, literal: &Literal) {
     }
 }
 
-fn process_condition(scope: &mut Scope, condition: &Condition) {
-    for literal in condition.literals() {
-        bind_literal(scope, literal.get());
+/// A body conditional's own literal (left of `:`), per the grounder's two-stage element reading: the
+/// condition is instantiated first, so a condition variable is bound by the condition or globally —
+/// never by this literal; the literal is then evaluated per instance (finding I, `h :- X = 1 : q.` is
+/// safe). A positive atom is matched against its own instances, so its variables need no other binder
+/// (it contributes nothing); a negated atom requires its variables (a minted `_` is projected as in any
+/// negated atom, finding E); a comparison requires its variables, and a positive `=` assigns — but
+/// never to a variable the condition mentions (the condition binds that, not the assignment).
+fn bind_conditional_literal(
+    scope: &mut Scope,
+    literal: &Literal,
+    condition: &Condition,
+    minted: &BTreeSet<Variable>,
+) {
+    match &literal.inner {
+        LiteralInner::Atom(atom) => {
+            let atom = atom.get();
+            if literal.negation == DefaultNegation::None {
+                // Positive: bound by matching its own instances — nothing required, nothing bound.
+            } else if atom.sign == Sign::Positive {
+                let mut vars = BTreeSet::new();
+                let mut projected = BTreeSet::new();
+                for term in &atom.arguments {
+                    term_named_vars(term, &mut vars);
+                    projected.extend(projected_anonymous(term, minted));
+                }
+                scope.required.extend(vars.difference(&projected).cloned());
+            } else {
+                for term in &atom.arguments {
+                    term_named_vars(term, &mut scope.required);
+                }
+            }
+        }
+        LiteralInner::Comparison(comparison) => {
+            comparison_named_vars(comparison.get(), &mut scope.required);
+            if literal.negation == DefaultNegation::None {
+                let mut condition_vars = BTreeSet::new();
+                for lit in condition.literals() {
+                    match &lit.get().inner {
+                        LiteralInner::Atom(atom) => {
+                            for term in &atom.get().arguments {
+                                term_named_vars(term, &mut condition_vars);
+                            }
+                        }
+                        LiteralInner::Comparison(comparison) => {
+                            comparison_named_vars(comparison.get(), &mut condition_vars);
+                        }
+                        LiteralInner::True | LiteralInner::False => {}
+                    }
+                }
+                let mut assignments = Vec::new();
+                assignments_of(comparison.get(), &mut assignments);
+                for (lone, others) in assignments {
+                    if !condition_vars.contains(&lone) {
+                        scope.assignments.push((lone, others));
+                    }
+                }
+            }
+        }
+        LiteralInner::True | LiteralInner::False => {}
     }
+}
+
+fn process_condition(scope: &mut Scope, minted: &BTreeSet<Variable>, condition: &Condition) {
+    for literal in condition.literals() {
+        bind_literal(scope, literal.get(), minted);
+    }
+}
+
+/// The minted anonymous variables a default-negated positive atom *projects* (clingo's existential
+/// rewrite of `_` under `not`): those reachable through constructor structure only — function, tuple,
+/// pool — never through an evaluated term (arithmetic, interval, absolute, external), whose variables
+/// must be bound to evaluate (verified: `not q(f(_))` grounds, `not q(_/2)` does not). Only variables in
+/// `minted` (the freshened `_`) project; a genuine named variable under `not` is always required. Runs
+/// over the iterative `Term::fold`, so a deeply nested term is bounded by the heap, not the call stack
+/// (§3.6, §12.4).
+fn projected_anonymous(term: &Term, minted: &BTreeSet<Variable>) -> BTreeSet<Variable> {
+    term.clone().fold(|parts| match parts {
+        TermParts::Variable(variable @ Variable::Named(_)) if minted.contains(&variable) => {
+            BTreeSet::from([variable])
+        }
+        // Constructor structure descends: a `_` under a function, tuple, or pool projects.
+        TermParts::Function { arguments, .. }
+        | TermParts::Tuple(arguments)
+        | TermParts::Pool(arguments) => {
+            let mut projected = BTreeSet::new();
+            for child in arguments {
+                projected.extend(child);
+            }
+            projected
+        }
+        // An evaluated term (arithmetic, interval, absolute, external) or a non-minted leaf projects
+        // nothing — a `_` there must be bound to evaluate, so it is required, not projected.
+        _ => BTreeSet::new(),
+    })
 }
 
 fn assignments_of(comparison: &Comparison, out: &mut Vec<(Variable, BTreeSet<Variable>)>) {
@@ -646,11 +898,41 @@ fn close_within(
 /// and soundly skips those that bind only element-local variables, so no variable the graph makes
 /// recursive is a carrier the growth check misses (its congruence is stated on `BodyGrowth`).
 fn finiteness_verdict(program: &Program, graph: &DependencyGraph) -> Verdict {
+    // The common program has no `#external`, and the shared derivation graph is exact for it — so use
+    // it, and build no second graph. A `#external a : body` *generates* the atoms of `a` (§6.1): a
+    // domain-extending external that closes a generation loop (`#external p(f(X)) : q(X)` with `q`
+    // reached from `p`) grows the Herbrand universe though no rule derives it, invisible to the
+    // rules-only derivation graph — a false `Holds` (verified: clingo grounds it unbounded). So a
+    // program carrying any external is analyzed over the **generation graph** (rules + externals as
+    // pseudo-rules), where the existing deepening check reports it and its recursive component
+    // witnesses it; classify's derivation view is untouched.
+    let generation;
+    let has_external = program
+        .statements()
+        .any(|statement| matches!(statement.get(), Statement::External(_)));
+    let graph = if has_external {
+        generation = DependencyGraph::generation_of(program);
+        &generation
+    } else {
+        graph
+    };
     for statement in program.statements() {
-        if let Statement::Rule(rule) = statement.get()
-            && let Some(component) = growing_component(rule, graph)
-        {
-            return Verdict::Unknown { witness: component };
+        match statement.get() {
+            Statement::Rule(rule) => {
+                if let Some(component) = growing_component(rule, graph) {
+                    return Verdict::Unknown { witness: component };
+                }
+            }
+            // An external is vetted through its generation pseudo-rule `atom :- body`: a term-forming
+            // head over a variable carried around a generation cycle deepens exactly as a rule head, so
+            // the same check reports it (§6.1). A non-deepening external (`p(X) : q(X)`) or one on a
+            // finite body (a non-recursive component) grows nothing — no false `Unknown`.
+            Statement::External(external) if has_external => {
+                if let Some(component) = growing_component(&external_pseudo_rule(external), graph) {
+                    return Verdict::Unknown { witness: component };
+                }
+            }
+            _ => {}
         }
     }
     Verdict::Holds

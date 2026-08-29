@@ -35,7 +35,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use themelios_program::program::{Atom, Program, Statement};
+use themelios_program::program::{Atom, External, Program, Statement};
 
 // Three types reused from the program tier rather than redefined — the one
 // authority for each (program §4, §12.1): `Signature` (the node identity),
@@ -89,6 +89,34 @@ impl DependencyGraph {
         for statement in program.statements() {
             if let Statement::Rule(rule) = statement.get() {
                 collect_rule(rule, &mut nodes, &mut edges);
+            }
+        }
+        DependencyGraph::from_parts(nodes, edges)
+    }
+
+    /// The **generation** dependency graph of a program — the derivation graph
+    /// [`of`](DependencyGraph::of) augmented with each `#external` as a pseudo-rule
+    /// `atom :- body` (analysis §6.1, finiteness). A `#external a : body` *generates*
+    /// the atoms of `a` for each solution of `body`, so for grounding **finiteness** it
+    /// depends on `body` exactly as a rule head does: a domain-extending external that
+    /// closes a generation loop (`#external p(f(X)) : q(X)` where `q` is reached from
+    /// `p`) makes its component recursive and its term-forming head deepen a carried
+    /// variable, exactly as the rule case — which the growth check then reports.
+    ///
+    /// A `#external` is **not** a *derivation* dependency (its atom is declared, never
+    /// derived), so this edge stays out of the shared [`of`](DependencyGraph::of) graph
+    /// the classification facets read (tightness, stratification, §6.2–6.3): it belongs
+    /// only to finiteness, and is built here for it. `O(program)`.
+    pub(crate) fn generation_of(program: &Program) -> DependencyGraph {
+        let mut nodes = BTreeSet::new();
+        let mut edges: BTreeMap<Signature, BTreeSet<(DependencyKind, Signature)>> = BTreeMap::new();
+        for statement in program.statements() {
+            match statement.get() {
+                Statement::Rule(rule) => collect_rule(rule, &mut nodes, &mut edges),
+                Statement::External(external) => {
+                    collect_rule(&external_pseudo_rule(external), &mut nodes, &mut edges);
+                }
+                _ => {}
             }
         }
         DependencyGraph::from_parts(nodes, edges)
@@ -217,6 +245,14 @@ impl Component {
         self.internal_edge_kinds
             .contains(&DependencyKind::ThroughAggregate)
     }
+}
+
+/// A `#external`'s **generation pseudo-rule** `atom :- body` (§6.1): the derivation-shaped view
+/// finiteness reads an external through, so the growth machinery (`generation_of`, and the finiteness
+/// deepening check) sees the external's atom as a head over its body. The truth-`value` is irrelevant to
+/// dependency and growth, so it is dropped. Owned (a fresh `Rule`), since `Rule::new` builds one.
+pub(crate) fn external_pseudo_rule(external: &External) -> Rule {
+    Rule::new(external.atom().get().clone(), external.body().get().clone())
 }
 
 /// Add a rule's nodes and tagged edges (§4): every predicate it derives

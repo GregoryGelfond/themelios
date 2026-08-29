@@ -316,22 +316,43 @@ pub struct UnsafeStatement { /* private: statement: WithProvenance<Statement>, u
 decidable, a variable is safe or it is not — so `Safety` reports it exactly, with
 the unsafe statement and its unbound variables as the witness. The condition is the
 **ASP-Core-2 standard's** (the working group's, grammar §3, §6): a variable is
-safe when it occurs in a positive body literal, and the definition's cases are
-each honored so that "definite" is earned rather than glossed — a global variable
-bound by the body, an aggregate- or condition-*local* variable bound within its
-own element, and a variable bound by an assignment `X = t` whose right side is
-itself bound. Safety scopes **every statement that can bind a variable** — a
+safe when it has a *binding occurrence*, and the definition's cases are each
+honored so that "definite" is earned rather than glossed. A **positive body atom**
+binds a variable in a *matchable position* — one the grounder solves for by
+unifying a ground instance against the term: through the Herbrand constructors (a
+function or tuple argument) and invertible arithmetic (unary `-`; `+`/`-`/`*` with
+the other operand ground), but **not** through a non-invertible former (`/`, `\`,
+`**`, bitwise, an interval, an absolute value, a `@`-call), whose variable must be
+bound elsewhere — so `p(X)`, `p(f(X))`, and `p(X+1)` bind `X`, while `p(X/2)`,
+`p(|X|)`, and `p(X..3)` require it without binding it. A global variable is bound by
+the body; an aggregate- or condition-*local* variable within its own element; a
+variable by an assignment `X = t` whose right side is itself bound. A
+**default-negated** literal binds nothing, but the grounder projects each anonymous
+`_` under `not` to a fresh existential, so a `_` there — reachable through
+constructor structure only, never an evaluated term — needs no binder (`p :- not
+q(_).` is safe). A **body conditional** `l : cond` binds two-stage — its condition
+instantiates first, then its literal is matched per instance, binding *locally*
+(`h :- X = 1 : q.` is safe; a variable a conditional binds only locally is not
+bound globally). These engine readings — the invertible-matching positions, the
+`_`-projection, the conditional two-stage — are the clingo grounder's, verified
+against the pinned binary (§10) where the strict standard is silent or stricter;
+the standard is the floor, clingo the authority for its extensions. Safety scopes
+**every statement that can bind a variable** — a
 derivation rule (head requiring, body binding) and the **bodied directives** (a
 weak constraint, `#show t : body`, `#project`, `#edge`, `#heuristic`, `#external`,
 and an optimize element, whose non-body term positions the body binds) — classified
 exhaustively over `Statement` in the program tier (`statement_binder`), so a new
 statement kind is a compile error there, never a silent fail-open here; a directive
 that admits no variable (a signature, an include, a query — grammar §6.1) carries no
-obligation. Two engine-specific positions the differential (§10) settles against the
-authority for these clingo-only directives: a `#project`/`#heuristic` **atom** is a
-schema wildcard — its variables range over the atom's instances and are not required
-bound (`#project p(X).` is safe) — where a `#external` or `#edge` term must be ground,
-and a `#heuristic`'s bracket terms (bias/priority/modifier) are required. A variable occurring only in a **theory term** is descended for its
+obligation. Engine-specific directive positions the differential (§10) settles against the
+authority for these clingo-only directives: a `#project` **atom** is a schema wildcard — its
+variables range over the atom's instances, not required bound (`#project p(X).` is safe) —
+while a `#heuristic` **atom** *domain-matches*, its variables binding its required bracket
+terms (bias/priority/modifier), so `#heuristic p(X). [X@1, sign]` is safe (the atom binds the
+bracket `X`) but `#heuristic p(a). [W@1, sign]` is not (`W` is unbound); a `#external` or
+`#edge` term must be ground. A body-less `#show t.` binds nothing, so a variable in its shown
+term is unsafe (`#show f(X).`, agreeing with clingo) — the once-liberal bare-show boundary now
+closed. A variable occurring only in a **theory term** is descended for its
 ordinary variable leaves — the shared leaves the theory peer algebra meets the
 ordinary term algebra at (program §4.9: "a variable and a ground symbol") — and
 required, never binding, since a theory term binds no ordinary variable
@@ -378,6 +399,22 @@ obligation `Holds` answers to; it is discharged by the growth laws (§10), by a 
 grounding differential** now — a `Holds` program must ground within a rule-count cap against
 the pinned grounder (§10) — and, for the full ground-level precision, by the grounder
 differential the solve tier brings.
+
+**A `#external` generates, so finiteness reads it too.** A `#external a : body` *generates*
+the atoms of `a` for each solution of `body` — no rule derives them, so they are invisible to
+the rules-only dependency graph, yet a domain-extending external that closes a generation
+loop grows the Herbrand universe without bound (`p(a). q(X):-p(X). #external p(f(X)):q(X).`
+generates `p(f(a)), p(f(f(a))), …`; clingo grounds it unbounded, a **false `Holds`** were the
+external ignored). So finiteness reads a program carrying any external over a **generation
+graph** — the derivation graph augmented with each external as a pseudo-rule `atom :- body` —
+and vets each external's head atom for deepening exactly as a rule head, on that graph. The
+generation edge is *not* a derivation dependency (the atom is declared, not derived), so it
+stays out of the shared graph the recursion classes read (§6.2–6.3, whose tightness and
+stratification are about derivation): it is built only for finiteness. The reading stays
+precise, not blunt — a non-deepening external (`#external p(X):q(X)`) or one on a finite,
+non-recursive body generates no unbounded depth and holds; only a term-forming head over a
+variable carried around a generation cycle is `Unknown`, witnessed by that recursive
+component.
 
 `Holds` is proven for the program's **safe** rules; at an untrusted boundary the sound
 gate is `is_safe() && Holds`. A rule reported unsafe is outside the proof: a grounder whose
@@ -808,11 +845,20 @@ successor carries them.
   of the native-solver horizon's "structural analysis and classification" (spec
   §1.1, §13), drawn into the foundation because it reads the program value alone
   (§1).
-- **The safety authority.** Safety follows the ASP-Core-2 standard's definition
-  (grammar §3, §6); whether clingo's or clingcon's grounder admits a different
-  notion is a differential obligation against the pinned binary and, if they
-  differ materially, a dialect parameterization (§5) — recorded so the question is
-  pinned, not assumed. Each anonymous `_` in an ordinary term is treated as the distinct
+- **The safety authority.** Safety **adheres to the ASP-Core-2 standard by default,
+  and takes clingo as the authority for its extensions** — the ratified doctrine
+  (grammar §3, §6). Where the standard is silent or stricter than the grounder, safety
+  adopts clingo's reading, verified against the pinned binary (§10): a positive atom
+  binds only in an **invertible/matchable position** (not through `/`, `|·|`, an
+  interval), the grounder **projects an anonymous `_` under `not`** (existential), a
+  **body conditional binds two-stage** (element-locally), and the clingo-only directive
+  readings hold (a `#heuristic` atom binds its bracket; a `#project` atom is a wildcard;
+  a body-less `#show t.` is vetted). The one divergence safety does **not** adopt — the
+  **matching-`=`** permissive gap — it characterizes differentially (below), because
+  adopting it would risk a false `Holds` (§5's direction-sensitive deepening). Whether
+  clingcon's grounder admits a further notion stays a differential obligation and, if
+  material, a dialect parameterization (§5) — recorded so the question is pinned, not
+  assumed. Each anonymous `_` in an ordinary term is treated as the distinct
   fresh variable the grounder sees (program §12.1): a `_` in a requiring position is unbound,
   an `X = _` binds the `_` when `X` is bound, and a positive atom's `_` binds itself; the
   freshening runs over the whole **statement**, not just a rule, so a directive-borne `_`
@@ -825,12 +871,25 @@ successor carries them.
   standard does not — §5, with the chained `X = Y = 1` a candidate) and the **aggregate-result
   assignment** (clingo binds `N = #count { … }`'s guard, the standard does not); each is recorded
   against the pinned binary and is the trigger for the dialect parameterization §5 reserves if it
-  proves material. A few directive positions — a bare `#show t`, an `#external` value — are read
-  **liberally** (their variables not vetted), the divergence pinned as an open differential
-  question, the same characterized-not-hidden discipline. A `#const`'s value is variable-free by the
+  proves material. One directive position — an `#external` **value** (a carried, never-meaningful
+  ground truth-value, grammar §13) — is read **liberally** (its variable not vetted), the divergence
+  pinned as an open differential question, the same characterized-not-hidden discipline; the bare
+  `#show t.` is now **vetted** (a variable in the shown term is unsafe, agreeing with clingo). A
+  `#const`'s value is variable-free by the
   grammar's constant-term subset (grammar §5.9), so a raised `#const` needs no vetting; a *constructed*
   out-of-subset `#const x = X.` reading safe is a well-formedness question of a different facet, not
   safety's charter, deliberately.
+- **Finiteness reads a generation graph, classification a derivation graph (§5, §6.1).** A
+  `#external a : body` *generates* the atoms of `a` without deriving them, so it grows the
+  Herbrand universe for grounding **finiteness** yet is **not** a *derivation* dependency the
+  recursion classes read. Finiteness therefore reads a program carrying any external over a
+  **generation graph** — the derivation graph plus each external as a pseudo-rule `atom :- body`
+  — while tightness, stratification, and head-cycle-freeness (§6.2–6.3) read the derivation graph
+  alone. Recorded because the two graphs are deliberately distinct: conflating them would either
+  miss the external's unbounded generation (a false `Holds`) or make a declared, never-derived
+  atom a spurious derivation cycle (a false non-tight/non-stratified). The generation graph is
+  built only when an external is present, so the common program's single shared derivation graph
+  is unchanged.
 - **The dependency kind is the substrate's, not this crate's.** The edge tag is
   `DependencyKind` (program §12.1), reused here by `pub use` as `Signature` and `Rule`
   are, rather than a crate-local `EdgeKind`. The program substrate's edge accessor
