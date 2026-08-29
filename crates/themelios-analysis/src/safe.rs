@@ -18,9 +18,10 @@ use themelios_program::program::{
     Guard, HasGuards, Head, Literal, LiteralInner, Program, Relation, Rule, SetElement, Statement,
     TheoryAtom,
 };
-use themelios_program::provenance::WithProvenance;
-use themelios_program::symbol::Signature;
+use themelios_program::provenance::{TransformTag, WithProvenance};
+use themelios_program::symbol::{Signature, VarName};
 use themelios_program::term::{Term, Variable};
+use themelios_program::transform::Rewrite;
 
 use crate::classify::Verdict;
 use crate::depend::{Component, DependencyGraph, atom_signature};
@@ -137,11 +138,30 @@ struct Scope {
 
 /// The variables of a rule with no binding occurrence in their scope — empty iff the
 /// rule is safe (§5).
+///
+/// Each anonymous `_` is a **distinct** fresh variable, as the grounder reads it (program
+/// `Rule::variables`), so the scan first renames every `_` to a distinct named variable and
+/// then runs the ordinary binding fixpoint over it. This is exact where a single "anonymous"
+/// marker cannot be: a `_` in a requiring position (a head, a negated literal, a non-lone `=`
+/// side) is unbound, while `X = _` binds the `_` when `X` is bound — just like `X = Y` — rather
+/// than being read as always-unbound. The witness collapses the minted names back to the
+/// anonymous variable. (The finiteness carrier walk keeps the `_` as-is: a single-occurrence
+/// anonymous cannot carry recursion between two positions, so renaming it there would be noise.)
 fn unbound_variables(rule: &Rule) -> BTreeSet<Variable> {
+    let mut freshener = FreshenAnonymous::over(rule);
+    // The common rule has no `_`; only rebuild it when one is present (the rebuild is O(rule)).
+    let renamed;
+    let scanned: &Rule = if freshener.has_anonymous {
+        renamed = freshener.rewrite_rule(rule.clone());
+        &renamed
+    } else {
+        rule
+    };
+
     let mut global = Scope::default();
     let mut locals: Vec<Scope> = Vec::new();
-    collect_head(rule.head().get(), &mut global, &mut locals);
-    collect_body(rule.body().get(), &mut global, &mut locals);
+    collect_head(scanned.head().get(), &mut global, &mut locals);
+    collect_body(scanned.body().get(), &mut global, &mut locals);
 
     let global_bound = close(global.binders.clone(), &global.assignments);
     let mut unbound: BTreeSet<Variable> =
@@ -159,7 +179,88 @@ fn unbound_variables(rule: &Rule) -> BTreeSet<Variable> {
             }
         }
     }
+    freshener.collapse_witness(&mut unbound);
     unbound
+}
+
+/// Rename every anonymous `_` in a rule to a distinct fresh named variable, so the safety scan can
+/// treat each as the distinct variable the grounder sees. The fresh names avoid the rule's own
+/// named variables (so they cannot be spuriously bound by, or bind, a real one), and are recorded
+/// to collapse the witness back to the anonymous variable. A `Rewrite` whose `rewrite_term` maps
+/// each `_` leaf; the bottom-up fold reaches every occurrence and is stack-safe (program §3.6).
+struct FreshenAnonymous {
+    next: u32,
+    used: BTreeSet<String>,
+    minted: BTreeSet<Variable>,
+    has_anonymous: bool,
+    tag: TransformTag,
+}
+
+impl FreshenAnonymous {
+    fn over(rule: &Rule) -> FreshenAnonymous {
+        let mut used = BTreeSet::new();
+        let mut has_anonymous = false;
+        for variable in rule.variables() {
+            match variable {
+                Variable::Named(name) => {
+                    used.insert(name.as_str().to_string());
+                }
+                Variable::Anonymous => has_anonymous = true,
+            }
+        }
+        FreshenAnonymous {
+            next: 0,
+            used,
+            minted: BTreeSet::new(),
+            has_anonymous,
+            tag: TransformTag::new("safety-freshen-anonymous"),
+        }
+    }
+
+    fn fresh(&mut self) -> Variable {
+        loop {
+            let candidate = format!("Anonymous{}", self.next);
+            self.next += 1;
+            if self.used.contains(&candidate) {
+                continue;
+            }
+            if let Ok(name) = VarName::new(candidate) {
+                let variable = Variable::Named(name);
+                self.minted.insert(variable.clone());
+                return variable;
+            }
+        }
+    }
+
+    /// Replace the minted names in a witness with the single anonymous variable, so the reported
+    /// unbound set names `_` rather than a synthetic identifier.
+    fn collapse_witness(&self, unbound: &mut BTreeSet<Variable>) {
+        let minted: Vec<Variable> = self
+            .minted
+            .iter()
+            .filter(|variable| unbound.contains(variable))
+            .cloned()
+            .collect();
+        if !minted.is_empty() {
+            for variable in minted {
+                unbound.remove(&variable);
+            }
+            unbound.insert(Variable::Anonymous);
+        }
+    }
+}
+
+impl Rewrite for FreshenAnonymous {
+    fn tag(&self) -> TransformTag {
+        self.tag.clone()
+    }
+
+    fn rewrite_term(&mut self, term: Term) -> Term {
+        match term {
+            Term::Variable(Variable::Anonymous) => Term::Variable(self.fresh()),
+            other => other,
+        }
+    }
 }
 
 fn collect_head(head: &Head, global: &mut Scope, locals: &mut Vec<Scope>) {

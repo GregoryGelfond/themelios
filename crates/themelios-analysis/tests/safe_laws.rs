@@ -90,6 +90,13 @@ fn term_named_vars(term: &Term, out: &mut BTreeSet<Variable>) {
     }
 }
 
+// Whether a term mentions the anonymous `_` — the reference reading, independent of the
+// production's own `term_has_anonymous`.
+fn term_has_anon(term: &Term) -> bool {
+    term.subterms()
+        .any(|subterm| matches!(subterm, Term::Variable(Variable::Anonymous)))
+}
+
 fn assignment_bindings(comparison: &Comparison) -> Vec<(Variable, BTreeSet<Variable>)> {
     let steps: Vec<(Relation, &Term)> = comparison.steps().collect();
     if steps.len() != 1 || steps[0].0 != Relation::Eq {
@@ -99,6 +106,10 @@ fn assignment_bindings(comparison: &Comparison) -> Vec<(Variable, BTreeSet<Varia
     let mut assignments = Vec::new();
     for (i, side) in sides.iter().enumerate() {
         if let Term::Variable(v @ Variable::Named(_)) = side {
+            // A `_` on the read side is an unbound fresh variable, so the assignment cannot fire.
+            if term_has_anon(sides[1 - i]) {
+                continue;
+            }
             let mut other = BTreeSet::new();
             term_named_vars(sides[1 - i], &mut other);
             if !other.contains(v) {
@@ -107,6 +118,61 @@ fn assignment_bindings(comparison: &Comparison) -> Vec<(Variable, BTreeSet<Varia
         }
     }
     assignments
+}
+
+// Whether a `_` occurs unbound. Each `_` is a distinct fresh variable, bound only by a positive
+// body atom (it binds itself) or as the whole lone side of a single `=` whose other side is fully
+// bound (it is assigned that value); anywhere else — the head, a negated literal, a nested or
+// non-lone `=` position, a non-`=` comparison — it is unbound. Computed by occurrence, independent
+// of the production's rename.
+fn naive_anonymous_unbound(rule: &Rule, bound: &BTreeSet<Variable>) -> bool {
+    let head_anon = match rule.head().get() {
+        Head::Literal(literal) => match &literal.inner {
+            LiteralInner::Atom(atom) => atom.get().arguments.iter().any(term_has_anon),
+            _ => false,
+        },
+        _ => false,
+    };
+    let body_anon = rule.body().get().elements().any(|element| {
+        let BodyElement::Literal(literal) = element.get() else {
+            return false;
+        };
+        match &literal.inner {
+            LiteralInner::Atom(atom) => {
+                literal.negation != DefaultNegation::None
+                    && atom.get().arguments.iter().any(term_has_anon)
+            }
+            LiteralInner::Comparison(comparison) => {
+                comparison_anon_unbound(comparison.get(), bound)
+            }
+            LiteralInner::True | LiteralInner::False => false,
+        }
+    });
+    head_anon || body_anon
+}
+
+fn comparison_anon_unbound(comparison: &Comparison, bound: &BTreeSet<Variable>) -> bool {
+    let steps: Vec<(Relation, &Term)> = comparison.steps().collect();
+    if steps.len() == 1 && steps[0].0 == Relation::Eq {
+        let sides = [comparison.first(), steps[0].1];
+        for (i, side) in sides.iter().enumerate() {
+            if !term_has_anon(side) {
+                continue;
+            }
+            // Bound only if this side is exactly `_` and the other side is fully bound.
+            let lone = matches!(side, Term::Variable(Variable::Anonymous));
+            let other = sides[1 - i];
+            let mut other_vars = BTreeSet::new();
+            term_named_vars(other, &mut other_vars);
+            let other_bound = !term_has_anon(other) && other_vars.iter().all(|v| bound.contains(v));
+            if !(lone && other_bound) {
+                return true;
+            }
+        }
+        false
+    } else {
+        term_has_anon(comparison.first()) || comparison.steps().any(|(_, term)| term_has_anon(term))
+    }
 }
 
 fn naive_unbound(rule: &Rule) -> BTreeSet<Variable> {
@@ -145,15 +211,26 @@ fn naive_unbound(rule: &Rule) -> BTreeSet<Variable> {
             break;
         }
     }
-    all.difference(&bound).cloned().collect()
+    let mut unbound: BTreeSet<Variable> = all.difference(&bound).cloned().collect();
+    if naive_anonymous_unbound(rule, &bound) {
+        unbound.insert(Variable::Anonymous);
+    }
+    unbound
 }
 
-// A generated aggregate-free rule over variables X0..X4 and predicates p/q/r.
+// A generated aggregate-free rule over variables X0..X4, the anonymous `_`, and predicates p/q/r.
 #[derive(Clone, Debug)]
 enum Elem {
-    Positive(usize, Vec<usize>),
-    Negative(usize, Vec<usize>),
+    Positive(usize, Vec<Arg>),
+    Negative(usize, Vec<Arg>),
     Assign(usize, Rhs),
+}
+
+// An atom argument: a named variable X0..X4, or the anonymous `_` (a distinct fresh variable).
+#[derive(Clone, Debug)]
+enum Arg {
+    Var(usize),
+    Anon,
 }
 
 #[derive(Clone, Debug)]
@@ -161,6 +238,7 @@ enum Rhs {
     Const,
     Var(usize),
     VarPlus(usize),
+    Anon,
 }
 
 const PREDS: [&str; 3] = ["p", "q", "r"];
@@ -169,23 +247,29 @@ fn var_name(i: usize) -> String {
     format!("X{i}")
 }
 
-fn build_atom(p: usize, idxs: &[usize]) -> Atom {
-    let names: Vec<String> = idxs.iter().map(|&i| var_name(i)).collect();
-    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    pred(PREDS[p], &refs)
+fn arg_term(arg: &Arg) -> Term {
+    match arg {
+        Arg::Var(i) => var(&var_name(*i)),
+        Arg::Anon => Term::Variable(Variable::Anonymous),
+    }
+}
+
+fn build_atom(p: usize, args: &[Arg]) -> Atom {
+    Atom::new(name(PREDS[p]), args.iter().map(arg_term))
 }
 
 fn build_body(elements: &[Elem]) -> Vec<BodyElement> {
     elements
         .iter()
         .map(|element| match element {
-            Elem::Positive(p, idxs) => BodyElement::from(build_atom(*p, idxs)),
-            Elem::Negative(p, idxs) => not(build_atom(*p, idxs)),
+            Elem::Positive(p, args) => BodyElement::from(build_atom(*p, args)),
+            Elem::Negative(p, args) => not(build_atom(*p, args)),
             Elem::Assign(lhs, rhs) => {
                 let right = match rhs {
                     Rhs::Const => num(0),
                     Rhs::Var(j) => var(&var_name(*j)),
                     Rhs::VarPlus(j) => var(&var_name(*j)) + num(1),
+                    Rhs::Anon => Term::Variable(Variable::Anonymous),
                 };
                 assign(&var_name(*lhs), right)
             }
@@ -193,28 +277,36 @@ fn build_body(elements: &[Elem]) -> Vec<BodyElement> {
         .collect()
 }
 
+fn any_arg() -> impl Strategy<Value = Arg> {
+    // Weighted toward named variables so `_` is exercised without dominating.
+    prop_oneof![5 => (0usize..5).prop_map(Arg::Var), 1 => Just(Arg::Anon)]
+}
+
+// A fresh atom-reference strategy each call — `impl Strategy` erases `Clone`, so the positive and
+// negative arms each build their own rather than sharing one.
+fn any_atom_ref() -> impl Strategy<Value = (usize, Vec<Arg>)> {
+    (0usize..3, prop::collection::vec(any_arg(), 0..3))
+}
+
 fn any_rule() -> impl Strategy<Value = Rule> {
-    let index = 0usize..5;
-    let atom_ref = (0usize..3, prop::collection::vec(0usize..5, 0..3));
     let element = prop_oneof![
-        atom_ref
-            .clone()
-            .prop_map(|(p, idxs)| Elem::Positive(p, idxs)),
-        atom_ref.prop_map(|(p, idxs)| Elem::Negative(p, idxs)),
+        any_atom_ref().prop_map(|(p, args)| Elem::Positive(p, args)),
+        any_atom_ref().prop_map(|(p, args)| Elem::Negative(p, args)),
         (
-            index.clone(),
+            0usize..5,
             prop_oneof![
                 Just(Rhs::Const),
                 (0usize..5).prop_map(Rhs::Var),
                 (0usize..5).prop_map(Rhs::VarPlus),
+                Just(Rhs::Anon),
             ]
         )
             .prop_map(|(lhs, rhs)| Elem::Assign(lhs, rhs)),
     ];
-    let head_idxs = prop::collection::vec(0usize..5, 0..3);
+    let head_args = prop::collection::vec(any_arg(), 0..3);
     let body = prop::collection::vec(element, 0..6);
-    (head_idxs, body)
-        .prop_map(|(head_idxs, body)| Rule::new(build_atom(0, &head_idxs), build_body(&body)))
+    (head_args, body)
+        .prop_map(|(head_args, body)| Rule::new(build_atom(0, &head_args), build_body(&body)))
 }
 
 // ---- Correctness: safety cases ----
@@ -246,6 +338,74 @@ fn safety_flags_a_rule_iff_a_variable_has_no_binding_occurrence() {
     assert_eq!(
         unbound_of(Rule::new(pred("q", &["X"]), assign("X", var("Y") + num(1)))),
         [named("X"), named("Y")].into_iter().collect(),
+    );
+}
+
+#[test]
+fn safety_reads_each_anonymous_as_a_distinct_fresh_variable() {
+    let anon = || Term::Variable(Variable::Anonymous);
+
+    // p(_) :- q.  → unsafe. The head `_` is a distinct fresh variable with no binding occurrence
+    // (a binding occurrence is a positive body atom, always a different `_`); the grounder refuses
+    // it. Reading it safe was a false `safe`, a definite-safety soundness break.
+    assert_eq!(
+        unbound_of(Rule::new(Atom::new(name("p"), [anon()]), pred("q", &[]))),
+        [Variable::Anonymous].into_iter().collect(),
+    );
+
+    // p(X) :- q, X = _.  → unsafe. `q` does not bind `X`, so `X = _` binds neither side; both `X`
+    // and the `_` are unbound. (Reading `_` as ground made `X = _` fire and hid this.)
+    assert_eq!(
+        unbound_of(Rule::new(
+            pred("p", &["X"]),
+            vec![BodyElement::from(pred("q", &[])), assign("X", anon())],
+        )),
+        [named("X"), Variable::Anonymous].into_iter().collect(),
+    );
+
+    // p(X) :- q(X), X = _.  → SAFE. `q(X)` binds `X`, so `X = _` binds the `_` — exactly as
+    // `X = Y` would. A single anonymous *marker* wrongly flags this (it cannot tell this `_` is
+    // bound by X); renaming each `_` to a distinct fresh variable reads it correctly.
+    assert!(
+        unbound_of(Rule::new(
+            pred("p", &["X"]),
+            vec![BodyElement::from(pred("q", &["X"])), assign("X", anon())],
+        ))
+        .is_empty(),
+    );
+
+    // p(X) :- q(X), r(_).  → SAFE. A `_` in a positive body atom binds itself.
+    assert!(
+        unbound_of(Rule::new(
+            pred("p", &["X"]),
+            vec![
+                BodyElement::from(pred("q", &["X"])),
+                BodyElement::from(Atom::new(name("r"), [anon()])),
+            ],
+        ))
+        .is_empty(),
+    );
+
+    // p(X) :- q(X), not r(_).  → unsafe. A `_` in a negated literal is required, never bound.
+    assert_eq!(
+        unbound_of(Rule::new(
+            pred("p", &["X"]),
+            vec![
+                BodyElement::from(pred("q", &["X"])),
+                not(Atom::new(name("r"), [anon()])),
+            ],
+        )),
+        [Variable::Anonymous].into_iter().collect(),
+    );
+
+    // p(_) :- q(_).  → unsafe. The head `_` and the body `_` are *distinct*; the body one binds
+    // itself, the head one has no binder.
+    assert_eq!(
+        unbound_of(Rule::new(
+            Atom::new(name("p"), [anon()]),
+            Atom::new(name("q"), [anon()]),
+        )),
+        [Variable::Anonymous].into_iter().collect(),
     );
 }
 
