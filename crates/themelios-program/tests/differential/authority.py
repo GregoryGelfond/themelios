@@ -128,11 +128,67 @@ def read_safety() -> dict:
     }
 
 
+CAP = 50_000
+
+
+class _GroundCap(Exception):
+    """Raised by the counting observer when grounding exceeds the rule-count cap."""
+
+
+class _Counter:
+    """A backend observer that counts ground rules and aborts past the cap (docs/design/analysis.md
+    §5, §10): a term-depth-finite program grounds within it; a program that grounds unboundedly hits
+    it. clingo interns nested terms, so the aborted grounding stays bounded in memory."""
+
+    def __init__(self, cap):
+        self.n = 0
+        self.cap = cap
+
+    def rule(self, choice, head, body):
+        self.n += 1
+        if self.n > self.cap:
+            raise _GroundCap()
+
+
+def read_ground() -> dict:
+    """Whether the authority grounds the program within a rule-count cap (docs/design/analysis.md
+    §5, §10): the finiteness backstop. Reads the program on stdin and grounds it under a counting
+    observer that aborts past the cap — a term-depth-finite program grounds (`grounded`), one that
+    grounds unboundedly is `capped`. Bounded in memory and time: no timeout, no exhaustion. A safety
+    error (an unsafe program) leaves `grounded` false with the message, so the corpus must be safe."""
+    program = sys.stdin.read()
+    messages: list[str] = []
+    control = clingo.Control(
+        logger=lambda code, message: messages.append(message), arguments=["--warn=none"]
+    )
+    counter = _Counter(CAP)
+    control.register_observer(counter)
+    capped = False
+    error = None
+    try:
+        control.add("base", [], program)
+        control.ground([("base", [])])
+    except _GroundCap:
+        capped = True
+    except RuntimeError as runtime_error:
+        error = str(runtime_error)
+    return {
+        "version": VERSION,
+        "grounded": not capped and error is None,
+        "capped": capped,
+        "rules": counter.n,
+        "cap": CAP,
+        "error": error,
+        "messages": messages,
+    }
+
+
 MODES = {
     "parse": read_parse,
     "eval": read_eval,
     "order": read_order,
     "safety": read_safety,
+    "ground": read_ground,
 }
 
 

@@ -11,11 +11,13 @@
 //! law reaches the syntax tier's vendored corpus. What it proves: this tier's safety verdict
 //! agrees with the authority's grounder on the corpus, or the divergence is one of the
 //! recorded, characterized boundaries. What it cannot (spec §10.2): agreement beyond the
-//! corpus — the universal law is the naive-reference proptest (safe_laws). The
-//! **classification** differential (the predicate-level approximations against ground-level
-//! truth, and the classes against a literature-tagged corpus) needs a ground dependency
-//! graph, hence a grounder, and is the solve stage's — deferred, but named below so it is
-//! not silently dropped (§10, §11).
+//! corpus — the universal law is the naive-reference proptest (safe_laws). Finiteness's
+//! `Holds`-**soundness** is backed here now, by a bounded grounding check
+//! (`a_holds_verdict_grounds_within_the_bound`): a `Holds` program must ground within a rule-count
+//! cap, and one that does not is a false `Holds`. The full ground-level **classification** differential
+//! (exact tightness / head-cycle-freeness against the ground graph, and finiteness *precision*) still
+//! needs a ground dependency graph, hence a grounder, and is the solve stage's — deferred, named in
+//! that test's doc so it is not silently dropped (§10, §11).
 
 #![cfg(feature = "differential")]
 
@@ -26,6 +28,7 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 
+use themelios_analysis::classify::Verdict;
 use themelios_analysis::safe::Safety;
 use themelios_base::source::{Source, SourceId};
 use themelios_program::raise::raise;
@@ -262,17 +265,127 @@ fn our_safety_agrees_with_the_authority_or_the_divergence_is_recorded() {
     );
 }
 
-/// The classification differential — the predicate-level approximations (tightness,
-/// head-cycle-freeness, finiteness) against the *ground-level* truth, and the classes
-/// against a corpus of programs tagged with their known classification from the literature
-/// — is **deferred to the solve stage** (analysis §10, §11): it needs a ground dependency
-/// graph, hence a grounder, which no tier of this estate yet has. It is named here so the
-/// obligation is not silently dropped; when a grounder exists, a predicate-level `Unknown`
-/// where the ground program *does* have the property is the approximation's stated
-/// imprecision, while a `Holds` the ground program lacks is a defect. This placeholder
-/// asserts nothing.
+/// This tier's grounding-finiteness verdict for a program of concrete syntax: whether grounding is
+/// proven **term-depth**-finite (`Holds`, §5), the property a grounder relies on.
+fn our_holds(text: &str) -> bool {
+    let source = Source::new(SourceId::new(0), text.to_owned()).expect("the fixture admits");
+    let lowered = raise(&parse(&source, Dialect::Clingo));
+    matches!(Safety::of(lowered.program()).finiteness(), Verdict::Holds)
+}
+
+/// Whether the authority grounds the program within a rule-count cap (§5, §10): `(grounded, capped)`.
+/// A term-depth-finite program grounds; one that grounds unboundedly hits the cap. Bounded in memory
+/// and time — a counting backend observer aborts past the cap, so there is no timeout and no
+/// exhaustion (the driver's `ground` mode; clingo interns nested terms, so the aborted grounding
+/// stays bounded).
+fn authority_ground(program: &str) -> (bool, bool) {
+    let mut child = Command::new("python")
+        .arg(authority_py())
+        .arg("ground")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("python runs: run this harness through `pixi run differential-analysis`");
+    let _ = child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(program.as_bytes());
+    let output = child.wait_with_output().expect("the authority answers");
+    assert!(
+        output.status.success(),
+        "the authority helper failed (run through pixi):\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).expect("the helper emits JSON");
+    assert_eq!(
+        value["version"].as_str(),
+        Some(AUTHORITY_VERSION),
+        "docs/grammar.md §3: the authority is pinned at v{AUTHORITY_VERSION}"
+    );
+    (
+        value["grounded"].as_bool().expect("grounded is a bool"),
+        value["capped"].as_bool().expect("capped is a bool"),
+    )
+}
+
+/// The programs this tier proves grounding-finite (`Holds`, §5): non-recursive term formers and
+/// non-growing (Datalog) recursion, each **seeded** so grounding actually produces rules. Each MUST
+/// ground within the authority's cap — a `Holds` the ground program lacks (a program that grounds
+/// unboundedly) would hit the cap, the false `Holds` the backstop exists to catch. **Integer**-value
+/// growth is out of this facet's **term-depth** scope (§5) — a program can be `Holds` yet ground
+/// infinitely through an unbounded integer — so no unbounded-integer aggregate appears here.
+const FINITENESS_HOLDS_CORPUS: &[(&str, &str)] = &[
+    ("non-recursive-former", "p(a).\nq(f(X)) :- p(X).\n"),
+    (
+        "nested-non-recursive-former",
+        "p(a).\nq(f(g(X))) :- p(X).\n",
+    ),
+    (
+        "bounded-former-over-facts",
+        "p(a). p(b). p(c).\nq(f(X)) :- p(X).\n",
+    ),
+    (
+        "datalog-transitive-closure",
+        "edge(a,b). edge(b,c). edge(c,d).\nreach(X,Y) :- edge(X,Y).\nreach(X,Z) :- reach(X,Y), edge(Y,Z).\n",
+    ),
+    (
+        "mutual-non-growing-recursion",
+        "a(1).\nb(X) :- a(X).\na(X) :- b(X).\n",
+    ),
+    (
+        "former-off-the-recursion",
+        "n(0). n(1).\nr(X) :- n(X).\nq(f(X)) :- n(X), r(X).\n",
+    ),
+    // The aliasing boundary: `X = Y` aliases (same depth) where `X = f(Y)` deepens — the distinction
+    // the false-`Holds` rounds hinged on. Recursive but non-growing, so `Holds`; clingo grounds the
+    // tautology `p(Y) :- p(Y)` to just the seed.
+    (
+        "recursive-aliasing-not-growth",
+        "p(a).\np(X) :- p(Y), X = Y.\n",
+    ),
+];
+
+/// A program this tier reports `Unknown` and that grounds unboundedly (a term former deepens the
+/// recursion): the control that proves the backstop is **live** — the cap fires on an infinite
+/// grounding, and this tier's `Unknown` correctly flags the infinity, so the `Holds` corpus above is
+/// not passing vacuously.
+const FINITENESS_INFINITE_CONTROL: (&str, &str) =
+    ("recursive-former-grows", "p(a).\np(f(X)) :- p(X).\n");
+
+/// The bounded finiteness backstop (§5, §6.1, §10): the ground-truth net for a false `Holds`, the one
+/// failure §6.1 forbids. The full ground-level *classification* differential (exact tightness /
+/// head-cycle-freeness, and finiteness *precision* — an `Unknown` the ground program does not need)
+/// still needs a ground dependency graph, hence a grounder, and is the solve stage's (§10, §11); but
+/// finiteness's `Holds`-**soundness** is checkable now, by grounding: a `Holds` program must ground
+/// within a bound, and one that does not is the defect. This closes the "argument, not ground truth"
+/// gap for the `Holds` direction — the direction that fails open at the grounding-DoS boundary.
 #[test]
-#[ignore = "deferred to the solve stage (analysis §10, §11): the ground-level classification differential needs a grounder"]
-fn the_classification_differential_is_the_solve_stages() {
-    // Intentionally empty: the recorded, deferred obligation (analysis §10).
+fn a_holds_verdict_grounds_within_the_bound() {
+    for (label, program) in FINITENESS_HOLDS_CORPUS {
+        assert!(
+            our_holds(program),
+            "[{label}] this tier must prove Holds for a finiteness-corpus program: {program:?}",
+        );
+        let (grounded, capped) = authority_ground(program);
+        assert!(
+            grounded && !capped,
+            "[{label}] this tier proves Holds, but the authority did not ground it within the cap — \
+             a false Holds (grounded={grounded}, capped={capped}): {program:?}",
+        );
+    }
+
+    // The control: this tier says Unknown, and the authority hits the cap — so the backstop can fire.
+    let (label, control) = FINITENESS_INFINITE_CONTROL;
+    assert!(
+        !our_holds(control),
+        "[{label}] the infinite control must be Unknown, not Holds: {control:?}",
+    );
+    let (grounded, capped) = authority_ground(control);
+    assert!(
+        capped && !grounded,
+        "[{label}] the infinite control must hit the cap, or the backstop is vacuous \
+         (grounded={grounded}, capped={capped}): {control:?}",
+    );
 }

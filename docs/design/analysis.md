@@ -374,8 +374,10 @@ the aliasing `X = Y` does not; treating the two alike would miss an unbounded gr
 **false `Holds`**. The term successor `X = f(Y)` and the arithmetic successor `X = Y + 1`
 are the same act — generating unbounded naturals — and both deepen. This enumeration, the
 carrier-graph congruence, and the argument that each path is caught, is the soundness
-obligation `Holds` answers to; it is discharged by the growth laws (§10) and, ultimately,
-by the grounder differential the solve tier brings.
+obligation `Holds` answers to; it is discharged by the growth laws (§10), by a **bounded
+grounding differential** now — a `Holds` program must ground within a rule-count cap against
+the pinned grounder (§10) — and, for the full ground-level precision, by the grounder
+differential the solve tier brings.
 
 `Holds` is proven for the program's **safe** rules; at an untrusted boundary the sound
 gate is `is_safe() && Holds`. A rule reported unsafe is outside the proof: a grounder whose
@@ -736,13 +738,19 @@ what it proves and what it cannot (spec §10.2).
     of the stated kind. This is the load-bearing law — it holds `Holds` honest.
   - **The scan is complete:** every construct that occurs is flagged, and every
     flag's `first` names a statement that bears it.
-- **The differential** (out of band, once a grounder exists — the solve tier):
-  the predicate-level approximations against the ground-level truth on the corpus,
-  and the classes against a corpus of programs tagged with their known
-  classification from the literature; disagreements are recorded, since a
-  predicate-level `Unknown` where the ground program *does* have the property is
-  expected (the approximation's stated imprecision), while a `Holds` the ground
-  program lacks is a defect.
+- **The differential** (out of band, through pixi against the pinned clingo):
+  **safety** agrees with the authority's grounder on a corpus spanning the binding
+  cases, the bodied directives, and the theory-term leaves — or the divergence is a
+  recorded, characterized boundary (the matching-`=` dialect gap); and **finiteness's
+  `Holds`-soundness** is backed by a bounded grounding check — a `Holds` program must
+  ground within a rule-count cap, and an infinite control confirms the cap fires, so a
+  false `Holds` is caught against ground truth. The full **ground-level** classification
+  differential — exact tightness / head-cycle-freeness against the ground graph, and
+  finiteness *precision* (an `Unknown` the ground program does not need) — still needs a
+  ground dependency graph, hence a grounder, and is the solve tier's; there a
+  predicate-level `Unknown` where the ground program *does* have the property is expected
+  (the approximation's stated imprecision), while a `Holds` the ground program lacks is a
+  defect.
 - **Scaling shapes (criterion):** `Analysis::of` linear in `program + edges`; the
   component decomposition linear in the graph; the shapes asserted by the test suite,
   absolute numbers measured out of band as benchmarks (spec §10.2).
