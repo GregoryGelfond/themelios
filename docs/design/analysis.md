@@ -338,14 +338,20 @@ component's grounding is unbounded — in **term depth** — exactly when a rule
 on the recursion, a term the component carries; so `finiteness` proves `Holds` by
 finding *no* such deepening, and that proof is only as sound as (a) its enumeration of
 **how** a head term can deepen a carried variable, and (b) its collecting carriers
-**wherever the dependency graph reads a dependency** (§4) — never a variable the graph
-makes recursive that the growth check cannot see. A head-atom argument deepens a carried
-variable when it is a term-former (`f`, a tuple, an arithmetic operation) over it:
-written directly (`q(f(Y)) :- q(Y)`), reached through a body `=`-assignment that makes a
-variable deepen a carried one (`q(X) :- q(Y), X = f(Y)`, transitively along a chain), or
-over a variable a **head element's own condition** carries (`p(f(X)) : p(X) :- base.` —
-the condition `p(X)` makes `p` recursive and carries `X` to the derived `p(f(X))`, so its
-carriers are read exactly as a body atom's are). The `=`-assignment case is the one to
+**wherever the dependency graph reads a dependency** (§4), *plus the carrier positions the
+graph does not read as a plain atom* — an aggregate's lone-variable guard, which is bound
+to a member value of the predicates it ranges over — never a variable the graph makes
+recursive that the growth check cannot see. A head-atom argument deepens a carried
+variable when it is a term-former (`f`, a tuple, an arithmetic operation) over it, by one
+of **four** paths: written directly (`q(f(Y)) :- q(Y)`); reached through a body
+`=`-assignment that makes a variable deepen a carried one (`q(X) :- q(Y), X = f(Y)`,
+transitively along a chain); over a variable a **head element's own condition** carries
+(`p(f(X)) : p(X) :- base.` — the condition `p(X)` makes `p` recursive and carries `X` to
+the derived `p(f(X))`, so its carriers are read exactly as a body atom's are); or through a
+**`#max`/`#min` aggregate whose element value-term is a former** (`p(X) :- X = #max { f(Y)
+: p(Y) }.` — the extremum returns a member value-*term*, so `f(Y)` makes the guard `X` one
+former deeper than the members it maxes over, exactly the body `p(Y), X = f(Y)`; the member
+variables are carried so the deepening is reachable). The `=`-assignment case is the one to
 hold carefully: `X = f(Y)` embeds a successor — a Church numeral — so it *deepens*, where
 the aliasing `X = Y` does not; treating the two alike would miss an unbounded grounding, a
 **false `Holds`**. The term successor `X = f(Y)` and the arithmetic successor `X = Y + 1`
@@ -353,6 +359,13 @@ are the same act — generating unbounded naturals — and both deepen. This enu
 carrier-graph congruence, and the argument that each path is caught, is the soundness
 obligation `Holds` answers to; it is discharged by the growth laws (§10) and, ultimately,
 by the grounder differential the solve tier brings.
+
+`Holds` is proven for the program's **safe** rules; at an untrusted boundary the sound
+gate is `is_safe() && Holds`. A rule reported unsafe is outside the proof: a grounder whose
+`=` binds more than the standard's — clingo decomposes `Z = (X, Y)` to bind `X`, `Y` — can
+ground it unboundedly, and safety already refuses it. This matching-`=` shape is a
+characterized dialect boundary; the solve-tier grounder differential carries it as an
+expected divergence.
 
 **Scope: term depth, not integer value.** `finiteness` proves finiteness of the
 **Herbrand term** instantiation — unbounded function-symbol nesting. A program can be

@@ -80,6 +80,15 @@ impl Safety {
     /// Whether grounding is finite — a sound approximation (§6.1): `Holds` (proven
     /// finite) or `Unknown` carrying the recursive component whose term growth blocked
     /// the proof. Never asserted infinite where it might be finite (§5).
+    ///
+    /// `Holds` proves finiteness for the program's **safe** rules; at an untrusted
+    /// boundary read it composed with [`is_safe`](Safety::is_safe), as `is_safe() &&
+    /// Holds`. A rule this analysis reports unsafe is outside the proof: under a grounder
+    /// whose `=` binds more than ASP-Core-2's — clingo decomposes `Z = (X, Y)` to bind
+    /// `X`, `Y`, where the standard leaves them unbound (the same dialect gap safety
+    /// already refuses) — such a rule can ground unboundedly, so trusting `Holds` for it
+    /// alone would be unsound. The composed gate refuses it, being unsafe; that is the
+    /// reading the boundary must use.
     pub fn finiteness(&self) -> &Verdict {
         &self.finiteness
     }
@@ -477,6 +486,13 @@ fn finiteness_verdict(program: &Program, graph: &DependencyGraph) -> Verdict {
 /// variable *deepen* a carried one (`q(X) :- q(Y), X = f(Y)`), or a head-element condition (§5).
 /// The rule's body growth-context is built once and each head atom is a lookup against its own
 /// component, so the rule costs `O(rule)`.
+///
+/// The `O(rule)` rests on a lemma: **at most one component per rule has a nonempty carried set.**
+/// Every carrier position is also a dependency edge from *every* head signature of the rule (the
+/// congruence — see `BodyGrowth`), so two components each holding both a head atom and a carrier of
+/// this rule would depend on each other and be one component, contradicting SCC maximality. A
+/// component with an empty carried set costs `O(1)` (`reaching` of nothing), so the per-component
+/// `reaching` traversals sum to `O(rule)`, not `O(head atoms · rule)`.
 fn growing_component(rule: &Rule, graph: &DependencyGraph) -> Option<Component> {
     let context = BodyGrowth::of(rule, graph);
     // Each recursive component's deepening set — the roots that deepen one of its carried roots —
@@ -490,6 +506,9 @@ fn growing_component(rule: &Rule, graph: &DependencyGraph) -> Option<Component> 
         if !component.is_recursive() {
             continue;
         }
+        // `decompose` gives every component at least one member (each pops its own root), so this
+        // arm is unreachable; the guard keeps the read total. Were it ever reached, `continue`
+        // skips the growth check — erring toward `Holds` — so it must stay unreachable (§6.1).
         let Some(key) = component.members().next() else {
             continue;
         };
@@ -568,6 +587,7 @@ impl BodyGrowth {
             if !component.is_recursive() {
                 continue;
             }
+            // Unreachable: `decompose` gives every component a member (see `growing_component`).
             let Some(key) = component.members().next() else {
                 continue;
             };
@@ -774,10 +794,13 @@ fn push_atom_carriers(atom: &Atom, carriers: &mut BTreeMap<Signature, BTreeSet<V
     }
 }
 
-/// Feed one literal to the growth-context (§5): a positive atom's variables carry; a positive `=`
-/// comparison aliases (`X = Y`) or deepens (`X = f(Y)`). A negated literal binds nothing (a
-/// disequality asserts inequality). The single walk used for a body literal *and* every head-element
-/// condition literal, so a comparison is never handled at one position and dropped at another.
+/// Feed one literal to the growth-context (§5): an atom's variables carry — **regardless of
+/// negation**, a conservative over-collection (a negated atom's variable can still be the carried one
+/// a head deepens, and over-carrying only risks a spurious `Unknown`, never a false `Holds`); a
+/// *positive* `=` comparison aliases (`X = Y`) or deepens (`X = f(Y)`), while a negated comparison is
+/// a disequality that carries nothing. The single walk used for a body literal *and* every
+/// head-element condition literal, so a comparison is never handled at one position and dropped at
+/// another.
 fn collect_literal(
     literal: &Literal,
     carriers: &mut BTreeMap<Signature, BTreeSet<Variable>>,
