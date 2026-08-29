@@ -77,3 +77,32 @@ jobs:
       # toolchain and coverage-tool measurement drift. One number on
       # every machine.
       - run: cargo llvm-cov --workspace --exclude themelios-syntax-fuzz --locked --fail-under-lines 90
+  # The out-of-band differentials against the pinned authorities — clingo 5.8.2 (the
+  # membership, program-rendering, and safety-grounding checks) and the pinned
+  # tree-sitter-clingo grammar (the parser cross-check). These are the instruments
+  # docs/design/syntax.md §16 keeps out of the default build; running them only by hand
+  # at a stage close lets a regression here go unseen (a false authority-agreement
+  # certificate), so they are guarded on every change. The authorities come from
+  # pixi/conda-forge (pixi.toml), resolved from the committed pixi.lock — nothing here
+  # enters a Rust manifest or a shipped closure (§12.4).
+  differentials:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      # Necessary: installs pixi and materializes the clingo/python/tree-sitter
+      # environment from the committed pixi.lock (locked: true — the certified lock,
+      # never re-resolved, as --locked is for Cargo). Pinned to a commit for
+      # reproducible provenance, never a movable tag (§10.1, §12.4).
+      - uses: prefix-dev/setup-pixi@d3f436a425481402e6a95a1d1fc10331c708cd9e # v0.10.2
+        with:
+          locked: true
+      # Each authority-agreement instrument, in its tier. `pixi run` runs the cargo
+      # test under the pixi environment, so clingo and the tree-sitter CLI are on PATH
+      # while the ambient rustup toolchain builds the crate.
+      - run: pixi run differential
+      - run: pixi run differential-program
+      - run: pixi run differential-analysis
+      - run: pixi run cross-check
