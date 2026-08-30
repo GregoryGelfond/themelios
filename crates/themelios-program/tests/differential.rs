@@ -616,107 +616,107 @@ fn relate(term: &Term, theirs: &Value) -> Relation {
 
 #[test]
 fn evaluate_agrees_with_the_authoritys_ground_arithmetic() {
-    // The random body: mostly faithful agreements, with the zero-divisor refusals both
-    // sides share. Its terms and the curated boundaries below are evaluated in one batch.
+    // themelios refuses overflow (§3.5); the authority's overflow is platform-dependent — the same
+    // clingo 5.8.2 wraps it on osx-arm64 but *aborts the process* on linux-64 (a signed-overflow trap
+    // the helper's `except` cannot catch), so an overflowing term is never fed to the authority.
+    // themelios's own evaluation is the safe filter: a term it evaluates to a value overflows at no
+    // step, so the authority evaluates it on every platform without the trap and the two must agree.
+    // The refusal boundaries are characterized separately, below.
     let mut rng = Rng::new(0x1234_5678_9ABC_DEF0);
     let random: Vec<Term> = (0..4000).map(|_| gen_arith(&mut rng, 4)).collect();
 
-    // The curated boundaries, each deliberately reaching one named relation so the
-    // characterization is exercised, not merely asserted absent.
-    let curated: Vec<Term> = vec![
-        // The authority wraps on overflow where this tier refuses (§3.5).
-        Term::BinaryOperation {
-            operator: BinaryOp::Add,
-            left: Box::new(Term::from(i32::MAX)),
-            right: Box::new(Term::from(1)),
-        },
-        Term::BinaryOperation {
-            operator: BinaryOp::Mul,
-            left: Box::new(Term::from(100_000)),
-            right: Box::new(Term::from(100_000)),
-        },
-        Term::BinaryOperation {
-            operator: BinaryOp::Pow,
-            left: Box::new(Term::from(2)),
-            right: Box::new(Term::from(31)),
-        },
-        // A negative exponent: 0 to the authority, refused here (the conservative reading).
-        Term::BinaryOperation {
-            operator: BinaryOp::Pow,
-            left: Box::new(Term::from(2)),
-            right: Box::new(Term::from(-1)),
-        },
-        // Zero divisor: both refuse.
-        Term::BinaryOperation {
-            operator: BinaryOp::Div,
-            left: Box::new(Term::from(5)),
-            right: Box::new(Term::from(0)),
-        },
-        Term::BinaryOperation {
-            operator: BinaryOp::Mod,
-            left: Box::new(Term::from(5)),
-            right: Box::new(Term::from(0)),
-        },
-        // Faithful non-arithmetic ground terms: a function, a tuple, a nested mix.
-        Term::Function {
-            name: name("f"),
-            arguments: vec![Term::from(1), Term::from(2)],
-        },
-        Term::Tuple(vec![Term::from(1), Term::from(2)]),
-        Term::UnaryOperation {
-            operator: UnaryOp::Negate,
-            argument: Box::new(Term::from(5)),
-        },
-        Term::Absolute(Box::new(Term::from(-7))),
-        Term::BinaryOperation {
-            operator: BinaryOp::BitAnd,
-            left: Box::new(Term::from(5)),
-            right: Box::new(Term::from(3)),
-        },
-        Term::BinaryOperation {
-            operator: BinaryOp::BitXor,
-            left: Box::new(Term::from(5)),
-            right: Box::new(Term::from(3)),
-        },
-    ];
-
-    let all: Vec<Term> = random.iter().chain(&curated).cloned().collect();
-    let spellings: Vec<String> = all.iter().map(spell_term).collect();
+    let accepted: Vec<&Term> = random
+        .iter()
+        .filter(|term| term.evaluate().is_ok())
+        .collect();
+    let spellings: Vec<String> = accepted.iter().copied().map(spell_term).collect();
     let results = authority_eval(&spellings);
-    assert_eq!(results.len(), all.len(), "one result per term");
-
-    let mut agree = 0usize;
-    let mut overflow = 0usize;
-    let mut conservative = 0usize;
-    let mut both_refuse = 0usize;
-    for (term, theirs) in all.iter().zip(&results) {
-        match relate(term, theirs) {
-            Relation::Agree => agree += 1,
-            Relation::OverflowWrapped => overflow += 1,
-            Relation::ConservativeRefusal => conservative += 1,
-            Relation::BothRefuse => both_refuse += 1,
-        }
+    assert_eq!(
+        results.len(),
+        accepted.len(),
+        "one result per accepted term"
+    );
+    for (term, theirs) in accepted.iter().copied().zip(&results) {
+        assert_eq!(
+            relate(term, theirs),
+            Relation::Agree,
+            "the authority evaluates the overflow-free `{}` to the same symbol",
+            spell_term(term),
+        );
     }
-    println!(
-        "evaluate vs the authority: {agree} agree, {both_refuse} both refuse, \
-         {overflow} overflow-wrapped (authority wraps, refused here), \
-         {conservative} conservative-refusal (authority defines, refused here)"
-    );
-    // The random body must have exercised faithful agreement and the shared refusals,
-    // and the curated boundaries each of the two characterized divergences.
-    assert!(agree > 1000, "faithful agreements were exercised ({agree})");
     assert!(
-        both_refuse > 0,
-        "the shared zero-divisor refusal was exercised"
+        accepted.len() > 1000,
+        "faithful agreements were exercised ({})",
+        accepted.len(),
     );
-    assert!(
-        overflow >= 3,
-        "the overflow boundary was exercised ({overflow})"
-    );
-    assert!(
-        conservative >= 1,
-        "the conservative-refusal boundary was exercised ({conservative})",
-    );
+}
+
+/// A binary-operation term over two integer literals — the arithmetic boundaries' building block.
+fn binop(operator: BinaryOp, left: i32, right: i32) -> Term {
+    Term::BinaryOperation {
+        operator,
+        left: Box::new(Term::from(left)),
+        right: Box::new(Term::from(right)),
+    }
+}
+
+#[test]
+fn evaluate_characterizes_the_arithmetic_boundaries() {
+    // The overflow boundaries: a themelios refusal only — the authority's overflow is platform-dependent
+    // (it wraps on some builds and aborts the process on others), so it is not fed these.
+    for term in [
+        binop(BinaryOp::Add, i32::MAX, 1),
+        binop(BinaryOp::Mul, 100_000, 100_000),
+        binop(BinaryOp::Pow, 2, 31),
+    ] {
+        assert!(
+            matches!(term.evaluate(), Err(EvalError::Overflow)),
+            "themelios refuses the overflow `{}`",
+            spell_term(&term),
+        );
+    }
+
+    // The boundaries the authority handles without the trap, each compared in one batch. Two conservative
+    // divergences the authority defines but this tier refuses: a negative exponent (`0` to the authority)
+    // and a zero *modulus* (`5 \ 0` is `5` — the dividend, not a refusal). A zero *divisor* both refuse.
+    // And faithful non-arithmetic ground terms (a function, a tuple, a negation, an absolute, two bitwise)
+    // agree.
+    let curated: [(Term, Relation); 9] = [
+        (binop(BinaryOp::Pow, 2, -1), Relation::ConservativeRefusal),
+        (binop(BinaryOp::Div, 5, 0), Relation::BothRefuse),
+        (binop(BinaryOp::Mod, 5, 0), Relation::ConservativeRefusal),
+        (
+            Term::Function {
+                name: name("f"),
+                arguments: vec![Term::from(1), Term::from(2)],
+            },
+            Relation::Agree,
+        ),
+        (
+            Term::Tuple(vec![Term::from(1), Term::from(2)]),
+            Relation::Agree,
+        ),
+        (
+            Term::UnaryOperation {
+                operator: UnaryOp::Negate,
+                argument: Box::new(Term::from(5)),
+            },
+            Relation::Agree,
+        ),
+        (Term::Absolute(Box::new(Term::from(-7))), Relation::Agree),
+        (binop(BinaryOp::BitAnd, 5, 3), Relation::Agree),
+        (binop(BinaryOp::BitXor, 5, 3), Relation::Agree),
+    ];
+    let spellings: Vec<String> = curated.iter().map(|(term, _)| spell_term(term)).collect();
+    let results = authority_eval(&spellings);
+    for ((term, expected), theirs) in curated.iter().zip(&results) {
+        assert_eq!(
+            relate(term, theirs),
+            *expected,
+            "the curated boundary `{}` relates as expected",
+            spell_term(term),
+        );
+    }
 }
 
 // ---- check 3: `Symbol` order against the authority's printing order (§3.1, §16) ----
