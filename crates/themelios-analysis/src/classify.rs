@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 use themelios_program::program::{Disjunction, Head, LiteralInner, Program, Statement};
 use themelios_program::provenance::WithProvenance;
 use themelios_program::symbol::Signature;
+use themelios_program::transform::unpool;
 
 use crate::construct::{Construct, Constructs};
 use crate::depend::{Component, DependencyGraph, Rule, atom_signature};
@@ -61,9 +62,12 @@ impl Classes {
     /// structure (§6.3). `O(program + edges)`. Builds the graph and scan and delegates to
     /// `from_parts`; the assembled `Analysis` (§3) builds them once and shares them.
     pub fn of(program: &Program) -> Classes {
+        // The graph and the recursion/membership readings that share it read the unpooled
+        // program (§9); the construct scan reads the faithful one (so pooling is reported, §7).
+        let unpooled = unpool(program);
         Classes::from_parts(
-            program,
-            &DependencyGraph::of(program),
+            &unpooled,
+            &DependencyGraph::of_unpooled(&unpooled),
             &Constructs::of(program),
         )
     }

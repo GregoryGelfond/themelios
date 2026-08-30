@@ -281,31 +281,28 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
     // A positive conditional literal binds locally in its invertible positions, so a non-invertible one
     // is unsafe just as a body atom is (the head-element path already requires all its variables).
     ("cond-non-invertible-unbound", "t :- p(X / 2) : r.\n"),
-    // ---- A pool (a single term argument) is not invertible (§5): a pooled position binds nothing, so a
-    // variable there is unsafe unless an alternative that omits it never exists — `p((a;X))` unfolds to
-    // `p(a)` (no `X`), unsafe to both. The conservative reading over-reports on `p((X;X))` (safe to the
-    // grounder — both alternatives bind `X`); that is a recorded divergence pending the faithful
-    // per-alternative reading.
+    // ---- Pools (§5, §9): the raise represents both a term pool (`(a;X)`, `f(a;X)`) and an atom-level
+    // argument-list pool (`p(X;a)`, whole argument tuples) faithfully, and the unpool pass (program §9)
+    // expands each into the distinct atoms the grounder does — before this analysis reads it. So a
+    // pooled program's safety agrees with the grounder at every position: a variable is safe iff it
+    // binds in *every* alternative (`p((X;X))` safe — both bind X; `p((a;X))` unsafe — the `a`
+    // alternative drops X).
     ("atom-pool-position-unbound", "q(X) :- p((a;X)).\n"),
     ("pool-every-alternative-binds", "q(X) :- p((X;X)).\n"),
-    // ---- Atom-level *argument-list* pools (`p(X; a)`, a pool of whole argument tuples, not one pooled
-    // term): the grounder unpools each into distinct atoms (`p(X)`, `p(a)`), a literal-level
-    // cross-product. This tier does not yet carry that pool, so the raise flags it (`PooledArgumentList`,
-    // program §8) and the composed verdict fails closed — agreeing with the grounder wherever an
-    // unpooled alternative is unsafe, conservative where none is. (Each was a *silent* false safe while
-    // the truncation drew no diagnostic; the fail-closed reading closes it, pending the faithful
-    // per-alternative representation.)
-    //   Body pool — the `p(a)` alternative leaves the head's `X` unbound, so the grounder reports the
-    //   rule unsafe: unsafe to both.
+    //   A body argument-list pool leaves the head's `X` unbound in the `p(a)` alternative — unsafe.
     ("atom-argument-list-pool-truncated", "q(X) :- p(X; a).\n"),
-    //   Directive pool — `#external p(X) : q.` leaves `X` unbound in the body, so the grounder reports
-    //   it unsafe: unsafe to both, the directive surface of the same boundary.
+    //   A directive pool — `#external p(a; X) : q.` leaves `X` unbound in the body — unsafe.
     ("external-atom-list-pool", "#external p(a; X) : q.\n"),
-    //   Head pool where *every* unpooled rule is safe — `p(X) :- p(X).` and `p(f(X)) :- p(X).`, both
-    //   bound by the body — so the grounder reports the rule safe (and grounds it unboundedly). This
-    //   tier fails closed on the pool: unsafe. A recorded divergence, the conservative side, and the
-    //   reading that shuts the false `Holds` this shape reached (see the finiteness backstop).
+    //   A head pool where every unpooled rule is safe — `p(X):-p(X).` and `p(f(X)):-p(X).` — safe to
+    //   both; finiteness catches the unbounded growth of the `p(f(X))` rule (the finiteness corpus).
     ("atom-argument-list-pool-head", "p(X; f(X)) :- p(X).\n"),
+    //   Element-level pools expand *within* their container (never lifting the pool to the rule),
+    //   agreeing with the grounder: an aggregate element, a choice element, a disjunction element, and a
+    //   conditional literal's condition — each here a safe agreement case.
+    ("aggregate-element-pool", "q :- 1 <= #count { p(a; b) }.\n"),
+    ("choice-element-pool", "{ p(a; b) }.\n"),
+    ("disjunction-element-pool", "p(X; a) | q :- r(X).\n"),
+    ("conditional-condition-pool", "q :- p : r(a; b).\n"),
     // ---- The matching-`=` dialect boundary (§5): clingo decomposes an `=` against a tuple, and chains
     // a multi-step `=`, to bind — where the strict ASP-Core-2 standard does not. Recorded divergences;
     // this tier is the conservative side (never a false safe).
@@ -381,24 +378,10 @@ const RECORDED_DIVERGENCES: &[(&str, &str)] = &[
         "chained-equality",
         "clingo binds through a chained `X = Y = 1`; this tier's `=` binds only as a single step",
     ),
-    // clingo binds a variable that binds in *every* pooled alternative (`(X;X)` unfolds to `p(X)` and
-    // `p(X)`, both binding X); this tier reads a pool as not invertible, binding nothing — the
-    // conservative side, never a false safe. The faithful per-alternative reading is scheduled work.
-    (
-        "pool-every-alternative-binds",
-        "clingo binds a variable that binds in every pooled alternative; this tier reads a pool as not invertible",
-    ),
-    // An atom-level argument-list pool in a *head* where every unpooled rule is safe: clingo unpools
-    // `p(X; f(X)) :- p(X).` to `p(X) :- p(X).` and `p(f(X)) :- p(X).`, both safe, and reports the rule
-    // safe (grounding it unboundedly). This tier does not yet carry the literal-level pool, so the raise
-    // flags it and the composed verdict fails closed — the conservative side (never a false safe), and
-    // the reading that shuts the false `Holds` this shape reached. Pending the grounder's unpool
-    // (program §8). The body and directive surfaces of this pool *agree* with the grounder (an unpooled
-    // alternative is unsafe there), so they sit in the corpus, not here.
-    (
-        "atom-argument-list-pool-head",
-        "clingo unpools `p(X; f(X)) :- p(X).` to two safe rules (safe); this tier fails closed on the atom-level pool — conservative, and it shuts the false Holds this shape reached",
-    ),
+    // (The pool cases `pool-every-alternative-binds`, `atom-argument-list-pool-head`, and
+    // `project-atom-pool` were recorded divergences while the tier fail-closed on a pool; the faithful
+    // representation + the unpool pass (program §9) now agree with the grounder, so they are corpus
+    // agreement rows, not divergences.)
     // clingo decomposes a former on both sides of `=` when one side is bound (`q(X)` binds X, so
     // `f(X) = f(Y)` binds Y); the strict standard binds only a lone side, so this tier reports Y unsafe
     // — the matching-`=` family, the conservative side, never a false safe.
@@ -429,10 +412,6 @@ const RECORDED_DIVERGENCES: &[(&str, &str)] = &[
     (
         "atom-overflow-coefficient",
         "clingo wraps an overflowing constant fold (a non-zero coefficient stays invertible); this tier's evaluator refuses overflow — a refusal only pushes toward unsafe",
-    ),
-    (
-        "project-atom-pool",
-        "clingo unpools `#project p((X;a))` per alternative; this tier reads a pool as not invertible, the same conservative boundary as a body atom's",
     ),
     // Not recorded here: the head conditional `p(X) : q(X)` agrees. A disjunction/choice element is
     // scoped to itself, its literal bound by its own condition, so the tier reads it safe with clingo

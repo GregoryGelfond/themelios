@@ -374,12 +374,11 @@ fn a_const_value_may_be_an_external_call() {
 }
 
 #[test]
-fn a_pooled_atom_argument_list_is_diagnosed_not_silently_truncated() {
-    // `p(a; b)` is an atom-level pool — the grounder unpools it into the distinct atoms
-    // `p(a)`, `p(b)` (a literal-level cross-product), which the program does not yet carry.
-    // The raise reads the first alternative and marks the rest (§8), never dropping them in
-    // silence, so a consumer gating on a clean raise does not trust safety or finiteness of
-    // the partial reading — in head, body, and directive position alike.
+fn an_ordinary_atom_argument_list_pool_is_represented_not_diagnosed() {
+    // `p(a; b)` is an atom-level pool the value now carries faithfully (§8): the raise draws no
+    // diagnostic, and the unpool pass (§9) expands it into the distinct atoms the grounder does —
+    // in head, body, directive, aggregate, choice, and conditional position alike. A pooled *term*
+    // (`p((a; b))`, `q(f(a; b))`), a plain list (`p(a, b)`), and a tuple term were never diagnosed.
     for text in [
         "p(a; b).",                     // a head fact
         "q(X) :- p(X; a).",             // a body atom
@@ -389,35 +388,36 @@ fn a_pooled_atom_argument_list_is_diagnosed_not_silently_truncated() {
         "q :- #count { X : p(X; a) }.", // an aggregate element's condition atom
         "{ p(X; a) } :- q.",            // a choice head element atom
         "t :- p(X; a) : r.",            // a conditional literal's atom
-        ":- &sum(a; b) { x }.",         // a theory atom's argument list (raise_theory_atom door)
+        "p((a; b)).",                   // one parenthesized Pool term argument
+        "q(f(a; b)).",                  // a pooled function term inside one argument
+        "p(a, b).",                     // a plain, comma-separated argument list
+        ":~ q. [1@1, p(a; b)]",         // a weak-constraint tuple term (a Pool term, not an atom)
     ] {
         let raised = raised(text);
         assert!(
-            raised
+            !raised
                 .diagnostics()
                 .iter()
                 .any(|error| matches!(error.kind(), LowerErrorKind::PooledArgumentList)),
-            "a pooled atom argument list is a lowering diagnostic: {text:?} -> {:?}",
+            "an ordinary atom pool is represented, not diagnosed: {text:?} -> {:?}",
             raised.diagnostics(),
         );
     }
-    // A pooled *term* — one parenthesized `Pool` argument (`p((a; b))`) or a pooled function
-    // term (`q(f(a; b))`) — is represented, not an atom-level pool; a plain multi-argument
-    // atom (`p(a, b)`) has one alternative. None draws a `PooledArgumentList`.
-    for text in [
-        "p((a; b)).",           // one parenthesized Pool term argument
-        "q(f(a; b)).",          // a pooled function term inside one argument
-        "p(a, b).",             // a plain, comma-separated argument list
-        ":~ q. [1@1, p(a; b)]", // a weak-constraint tuple term (a Pool term, not an atom)
-    ] {
-        assert!(
-            !raised(text)
-                .diagnostics()
-                .iter()
-                .any(|error| matches!(error.kind(), LowerErrorKind::PooledArgumentList)),
-            "a pooled term or plain argument list is not an atom-level pool: {text:?}",
-        );
-    }
+}
+
+#[test]
+fn a_theory_atom_argument_list_pool_stays_diagnosed() {
+    // A theory-atom argument-list pool (`&sum(a; b)`) is deferred (§7): the raise still reads the
+    // first alternative and marks the rest, so the fully-unpooled analysis gate fails closed on it.
+    let raised = raised(":- &sum(a; b) { x }.");
+    assert!(
+        raised
+            .diagnostics()
+            .iter()
+            .any(|error| matches!(error.kind(), LowerErrorKind::PooledArgumentList)),
+        "a theory-atom pool stays diagnosed (deferred): {:?}",
+        raised.diagnostics(),
+    );
 }
 
 // ---- Documentation and parsed provenance ride the raised node (§6, §8) ----

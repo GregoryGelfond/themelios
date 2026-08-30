@@ -24,7 +24,7 @@ use themelios_program::program::{
 use themelios_program::provenance::{TransformTag, WithProvenance};
 use themelios_program::symbol::{Sign, Signature, Symbol, VarName};
 use themelios_program::term::{BinaryOp, Term, TermParts, UnaryOp, Variable, evaluate};
-use themelios_program::transform::Rewrite;
+use themelios_program::transform::{Rewrite, unpool};
 
 use crate::classify::Verdict;
 use crate::depend::{Component, DependencyGraph, atom_signature, external_pseudo_rule};
@@ -42,7 +42,8 @@ impl Safety {
     /// program + edges)`. Builds the dependency graph and delegates to `from_graph`;
     /// the assembled `Analysis` (§3) builds the graph once and shares it.
     pub fn of(program: &Program) -> Safety {
-        Safety::from_graph(program, &DependencyGraph::of(program))
+        let unpooled = unpool(program);
+        Safety::from_graph(&unpooled, &DependencyGraph::of_unpooled(&unpooled))
     }
 
     /// Read a program's safety against a dependency graph already built for it (§5):
@@ -534,10 +535,17 @@ fn push_element_scope(
 /// body/condition literal and a `#project`/`#heuristic` atom's domain match (`statement_binder`'s
 /// `DomainAtom`), so the certain-occurrence rule stays congruent across all of them.
 fn bind_positive_atom(scope: &mut Scope, atom: &Atom) {
+    // A pooled atom binds nothing (§9): the grounder unpools it into distinct atoms before
+    // binding, so a residual pool — a lone body conditional's head, program §9, the one case
+    // unpool leaves — must fail closed, the atom-level twin of a `Term::Pool` being
+    // `NOT_INVERTIBLE`. Its variables stay required, so the rule is unsafe unless bound elsewhere.
+    let pooled = atom.is_pooled();
     for term in atom.argument_terms() {
         let (required, binding) = binding_analysis(term);
         scope.required.extend(required);
-        scope.binders.extend(binding);
+        if !pooled {
+            scope.binders.extend(binding);
+        }
     }
 }
 

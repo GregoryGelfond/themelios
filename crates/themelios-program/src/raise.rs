@@ -924,26 +924,42 @@ fn raise_atom(atom: &ast::Atom, parse: &dyn Reads, errors: &mut Vec<LowerError>)
     } else {
         Sign::Positive
     };
-    let arguments = atom_arguments(atom.arguments(), parse, errors);
+    let arguments = raise_atom_arguments(atom.arguments(), parse, errors);
     Some(Atom {
         sign,
         name,
-        arguments: Arguments::Single(arguments),
+        arguments,
     })
 }
 
-/// The argument terms of an atom (§8): the terms of the first argument alternative. A
-/// pooled atom argument list (`p(a; b)`) is an atom-level pool — the grounder unpools it
-/// into *distinct atoms* (`p(a)`, `p(b)`), a literal-level cross-product, not one atom over
-/// a pooled term (contrast `f(a; b)`, a [`Term::Pool`], which the value does represent). The
-/// program does not yet carry that literal-level pool, so the raise reads the first
-/// alternative as a best-effort partial and marks the rest with a [`LowerErrorKind`] beside
-/// it (§8) — a consumer gating on a clean raise then never trusts safety or finiteness of the
-/// truncated reading, in place of the silent drop that hid the unread alternatives from
-/// analysis. The faithful per-alternative reading arrives with the pool representation (an
-/// unpool pass ahead of analysis, mirroring the grounder's unpool-before-simplify order:
-/// `Statement::unpool` in `libgringo/src/input/statement.cc` cross-products the unpooled heads and
-/// bodies into distinct rules, and `libgringo/src/term.cc` asserts `simplify` runs after `unpool`).
+/// The faithful argument list of an ordinary atom (§8): one tuple, or an argument-list pool
+/// of two or more, whose alternatives may differ in arity (`p(a; b, c)` is p/1 and p/2). The
+/// unpool pass (§9) eliminates it into the distinct atoms the grounder does, ahead of analysis
+/// and solve; a one-alternative list is `Single` by canonicalization (§5.1). No truncation and
+/// no diagnostic — the value carries the pool.
+fn raise_atom_arguments(
+    arguments: Option<ast::Arguments>,
+    parse: &dyn Reads,
+    errors: &mut Vec<LowerError>,
+) -> Arguments {
+    let Some(arguments) = arguments else {
+        return Arguments::Single(Vec::new());
+    };
+    let mut alternatives: Vec<Vec<Term>> = arguments
+        .alternatives()
+        .map(|tuple| raise_terms(tuple.terms(), parse, errors))
+        .collect();
+    match alternatives.len() {
+        0 | 1 => Arguments::Single(alternatives.pop().unwrap_or_default()),
+        _ => Arguments::Pooled(alternatives),
+    }
+}
+
+/// The argument terms of a **theory** atom (§8), read as the first argument alternative. A
+/// theory-atom argument-list pool (`&t(a; b)`) is deferred (§7): the raise marks the rest with
+/// a [`PooledArgumentList`](LowerErrorKind::PooledArgumentList) beside the partial reading, so a
+/// consumer gating on a clean raise never trusts the truncated theory atom, and the fully-
+/// unpooled analysis gate fails closed on it. (An ordinary atom is faithful, `raise_atom_arguments`.)
 fn atom_arguments(
     arguments: Option<ast::Arguments>,
     parse: &dyn Reads,

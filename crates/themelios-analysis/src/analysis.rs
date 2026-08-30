@@ -21,6 +21,7 @@
 //! (program §13) — so a pathological program cannot overflow one.
 
 use themelios_program::program::Program;
+use themelios_program::transform::unpool;
 
 use crate::classify::Classes;
 use crate::construct::Constructs;
@@ -53,9 +54,10 @@ impl Analysis {
         // that share them — safety reads the graph for finiteness (§5), the classes
         // read the graph and the scan (§6) — take them rather than rebuild them.
         let constructs = Constructs::of(program);
-        let dependencies = DependencyGraph::of(program);
-        let safety = Safety::from_graph(program, &dependencies);
-        let classes = Classes::from_parts(program, &dependencies, &constructs);
+        let unpooled = unpool(program);
+        let dependencies = DependencyGraph::of_unpooled(&unpooled);
+        let safety = Safety::from_graph(&unpooled, &dependencies);
+        let classes = Classes::from_parts(&unpooled, &dependencies, &constructs);
         Analysis {
             constructs,
             dependencies,

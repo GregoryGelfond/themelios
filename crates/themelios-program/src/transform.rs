@@ -1476,7 +1476,15 @@ fn term_has_pool(term: &Term) -> bool {
 /// Every pool-free image of a term (§9): a `Term::Pool` becomes its alternatives, a compound
 /// term the cross-product of its children's images — the grounder's term unpool
 /// (`libgringo/src/term.cc`). Iterative in the term's depth (§13) through `Term::fold`.
+///
+/// A **pool-free** term is returned unchanged, without folding: the fold rebuilds every node, and
+/// the cross-product would re-clone the growing subterm at each level of a deep chain — `O(depth²)`
+/// on a term the analysis tier's deep-term scaling forbids (analysis §12.4). The `term_has_pool`
+/// guard is one `O(depth)` iterative walk, so only a term that actually carries a pool is rebuilt.
 fn unpool_term(term: Term) -> Vec<Term> {
+    if !term_has_pool(&term) {
+        return vec![term];
+    }
     term.fold(|parts| match parts {
         TermParts::Variable(variable) => vec![Term::Variable(variable)],
         TermParts::Symbolic(symbol) => vec![Term::Symbolic(symbol)],
@@ -1541,15 +1549,33 @@ fn unpool_term(term: Term) -> Vec<Term> {
 fn cross_product<T: Clone>(positions: Vec<Vec<T>>) -> Vec<Vec<T>> {
     let mut combos: Vec<Vec<T>> = vec![Vec::new()];
     for position in positions {
-        let mut next = Vec::with_capacity(combos.len().saturating_mul(position.len()));
-        for combo in &combos {
-            for alternative in &position {
-                let mut extended = combo.clone();
-                extended.push(alternative.clone());
-                next.push(extended);
+        match position.as_slice() {
+            // No alternative: an empty pool would delete the statement. It is refused at the
+            // door (§1.4), so this is defensive — fail closed to no combos.
+            [] => return Vec::new(),
+            // One alternative — the pool-free case: extend every combo **in place**, so an
+            // N-position pool-free product (an N-literal body) is `O(N)`, not `O(N²)`. Cloning
+            // the growing prefix at each of N positions is the quadratic the analysis tier's
+            // linear scaling forbids (analysis §8); the in-place extend avoids it.
+            [single] => {
+                for combo in &mut combos {
+                    combo.push(single.clone());
+                }
+            }
+            // Two or more — a genuine pool: branch each combo. The clone is `O(output)` (§9),
+            // an output-size cost, since the combos here truly diverge.
+            alternatives => {
+                let mut next = Vec::with_capacity(combos.len().saturating_mul(alternatives.len()));
+                for combo in &combos {
+                    for alternative in alternatives {
+                        let mut extended = combo.clone();
+                        extended.push(alternative.clone());
+                        next.push(extended);
+                    }
+                }
+                combos = next;
             }
         }
-        combos = next;
     }
     combos
 }

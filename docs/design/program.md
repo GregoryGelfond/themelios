@@ -1456,18 +1456,15 @@ comparison chain becomes one `Comparison` (§4.6); a set form becomes a `Choice`
 in a head and a cardinality `Aggregate` in a body by the position the tree
 records (§4.4); a `#const` value is checked against the constant-term subset
 (grammar §5.9) and carried as an unevaluated term (§4.8); a maximal ground
-constructor term is collapsed by canonicalization (§5.1); an **atom-level
+constructor term is collapsed by canonicalization (§5.1); an **ordinary atom's
 argument-list pool** (`p(a; b)`, grammar §8) — which the grounder unpools into the *distinct
-atoms* `p(a)`, `p(b)`, a literal-level cross-product, unlike a pooled *term* `f(a; b)` this tier
-does represent as a `Pool` — is one the program does not yet carry, so the raise reads its first
-alternative as a best-effort partial and marks the rest with a `PooledArgumentList` diagnostic
-beside it, never a silent truncation: a consumer that gates on a clean raise does not trust the
-safety or finiteness of the partial reading (analysis §12), and the faithful per-alternative
-reading arrives with the pool representation (an unpool pass ahead of analysis, mirroring the
-grounder's unpool-before-simplify order: `PredicateLiteral::unpool` in
-`libgringo/src/input/literals.cc` unpools an atom into distinct literals, `Statement::unpool` in
-`libgringo/src/input/statement.cc` cross-products them into rules, and `libgringo/src/term.cc`
-asserts `simplify` runs after `unpool`); and a statement's
+atoms* `p(a)`, `p(b)`, a literal-level cross-product, like a pooled *term* `f(a; b)` this tier
+also represents (as a `Term::Pool`) — is raised **faithfully** to a `Pooled` atom (§4.6), no
+truncation and no diagnostic, and the unpool pass (§9) eliminates it into those distinct atoms
+ahead of analysis and solve, mirroring the grounder's unpool-before-simplify order. A **theory**
+atom's argument-list pool (`&t(a; b)`) is deferred (§17): the raise reads its first alternative
+and marks the rest with a `PooledArgumentList` diagnostic, so a consumer gating on a clean raise
+does not trust the truncated theory atom (analysis §12); and a statement's
 leading doc comments (grammar §5.11, syntax §8.2) become a `Doc` annotation on the
 raised statement (§6), so documentation rides the rule it documents. Every raised
 node carries `Origin::Parsed(location)` (§6), so a program-level report points
@@ -1523,6 +1520,32 @@ over the grammar-bounded layers (§13). Canonicalization (§5.1) runs on a rewri
 output, so a transformation cannot leave a program non-canonical, and the
 identity rewrite is the identity function up to a `Transformed` tag no equality
 reads (§6).
+
+**The unpool pass** — a `Program → Program` that eliminates every pool, expanding
+each node at the level the grounder does, so the analysis (analysis §9) and solve
+tiers meet a pool-free program (the grounder's unpool-before-simplify order,
+`simplify`/`project`/`eval`/`match` all run after `unpool`):
+
+```rust
+pub fn unpool(program: &Program) -> Program;
+```
+
+It is **not** a `Rewrite` (that is one statement → one); its **1→N** shape mirrors
+the grounder's own `Statement::unpool` (`libgringo/src/input/statement.cc`), which
+returns a vector of statements. A pool in a top-level literal, comparison, or
+directive expands into **separate statements** (a head × body cross-product); a pool
+in an aggregate/choice/disjunction/optimize **element**, or a body conditional's
+condition, expands **within its container** (never lifting the pool to the statement
+level) — the position-sensitive split the grounder makes
+(`clingo_ast_unpool_type_{condition,other}`). It reuses the term `fold` (§3.6, so a
+deep term is stack-safe) and the ingest door (§5.1, so its output is canonical), and
+every produced node carries `Origin::Transformed` unioned with its source origin
+(§6), so a verdict traces back to the source pool. Total; `O(output)` — a
+cross-product of pools is exponential in the number of pooled positions, an
+output-size fact (like `substitute`, §9.2), not a defect. **Two representation-gap
+cases stay pooled** for the analysis tier's fail-closed gate: a theory-atom pool
+(§17), and a pooled derived literal in a lone body conditional, which would need a
+disjunctive clause a single-literal conditional cannot hold.
 
 ### 9.2 Substitution and fresh names
 

@@ -36,6 +36,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use themelios_program::program::{Arguments, Atom, External, Program, Statement};
+use themelios_program::transform::unpool;
 
 // Three types reused from the program tier rather than redefined — the one
 // authority for each (program §4, §12.1): `Signature` (the node identity),
@@ -93,8 +94,17 @@ impl DependencyGraph {
     /// The predicate dependency graph of a program (§4): one walk of its rules,
     /// each contributing an edge from every predicate it derives to every predicate
     /// it depends on, tagged, then the strongly-connected-components decomposition.
-    /// `O(rules · body size + nodes + edges)`.
+    /// The program is **unpooled** first (§9), so a pooled atom is the distinct atoms
+    /// the grounder unpools it into before the graph reads it. `O(unpooled + edges)`.
     pub fn of(program: &Program) -> DependencyGraph {
+        Self::of_unpooled(&unpool(program))
+    }
+
+    /// The dependency graph of an **already-unpooled** program (§4, §9): the door the
+    /// assembled [`Analysis`](crate::Analysis) and the safety/classify facets call so one
+    /// `unpool` is shared across them rather than repeated per facet. [`of`](DependencyGraph::of)
+    /// is this with a fresh unpool.
+    pub(crate) fn of_unpooled(program: &Program) -> DependencyGraph {
         let mut nodes = BTreeSet::new();
         let mut edges: BTreeMap<Signature, BTreeSet<(DependencyKind, Signature)>> = BTreeMap::new();
         for statement in program.statements() {
