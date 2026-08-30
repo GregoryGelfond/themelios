@@ -84,7 +84,11 @@ impl LowerError {
 
 /// The ways a recovered term defeats the value (program §8). The term raise emits
 /// these; the statement and directive raise add their own, so a consumer's match
-/// carries a wildcard.
+/// carries a wildcard. `#[non_exhaustive]`, and a soundness obligation rides it: a new
+/// kind that marks a *lossy* reading — a best-effort partial the value could not fully
+/// represent — of text the grounder itself admits must join the analysis differential's
+/// faithful-raise gate (`raised_faithfully`), or a truncated reading is trusted again, the
+/// failure [`PooledArgumentList`](LowerErrorKind::PooledArgumentList) exists to end.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum LowerErrorKind {
@@ -104,6 +108,17 @@ pub enum LowerErrorKind {
     /// or an interval where a constant term must stand (§4.8). The value is carried
     /// unevaluated all the same; this marks it as one a constant may not take.
     NonConstantValue,
+    /// An atom's argument list is pooled (`p(a; b)`, grammar §8): an atom-level pool — its
+    /// alternatives are distinct atoms, not one atom over a pooled *term* (contrast `f(a; b)`,
+    /// a [`Term::Pool`], which the value does represent) — that the value does not yet
+    /// represent. The grounder unpools it into distinct literals (`PredicateLiteral::unpool`,
+    /// `libgringo/src/input/literals.cc`) before safety runs. The raise reads the first
+    /// alternative as a best-effort partial and marks the rest here (§8), never dropping them
+    /// in silence, so a consumer that gates on a clean raise does not trust safety or finiteness
+    /// of the truncated reading. A theory atom's argument list (`&t(a; b)`) raises through the
+    /// same door and is marked alike. The faithful per-alternative reading arrives with the pool
+    /// representation.
+    PooledArgumentList,
 }
 
 impl LowerErrorKind {
@@ -134,6 +149,10 @@ impl LowerErrorKind {
             LowerErrorKind::NonConstantValue => (
                 DiagnosticId::new("program", "non-constant-value"),
                 "a constant's value must be a constant term",
+            ),
+            LowerErrorKind::PooledArgumentList => (
+                DiagnosticId::new("program", "pooled-argument-list"),
+                "a pooled atom argument list is read only as its first alternative",
             ),
         }
     }
@@ -913,18 +932,33 @@ fn raise_atom(atom: &ast::Atom, parse: &dyn Reads, errors: &mut Vec<LowerError>)
     })
 }
 
-/// The argument terms of an atom (§8): the first argument alternative's terms. A pooled
-/// atom argument list (`p(a; b)`) is the grounder's to expand; this reads the written
-/// tuple.
+/// The argument terms of an atom (§8): the terms of the first argument alternative. A
+/// pooled atom argument list (`p(a; b)`) is an atom-level pool — the grounder unpools it
+/// into *distinct atoms* (`p(a)`, `p(b)`), a literal-level cross-product, not one atom over
+/// a pooled term (contrast `f(a; b)`, a [`Term::Pool`], which the value does represent). The
+/// program does not yet carry that literal-level pool, so the raise reads the first
+/// alternative as a best-effort partial and marks the rest with a [`LowerErrorKind`] beside
+/// it (§8) — a consumer gating on a clean raise then never trusts safety or finiteness of the
+/// truncated reading, in place of the silent drop that hid the unread alternatives from
+/// analysis. The faithful per-alternative reading arrives with the pool representation (an
+/// unpool pass ahead of analysis, mirroring the grounder's unpool-before-simplify order:
+/// `Statement::unpool` in `libgringo/src/input/statement.cc` cross-products the unpooled heads and
+/// bodies into distinct rules, and `libgringo/src/term.cc` asserts `simplify` runs after `unpool`).
 fn atom_arguments(
     arguments: Option<ast::Arguments>,
     parse: &dyn Reads,
     errors: &mut Vec<LowerError>,
 ) -> Vec<Term> {
-    let terms = arguments
-        .and_then(|arguments| arguments.alternatives().next())
-        .into_iter()
-        .flat_map(|tuple| tuple.terms());
+    let Some(arguments) = arguments else {
+        return Vec::new();
+    };
+    let range = arguments.syntax().text_range();
+    let mut alternatives = arguments.alternatives();
+    let first = alternatives.next();
+    if alternatives.next().is_some() {
+        errors.push(located(parse, range, LowerErrorKind::PooledArgumentList));
+    }
+    let terms = first.into_iter().flat_map(|tuple| tuple.terms());
     raise_terms(terms, parse, errors)
 }
 

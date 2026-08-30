@@ -75,7 +75,7 @@ impl Analysis {
         &self.dependencies
     }
 
-    /// Safety and grounding finiteness (§5): which rules are not safe, and whether
+    /// Safety and grounding finiteness (§5): which statements are not safe, and whether
     /// grounding is proven finite.
     pub fn safety(&self) -> &Safety {
         &self.safety

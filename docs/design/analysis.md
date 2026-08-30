@@ -354,7 +354,9 @@ authority for these clingo-only directives: a `#project` and a `#heuristic` **at
 `#project p(X).` and `#heuristic p(X). [X@1, sign]` are safe, while `#project p(X/2).` and
 `#heuristic p(a). [W@1, sign]` are not (`X` sits under a non-invertible `/2`; `W` is unbound). A
 `#heuristic`'s bracket terms (bias/priority/modifier) are then bound by the atom's domain match
-or its body, and a `#external` or `#edge` term must be ground. A body-less `#show t.` binds nothing, so a variable in its shown
+or its body; a `#external`'s value bracket and an `#edge`'s node terms are required and bound by
+the directive's body (never self-binding), so `#external p(X) : q(X). [W]` and `#edge (X, Y).` are
+unsafe on the variable the body leaves unbound. A body-less `#show t.` binds nothing, so a variable in its shown
 term is unsafe (`#show f(X).`, agreeing with clingo) — the once-liberal bare-show boundary now
 closed. A variable occurring only in a **theory term** is descended for its
 ordinary variable leaves — the shared leaves the theory peer algebra meets the
@@ -863,10 +865,18 @@ successor carries them.
   invertible positions); and the clingo-only directive readings hold (a `#project` and a
   `#heuristic` atom both **domain-match**, a `#heuristic`'s bracket bound by the atom or
   body, a body-less `#show t.` vetted). The divergences safety does **not** adopt — the
-  **matching-`=`** permissive gap, and the pool's precise per-alternative reading — it
+  **matching-`=`** permissive gap, and a **pooled term**'s precise per-alternative reading — it
   characterizes differentially (below), the matching-`=` because adopting it would risk a
-  false `Holds` (§5's direction-sensitive deepening), the pool because its faithful
-  representation is scheduled work. Whether
+  false `Holds` (§5's direction-sensitive deepening), the pooled term because its faithful
+  representation is scheduled work. An **atom-level pool** — an argument-list pool `p(X; a)` the
+  grounder unpools into *distinct atoms* — is a different matter: the value does not yet carry that
+  literal-level pool, so the **raise flags it** (`PooledArgumentList`, program §8) instead of
+  reading it whole. The composed grounding-safety verdict (`is_safe() && Holds`) is therefore
+  **trustworthy only on a faithfully raised program** — one whose raise reported no lossy
+  diagnostic — so a consumer, and the differential, **fail it closed** on that diagnostic, agreeing
+  with the grounder's unpool wherever an unpooled alternative is unsafe. This closes the *silent*
+  false safe (and, at a head, the false `Holds`) the truncated reading once reached, pending the
+  faithful per-alternative representation. Whether
   clingcon's grounder admits a further notion stays a differential obligation and, if
   material, a dialect parameterization (§5) — recorded so the question is pinned, not
   assumed. Each anonymous `_` in an ordinary term is treated as the distinct
@@ -880,12 +890,17 @@ successor carries them.
   **characterized dialect boundary** — the standard-vs-engine divergence, not a hidden gap — is
   the **matching-`=`** notion (clingo decomposes `Z = (X, Y)` to bind `X`, `Y`; the strict
   standard does not — §5, with the chained `X = Y = 1` a candidate); the **aggregate-result
-  assignment** (clingo binds `N = #count { … }`'s guard, the standard does not); and the **pool**,
-  which this tier reads *not invertible* (a pooled position binds nothing, `q(X) :- p((a;X)).`
+  assignment** (clingo binds `N = #count { … }`'s guard, the standard does not); and a pooled
+  **term**, which this tier reads *not invertible* (a pooled position binds nothing, `q(X) :- p((a;X)).`
   unsafe) — sound but conservative, since the grounder binds a variable that binds in *every*
   pooled alternative (`q(X) :- p((X;X)).` safe); the faithful per-alternative reading arrives with
-  the pool representation. Each is recorded against the pinned binary and is the trigger for the
-  dialect parameterization §5 reserves if it proves material. The `#external` **value** bracket
+  the pool representation. Two further conservative families are recorded, both stricter than the
+  grounder and so never a false safe: **arithmetic over a non-numeric operand** (the grounder accepts
+  `f(X)*g(Y)` and `-f(X)` — a type error it grounds vacuously, or unary `-` passing boundness through a
+  function — while this tier reads a non-numeric arithmetic operand as not invertible), and an
+  **overflowing constant fold** (the grounder wraps; this tier's ground evaluator refuses overflow,
+  reading the operand as not invertible). Each is recorded against the pinned binary and is the trigger
+  for the dialect parameterization §5 reserves if it proves material. The `#external` **value** bracket
   (`#external p : q. [W]`, grammar §13) is now **vetted** — its variables are required and bound by the
   body, exactly as the atom's are, agreeing with the grounder (which collects the value with `bound =
   false`); an earlier reading left it liberal on the open question of whether the grounder checks it, and

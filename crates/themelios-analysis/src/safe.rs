@@ -3,8 +3,8 @@
 //!
 //! **Safety is definite; finiteness is approximate.** Safety is the ASP-Core-2
 //! standard's syntactic condition (grammar §3, §6) — a variable is safe when it has a
-//! *binding* occurrence — so `Safety` reports it exactly, with the unsafe rule and its
-//! unbound variables as the witness. Finiteness is undecidable with function symbols
+//! *binding* occurrence — so `Safety` reports it exactly, with the unsafe statement (a rule
+//! or a bodied directive) and its unbound variables as the witness. Finiteness is undecidable with function symbols
 //! (`p(f(X)) :- p(X)` grows terms without bound), so it is a sound approximation
 //! returning the shared `Verdict` (§6.1): `Holds` where grounding is proven bounded,
 //! `Unknown` carrying the recursive component through which terms grow — never
@@ -75,7 +75,9 @@ impl Safety {
         self.unsafe_statements.iter()
     }
 
-    /// Whether every statement is safe (§5).
+    /// Whether every statement is safe (§5). At an untrusted text boundary this composes with
+    /// [`finiteness`](Safety::finiteness) as `is_safe() && Holds`, trustworthy only on a faithful
+    /// raise — see the precondition recorded there.
     pub fn is_safe(&self) -> bool {
         self.unsafe_statements.is_empty()
     }
@@ -91,7 +93,12 @@ impl Safety {
     /// `X`, `Y`, where the standard leaves them unbound (the same dialect gap safety
     /// already refuses) — such a rule can ground unboundedly, so trusting `Holds` for it
     /// alone would be unsound. The composed gate refuses it, being unsafe; that is the
-    /// reading the boundary must use.
+    /// reading the boundary must use. One precondition rides beneath it: on a boundary whose
+    /// program was **raised from text**, the composed verdict is trustworthy only on a **faithful
+    /// raise** — one that reported no lossy diagnostic (today a `PooledArgumentList`, an atom-level
+    /// pool the raise cannot yet represent, program §8; analysis §12) — since this analysis reads
+    /// the truncated program, not the pool's dropped alternatives. This analysis sees only a
+    /// `Program`, so a text-boundary consumer gates on the raise's own diagnostics.
     pub fn finiteness(&self) -> &Verdict {
         &self.finiteness
     }

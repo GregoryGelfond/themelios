@@ -373,6 +373,53 @@ fn a_const_value_may_be_an_external_call() {
     }
 }
 
+#[test]
+fn a_pooled_atom_argument_list_is_diagnosed_not_silently_truncated() {
+    // `p(a; b)` is an atom-level pool — the grounder unpools it into the distinct atoms
+    // `p(a)`, `p(b)` (a literal-level cross-product), which the program does not yet carry.
+    // The raise reads the first alternative and marks the rest (§8), never dropping them in
+    // silence, so a consumer gating on a clean raise does not trust safety or finiteness of
+    // the partial reading — in head, body, and directive position alike.
+    for text in [
+        "p(a; b).",                     // a head fact
+        "q(X) :- p(X; a).",             // a body atom
+        "p(X; f(X)) :- p(X).",          // a head atom
+        "#external p(a; X) : q.",       // a directive atom
+        "#project p(a; b).",            // another directive atom
+        "q :- #count { X : p(X; a) }.", // an aggregate element's condition atom
+        "{ p(X; a) } :- q.",            // a choice head element atom
+        "t :- p(X; a) : r.",            // a conditional literal's atom
+        ":- &sum(a; b) { x }.",         // a theory atom's argument list (raise_theory_atom door)
+    ] {
+        let raised = raised(text);
+        assert!(
+            raised
+                .diagnostics()
+                .iter()
+                .any(|error| matches!(error.kind(), LowerErrorKind::PooledArgumentList)),
+            "a pooled atom argument list is a lowering diagnostic: {text:?} -> {:?}",
+            raised.diagnostics(),
+        );
+    }
+    // A pooled *term* — one parenthesized `Pool` argument (`p((a; b))`) or a pooled function
+    // term (`q(f(a; b))`) — is represented, not an atom-level pool; a plain multi-argument
+    // atom (`p(a, b)`) has one alternative. None draws a `PooledArgumentList`.
+    for text in [
+        "p((a; b)).",           // one parenthesized Pool term argument
+        "q(f(a; b)).",          // a pooled function term inside one argument
+        "p(a, b).",             // a plain, comma-separated argument list
+        ":~ q. [1@1, p(a; b)]", // a weak-constraint tuple term (a Pool term, not an atom)
+    ] {
+        assert!(
+            !raised(text)
+                .diagnostics()
+                .iter()
+                .any(|error| matches!(error.kind(), LowerErrorKind::PooledArgumentList)),
+            "a pooled term or plain argument list is not an atom-level pool: {text:?}",
+        );
+    }
+}
+
 // ---- Documentation and parsed provenance ride the raised node (§6, §8) ----
 
 #[test]

@@ -31,7 +31,7 @@ use serde_json::Value;
 use themelios_analysis::classify::Verdict;
 use themelios_analysis::safe::Safety;
 use themelios_base::source::{Source, SourceId};
-use themelios_program::raise::raise;
+use themelios_program::raise::{LowerErrorKind, Raised, raise};
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::parse::parse;
 
@@ -83,13 +83,34 @@ fn authority_safe(program: &str) -> bool {
     value["safe"].as_bool().expect("safe is a bool")
 }
 
+/// A raise that faithfully represents the program — no diagnostic marking a *lossy* reading (a
+/// best-effort partial the value could not fully represent) of text the **authority itself admits**.
+/// Today the one such kind is a truncated atom-level pool (`PooledArgumentList`, program §8): the
+/// grounder unpools `p(X; a)` into the distinct atoms `p(X)`, `p(a)` (a literal-level cross-product),
+/// but the program reads only the first alternative, so safety and finiteness of that reading are not
+/// the grounder's. The composed verdict fails closed on it — agreeing with the grounder's unpool —
+/// until the faithful pool representation lands. The *other* `LowerErrorKind`s do not arise here: each
+/// marks input the authority **refuses** at admission (a recovered/incomplete construct, a malformed or
+/// out-of-range token, an unexpanded splice, a non-constant `#const`), so no safety comparison is drawn
+/// on it; and a theory rule's up-to-grounding note (program §4.9) is faithful, not lossy, so a theory
+/// case stays analyzable here. `LowerErrorKind` is `#[non_exhaustive]`: a future lossy kind reachable
+/// from admitted text must join this gate (the obligation is recorded on the enum, program tier).
+fn raised_faithfully(lowered: &Raised) -> bool {
+    !lowered
+        .diagnostics()
+        .iter()
+        .any(|error| matches!(error.kind(), LowerErrorKind::PooledArgumentList))
+}
+
 /// This tier's safety verdict for a program of concrete syntax (§5). A theory rule raises
 /// with an up-to-grounding diagnostic (program §4.9) yet still yields a program to read;
-/// the verdict is taken on that program, so a theory case is analyzable here.
+/// the verdict is taken on that program, so a theory case is analyzable here. A reading the
+/// raise could not faithfully represent (a truncated atom-level pool) fails closed: the
+/// composed safety verdict is trustworthy only on a faithful raise (§5).
 fn our_safe(text: &str) -> bool {
     let source = Source::new(SourceId::new(0), text.to_owned()).expect("the fixture admits");
     let lowered = raise(&parse(&source, Dialect::Clingo));
-    Safety::of(lowered.program()).is_safe()
+    raised_faithfully(&lowered) && Safety::of(lowered.program()).is_safe()
 }
 
 /// A corpus of single rules spanning the ASP-Core-2 binding cases (§5): a global variable
@@ -267,12 +288,24 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
     // per-alternative reading.
     ("atom-pool-position-unbound", "q(X) :- p((a;X)).\n"),
     ("pool-every-alternative-binds", "q(X) :- p((X;X)).\n"),
-    // KNOWN FALSE-SAFE, recorded: an *argument-list* pool `p(X; a)` (a pool of whole argument tuples,
-    // not one term) is truncated to its first alternative by the raise (program tier), so analysis never
-    // sees the `p(a)` alternative that leaves `X` unbound — this tier reads it safe, the grounder unsafe.
-    // The safety tier is correct for the (truncated) program it receives; the fix is the faithful pool
-    // representation in the raise. Named openly here, not hidden, pending that work.
+    // ---- Atom-level *argument-list* pools (`p(X; a)`, a pool of whole argument tuples, not one pooled
+    // term): the grounder unpools each into distinct atoms (`p(X)`, `p(a)`), a literal-level
+    // cross-product. This tier does not yet carry that pool, so the raise flags it (`PooledArgumentList`,
+    // program §8) and the composed verdict fails closed — agreeing with the grounder wherever an
+    // unpooled alternative is unsafe, conservative where none is. (Each was a *silent* false safe while
+    // the truncation drew no diagnostic; the fail-closed reading closes it, pending the faithful
+    // per-alternative representation.)
+    //   Body pool — the `p(a)` alternative leaves the head's `X` unbound, so the grounder reports the
+    //   rule unsafe: unsafe to both.
     ("atom-argument-list-pool-truncated", "q(X) :- p(X; a).\n"),
+    //   Directive pool — `#external p(X) : q.` leaves `X` unbound in the body, so the grounder reports
+    //   it unsafe: unsafe to both, the directive surface of the same boundary.
+    ("external-atom-list-pool", "#external p(a; X) : q.\n"),
+    //   Head pool where *every* unpooled rule is safe — `p(X) :- p(X).` and `p(f(X)) :- p(X).`, both
+    //   bound by the body — so the grounder reports the rule safe (and grounds it unboundedly). This
+    //   tier fails closed on the pool: unsafe. A recorded divergence, the conservative side, and the
+    //   reading that shuts the false `Holds` this shape reached (see the finiteness backstop).
+    ("atom-argument-list-pool-head", "p(X; f(X)) :- p(X).\n"),
     // ---- The matching-`=` dialect boundary (§5): clingo decomposes an `=` against a tuple, and chains
     // a multi-step `=`, to bind — where the strict ASP-Core-2 standard does not. Recorded divergences;
     // this tier is the conservative side (never a false safe).
@@ -355,12 +388,16 @@ const RECORDED_DIVERGENCES: &[(&str, &str)] = &[
         "pool-every-alternative-binds",
         "clingo binds a variable that binds in every pooled alternative; this tier reads a pool as not invertible",
     ),
-    // A KNOWN false-safe (the one recorded here that is not conservative), rooted in the program tier's
-    // raise: an argument-list pool `p(X; a)` is truncated to its first alternative, so analysis never
-    // sees the alternative that leaves `X` unbound. Recorded openly, pending the faithful pool raise.
+    // An atom-level argument-list pool in a *head* where every unpooled rule is safe: clingo unpools
+    // `p(X; f(X)) :- p(X).` to `p(X) :- p(X).` and `p(f(X)) :- p(X).`, both safe, and reports the rule
+    // safe (grounding it unboundedly). This tier does not yet carry the literal-level pool, so the raise
+    // flags it and the composed verdict fails closed — the conservative side (never a false safe), and
+    // the reading that shuts the false `Holds` this shape reached. Pending the grounder's unpool
+    // (program §8). The body and directive surfaces of this pool *agree* with the grounder (an unpooled
+    // alternative is unsafe there), so they sit in the corpus, not here.
     (
-        "atom-argument-list-pool-truncated",
-        "the raise truncates an argument-list pool `p(X; a)` to its first alternative, hiding the unsafe alternative from analysis",
+        "atom-argument-list-pool-head",
+        "clingo unpools `p(X; f(X)) :- p(X).` to two safe rules (safe); this tier fails closed on the atom-level pool — conservative, and it shuts the false Holds this shape reached",
     ),
     // clingo decomposes a former on both sides of `=` when one side is bound (`q(X)` binds X, so
     // `f(X) = f(Y)` binds Y); the strict standard binds only a lone side, so this tier reports Y unsafe
@@ -397,11 +434,9 @@ const RECORDED_DIVERGENCES: &[(&str, &str)] = &[
         "project-atom-pool",
         "clingo unpools `#project p((X;a))` per alternative; this tier reads a pool as not invertible, the same conservative boundary as a body atom's",
     ),
-    // The head conditional `p(X) : q(X)` was once recorded here as a divergence — the tier read a
-    // head literal's variables as rule-global. It no longer diverges: a disjunction/choice element
-    // is scoped to itself, its literal bound by its own condition, so the tier now agrees with
-    // clingo that the idiom is safe. The `condition-binds-head` corpus row stays below as an
-    // agreement case.
+    // Not recorded here: the head conditional `p(X) : q(X)` agrees. A disjunction/choice element is
+    // scoped to itself, its literal bound by its own condition, so the tier reads it safe with clingo
+    // — the `condition-binds-head` corpus row is an agreement case, not a divergence.
 ];
 
 #[test]
@@ -448,7 +483,8 @@ fn our_safety_agrees_with_the_authority_or_the_divergence_is_recorded() {
 fn our_holds(text: &str) -> bool {
     let source = Source::new(SourceId::new(0), text.to_owned()).expect("the fixture admits");
     let lowered = raise(&parse(&source, Dialect::Clingo));
-    matches!(Safety::of(lowered.program()).finiteness(), Verdict::Holds)
+    raised_faithfully(&lowered)
+        && matches!(Safety::of(lowered.program()).finiteness(), Verdict::Holds)
 }
 
 /// Whether the authority grounds the program within a rule-count cap (§5, §10): `(grounded, capped)`.
@@ -588,4 +624,36 @@ fn a_holds_verdict_grounds_within_the_bound() {
              (grounded={grounded}, capped={capped}): {control:?}",
         );
     }
+}
+
+/// The pooled-head false `Holds` the grounder differential surfaced, and the faithful-raise gate that
+/// shuts it. `p(X; f(X)) :- p(X).` is an atom-level head pool: the grounder unpools it into the grower
+/// `p(f(X)) :- p(X).` and grounds unboundedly. The program reads only the truncated `p(X) :- p(X).`,
+/// which the finiteness analysis — correctly, for that reading — proves `Holds`: a false `Holds` were
+/// the truncation trusted. The raise flags the pool (`PooledArgumentList`, program §8), so the composed
+/// `raised_faithfully && Holds` gate is false. The boundary is held closed not by the analysis but by
+/// refusing to trust analysis of a reading the value could not represent (§5) — the direct proof that
+/// the fail-closed reading holds the grounding-DoS boundary the pool truncation had opened.
+#[test]
+fn a_pooled_head_atom_does_not_yield_a_false_holds() {
+    let grower = "p(a).\np(X; f(X)) :- p(X).\n";
+    // The truncated reading the raise produces IS `Holds` — the latent false `Holds` the gate shuts.
+    let truncated = "p(a).\np(X) :- p(X).\n";
+    assert!(
+        our_holds(truncated),
+        "the truncated reading is Holds — the false Holds the gate must shut: {truncated:?}",
+    );
+    // But the pooled program raises with the lossy diagnostic, so the composed verdict fails closed.
+    assert!(
+        !our_holds(grower),
+        "the pooled head must fail closed, not report a false Holds: {grower:?}",
+    );
+    // And the grounder confirms the pool grounds unboundedly — a real false Holds, were the reading
+    // trusted.
+    let (grounded, capped) = authority_ground(grower);
+    assert!(
+        capped && !grounded,
+        "the grounder unpools the pool into a grower and hits the cap \
+         (grounded={grounded}, capped={capped}): {grower:?}",
+    );
 }

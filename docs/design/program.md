@@ -1429,7 +1429,18 @@ comparison chain becomes one `Comparison` (§4.6); a set form becomes a `Choice`
 in a head and a cardinality `Aggregate` in a body by the position the tree
 records (§4.4); a `#const` value is checked against the constant-term subset
 (grammar §5.9) and carried as an unevaluated term (§4.8); a maximal ground
-constructor term is collapsed by canonicalization (§5.1); and a statement's
+constructor term is collapsed by canonicalization (§5.1); an **atom-level
+argument-list pool** (`p(a; b)`, grammar §8) — which the grounder unpools into the *distinct
+atoms* `p(a)`, `p(b)`, a literal-level cross-product, unlike a pooled *term* `f(a; b)` this tier
+does represent as a `Pool` — is one the program does not yet carry, so the raise reads its first
+alternative as a best-effort partial and marks the rest with a `PooledArgumentList` diagnostic
+beside it, never a silent truncation: a consumer that gates on a clean raise does not trust the
+safety or finiteness of the partial reading (analysis §12), and the faithful per-alternative
+reading arrives with the pool representation (an unpool pass ahead of analysis, mirroring the
+grounder's unpool-before-simplify order: `PredicateLiteral::unpool` in
+`libgringo/src/input/literals.cc` unpools an atom into distinct literals, `Statement::unpool` in
+`libgringo/src/input/statement.cc` cross-products them into rules, and `libgringo/src/term.cc`
+asserts `simplify` runs after `unpool`); and a statement's
 leading doc comments (grammar §5.11, syntax §8.2) become a `Doc` annotation on the
 raised statement (§6), so documentation rides the rule it documents. Every raised
 node carries `Origin::Parsed(location)` (§6), so a program-level report points

@@ -1,6 +1,6 @@
 //! The analysis tier: the engine-free reading of a `themelios_program::Program`
 //! that reports what is *structurally* true of it — which constructs it uses,
-//! how its predicates depend on one another, whether its rules are safe and
+//! how its predicates depend on one another, whether its statements are safe and
 //! ground finitely, and which classes of the literature it falls in: tight,
 //! stratified, head-cycle-free, normal, Horn, disjunctive, choice. It reports
 //! *facts*, never *policy*: which class earns which solving algorithm, which

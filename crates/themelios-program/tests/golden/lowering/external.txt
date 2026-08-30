@@ -1,1 +1,5 @@
-no lowering diagnostics
+error[program::pooled-argument-list]: a pooled atom argument list is read only as its first alternative
+ --> external:1:2
+  |
+1 | p(true;false;free;release;undefined).
+  |  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
