@@ -15,12 +15,12 @@ use crate::program::{
     Aggregate, Arguments, Atom, Body, BodyAggregateElement, BodyElement, Choice, ChoiceElement,
     Comparison, Condition, ConditionalLiteral, Const, Disjunction, DisjunctionElement, Edge,
     External, FunctionAggregate, Guard, HasGuards, Head, HeadAggregate, HeadAggregateElement,
-    Heuristic, Literal, LiteralInner, Optimize, OptimizeElement, Program, Project, Query, Rule,
-    SetAggregate, SetElement, Show, Statement, TheoryAtom, TheoryElement, WeakConstraint, Weight,
-    weight,
+    Heuristic, Literal, LiteralInner, Optimize, OptimizeElement, Program, Project, Query, Relation,
+    Rule, SetAggregate, SetElement, Show, Statement, TheoryAtom, TheoryElement, WeakConstraint,
+    Weight, weight,
 };
 use crate::provenance::{Origin, Provenance, TransformTag, WithProvenance};
-use crate::term::Term;
+use crate::term::{Term, TermParts};
 
 // ---- The visitor (§9.1) ----
 
@@ -802,4 +802,247 @@ fn rebuild_const<R: Rewrite + ?Sized>(r: &mut R, constant: Const) -> Const {
         value: rewrite_term(r, constant.value),
         policy: constant.policy,
     }
+}
+
+// ===== The unpool pass (§9) =====
+
+/// Eliminate every pool, expanding each node at the level the grounder does so the
+/// analysis and solve tiers meet a pool-free program — the grounder's unpool-before-
+/// simplify order (`simplify`/`project`/`eval`/`match` run only after `unpool`). A pool in
+/// a top-level literal expands into separate rules (a head × body cross-product,
+/// `Statement::unpool` in `libgringo/src/input/statement.cc`); a pool in an element or a
+/// condition expands within its container. Not a [`Rewrite`] (that is one statement → one);
+/// the 1→N shape mirrors the grounder's own `Statement::unpool`, which returns a vector.
+///
+/// Every produced node carries `Origin::Transformed` unioned with its source origin (§6),
+/// so a verdict on `p(a)` traces back to the source `p(a; b)`. Total; `O(output)` — a
+/// cross-product of pools is exponential in the number of pooled positions, an output-size
+/// fact (like [`substitute`](crate::unify), §9.2), not an algorithm defect.
+pub fn unpool(program: &Program) -> Program {
+    let tag = TransformTag::new("unpool");
+    let mut statements = Vec::new();
+    for carrier in program.statements() {
+        let provenance = stamp(carrier.provenance().clone(), tag.clone());
+        for statement in unpool_statement(carrier.get().clone()) {
+            statements.push(WithProvenance::new(statement, provenance.clone()));
+        }
+    }
+    Program::of(statements)
+}
+
+fn unpool_statement(statement: Statement) -> Vec<Statement> {
+    match statement {
+        Statement::Rule(rule) => unpool_rule(&rule)
+            .into_iter()
+            .map(Statement::Rule)
+            .collect(),
+        // Directives and the other statement kinds are unpooled incrementally; until a kind
+        // is covered a pool inside it survives, and the analysis tier's fully-unpooled gate
+        // (analysis §5) fails closed on it — sound, never a false safe.
+        other => vec![other],
+    }
+}
+
+fn unpool_rule(rule: &Rule) -> Vec<Rule> {
+    let heads = unpool_head(rule.head().get());
+    let bodies = unpool_body(rule.body().get());
+    let mut rules = Vec::with_capacity(heads.len().saturating_mul(bodies.len()));
+    for body in &bodies {
+        for head in &heads {
+            rules.push(Rule::new(head.clone(), body.clone()));
+        }
+    }
+    rules
+}
+
+fn unpool_head(head: &Head) -> Vec<Head> {
+    match head {
+        Head::Literal(literal) => unpool_literal(literal)
+            .into_iter()
+            .map(Head::Literal)
+            .collect(),
+        // Choice/Disjunction/head-aggregate elements expand within their container, and a
+        // head theory atom is deferred (§7) — extended incrementally; until then the
+        // fully-unpooled gate fails closed on a pool inside one.
+        _ => vec![head.clone()],
+    }
+}
+
+fn unpool_body(body: &Body) -> Vec<Body> {
+    let per_element: Vec<Vec<BodyElement>> = body
+        .elements()
+        .map(|element| unpool_body_element(element.get()))
+        .collect();
+    cross_product(per_element)
+        .into_iter()
+        .map(Body::new)
+        .collect()
+}
+
+fn unpool_body_element(element: &BodyElement) -> Vec<BodyElement> {
+    match element {
+        BodyElement::Literal(literal) => unpool_literal(literal)
+            .into_iter()
+            .map(BodyElement::Literal)
+            .collect(),
+        // A conditional literal, an aggregate, and a theory atom expand within — extended
+        // incrementally; until then the fully-unpooled gate fails closed on a pool inside one.
+        _ => vec![element.clone()],
+    }
+}
+
+fn unpool_literal(literal: &Literal) -> Vec<Literal> {
+    match &literal.inner {
+        LiteralInner::Atom(atom) => unpool_atom(atom.get())
+            .into_iter()
+            .map(|atom| Literal {
+                negation: literal.negation,
+                inner: LiteralInner::Atom(WithProvenance::constructed(atom)),
+            })
+            .collect(),
+        LiteralInner::Comparison(comparison) => unpool_comparison(comparison.get())
+            .into_iter()
+            .map(|comparison| Literal {
+                negation: literal.negation,
+                inner: LiteralInner::Comparison(WithProvenance::constructed(comparison)),
+            })
+            .collect(),
+        LiteralInner::True | LiteralInner::False => vec![literal.clone()],
+    }
+}
+
+/// A pooled atom, or an atom over pooled term arguments, expands into the distinct atoms the
+/// grounder unpools it into (§8): each argument-list alternative crossed with each term-pool
+/// alternative in its tuple. A `Single` pool-free atom yields exactly itself.
+fn unpool_atom(atom: &Atom) -> Vec<Atom> {
+    let mut atoms = Vec::new();
+    for tuple in atom.alternatives() {
+        let per_position: Vec<Vec<Term>> =
+            tuple.iter().map(|term| unpool_term(term.clone())).collect();
+        for combo in cross_product(per_position) {
+            atoms.push(Atom {
+                sign: atom.sign,
+                name: atom.name.clone(),
+                arguments: Arguments::Single(combo),
+            });
+        }
+    }
+    atoms
+}
+
+/// A comparison expands the cross-product of its first term and each step's term, one
+/// comparison per choice (`RelationLiteral::unpool`, `libgringo/src/input/literals.cc`).
+fn unpool_comparison(comparison: &Comparison) -> Vec<Comparison> {
+    let relations: Vec<Relation> = comparison.steps().map(|(relation, _)| relation).collect();
+    let mut positions: Vec<Vec<Term>> = Vec::with_capacity(relations.len() + 1);
+    positions.push(unpool_term(comparison.first().clone()));
+    for (_, term) in comparison.steps() {
+        positions.push(unpool_term(term.clone()));
+    }
+    cross_product(positions)
+        .into_iter()
+        .map(|combo| {
+            let mut terms = combo.into_iter();
+            let first = terms.next().expect("a first term");
+            let mut steps = relations.iter();
+            let mut comparison = Comparison::new(
+                first,
+                *steps.next().expect("a comparison has at least one step"),
+                terms.next().expect("a term for the first step"),
+            );
+            for relation in steps {
+                comparison = comparison.chain(*relation, terms.next().expect("a term per step"));
+            }
+            comparison
+        })
+        .collect()
+}
+
+/// Every pool-free image of a term (§9): a `Term::Pool` becomes its alternatives, a compound
+/// term the cross-product of its children's images — the grounder's term unpool
+/// (`libgringo/src/term.cc`). Iterative in the term's depth (§13) through `Term::fold`.
+fn unpool_term(term: Term) -> Vec<Term> {
+    term.fold(|parts| match parts {
+        TermParts::Variable(variable) => vec![Term::Variable(variable)],
+        TermParts::Symbolic(symbol) => vec![Term::Symbolic(symbol)],
+        TermParts::Pool(alternatives) => alternatives.into_iter().flatten().collect(),
+        TermParts::Function { name, arguments } => cross_product(arguments)
+            .into_iter()
+            .map(|arguments| Term::Function {
+                name: name.clone(),
+                arguments,
+            })
+            .collect(),
+        TermParts::Tuple(items) => cross_product(items).into_iter().map(Term::Tuple).collect(),
+        TermParts::UnaryOperation { operator, argument } => argument
+            .into_iter()
+            .map(|argument| Term::UnaryOperation {
+                operator,
+                argument: Box::new(argument),
+            })
+            .collect(),
+        TermParts::BinaryOperation {
+            operator,
+            left,
+            right,
+        } => cross_product(vec![left, right])
+            .into_iter()
+            .map(|pair| {
+                let [left, right] = two(pair);
+                Term::BinaryOperation {
+                    operator,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                }
+            })
+            .collect(),
+        TermParts::Interval { lower, upper } => cross_product(vec![lower, upper])
+            .into_iter()
+            .map(|pair| {
+                let [lower, upper] = two(pair);
+                Term::Interval {
+                    lower: Box::new(lower),
+                    upper: Box::new(upper),
+                }
+            })
+            .collect(),
+        TermParts::Absolute(inner) => inner
+            .into_iter()
+            .map(|inner| Term::Absolute(Box::new(inner)))
+            .collect(),
+        TermParts::External { name, arguments } => cross_product(arguments)
+            .into_iter()
+            .map(|arguments| Term::External {
+                name: name.clone(),
+                arguments,
+            })
+            .collect(),
+    })
+}
+
+/// The cartesian product of a list of positions, each a list of alternatives: one output
+/// tuple per choice of alternative at each position (an empty input yields one empty tuple).
+/// `O(product)` — exponential in the number of pooled positions (§9), an output-size fact.
+fn cross_product<T: Clone>(positions: Vec<Vec<T>>) -> Vec<Vec<T>> {
+    let mut combos: Vec<Vec<T>> = vec![Vec::new()];
+    for position in positions {
+        let mut next = Vec::with_capacity(combos.len().saturating_mul(position.len()));
+        for combo in &combos {
+            for alternative in &position {
+                let mut extended = combo.clone();
+                extended.push(alternative.clone());
+                next.push(extended);
+            }
+        }
+        combos = next;
+    }
+    combos
+}
+
+/// The two elements of a two-position cross-product tuple, in order — the operand pair of
+/// a binary operation or an interval (each has exactly two positions).
+fn two<T>(mut pair: Vec<T>) -> [T; 2] {
+    let second = pair.pop().expect("a two-position tuple has a second");
+    let first = pair.pop().expect("a two-position tuple has a first");
+    [first, second]
 }
