@@ -836,9 +836,37 @@ fn unpool_statement(statement: Statement) -> Vec<Statement> {
             .into_iter()
             .map(Statement::Rule)
             .collect(),
-        // Directives and the other statement kinds are unpooled incrementally; until a kind
-        // is covered a pool inside it survives, and the analysis tier's fully-unpooled gate
-        // (analysis §5) fails closed on it — sound, never a false safe.
+        Statement::WeakConstraint(weak) => unpool_weak_constraint(&weak)
+            .into_iter()
+            .map(Statement::WeakConstraint)
+            .collect(),
+        Statement::Optimize(optimize) => vec![Statement::Optimize(unpool_optimize(&optimize))],
+        Statement::Show(show) => unpool_show(&show)
+            .into_iter()
+            .map(Statement::Show)
+            .collect(),
+        Statement::Project(project) => unpool_project(&project)
+            .into_iter()
+            .map(Statement::Project)
+            .collect(),
+        Statement::Edge(edge) => unpool_edge(&edge)
+            .into_iter()
+            .map(Statement::Edge)
+            .collect(),
+        Statement::Heuristic(heuristic) => unpool_heuristic(&heuristic)
+            .into_iter()
+            .map(Statement::Heuristic)
+            .collect(),
+        Statement::External(external) => unpool_external(&external)
+            .into_iter()
+            .map(Statement::External)
+            .collect(),
+        Statement::Query(query) => unpool_query(&query)
+            .into_iter()
+            .map(Statement::Query)
+            .collect(),
+        // A `#const` pool is refused non-constant and carried (§4.8); a theory definition,
+        // `#defined`, `#include`, and a script carry no unpoolable ordinary pool.
         other => vec![other],
     }
 }
@@ -861,33 +889,81 @@ fn unpool_head(head: &Head) -> Vec<Head> {
             .into_iter()
             .map(Head::Literal)
             .collect(),
-        // Choice/Disjunction/head-aggregate elements expand within their container, and a
-        // head theory atom is deferred (§7) — extended incrementally; until then the
-        // fully-unpooled gate fails closed on a pool inside one.
-        _ => vec![head.clone()],
+        // A disjunction has no guards, so it never multiplies: its elements expand within.
+        Head::Disjunction(disjunction) => vec![Head::Disjunction(unpool_disjunction(disjunction))],
+        // A choice/head-aggregate's elements expand within; its guards multiply it (a
+        // statement-level product).
+        Head::Choice(choice) => unpool_choice(choice)
+            .into_iter()
+            .map(Head::Choice)
+            .collect(),
+        Head::Aggregate(aggregate) => unpool_head_aggregate(aggregate)
+            .into_iter()
+            .map(Head::Aggregate)
+            .collect(),
+        // A head theory atom is deferred (§7); Falsum/Verum carry no pool.
+        Head::TheoryAtom(_) | Head::Falsum | Head::Verum => vec![head.clone()],
     }
 }
 
 fn unpool_body(body: &Body) -> Vec<Body> {
-    let per_element: Vec<Vec<BodyElement>> = body
+    // Each element yields alternatives (the outer list), each a conjunctive group of elements
+    // (the inner list): a plain literal splits the rule (one element per alternative), a
+    // conditional or aggregate expands within (one alternative, several conjunctive elements).
+    let per_element: Vec<Vec<Vec<BodyElement>>> = body
         .elements()
         .map(|element| unpool_body_element(element.get()))
         .collect();
     cross_product(per_element)
         .into_iter()
-        .map(Body::new)
+        .map(|groups| Body::new(groups.into_iter().flatten()))
         .collect()
 }
 
-fn unpool_body_element(element: &BodyElement) -> Vec<BodyElement> {
+/// A body element's expansion as *alternatives* (outer) each a *conjunctive group* (inner):
+/// a plain literal is several alternatives of one element each; a conditional or aggregate is
+/// one alternative whose group holds its within-expanded elements.
+fn unpool_body_element(element: &BodyElement) -> Vec<Vec<BodyElement>> {
     match element {
         BodyElement::Literal(literal) => unpool_literal(literal)
             .into_iter()
-            .map(BodyElement::Literal)
+            .map(|literal| vec![BodyElement::Literal(literal)])
             .collect(),
-        // A conditional literal, an aggregate, and a theory atom expand within — extended
-        // incrementally; until then the fully-unpooled gate fails closed on a pool inside one.
-        _ => vec![element.clone()],
+        BodyElement::Conditional(conditional) => {
+            // A pooled *condition* becomes several conditional literals, all conjunctive in
+            // the one body (`r :- t : c(a; b).` is `r :- t : c(a), t : c(b).`). A pooled
+            // *head literal* would need a disjunctive clause `(p(a); p(b)) : c` a single-literal
+            // conditional cannot hold, so it is left pooled and the fully-unpooled gate fails
+            // closed on it (a representation gap, recorded like theory §7).
+            if literal_has_pool(&conditional.literal) {
+                vec![vec![BodyElement::Conditional(conditional.clone())]]
+            } else {
+                let group = unpool_condition(&conditional.condition)
+                    .into_iter()
+                    .map(|condition| {
+                        BodyElement::Conditional(ConditionalLiteral {
+                            literal: conditional.literal.clone(),
+                            condition,
+                        })
+                    })
+                    .collect();
+                vec![group]
+            }
+        }
+        BodyElement::Aggregate {
+            negation,
+            aggregate,
+        } => unpool_aggregate(aggregate)
+            .into_iter()
+            .map(|aggregate| {
+                vec![BodyElement::Aggregate {
+                    negation: *negation,
+                    aggregate,
+                }]
+            })
+            .collect(),
+        // A body theory atom is deferred (§7); `BodyElement` is non_exhaustive.
+        _ => vec![vec![element.clone()]],
     }
 }
 
@@ -956,6 +1032,445 @@ fn unpool_comparison(comparison: &Comparison) -> Vec<Comparison> {
             comparison
         })
         .collect()
+}
+
+/// A condition's pool-free images (§9): the cross-product of its literals' unpoolings, one
+/// conjunction per choice — the within-container expansion of a pooled condition.
+fn unpool_condition(condition: &Condition) -> Vec<Condition> {
+    let per_literal: Vec<Vec<Literal>> = condition
+        .literals()
+        .map(|literal| unpool_literal(literal.get()))
+        .collect();
+    cross_product(per_literal)
+        .into_iter()
+        .map(Condition::new)
+        .collect()
+}
+
+/// An optional guard's pool-free images: its bound term unpooled, the relation kept. A pooled
+/// guard bound multiplies the aggregate (a statement-level product, `(1;2){p}` is two
+/// aggregates), unlike an element pool.
+fn unpool_optional_guard(guard: Option<&WithProvenance<Guard>>) -> Vec<Option<Guard>> {
+    match guard {
+        None => vec![None],
+        Some(guard) => {
+            let guard = guard.get();
+            unpool_term(guard.term.clone())
+                .into_iter()
+                .map(|term| {
+                    Some(Guard {
+                        relation: guard.relation,
+                        term,
+                    })
+                })
+                .collect()
+        }
+    }
+}
+
+/// A body aggregate's pool-free images: its elements expand within, its guards multiply it.
+fn unpool_aggregate(aggregate: &Aggregate) -> Vec<Aggregate> {
+    match aggregate {
+        Aggregate::Function(function) => unpool_function_aggregate(function)
+            .into_iter()
+            .map(Aggregate::Function)
+            .collect(),
+        Aggregate::Set(set) => unpool_set_aggregate(set)
+            .into_iter()
+            .map(Aggregate::Set)
+            .collect(),
+    }
+}
+
+fn unpool_function_aggregate(aggregate: &FunctionAggregate) -> Vec<FunctionAggregate> {
+    let elements: Vec<BodyAggregateElement> = aggregate
+        .elements()
+        .flat_map(|element| unpool_body_aggregate_element(element.get()))
+        .collect();
+    let function = aggregate.function();
+    let mut result = Vec::new();
+    for left in unpool_optional_guard(aggregate.left_guard()) {
+        for right in unpool_optional_guard(aggregate.right_guard()) {
+            result.push(FunctionAggregate::new(
+                left.clone(),
+                function,
+                elements.clone(),
+                right.clone(),
+            ));
+        }
+    }
+    result
+}
+
+fn unpool_body_aggregate_element(element: &BodyAggregateElement) -> Vec<BodyAggregateElement> {
+    let per_term: Vec<Vec<Term>> = element
+        .terms()
+        .map(|term| unpool_term(term.clone()))
+        .collect();
+    let conditions = unpool_condition(element.condition());
+    let mut result = Vec::new();
+    for terms in cross_product(per_term) {
+        for condition in &conditions {
+            result.push(BodyAggregateElement::new(terms.clone(), condition.clone()));
+        }
+    }
+    result
+}
+
+fn unpool_set_aggregate(aggregate: &SetAggregate) -> Vec<SetAggregate> {
+    let elements: Vec<SetElement> = aggregate
+        .elements()
+        .flat_map(|element| unpool_set_element(element.get()))
+        .collect();
+    let mut result = Vec::new();
+    for left in unpool_optional_guard(aggregate.left_guard()) {
+        for right in unpool_optional_guard(aggregate.right_guard()) {
+            result.push(SetAggregate::new(
+                left.clone(),
+                elements.clone(),
+                right.clone(),
+            ));
+        }
+    }
+    result
+}
+
+fn unpool_set_element(element: &SetElement) -> Vec<SetElement> {
+    match element {
+        SetElement::Literal(literal) => unpool_literal(literal)
+            .into_iter()
+            .map(SetElement::Literal)
+            .collect(),
+        SetElement::ConditionalLiteral(conditional) => unpool_conditional_literal(conditional)
+            .into_iter()
+            .map(SetElement::ConditionalLiteral)
+            .collect(),
+    }
+}
+
+/// A conditional literal's within-container expansion (§9): both a pooled derived literal and
+/// a pooled condition become more elements of the one choice/disjunction/set — the container
+/// holds many, so a pooled head is representable here (unlike a lone body conditional).
+fn unpool_conditional_literal(conditional: &ConditionalLiteral) -> Vec<ConditionalLiteral> {
+    let literals = unpool_literal(&conditional.literal);
+    let conditions = unpool_condition(&conditional.condition);
+    let mut result = Vec::new();
+    for literal in &literals {
+        for condition in &conditions {
+            result.push(ConditionalLiteral {
+                literal: literal.clone(),
+                condition: condition.clone(),
+            });
+        }
+    }
+    result
+}
+
+fn unpool_choice(choice: &Choice) -> Vec<Choice> {
+    let elements: Vec<ChoiceElement> = choice
+        .elements()
+        .flat_map(|element| unpool_choice_element(element.get()))
+        .collect();
+    let mut result = Vec::new();
+    for left in unpool_optional_guard(choice.left_guard()) {
+        for right in unpool_optional_guard(choice.right_guard()) {
+            result.push(Choice::new(left.clone(), elements.clone(), right.clone()));
+        }
+    }
+    result
+}
+
+fn unpool_choice_element(element: &ChoiceElement) -> Vec<ChoiceElement> {
+    let literals = unpool_literal(element.literal());
+    let conditions = unpool_condition(element.condition());
+    let mut result = Vec::new();
+    for literal in &literals {
+        for condition in &conditions {
+            result.push(ChoiceElement::new(literal.clone(), condition.clone()));
+        }
+    }
+    result
+}
+
+fn unpool_disjunction(disjunction: &Disjunction) -> Disjunction {
+    let elements: Vec<DisjunctionElement> = disjunction
+        .elements()
+        .flat_map(|element| unpool_disjunction_element(element.get()))
+        .collect();
+    Disjunction::new(elements)
+}
+
+fn unpool_disjunction_element(element: &DisjunctionElement) -> Vec<DisjunctionElement> {
+    // A pooled disjunct literal becomes more disjuncts, a pooled condition more elements —
+    // both within the one disjunction (`p(X; a) | q` is `p(X) | p(a) | q`).
+    let literals = unpool_literal(element.literal());
+    let conditions = unpool_condition(element.condition());
+    let mut result = Vec::new();
+    for literal in &literals {
+        for condition in &conditions {
+            result.push(DisjunctionElement::new(literal.clone(), condition.clone()));
+        }
+    }
+    result
+}
+
+fn unpool_head_aggregate(aggregate: &HeadAggregate) -> Vec<HeadAggregate> {
+    let elements: Vec<HeadAggregateElement> = aggregate
+        .elements()
+        .flat_map(|element| unpool_head_aggregate_element(element.get()))
+        .collect();
+    let function = aggregate.function();
+    let mut result = Vec::new();
+    for left in unpool_optional_guard(aggregate.left_guard()) {
+        for right in unpool_optional_guard(aggregate.right_guard()) {
+            result.push(HeadAggregate::new(
+                left.clone(),
+                function,
+                elements.clone(),
+                right.clone(),
+            ));
+        }
+    }
+    result
+}
+
+fn unpool_head_aggregate_element(element: &HeadAggregateElement) -> Vec<HeadAggregateElement> {
+    let per_term: Vec<Vec<Term>> = element
+        .terms()
+        .map(|term| unpool_term(term.clone()))
+        .collect();
+    let literals = unpool_literal(element.literal());
+    let conditions = unpool_condition(element.condition());
+    let mut result = Vec::new();
+    for terms in cross_product(per_term) {
+        for literal in &literals {
+            for condition in &conditions {
+                result.push(HeadAggregateElement::new(
+                    terms.clone(),
+                    literal.clone(),
+                    condition.clone(),
+                ));
+            }
+        }
+    }
+    result
+}
+
+// ---- Directives, optimization, and the query (§9) ----
+//
+// A directive over pooled parts becomes several directives (a statement-level product over
+// its atom, terms, and body, `ExternalHeadAtom::unpool` and its kin, `libgringo/src/input/
+// aggregates.cc`); an optimize statement's elements expand within, like an aggregate's.
+
+/// A `weight@priority`'s pool-free images: its weight and priority terms unpooled.
+fn unpool_weight(w: &Weight) -> Vec<Weight> {
+    let priorities: Vec<Option<Term>> = match w.priority() {
+        None => vec![None],
+        Some(priority) => unpool_term(priority.clone())
+            .into_iter()
+            .map(Some)
+            .collect(),
+    };
+    let mut result = Vec::new();
+    for term in unpool_term(w.term().clone()) {
+        for priority in &priorities {
+            result.push(match priority {
+                None => weight(term.clone()),
+                Some(priority) => weight(term.clone()).at_priority(priority.clone()),
+            });
+        }
+    }
+    result
+}
+
+fn unpool_optional_value(value: Option<&Term>) -> Vec<Option<Term>> {
+    match value {
+        None => vec![None],
+        Some(value) => unpool_term(value.clone()).into_iter().map(Some).collect(),
+    }
+}
+
+fn unpool_external(external: &External) -> Vec<External> {
+    let bodies = unpool_body(external.body().get());
+    let values = unpool_optional_value(external.value());
+    let mut result = Vec::new();
+    for atom in unpool_atom(external.atom().get()) {
+        for body in &bodies {
+            for value in &values {
+                result.push(External::new(atom.clone(), body.clone(), value.clone()));
+            }
+        }
+    }
+    result
+}
+
+fn unpool_project(project: &Project) -> Vec<Project> {
+    match project {
+        Project::Signature(_) => vec![project.clone()],
+        Project::Atom { atom, body } => {
+            let bodies = unpool_body(body.get());
+            let mut result = Vec::new();
+            for atom in unpool_atom(atom.get()) {
+                for body in &bodies {
+                    result.push(Project::atom_body(atom.clone(), body.clone()));
+                }
+            }
+            result
+        }
+    }
+}
+
+fn unpool_show(show: &Show) -> Vec<Show> {
+    match show {
+        Show::All | Show::Signature(_) => vec![show.clone()],
+        Show::Term(term) => unpool_term(term.clone())
+            .into_iter()
+            .map(Show::Term)
+            .collect(),
+        Show::TermBody { term, body } => {
+            let bodies = unpool_body(body.get());
+            let mut result = Vec::new();
+            for term in unpool_term(term.clone()) {
+                for body in &bodies {
+                    result.push(Show::TermBody {
+                        term: term.clone(),
+                        body: WithProvenance::constructed(body.clone()),
+                    });
+                }
+            }
+            result
+        }
+    }
+}
+
+fn unpool_edge(edge: &Edge) -> Vec<Edge> {
+    let per_pair: Vec<Vec<(Term, Term)>> = edge
+        .pairs()
+        .map(|(from, to)| {
+            let tos = unpool_term(to.clone());
+            let mut pairs = Vec::new();
+            for from in unpool_term(from.clone()) {
+                for to in &tos {
+                    pairs.push((from.clone(), to.clone()));
+                }
+            }
+            pairs
+        })
+        .collect();
+    let bodies = unpool_body(edge.body().get());
+    let mut result = Vec::new();
+    for pairs in cross_product(per_pair) {
+        for body in &bodies {
+            result.push(Edge::new(pairs.clone(), body.clone()));
+        }
+    }
+    result
+}
+
+fn unpool_heuristic(heuristic: &Heuristic) -> Vec<Heuristic> {
+    let bodies = unpool_body(heuristic.body().get());
+    let biases = unpool_term(heuristic.bias().clone());
+    let priorities = unpool_optional_value(heuristic.priority());
+    let modifiers = unpool_term(heuristic.modifier().clone());
+    let mut result = Vec::new();
+    for atom in unpool_atom(heuristic.atom().get()) {
+        for body in &bodies {
+            for bias in &biases {
+                for priority in &priorities {
+                    for modifier in &modifiers {
+                        result.push(Heuristic::new(
+                            atom.clone(),
+                            body.clone(),
+                            bias.clone(),
+                            priority.clone(),
+                            modifier.clone(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+fn unpool_weak_constraint(weak: &WeakConstraint) -> Vec<WeakConstraint> {
+    let weights = unpool_weight(weak.weight());
+    let per_term: Vec<Vec<Term>> = weak.terms().map(|term| unpool_term(term.clone())).collect();
+    let term_combos = cross_product(per_term);
+    let mut result = Vec::new();
+    for body in unpool_body(weak.body().get()) {
+        for weight in &weights {
+            for terms in &term_combos {
+                result.push(WeakConstraint::new(
+                    body.clone(),
+                    weight.clone(),
+                    terms.clone(),
+                ));
+            }
+        }
+    }
+    result
+}
+
+fn unpool_optimize(optimize: &Optimize) -> Optimize {
+    let elements: Vec<OptimizeElement> = optimize
+        .elements()
+        .flat_map(|element| unpool_optimize_element(element.get()))
+        .collect();
+    Optimize::new(optimize.direction, elements)
+}
+
+fn unpool_optimize_element(element: &OptimizeElement) -> Vec<OptimizeElement> {
+    let weights = unpool_weight(element.weight());
+    let per_term: Vec<Vec<Term>> = element
+        .terms()
+        .map(|term| unpool_term(term.clone()))
+        .collect();
+    let term_combos = cross_product(per_term);
+    let conditions = unpool_condition(element.condition());
+    let mut result = Vec::new();
+    for weight in &weights {
+        for terms in &term_combos {
+            for condition in &conditions {
+                result.push(OptimizeElement::new(
+                    weight.clone(),
+                    terms.clone(),
+                    condition.clone(),
+                ));
+            }
+        }
+    }
+    result
+}
+
+fn unpool_query(query: &Query) -> Vec<Query> {
+    unpool_atom(query.atom().get())
+        .into_iter()
+        .map(Query::new)
+        .collect()
+}
+
+/// Whether a literal still carries a pool — a pooled atom, or a term pool in an atom's
+/// arguments or a comparison's terms. The lone-body-conditional gap (a pooled derived
+/// literal) is left for the fully-unpooled gate, and this reports it.
+fn literal_has_pool(literal: &Literal) -> bool {
+    match &literal.inner {
+        LiteralInner::Atom(atom) => atom_has_pool(atom.get()),
+        LiteralInner::Comparison(comparison) => {
+            let comparison = comparison.get();
+            term_has_pool(comparison.first())
+                || comparison.steps().any(|(_, term)| term_has_pool(term))
+        }
+        LiteralInner::True | LiteralInner::False => false,
+    }
+}
+
+fn atom_has_pool(atom: &Atom) -> bool {
+    atom.is_pooled() || atom.argument_terms().any(term_has_pool)
+}
+
+fn term_has_pool(term: &Term) -> bool {
+    term.subterms().any(|node| matches!(node, Term::Pool(_)))
 }
 
 /// Every pool-free image of a term (§9): a `Term::Pool` becomes its alternatives, a compound
