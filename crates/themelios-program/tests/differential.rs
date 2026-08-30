@@ -11,10 +11,10 @@
 //! What it proves: agreement with the authority on the generated cases and the
 //! vendored corpus. What it cannot (spec §10.2): agreement beyond them, nor any
 //! universal law — those are the property laws (round_trip_laws, unify_laws,
-//! symbol_laws). Every divergence is either an asserted agreement or a *characterized*
-//! boundary with its reason: the authority wraps on overflow where this tier refuses
-//! (refuse-over-repair, §3.5), and refuses a construction the authority defines (a
-//! negative exponent) — neither chased.
+//! symbol_laws). Every case is an asserted agreement or a boundary characterized *directly* as this
+//! tier's refusal (refuse-over-repair, §3.5): it refuses overflow, a zero divisor or modulus, and a
+//! negative exponent, where the authority's own behaviour is platform-dependent (the same clingo may
+//! wrap, define, or abort the process on a different build), so those are never fed to the authority.
 
 #![cfg(feature = "differential")]
 
@@ -575,43 +575,31 @@ fn gen_arith(rng: &mut Rng, depth: u32) -> Term {
     }
 }
 
-/// How this tier's evaluation and the authority's relate on one ground term.
-#[derive(PartialEq, Eq, Debug)]
-enum Relation {
-    /// Both yield the same symbol — the faithful agreement.
-    Agree,
-    /// The authority wraps to a number where this tier refuses the overflow (§3.5): the
-    /// KR-soundness boundary, refuse-over-repair — recorded, not chased.
-    OverflowWrapped,
-    /// The authority defines a value where this tier refuses (a negative exponent is 0
-    /// to the authority; `Undefined` here): the conservative-refusal boundary — recorded.
-    ConservativeRefusal,
-    /// Both refuse — division or modulo by zero, alike.
-    BothRefuse,
-}
-
-fn relate(term: &Term, theirs: &Value) -> Relation {
-    let ours = term.evaluate();
-    let their_ok = theirs["ok"].as_bool().unwrap_or(false);
-    match (ours, their_ok) {
-        (Ok(symbol), true) => {
-            let their_symbol = theirs["symbol"].as_str().expect("a printed symbol");
-            assert_eq!(
-                spell_symbol(&symbol),
-                their_symbol,
-                "the authority evaluates `{}` to a different symbol",
-                spell_term(term),
-            );
-            Relation::Agree
-        }
-        (Err(EvalError::Overflow), true) => Relation::OverflowWrapped,
-        (Err(EvalError::Undefined), true) => Relation::ConservativeRefusal,
-        (Err(EvalError::Undefined | EvalError::Overflow), false) => Relation::BothRefuse,
-        (ours, their_ok) => panic!(
-            "unrecorded arithmetic divergence on `{}`: here {ours:?}, authority ok={their_ok} ({theirs})",
+/// Assert this tier's evaluation of a ground term agrees with the authority's — both yield the same
+/// symbol. The differential feeds this only terms this tier evaluates to a value (an overflow-free,
+/// defined term), so the authority evaluates them without its platform-dependent arithmetic traps and
+/// must agree. A refusal or a divergence here is a real defect, not a characterized boundary: this
+/// tier's refusals (an overflow, a zero divisor or modulus, a negative exponent) are asserted directly,
+/// never fed to the authority.
+fn assert_agrees(term: &Term, theirs: &Value) {
+    let symbol = term.evaluate().unwrap_or_else(|error| {
+        panic!(
+            "the differential feeds `assert_agrees` only accepted terms, but `{}` gave {error:?}",
             spell_term(term),
-        ),
-    }
+        )
+    });
+    assert!(
+        theirs["ok"].as_bool().unwrap_or(false),
+        "the authority refuses `{}`, which this tier evaluates ({theirs})",
+        spell_term(term),
+    );
+    let their_symbol = theirs["symbol"].as_str().expect("a printed symbol");
+    assert_eq!(
+        spell_symbol(&symbol),
+        their_symbol,
+        "the authority evaluates `{}` to a different symbol",
+        spell_term(term),
+    );
 }
 
 #[test]
@@ -637,12 +625,7 @@ fn evaluate_agrees_with_the_authoritys_ground_arithmetic() {
         "one result per accepted term"
     );
     for (term, theirs) in accepted.iter().copied().zip(&results) {
-        assert_eq!(
-            relate(term, theirs),
-            Relation::Agree,
-            "the authority evaluates the overflow-free `{}` to the same symbol",
-            spell_term(term),
-        );
+        assert_agrees(term, theirs);
     }
     assert!(
         accepted.len() > 1000,
@@ -676,46 +659,42 @@ fn evaluate_characterizes_the_arithmetic_boundaries() {
         );
     }
 
-    // The boundaries the authority handles without the trap, each compared in one batch. Two conservative
-    // divergences the authority defines but this tier refuses: a negative exponent (`0` to the authority)
-    // and a zero *modulus* (`5 \ 0` is `5` — the dividend, not a refusal). A zero *divisor* both refuse.
-    // And faithful non-arithmetic ground terms (a function, a tuple, a negation, an absolute, two bitwise)
-    // agree.
-    let curated: [(Term, Relation); 9] = [
-        (binop(BinaryOp::Pow, 2, -1), Relation::ConservativeRefusal),
-        (binop(BinaryOp::Div, 5, 0), Relation::BothRefuse),
-        (binop(BinaryOp::Mod, 5, 0), Relation::ConservativeRefusal),
-        (
-            Term::Function {
-                name: name("f"),
-                arguments: vec![Term::from(1), Term::from(2)],
-            },
-            Relation::Agree,
-        ),
-        (
-            Term::Tuple(vec![Term::from(1), Term::from(2)]),
-            Relation::Agree,
-        ),
-        (
-            Term::UnaryOperation {
-                operator: UnaryOp::Negate,
-                argument: Box::new(Term::from(5)),
-            },
-            Relation::Agree,
-        ),
-        (Term::Absolute(Box::new(Term::from(-7))), Relation::Agree),
-        (binop(BinaryOp::BitAnd, 5, 3), Relation::Agree),
-        (binop(BinaryOp::BitXor, 5, 3), Relation::Agree),
-    ];
-    let spellings: Vec<String> = curated.iter().map(|(term, _)| spell_term(term)).collect();
-    let results = authority_eval(&spellings);
-    for ((term, expected), theirs) in curated.iter().zip(&results) {
-        assert_eq!(
-            relate(term, theirs),
-            *expected,
-            "the curated boundary `{}` relates as expected",
-            spell_term(term),
+    // The other arithmetic edge cases are this tier's refusals too, and the authority's behaviour on them
+    // is likewise platform-dependent (a build may refuse, define, or abort — the same clingo defines
+    // `5 \ 0` as `5` and evaluates `2 ** -1` to `0` on osx-arm64), so none is fed to the authority: the
+    // refusal (§3.5) is the characterization.
+    for term in [
+        binop(BinaryOp::Pow, 2, -1), // a negative exponent
+        binop(BinaryOp::Div, 5, 0),  // a zero divisor
+        binop(BinaryOp::Mod, 5, 0),  // a zero modulus
+    ] {
+        assert!(
+            matches!(term.evaluate(), Err(EvalError::Undefined)),
+            "themelios refuses the undefined `{}`",
+            spell_term(&term),
         );
+    }
+
+    // Faithful non-arithmetic ground terms — a function, a tuple, a negation, an absolute, two bitwise —
+    // carry no arithmetic edge case, so the authority evaluates them on every platform, and agrees.
+    let curated = [
+        Term::Function {
+            name: name("f"),
+            arguments: vec![Term::from(1), Term::from(2)],
+        },
+        Term::Tuple(vec![Term::from(1), Term::from(2)]),
+        Term::UnaryOperation {
+            operator: UnaryOp::Negate,
+            argument: Box::new(Term::from(5)),
+        },
+        Term::Absolute(Box::new(Term::from(-7))),
+        binop(BinaryOp::BitAnd, 5, 3),
+        binop(BinaryOp::BitXor, 5, 3),
+    ];
+    let spellings: Vec<String> = curated.iter().map(spell_term).collect();
+    let results = authority_eval(&spellings);
+    for (term, theirs) in curated.iter().zip(&results) {
+        assert_agrees(term, theirs);
     }
 }
 
