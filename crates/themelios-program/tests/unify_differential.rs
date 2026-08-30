@@ -247,8 +247,7 @@ fn alpha_canonical(term: &Reference) -> Reference {
 fn reference_image(atom: &Atom, subst: &BTreeMap<String, Reference>) -> Reference {
     Reference::App(
         "::args".to_owned(),
-        atom.arguments
-            .iter()
+        atom.argument_terms()
             .map(|term| apply(&to_reference(term), subst))
             .collect(),
     )
@@ -258,8 +257,7 @@ fn reference_image(atom: &Atom, subst: &BTreeMap<String, Reference>) -> Referenc
 fn mgu_image(atom: &Atom, subst: &themelios_program::unify::Substitution) -> Reference {
     Reference::App(
         "::args".to_owned(),
-        atom.arguments
-            .iter()
+        atom.argument_terms()
             .map(|term| to_reference(&term.clone().substitute(subst)))
             .collect(),
     )
@@ -274,8 +272,8 @@ fn mgu_agrees_with_a_naive_reference_unifier() {
     let mut clashed = 0u32;
     for case in 0..CASES {
         let (left, right) = gen_pair(&mut rng);
-        let left_terms: Vec<Reference> = left.arguments.iter().map(to_reference).collect();
-        let right_terms: Vec<Reference> = right.arguments.iter().map(to_reference).collect();
+        let left_terms: Vec<Reference> = left.argument_terms().map(to_reference).collect();
+        let right_terms: Vec<Reference> = right.argument_terms().map(to_reference).collect();
         let reference = reference_unify(left_terms.into_iter().zip(right_terms).collect());
         // A constructor-fragment atom is always a pattern, so mgu never refuses here.
         let outcome = mgu(&left, &right).expect("a constructor-fragment atom is a pattern");
@@ -291,13 +289,11 @@ fn mgu_agrees_with_a_naive_reference_unifier() {
             unified += 1;
             // 2. mgu's substitution is a unifier: the two atoms are equal once resolved.
             let left_image: Vec<Term> = left
-                .arguments
-                .iter()
+                .argument_terms()
                 .map(|term| term.clone().substitute(sigma))
                 .collect();
             let right_image: Vec<Term> = right
-                .arguments
-                .iter()
+                .argument_terms()
                 .map(|term| term.clone().substitute(sigma))
                 .collect();
             assert_eq!(

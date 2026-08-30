@@ -222,7 +222,7 @@ fn atom_signature(atom: &Atom) -> Signature {
     Signature {
         sign: atom.sign,
         name: atom.name.clone(),
-        arity: u32::try_from(atom.arguments.len()).expect("an arity that fits a u32"),
+        arity: u32::try_from(atom.argument_terms().count()).expect("an arity that fits a u32"),
     }
 }
 

@@ -134,7 +134,7 @@ fn assignment_bindings(comparison: &Comparison) -> Vec<(Variable, BTreeSet<Varia
 fn naive_anonymous_unbound(rule: &Rule, bound: &BTreeSet<Variable>) -> bool {
     let head_anon = match rule.head().get() {
         Head::Literal(literal) => match &literal.inner {
-            LiteralInner::Atom(atom) => atom.get().arguments.iter().any(term_has_anon),
+            LiteralInner::Atom(atom) => atom.get().argument_terms().any(term_has_anon),
             _ => false,
         },
         _ => false,
@@ -197,7 +197,7 @@ fn naive_unbound(rule: &Rule) -> BTreeSet<Variable> {
         {
             match &literal.inner {
                 LiteralInner::Atom(a) => {
-                    for term in &a.get().arguments {
+                    for term in a.get().argument_terms() {
                         term_named_vars(term, &mut bound);
                     }
                 }

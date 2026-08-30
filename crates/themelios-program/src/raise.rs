@@ -28,7 +28,7 @@ use themelios_syntax::parse::Parse;
 use themelios_syntax::tree::{Asp, AstNode, SyntaxKind, SyntaxNode, TextRange};
 
 use crate::program::{
-    Aggregate, AggregateFunction, Atom, Body, BodyAggregateElement, BodyElement, Choice,
+    Aggregate, AggregateFunction, Arguments, Atom, Body, BodyAggregateElement, BodyElement, Choice,
     ChoiceElement, Comparison, Condition, ConditionalLiteral, Const, ConstPolicy, DefaultNegation,
     Defined, Direction, Disjunction, DisjunctionElement, Edge, External, FunctionAggregate, Guard,
     Head, HeadAggregate, HeadAggregateElement, Heuristic, Include, IncludeTarget, Literal,
@@ -928,7 +928,7 @@ fn raise_atom(atom: &ast::Atom, parse: &dyn Reads, errors: &mut Vec<LowerError>)
     Some(Atom {
         sign,
         name,
-        arguments,
+        arguments: Arguments::Single(arguments),
     })
 }
 

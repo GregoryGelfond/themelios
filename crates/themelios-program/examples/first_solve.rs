@@ -11,8 +11,8 @@
 
 use themelios_program::construct::not;
 use themelios_program::program::{
-    Atom, Body, BodyElement, DefaultNegation, Head, IntoHead, Literal, LiteralInner, Program, Rule,
-    Statement,
+    Arguments, Atom, Body, BodyElement, DefaultNegation, Head, IntoHead, Literal, LiteralInner,
+    Program, Rule, Statement,
 };
 use themelios_program::provenance::WithProvenance;
 use themelios_program::symbol::{Name, Sign, Symbol, VarName};
@@ -149,7 +149,7 @@ fn atom(predicate: &str, arguments: Vec<Term>) -> Atom {
     Atom {
         sign: Sign::Positive,
         name: name(predicate),
-        arguments,
+        arguments: Arguments::Single(arguments),
     }
 }
 

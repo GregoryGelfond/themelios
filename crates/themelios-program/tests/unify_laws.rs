@@ -46,8 +46,7 @@ fn konst(text: &str) -> Term {
 /// The resolved image of an atom's argument terms under a substitution — `substitute`
 /// follows the triangular chains to the fixpoint (§9.2), so this is the atom "after σ".
 fn image(atom: &Atom, s: &Substitution) -> Vec<Term> {
-    atom.arguments
-        .iter()
+    atom.argument_terms()
         .map(|term| term.clone().substitute(s))
         .collect()
 }
@@ -355,7 +354,7 @@ fn rename_apart_shares_no_variable_with_its_input() {
     );
     let mut fresh = fresh_over([a.clone()]);
     let renamed = rename_apart(&a, &mut fresh);
-    for term in &renamed.arguments {
+    for term in renamed.argument_terms() {
         for sub in term.subterms() {
             assert!(
                 sub != &tvar("X") && sub != &tvar("Y"),
@@ -372,18 +371,13 @@ fn rename_apart_renames_consistently_and_preserves_shape() {
     let a = atom("p", [tvar("X"), tvar("Y"), tvar("X")]);
     let mut fresh = fresh_over([a.clone()]);
     let renamed = rename_apart(&a, &mut fresh);
+    let args = renamed.alternatives().next().expect("a single-tuple atom");
     assert_eq!(renamed.name, a.name);
     assert_eq!(renamed.sign, a.sign);
-    assert_eq!(renamed.arguments.len(), 3);
-    assert_eq!(
-        renamed.arguments[0], renamed.arguments[2],
-        "the two X positions rename together",
-    );
-    assert_ne!(
-        renamed.arguments[0], renamed.arguments[1],
-        "X and Y rename apart",
-    );
-    assert!(matches!(renamed.arguments[0], Term::Variable(_)));
+    assert_eq!(args.len(), 3);
+    assert_eq!(args[0], args[2], "the two X positions rename together");
+    assert_ne!(args[0], args[1], "X and Y rename apart");
+    assert!(matches!(args[0], Term::Variable(_)));
 }
 
 #[test]
@@ -399,14 +393,9 @@ fn rename_apart_gives_each_anonymous_variable_its_own_fresh_name() {
     );
     let mut fresh = fresh_over([a.clone()]);
     let renamed = rename_apart(&a, &mut fresh);
-    assert_ne!(
-        renamed.arguments[0], renamed.arguments[1],
-        "each `_` renames apart",
-    );
-    assert!(matches!(
-        renamed.arguments[0],
-        Term::Variable(Variable::Named(_)),
-    ));
+    let args = renamed.alternatives().next().expect("a single-tuple atom");
+    assert_ne!(args[0], args[1], "each `_` renames apart");
+    assert!(matches!(args[0], Term::Variable(Variable::Named(_))));
 }
 
 #[test]

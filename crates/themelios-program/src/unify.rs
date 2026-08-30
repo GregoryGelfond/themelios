@@ -17,11 +17,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::RangeInclusive;
 
 use crate::program::{
-    Aggregate, Atom, Body, BodyAggregateElement, BodyElement, Choice, ChoiceElement, Comparison,
-    Condition, ConditionalLiteral, Disjunction, DisjunctionElement, FunctionAggregate, Guard,
-    HasGuards, Head, HeadAggregate, HeadAggregateElement, Literal, LiteralInner, OptimizeElement,
-    Program, Project, Rule, SetAggregate, SetElement, Show, Statement, TheoryAtom, TheoryElement,
-    TheoryTerm, Weight,
+    Aggregate, Arguments, Atom, Body, BodyAggregateElement, BodyElement, Choice, ChoiceElement,
+    Comparison, Condition, ConditionalLiteral, Disjunction, DisjunctionElement, FunctionAggregate,
+    Guard, HasGuards, Head, HeadAggregate, HeadAggregateElement, Literal, LiteralInner,
+    OptimizeElement, Program, Project, Rule, SetAggregate, SetElement, Show, Statement, TheoryAtom,
+    TheoryElement, TheoryTerm, Weight,
 };
 use crate::provenance::WithProvenance;
 use crate::symbol::{Name, Sign, Symbol, SymbolParts, VarName};
@@ -315,11 +315,7 @@ fn substitute_atom(atom: &Atom, s: &Substitution) -> Atom {
     Atom {
         sign: atom.sign,
         name: atom.name.clone(),
-        arguments: atom
-            .arguments
-            .iter()
-            .map(|term| term.clone().substitute(s))
-            .collect(),
+        arguments: atom.arguments.map_terms(|term| term.clone().substitute(s)),
     }
 }
 
@@ -698,7 +694,7 @@ fn collect_theory_term(term: &TheoryTerm, names: &mut Names) {
 
 fn collect_atom(atom: &Atom, names: &mut Names) {
     names.predicates.insert(atom.name.clone());
-    for term in &atom.arguments {
+    for term in atom.argument_terms() {
         collect_term(term, names);
     }
 }
@@ -864,6 +860,10 @@ pub enum NotAPattern {
         /// The offending term.
         term: Term,
     },
+    /// The atom is an argument-list pool (`p(a; b)`, §4.6): it names a *set* of atoms, not
+    /// one, so a term-against-symbol match cannot decide it — the atom-level twin of a pooled
+    /// *term* argument's [`NonDenoting`](NotAPattern::NonDenoting) refusal. Unpool (§9) first.
+    Pooled,
 }
 
 impl std::fmt::Display for NotAPattern {
@@ -873,6 +873,12 @@ impl std::fmt::Display for NotAPattern {
                 write!(
                     f,
                     "not a pattern: the term {term:?} does not denote a ground term"
+                )
+            }
+            NotAPattern::Pooled => {
+                write!(
+                    f,
+                    "not a pattern: an argument-list pool names a set of atoms, not one"
                 )
             }
         }
@@ -918,9 +924,7 @@ pub fn rename_apart(atom: &Atom, fresh: &mut Fresh) -> Atom {
         name: atom.name.clone(),
         arguments: atom
             .arguments
-            .iter()
-            .map(|term| rename_term(term.clone(), &mut renaming, fresh))
-            .collect(),
+            .map_terms(|term| rename_term(term.clone(), &mut renaming, fresh)),
     }
 }
 
@@ -947,9 +951,15 @@ fn rename_term(term: Term, renaming: &mut HashMap<VarName, Variable>, fresh: &mu
 /// (§11.2), not the range's. Lets a match against an answer set be `O(log n + k)`, not `O(n)`
 /// (§11.3). `O(arity)`.
 pub fn signature_range(pattern: &Atom) -> RangeInclusive<Symbol> {
+    // A pattern is a `Single` atom (§11.2): a pooled atom names a set and is refused as a
+    // pattern (`pattern_arguments`), so it does not reach here; guard it with an empty range
+    // (`Supremum..=Infimum`), matching nothing.
+    let Arguments::Single(terms) = &pattern.arguments else {
+        return Symbol::Supremum..=Symbol::Infimum;
+    };
     let block = |filler: Symbol| Symbol::Function {
         name: pattern.name.clone(),
-        arguments: vec![filler; pattern.arguments.len()],
+        arguments: vec![filler; terms.len()],
         sign: pattern.sign,
     };
     block(Symbol::Infimum)..=block(Symbol::Supremum)
@@ -958,7 +968,12 @@ pub fn signature_range(pattern: &Atom) -> RangeInclusive<Symbol> {
 /// Normalise every argument of an atom to its pattern form, or refuse (§11.2). Collecting into
 /// a `Result` short-circuits on the first non-denoting argument.
 fn pattern_arguments(atom: &Atom) -> Result<Vec<Term>, NotAPattern> {
-    atom.arguments.iter().map(pattern_normalize).collect()
+    // A pooled atom names a *set* of atoms, not one — it is not a pattern (§11.2), the
+    // atom-level twin of a pooled *term* argument's refusal below. Unpool (§9) before matching.
+    let Arguments::Single(terms) = &atom.arguments else {
+        return Err(NotAPattern::Pooled);
+    };
+    terms.iter().map(pattern_normalize).collect()
 }
 
 /// The pattern form of one term (§11.2), or a refusal carrying the non-denoting former. The

@@ -534,7 +534,7 @@ fn push_element_scope(
 /// body/condition literal and a `#project`/`#heuristic` atom's domain match (`statement_binder`'s
 /// `DomainAtom`), so the certain-occurrence rule stays congruent across all of them.
 fn bind_positive_atom(scope: &mut Scope, atom: &Atom) {
-    for term in &atom.arguments {
+    for term in atom.argument_terms() {
         let (required, binding) = binding_analysis(term);
         scope.required.extend(required);
         scope.binders.extend(binding);
@@ -735,7 +735,7 @@ fn bind_literal(scope: &mut Scope, literal: &Literal, minted: &BTreeSet<Variable
                 // (function/tuple/pool), never an evaluated term (`projected_anonymous`).
                 let mut vars = BTreeSet::new();
                 let mut projected = BTreeSet::new();
-                for term in &atom.arguments {
+                for term in atom.argument_terms() {
                     term_named_vars(term, &mut vars);
                     projected.extend(projected_anonymous(term, minted));
                 }
@@ -744,7 +744,7 @@ fn bind_literal(scope: &mut Scope, literal: &Literal, minted: &BTreeSet<Variable
                 // A default-negated classically-negated atom (`not -q(..)`) requires all its variables:
                 // the conservative reading, never projecting (§5).
                 let mut vars = BTreeSet::new();
-                for term in &atom.arguments {
+                for term in atom.argument_terms() {
                     term_named_vars(term, &mut vars);
                 }
                 scope.required.extend(vars);
@@ -765,7 +765,7 @@ fn bind_literal(scope: &mut Scope, literal: &Literal, minted: &BTreeSet<Variable
 fn require_literal(scope: &mut Scope, literal: &Literal) {
     match &literal.inner {
         LiteralInner::Atom(atom) => {
-            for term in &atom.get().arguments {
+            for term in atom.get().argument_terms() {
                 term_named_vars(term, &mut scope.required);
             }
         }
@@ -802,13 +802,13 @@ fn bind_conditional_literal(
             } else if atom.sign == Sign::Positive {
                 let mut vars = BTreeSet::new();
                 let mut projected = BTreeSet::new();
-                for term in &atom.arguments {
+                for term in atom.argument_terms() {
                     term_named_vars(term, &mut vars);
                     projected.extend(projected_anonymous(term, minted));
                 }
                 scope.required.extend(vars.difference(&projected).cloned());
             } else {
-                for term in &atom.arguments {
+                for term in atom.argument_terms() {
                     term_named_vars(term, &mut scope.required);
                 }
             }
@@ -820,7 +820,7 @@ fn bind_conditional_literal(
                 for lit in condition.literals() {
                     match &lit.get().inner {
                         LiteralInner::Atom(atom) => {
-                            for term in &atom.get().arguments {
+                            for term in atom.get().argument_terms() {
                                 term_named_vars(term, &mut condition_vars);
                             }
                         }
@@ -1209,7 +1209,7 @@ impl BodyGrowth {
         carried_roots: &BTreeSet<Variable>,
         deepening: &BTreeSet<Variable>,
     ) -> bool {
-        atom.arguments.iter().any(|term| {
+        atom.argument_terms().any(|term| {
             let former = is_former(term);
             term.subterms().any(|subterm| {
                 matches!(subterm, Term::Variable(variable) if {
@@ -1339,7 +1339,7 @@ fn class_root<'a>(
 /// where a variable flows around the recursion, at the same term depth.
 fn push_atom_carriers(atom: &Atom, carriers: &mut BTreeMap<Signature, BTreeSet<Variable>>) {
     let entry = carriers.entry(atom_signature(atom)).or_default();
-    for term in &atom.arguments {
+    for term in atom.argument_terms() {
         term_named_vars(term, entry);
     }
 }

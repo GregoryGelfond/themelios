@@ -8,8 +8,8 @@
 
 use themelios_program::analyze::DependencyKind;
 use themelios_program::program::{
-    Aggregate, AggregateFunction, Atom, Body, BodyAggregateElement, BodyElement, Condition,
-    DefaultNegation, Disjunction, DisjunctionElement, FunctionAggregate, Head, Literal,
+    Aggregate, AggregateFunction, Arguments, Atom, Body, BodyAggregateElement, BodyElement,
+    Condition, DefaultNegation, Disjunction, DisjunctionElement, FunctionAggregate, Head, Literal,
     LiteralInner, Program, Rule, Statement,
 };
 use themelios_program::provenance::{Origin, Provenance, WithProvenance};
@@ -32,7 +32,7 @@ fn atom(predicate: &str, arguments: Vec<Term>) -> Atom {
     Atom {
         sign: Sign::Positive,
         name: name(predicate),
-        arguments,
+        arguments: Arguments::Single(arguments),
     }
 }
 

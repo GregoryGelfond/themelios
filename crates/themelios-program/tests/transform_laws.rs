@@ -9,7 +9,7 @@ use themelios_base::source::{Source, SourceId};
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::parse::parse;
 
-use themelios_program::program::{Atom, Program, Rule, Statement};
+use themelios_program::program::{Arguments, Atom, Program, Rule, Statement};
 use themelios_program::provenance::{Origin, TransformTag};
 use themelios_program::raise::raise;
 use themelios_program::symbol::{Name, Sign, Signature};
@@ -127,11 +127,15 @@ struct Signatures {
 }
 impl Visit for Signatures {
     fn visit_atom(&mut self, atom: &Atom) {
-        self.seen.push(Signature {
-            sign: atom.sign,
-            name: atom.name.clone(),
-            arity: u32::try_from(atom.arguments.len()).expect("small arity"),
-        });
+        // One signature per argument-list alternative (§8), mirroring the substrate's own
+        // `alternative_signatures`; a `Single` atom yields exactly one.
+        for tuple in atom.alternatives() {
+            self.seen.push(Signature {
+                sign: atom.sign,
+                name: atom.name.clone(),
+                arity: u32::try_from(tuple.len()).expect("small arity"),
+            });
+        }
     }
 }
 
@@ -348,7 +352,7 @@ fn single_fact_program(argument: Term) -> Program {
     let atom = Atom {
         sign: Sign::Positive,
         name: name("p"),
-        arguments: vec![argument],
+        arguments: Arguments::Single(vec![argument]),
     };
     let rule = Rule::fact(atom);
     Program::of([WithProvenance::constructed(Statement::Rule(rule))])

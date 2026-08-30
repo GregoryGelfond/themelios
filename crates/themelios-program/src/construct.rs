@@ -18,8 +18,8 @@
 //! caller fills directly, which the ingest door collapses on entry (§5.1).
 
 use crate::program::{
-    Aggregate, Atom, Body, BodyElement, DefaultNegation, Direction, Head, IntoBody, IntoHead,
-    Literal, LiteralInner, Optimize, OptimizeElement, Rule, TheoryAtom,
+    Aggregate, Arguments, Atom, Body, BodyElement, DefaultNegation, Direction, Head, IntoBody,
+    IntoHead, Literal, LiteralInner, Optimize, OptimizeElement, Rule, TheoryAtom,
 };
 use crate::provenance::WithProvenance;
 use crate::symbol::{Name, Sign, Symbol};
@@ -336,7 +336,20 @@ impl Atom {
         Atom {
             sign: Sign::Positive,
             name,
-            arguments: arguments.into_iter().collect(),
+            arguments: Arguments::Single(arguments.into_iter().collect()),
+        }
+        .canonicalize()
+    }
+
+    /// An atom `p(t…; u…)` with an argument-list pool (§4.6): each alternative is one
+    /// argument tuple, the alternatives possibly of different arity. The name is a
+    /// validated identifier (§3.2), so this is total (§7.2); the arguments canonicalize
+    /// and a one-alternative pool collapses to `Single` at the door (§5.1).
+    pub fn pooled(name: Name, alternatives: impl IntoIterator<Item = Vec<Term>>) -> Atom {
+        Atom {
+            sign: Sign::Positive,
+            name,
+            arguments: Arguments::Pooled(alternatives.into_iter().collect()),
         }
         .canonicalize()
     }
@@ -347,7 +360,7 @@ impl Atom {
         Atom {
             sign: Sign::Positive,
             name,
-            arguments: Vec::new(),
+            arguments: Arguments::Single(Vec::new()),
         }
     }
 }

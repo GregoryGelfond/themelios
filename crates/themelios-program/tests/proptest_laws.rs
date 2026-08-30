@@ -131,9 +131,9 @@ proptest! {
         prop_assert!(first.is_ok(), "a constructor-fragment atom is a pattern");
         if let Ok(Some(sigma)) = &first {
             let left_image: Vec<Term> =
-                left.arguments.iter().map(|t| t.clone().substitute(sigma)).collect();
+                left.argument_terms().map(|t| t.clone().substitute(sigma)).collect();
             let right_image: Vec<Term> =
-                right.arguments.iter().map(|t| t.clone().substitute(sigma)).collect();
+                right.argument_terms().map(|t| t.clone().substitute(sigma)).collect();
             prop_assert_eq!(left_image, right_image, "a unifier equates the atoms once resolved");
         }
     }
@@ -165,7 +165,7 @@ proptest! {
         let signature = Signature {
             sign: pattern.sign,
             name: pattern.name.clone(),
-            arity: u32::try_from(pattern.arguments.len()).expect("a small test arity"),
+            arity: u32::try_from(pattern.argument_terms().count()).expect("a small test arity"),
         };
         let via_range: BTreeSet<Symbol> =
             answer.range(signature_range(&pattern)).cloned().collect();

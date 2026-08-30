@@ -50,18 +50,78 @@ pub enum LiteralInner {
     False,
 }
 
-/// An atom (grammar §5.2): a strong sign, a predicate name, and arguments. The sign
-/// is **strong** negation (`-p`); the default negation is the literal's (§4.6). No
-/// invariant beyond its fields' own, so a struct literal is its constructor (§4); its
-/// argument terms canonicalize when the atom passes an ingest door (§5.1, §7.2, §9).
+/// An atom (grammar §5.2): a strong sign, a predicate name, and an argument list that
+/// is one tuple or — an argument-list pool `p(a; b)` — several (§8). The sign is
+/// **strong** negation (`-p`); the default negation is the literal's (§4.6). Its
+/// argument terms canonicalize, and a one-alternative pool collapses to `Single`, when
+/// the atom passes an ingest door (§5.1, §7.2, §9).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Atom {
     /// The strong sign.
     pub sign: Sign,
     /// The predicate name.
     pub name: Name,
-    /// The argument terms.
-    pub arguments: Vec<Term>,
+    /// The argument list — one tuple (`Single`) or an argument-list pool.
+    pub arguments: Arguments,
+}
+
+/// An atom's arguments (§8): one tuple, or an argument-list pool of two or more tuples
+/// whose alternatives may differ in arity (`p(a; b, c)` is p/1 and p/2). A pool of
+/// whole tuples is the atom's own shape, not a [`Term::Pool`] (one argument position) —
+/// the one pooling concept at the level the term/atom split gives it (§4.6). The two-or-
+/// more normal form is canonicalization's (§5.1): a one-alternative pool collapses to
+/// `Single`, an empty one is refused at the door — not a private invariant, so this is a
+/// public value like `Term::Pool`.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum Arguments {
+    /// One argument tuple, `p(a, b)`.
+    Single(Vec<Term>),
+    /// An argument-list pool, `p(a; b)` — two or more alternatives.
+    Pooled(Vec<Vec<Term>>),
+}
+
+impl Arguments {
+    /// Map every term, preserving the `Single`/`Pooled` structure (§9): the rewrite and
+    /// substitution rebuild through this, so neither collapses a pool nor promotes a
+    /// single tuple to one.
+    pub(crate) fn map_terms(&self, mut f: impl FnMut(&Term) -> Term) -> Arguments {
+        match self {
+            Arguments::Single(terms) => Arguments::Single(terms.iter().map(&mut f).collect()),
+            Arguments::Pooled(alternatives) => Arguments::Pooled(
+                alternatives
+                    .iter()
+                    .map(|tuple| tuple.iter().map(&mut f).collect())
+                    .collect(),
+            ),
+        }
+    }
+}
+
+impl Atom {
+    /// The argument-list alternatives: one for a `Single` atom, several for a pool. The
+    /// structural accessor (§4.6) — render, the rewrite, and `unpool` (§9) read it.
+    /// There is deliberately **no** accessor for "the single argument list": a pool is
+    /// unpooled before it is read as one tuple, so no consumer silently truncates it.
+    pub fn alternatives(&self) -> impl Iterator<Item = &[Term]> {
+        match &self.arguments {
+            Arguments::Single(terms) => std::slice::from_ref(terms),
+            Arguments::Pooled(alternatives) => alternatives.as_slice(),
+        }
+        .iter()
+        .map(Vec::as_slice)
+    }
+
+    /// Every argument term across every alternative, flattened — for consumers that walk
+    /// terms without needing the tuple boundaries (§4.6). Never `zip` two atoms'
+    /// alternatives (it truncates to the shorter): match [`Arguments`] for a pairwise walk.
+    pub fn argument_terms(&self) -> impl Iterator<Item = &Term> {
+        self.alternatives().flatten()
+    }
+
+    /// Whether the atom is an argument-list pool (two or more alternatives).
+    pub fn is_pooled(&self) -> bool {
+        matches!(self.arguments, Arguments::Pooled(_))
+    }
 }
 
 /// A comparison chain (grammar §5.2): a first term and **one or more** relation/term
@@ -618,13 +678,31 @@ impl WeakConstraint {
 // `map` (§6.2), which carries it.
 
 impl Atom {
-    /// Canonicalize the argument terms (§5.1) — the atom's one raw term position, the
-    /// pub-field struct having no constructor door.
+    /// Canonicalize the argument terms (§5.1), and collapse a one-alternative pool to
+    /// `Single` — the atom-level image of the one-alternative `Term::Pool` drop.
     pub(crate) fn canonicalize(self) -> Atom {
+        let canonicalize_tuple = |terms: Vec<Term>| {
+            terms
+                .into_iter()
+                .map(Term::canonicalize)
+                .collect::<Vec<_>>()
+        };
+        let arguments = match self.arguments {
+            Arguments::Single(terms) => Arguments::Single(canonicalize_tuple(terms)),
+            Arguments::Pooled(alternatives) => {
+                let mut alternatives: Vec<Vec<Term>> =
+                    alternatives.into_iter().map(canonicalize_tuple).collect();
+                if alternatives.len() == 1 {
+                    Arguments::Single(alternatives.pop().expect("one alternative"))
+                } else {
+                    Arguments::Pooled(alternatives)
+                }
+            }
+        };
         Atom {
             sign: self.sign,
             name: self.name,
-            arguments: self.arguments.into_iter().map(Term::canonicalize).collect(),
+            arguments,
         }
     }
 }

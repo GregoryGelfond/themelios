@@ -9,9 +9,9 @@
 
 use themelios_program::construct::{maximize, minimize, not, not_not};
 use themelios_program::program::{
-    Aggregate, Atom, Body, BodyElement, Condition, DefaultNegation, Direction, Head, IntoBody,
-    IntoHead, Literal, LiteralInner, OptimizeElement, Program, Rule, SetAggregate, SetElement,
-    Statement, WeakConstraint, weight,
+    Aggregate, Arguments, Atom, Body, BodyElement, Condition, DefaultNegation, Direction, Head,
+    IntoBody, IntoHead, Literal, LiteralInner, OptimizeElement, Program, Rule, SetAggregate,
+    SetElement, Statement, WeakConstraint, weight,
 };
 use themelios_program::provenance::WithProvenance;
 use themelios_program::symbol::{Name, Sign, Symbol, VarName};
@@ -31,6 +31,26 @@ fn var(text: &str) -> Term {
 
 fn num(n: i32) -> Term {
     Term::Symbolic(Symbol::Number(n))
+}
+
+// ---- The faithful argument-list pool (§4.6): a pooled atom carries every
+// alternative, and its alternatives may differ in arity (`p(1; 2, 3)` is p/1 and
+// p/2). A one-alternative pool is a `Single` atom by canonicalization (§5.1). ----
+
+#[test]
+fn a_pooled_atom_carries_every_alternative() {
+    let atom = Atom::pooled(name("p"), [vec![num(1)], vec![num(2), num(3)]]);
+    assert!(atom.is_pooled());
+    let alternatives: Vec<Vec<Term>> = atom.alternatives().map(<[Term]>::to_vec).collect();
+    assert_eq!(alternatives, vec![vec![num(1)], vec![num(2), num(3)]]);
+}
+
+#[test]
+fn a_one_alternative_pool_canonicalizes_to_a_single_atom() {
+    let atom = Atom::pooled(name("p"), [vec![num(1)]]);
+    assert!(!atom.is_pooled());
+    let alternatives: Vec<Vec<Term>> = atom.alternatives().map(<[Term]>::to_vec).collect();
+    assert_eq!(alternatives, vec![vec![num(1)]]);
 }
 
 // ---- Strong versus arithmetic negation (§4.6) ----
@@ -161,11 +181,11 @@ fn atom_new_canonicalizes_ground_function_arguments() {
     let atom = Atom::new(name("p"), [ground_function]);
     assert_eq!(
         atom.arguments,
-        vec![Term::Symbolic(Symbol::Function {
+        Arguments::Single(vec![Term::Symbolic(Symbol::Function {
             name: name("f"),
             arguments: vec![Symbol::Number(1)],
             sign: Sign::Positive,
-        })],
+        })]),
         "a ground constructor argument collapses to a Symbolic leaf",
     );
 }
@@ -304,7 +324,7 @@ fn reachability_through_the_primitives() -> Program {
     let atom = |predicate: &str, arguments: Vec<Term>| Atom {
         sign: Sign::Positive,
         name: name(predicate),
-        arguments,
+        arguments: Arguments::Single(arguments),
     };
     let head = |predicate: &str, arguments: Vec<Term>| {
         Head::Literal(Literal {

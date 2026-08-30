@@ -200,14 +200,18 @@ pub fn statement_variables(statement: &Statement) -> Vec<&Variable> {
 
 // ---- The signature of an atom ----
 
-fn atom_signature(atom: &Atom) -> Signature {
-    Signature {
+/// The signatures an atom heads or depends on: **one per argument-list alternative**
+/// (§8), so a pooled `p(a; b, c)` contributes p/1 and p/2 — the distinct atoms the
+/// grounder unpools it into. A `Single` atom yields exactly one. Never reads a single
+/// alternative alone, so a pool is not silently truncated (§4.6).
+fn alternative_signatures(atom: &Atom) -> impl Iterator<Item = Signature> + '_ {
+    atom.alternatives().map(move |tuple| Signature {
         sign: atom.sign,
         name: atom.name.clone(),
         // A predicate carries no more arguments than a `Vec` holds, far under `u32::MAX`
         // (the workspace `cast_possible_truncation` allowance, argued in place).
-        arity: atom.arguments.len() as u32,
-    }
+        arity: tuple.len() as u32,
+    })
 }
 
 // ---- Variable occurrences ----
@@ -229,7 +233,7 @@ fn push_theory_term_variables<'a>(theory_term: &'a TheoryTerm, out: &mut Vec<&'a
 }
 
 fn push_atom_variables<'a>(atom: &'a Atom, out: &mut Vec<&'a Variable>) {
-    for term in &atom.arguments {
+    for term in atom.argument_terms() {
         push_term_variables(term, out);
     }
 }
@@ -407,7 +411,7 @@ fn head_signatures(head: &Head, out: &mut Vec<Signature>) {
 
 fn push_literal_signature(literal: &Literal, out: &mut Vec<Signature>) {
     if let LiteralInner::Atom(atom) = &literal.inner {
-        out.push(atom_signature(atom.get()));
+        out.extend(alternative_signatures(atom.get()));
     }
 }
 
@@ -502,21 +506,24 @@ fn push_literal_dependency(
         // A comparison or a boolean is not a predicate dependency.
         return;
     };
-    let signature = atom_signature(atom.get());
     let self_negated = is_negated(literal.negation);
-    match former {
-        Former::Plain => {
-            let kind = if self_negated {
-                DependencyKind::Negative
-            } else {
-                DependencyKind::Positive
-            };
-            out.push((kind, signature));
-        }
-        Former::ThroughAggregate { negated } => {
-            out.push((DependencyKind::ThroughAggregate, signature.clone()));
-            if negated || self_negated {
-                out.push((DependencyKind::Negative, signature));
+    // One dependency per pooled alternative (§8): the grounder unpools a pooled atom into
+    // distinct atoms, so each alternative's signature is its own edge.
+    for signature in alternative_signatures(atom.get()) {
+        match former {
+            Former::Plain => {
+                let kind = if self_negated {
+                    DependencyKind::Negative
+                } else {
+                    DependencyKind::Positive
+                };
+                out.push((kind, signature));
+            }
+            Former::ThroughAggregate { negated } => {
+                out.push((DependencyKind::ThroughAggregate, signature.clone()));
+                if negated || self_negated {
+                    out.push((DependencyKind::Negative, signature));
+                }
             }
         }
     }
@@ -749,8 +756,7 @@ pub fn statement_binder(statement: &Statement) -> StatementBinder<'_> {
             required: external
                 .atom()
                 .get()
-                .arguments
-                .iter()
+                .argument_terms()
                 .chain(external.value())
                 .collect(),
             body: Some(external.body().get()),

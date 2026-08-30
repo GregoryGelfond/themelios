@@ -20,7 +20,7 @@ use std::fmt;
 use themelios_syntax::dialect::Dialect;
 
 use crate::program::{
-    Aggregate, AggregateFunction, Atom, Body, BodyAggregateElement, BodyElement, Choice,
+    Aggregate, AggregateFunction, Arguments, Atom, Body, BodyAggregateElement, BodyElement, Choice,
     ChoiceElement, Comparison, Condition, ConditionalLiteral, Const, ConstPolicy, DefaultNegation,
     Defined, Direction, Disjunction, DisjunctionElement, Edge, External, FunctionAggregate, Guard,
     HasGuards, Head, HeadAggregate, HeadAggregateElement, Heuristic, Include, IncludeTarget,
@@ -342,7 +342,14 @@ fn render_default_negation(out: &mut String, negation: DefaultNegation) {
 /// printer a function term also uses (§10), so the two cannot drift.
 fn render_atom(out: &mut String, atom: &Atom, dialect: Dialect) -> Result<(), Unspellable> {
     let mut work = Vec::new();
-    push_applied(&mut work, out, Some(atom.sign), &atom.name, &atom.arguments);
+    match &atom.arguments {
+        Arguments::Single(terms) => {
+            push_applied(&mut work, out, Some(atom.sign), &atom.name, terms);
+        }
+        Arguments::Pooled(alternatives) => {
+            push_pooled(&mut work, out, atom.sign, &atom.name, alternatives);
+        }
+    }
     drain_terms(out, work, dialect)
 }
 
@@ -1192,6 +1199,32 @@ fn push_applied<'a>(
         out.push('(');
         work.push(TermAct::Str(")"));
         push_separated(work, arguments, ", ");
+    }
+}
+
+/// The applied form of an argument-list pool (§4.6, §10): `[-]name(t… ; u…)`, the
+/// alternatives separated by `; ` inside the one paren, each a `, `-separated tuple — the
+/// atom-level twin of a `Term::Pool`'s `(a; b)`, so `p(a; b)` round-trips. A pool has two or
+/// more alternatives (canonicalized), so the paren is never empty.
+fn push_pooled<'a>(
+    work: &mut Vec<TermAct<'a>>,
+    out: &mut String,
+    sign: Sign,
+    name: &Name,
+    alternatives: &'a [Vec<Term>],
+) {
+    if matches!(sign, Sign::Negative) {
+        out.push('-');
+    }
+    out.push_str(name.as_str());
+    out.push('(');
+    work.push(TermAct::Str(")"));
+    // Reversed for LIFO (§13): alternative 0 renders first, a `; ` before each later one.
+    for (index, alternative) in alternatives.iter().enumerate().rev() {
+        push_separated(work, alternative, ", ");
+        if index > 0 {
+            work.push(TermAct::Str("; "));
+        }
     }
 }
 

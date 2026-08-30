@@ -12,11 +12,12 @@
 //! algebra (§4.9) this structural surface does not descend, as substitution does not (§9.2).
 
 use crate::program::{
-    Aggregate, Atom, Body, BodyAggregateElement, BodyElement, Choice, ChoiceElement, Comparison,
-    Condition, ConditionalLiteral, Const, Disjunction, DisjunctionElement, Edge, External,
-    FunctionAggregate, Guard, HasGuards, Head, HeadAggregate, HeadAggregateElement, Heuristic,
-    Literal, LiteralInner, Optimize, OptimizeElement, Program, Project, Query, Rule, SetAggregate,
-    SetElement, Show, Statement, TheoryAtom, TheoryElement, WeakConstraint, Weight, weight,
+    Aggregate, Arguments, Atom, Body, BodyAggregateElement, BodyElement, Choice, ChoiceElement,
+    Comparison, Condition, ConditionalLiteral, Const, Disjunction, DisjunctionElement, Edge,
+    External, FunctionAggregate, Guard, HasGuards, Head, HeadAggregate, HeadAggregateElement,
+    Heuristic, Literal, LiteralInner, Optimize, OptimizeElement, Program, Project, Query, Rule,
+    SetAggregate, SetElement, Show, Statement, TheoryAtom, TheoryElement, WeakConstraint, Weight,
+    weight,
 };
 use crate::provenance::{Origin, Provenance, TransformTag, WithProvenance};
 use crate::term::Term;
@@ -213,7 +214,7 @@ fn descend_literal<V: Visit + ?Sized>(v: &mut V, literal: &Literal) {
 }
 
 fn descend_atom<V: Visit + ?Sized>(v: &mut V, atom: &Atom) {
-    for term in &atom.arguments {
+    for term in atom.argument_terms() {
         visit_terms(v, term);
     }
 }
@@ -536,11 +537,27 @@ fn rebuild_literal<R: Rewrite + ?Sized>(r: &mut R, literal: Literal) -> Literal 
 }
 
 fn rebuild_atom<R: Rewrite + ?Sized>(r: &mut R, atom: Atom) -> Atom {
-    let arguments = atom
-        .arguments
-        .into_iter()
-        .map(|term| rewrite_term(r, term))
-        .collect();
+    // Rewrite every term, preserving the `Single`/`Pooled` structure (§9) — a pool is
+    // eliminated by `unpool`, never by a term rewrite.
+    let arguments = match atom.arguments {
+        Arguments::Single(terms) => Arguments::Single(
+            terms
+                .into_iter()
+                .map(|term| rewrite_term(r, term))
+                .collect(),
+        ),
+        Arguments::Pooled(alternatives) => Arguments::Pooled(
+            alternatives
+                .into_iter()
+                .map(|tuple| {
+                    tuple
+                        .into_iter()
+                        .map(|term| rewrite_term(r, term))
+                        .collect()
+                })
+                .collect(),
+        ),
+    };
     Atom {
         sign: atom.sign,
         name: atom.name,

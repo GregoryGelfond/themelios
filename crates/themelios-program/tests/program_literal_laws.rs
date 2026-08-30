@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 
 use themelios_program::program::{
-    Atom, Comparison, Condition, DefaultNegation, Literal, LiteralInner, Relation,
+    Arguments, Atom, Comparison, Condition, DefaultNegation, Literal, LiteralInner, Relation,
 };
 use themelios_program::provenance::{Origin, Provenance, TransformTag, WithProvenance};
 use themelios_program::symbol::{Name, Sign, Symbol};
@@ -23,7 +23,7 @@ fn atom(sign: Sign, predicate: &str, arguments: Vec<Term>) -> Atom {
     Atom {
         sign,
         name: name(predicate),
-        arguments,
+        arguments: Arguments::Single(arguments),
     }
 }
 

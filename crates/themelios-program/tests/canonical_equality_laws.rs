@@ -6,8 +6,9 @@
 //! is idempotent, so re-admitting a canonical statement is stable.
 
 use themelios_program::program::{
-    Atom, Body, BodyElement, Condition, DefaultNegation, Direction, Head, Literal, LiteralInner,
-    Optimize, OptimizeElement, PartKey, Program, Rule, Statement, WeakConstraint, weight,
+    Arguments, Atom, Body, BodyElement, Condition, DefaultNegation, Direction, Head, Literal,
+    LiteralInner, Optimize, OptimizeElement, PartKey, Program, Rule, Statement, WeakConstraint,
+    weight,
 };
 use themelios_program::provenance::WithProvenance;
 use themelios_program::symbol::{Name, Sign, Symbol};
@@ -25,7 +26,7 @@ fn atom(predicate: &str) -> Atom {
     Atom {
         sign: Sign::Positive,
         name: name(predicate),
-        arguments: vec![],
+        arguments: Arguments::Single(vec![]),
     }
 }
 
@@ -134,10 +135,10 @@ fn canonicalization_is_idempotent() {
         positive(Atom {
             sign: Sign::Positive,
             name: name("p"),
-            arguments: vec![Term::Function {
+            arguments: Arguments::Single(vec![Term::Function {
                 name: name("f"),
                 arguments: vec![num(1)],
-            }],
+            }]),
         }),
         Body::empty(),
     );

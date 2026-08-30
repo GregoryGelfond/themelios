@@ -6,7 +6,7 @@
 //! is the motivating case; the merge is the same for any two origins.)
 
 use themelios_program::program::{
-    Atom, Body, DefaultNegation, Literal, LiteralInner, Program, Rule, Statement,
+    Arguments, Atom, Body, DefaultNegation, Literal, LiteralInner, Program, Rule, Statement,
 };
 use themelios_program::provenance::{Origin, Provenance, TransformTag, WithProvenance};
 use themelios_program::symbol::{Name, Sign};
@@ -19,7 +19,7 @@ fn fact(predicate: &str) -> Statement {
     let atom = Atom {
         sign: Sign::Positive,
         name: name(predicate),
-        arguments: vec![],
+        arguments: Arguments::Single(vec![]),
     };
     let literal = Literal {
         negation: DefaultNegation::None,

@@ -212,7 +212,7 @@ fn naive_unbound(rule: &Rule) -> BTreeSet<Variable> {
         {
             match &literal.inner {
                 LiteralInner::Atom(a) => {
-                    for term in &a.get().arguments {
+                    for term in a.get().argument_terms() {
                         term_named_vars(term, &mut bound);
                     }
                 }

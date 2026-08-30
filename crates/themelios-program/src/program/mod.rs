@@ -26,9 +26,9 @@ pub use directive::{
     TheoryOperatorDefinition, TheoryTerm, TheoryTermDefinition, TheoryTermParts,
 };
 pub use rule::{
-    Atom, Body, BodyElement, Choice, ChoiceElement, Comparison, Condition, ConditionalLiteral,
-    DefaultNegation, Disjunction, DisjunctionElement, Head, IntoBody, IntoHead, Literal,
-    LiteralInner, Relation, Rule, WeakConstraint,
+    Arguments, Atom, Body, BodyElement, Choice, ChoiceElement, Comparison, Condition,
+    ConditionalLiteral, DefaultNegation, Disjunction, DisjunctionElement, Head, IntoBody, IntoHead,
+    Literal, LiteralInner, Relation, Rule, WeakConstraint,
 };
 
 use std::collections::{BTreeMap, BTreeSet};

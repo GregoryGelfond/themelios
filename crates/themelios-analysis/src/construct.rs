@@ -303,7 +303,7 @@ fn scan_atom(atom: &Atom, found: &mut BTreeSet<Construct>) {
     if atom.sign == Sign::Negative {
         found.insert(Construct::StrongNegation);
     }
-    for term in &atom.arguments {
+    for term in atom.argument_terms() {
         scan_term(term, found);
     }
 }

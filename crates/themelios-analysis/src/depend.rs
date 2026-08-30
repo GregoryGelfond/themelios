@@ -35,7 +35,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use themelios_program::program::{Atom, External, Program, Statement};
+use themelios_program::program::{Arguments, Atom, External, Program, Statement};
 
 // Three types reused from the program tier rather than redefined — the one
 // authority for each (program §4, §12.1): `Signature` (the node identity),
@@ -50,12 +50,23 @@ pub use themelios_program::symbol::Signature;
 /// the dependency graph (§4). The crate-local atom→signature the facets share (safety's
 /// §5, classify's §6), reading it the one way, matching the substrate's own (program §12.1).
 pub(crate) fn atom_signature(atom: &Atom) -> Signature {
+    // The dependency graph is built after `unpool` (§4), so an atom here is `Single` — a pool
+    // was expanded into distinct atoms of their own arities. Reading the sole tuple's arity
+    // (not one alternative of a pool) keeps the truncation this feature removes unreachable;
+    // a pooled atom here is a broken invariant, failed loud, the grounder's own discipline
+    // (`simplify` aborts if run before `unpool`).
+    let arity = match &atom.arguments {
+        Arguments::Single(terms) => terms.len(),
+        Arguments::Pooled(_) => {
+            unreachable!("a pooled atom reached the post-unpool dependency graph (§4)")
+        }
+    };
     Signature {
         sign: atom.sign,
         name: atom.name.clone(),
         // A predicate carries no more arguments than a `Vec` holds, far under `u32::MAX`
         // (the workspace `cast_possible_truncation` allowance).
-        arity: atom.arguments.len() as u32,
+        arity: arity as u32,
     }
 }
 

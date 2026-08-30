@@ -294,7 +294,7 @@ fn signature_of(pattern: &Atom) -> Signature {
     Signature {
         sign: pattern.sign,
         name: pattern.name.clone(),
-        arity: u32::try_from(pattern.arguments.len()).expect("a small test arity"),
+        arity: u32::try_from(pattern.argument_terms().count()).expect("a small test arity"),
     }
 }
 

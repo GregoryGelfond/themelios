@@ -14,8 +14,8 @@ use themelios_syntax::parse::parse;
 
 use themelios_program::construct::not;
 use themelios_program::program::{
-    Atom, Body, BodyElement, DefaultNegation, Head, IntoHead, Literal, LiteralInner, Program, Rule,
-    Statement,
+    Arguments, Atom, Body, BodyElement, DefaultNegation, Head, IntoHead, Literal, LiteralInner,
+    Program, Rule, Statement,
 };
 use themelios_program::provenance::{Origin, TransformTag, WithProvenance};
 use themelios_program::raise::raise;
@@ -316,7 +316,7 @@ fn raw_atom(predicate: &str, arguments: Vec<Term>) -> Atom {
     Atom {
         sign: Sign::Positive,
         name: name(predicate),
-        arguments,
+        arguments: Arguments::Single(arguments),
     }
 }
 

@@ -838,10 +838,32 @@ pub struct Literal { pub negation: DefaultNegation, pub inner: LiteralInner }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum LiteralInner { Atom(Atom), Comparison(Comparison), True, False }
 
-/// An atom (grammar §5.2): a strong sign, a predicate name, and arguments.
-/// The sign is strong negation — `-p`; the default negation is the literal's.
+/// An atom (grammar §5.2): a strong sign, a predicate name, and an argument list
+/// that is one tuple or — an argument-list pool `p(a; b)` — several (§8). The sign
+/// is strong negation `-p`; the default negation is the literal's. A pool of whole
+/// tuples, whose alternatives may differ in arity (`p(a; b, c)` is p/1 and p/2), is
+/// the atom's own shape, **not** a `Term::Pool` (one argument position, §3.3) — the
+/// one pooling concept at the level the term/atom split gives it. A one-alternative
+/// pool is `Single` by canonicalization (§5.1). There is deliberately **no**
+/// accessor for "the single argument list": a pooled atom is unpooled (§9) before it
+/// is read as one tuple, so no consumer can silently truncate a pool to one
+/// alternative (the very defect the faithful representation removes).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Atom { pub sign: Sign, pub name: Name, pub arguments: Vec<Term> }
+pub struct Atom { pub sign: Sign, pub name: Name, pub arguments: Arguments }
+
+/// An atom's arguments (§8): one tuple, or an argument-list pool of **two or more**
+/// tuples. The ≥2 normal form is canonicalization's (§5.1) — a one-alternative pool
+/// collapses to `Single`, an empty one is refused at the door (§7.2) — not a private
+/// invariant, so this is a public value like `Term::Pool`.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum Arguments { Single(Vec<Term>), Pooled(Vec<Vec<Term>>) }
+impl Atom {
+    pub fn new(name: Name, arguments: impl IntoIterator<Item = Term>) -> Atom;        // Single
+    pub fn pooled(name: Name, alternatives: impl IntoIterator<Item = Vec<Term>>) -> Atom; // canonicalizes
+    pub fn alternatives(&self) -> impl Iterator<Item = &[Term]>;   // 1 for Single, N for Pooled — structural
+    pub fn argument_terms(&self) -> impl Iterator<Item = &Term>;   // every term, flattened — boundary-free
+    pub fn is_pooled(&self) -> bool;
+}
 
 /// A comparison chain (grammar §5.2): a first term and **one or more**
 /// relation/term steps. `1 < X < 5` is one literal carrying a guard sequence,
@@ -1046,8 +1068,13 @@ Canonicalization does the following, each syntactic:
   `BinaryOperation`; the lone exception is a value whose negation leaves the `i32`
   range (`-i32::MIN`), kept as `Negate(Number(i32::MIN))`.
 - **Degenerate forms.** A one-alternative pool is its term (`(a)` is `a`, grammar
-  §5.1); the grammar's other degeneracies (an empty tuple, a one-element tuple)
-  are kept, because the grammar makes them distinct terms.
+  §5.1), and — the atom-level image of the same rule (§4.6) — a one-alternative
+  argument-list `Pooled` is a `Single` atom; the grammar's other degeneracies (an
+  empty tuple, a one-element tuple) are kept, because the grammar makes them distinct
+  terms. An **empty** pool (a `Term::Pool` or `Arguments::Pooled` of no alternatives)
+  is not a normal form but a malformed value — the grammar spells no such thing, and
+  as an `unpool` cross-product factor it would silently delete a statement — so it is
+  refused at the door (§7.2), a validity invariant, not collapsed here.
 - **Boolean heads.** An un-negated `#true`/`#false` head-literal is folded to
   `Head::Verum`/`Head::Falsum` (§4.4) — the one form of ⊤/⊥ in head position, so a
   `#false.` head and a `:- .` constraint head are one value; the fold is checked

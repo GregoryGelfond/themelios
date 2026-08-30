@@ -4,8 +4,8 @@
 //! door.
 
 use themelios_program::program::{
-    AggregateFunction, Atom, BodyAggregateElement, Condition, DefaultNegation, Direction,
-    FunctionAggregate, Guard, HasGuards, HeadAggregate, HeadAggregateElement, Literal,
+    AggregateFunction, Arguments, Atom, BodyAggregateElement, Condition, DefaultNegation,
+    Direction, FunctionAggregate, Guard, HasGuards, HeadAggregate, HeadAggregateElement, Literal,
     LiteralInner, Optimize, OptimizeElement, Relation, SetAggregate, SetElement, weight,
 };
 use themelios_program::provenance::WithProvenance;
@@ -22,7 +22,7 @@ fn literal(predicate: &str) -> Literal {
         inner: LiteralInner::Atom(WithProvenance::constructed(Atom {
             sign: Sign::Positive,
             name: Name::new(predicate).expect("identifier"),
-            arguments: vec![],
+            arguments: Arguments::Single(vec![]),
         })),
     }
 }
