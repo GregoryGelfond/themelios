@@ -85,16 +85,17 @@ fn authority_safe(program: &str) -> bool {
 
 /// A raise that faithfully represents the program — no diagnostic marking a *lossy* reading (a
 /// best-effort partial the value could not fully represent) of text the **authority itself admits**.
-/// Today the one such kind is a truncated atom-level pool (`PooledArgumentList`, program §8): the
-/// grounder unpools `p(X; a)` into the distinct atoms `p(X)`, `p(a)` (a literal-level cross-product),
-/// but the program reads only the first alternative, so safety and finiteness of that reading are not
-/// the grounder's. The composed verdict fails closed on it — agreeing with the grounder's unpool —
-/// until the faithful pool representation lands. The *other* `LowerErrorKind`s do not arise here: each
+/// Today the one such kind is a truncated *theory*-atom argument-list pool (`PooledArgumentList`,
+/// program §8): the grounder unpools `&t(a; b)` into distinct theory atoms, but this tier defers
+/// theory terms to the solve stage (§7, program §4.9) and reads only the first alternative, so safety
+/// and finiteness of that reading are not the grounder's. The composed verdict fails closed on it —
+/// agreeing with the grounder — pending the solve stage. An *ordinary*-atom argument-list pool
+/// `p(X; a)` raises faithfully and `unpool` (program §9) eliminates it before this reads it, so it is
+/// not lossy and draws a genuine comparison. The *other* `LowerErrorKind`s do not arise here: each
 /// marks input the authority **refuses** at admission (a recovered/incomplete construct, a malformed or
 /// out-of-range token, an unexpanded splice, a non-constant `#const`), so no safety comparison is drawn
-/// on it; and a theory rule's up-to-grounding note (program §4.9) is faithful, not lossy, so a theory
-/// case stays analyzable here. `LowerErrorKind` is `#[non_exhaustive]`: a future lossy kind reachable
-/// from admitted text must join this gate (the obligation is recorded on the enum, program tier).
+/// on it. `LowerErrorKind` is `#[non_exhaustive]`: a future lossy kind reachable from admitted text
+/// must join this gate (the obligation is recorded on the enum, program tier).
 fn raised_faithfully(lowered: &Raised) -> bool {
     !lowered
         .diagnostics()
@@ -104,9 +105,10 @@ fn raised_faithfully(lowered: &Raised) -> bool {
 
 /// This tier's safety verdict for a program of concrete syntax (§5). A theory rule raises
 /// with an up-to-grounding diagnostic (program §4.9) yet still yields a program to read;
-/// the verdict is taken on that program, so a theory case is analyzable here. A reading the
-/// raise could not faithfully represent (a truncated atom-level pool) fails closed: the
-/// composed safety verdict is trustworthy only on a faithful raise (§5).
+/// the verdict is taken on that program, so a theory case is analyzable here. An ordinary-atom
+/// pool raises faithfully and is unpooled before safety reads it; a *theory*-atom pool the raise
+/// could not faithfully represent fails closed (§7): the composed safety verdict is trustworthy
+/// only on a faithful raise (§5).
 fn our_safe(text: &str) -> bool {
     let source = Source::new(SourceId::new(0), text.to_owned()).expect("the fixture admits");
     let lowered = raise(&parse(&source, Dialect::Clingo));
@@ -289,8 +291,9 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
     // alternative drops X).
     ("atom-pool-position-unbound", "q(X) :- p((a;X)).\n"),
     ("pool-every-alternative-binds", "q(X) :- p((X;X)).\n"),
-    //   A body argument-list pool leaves the head's `X` unbound in the `p(a)` alternative — unsafe.
-    ("atom-argument-list-pool-truncated", "q(X) :- p(X; a).\n"),
+    //   A body argument-list pool `unpool` expands to `q(X):-p(X).` and `q(X):-p(a).`; the second
+    //   leaves the head's `X` unbound — unsafe, agreeing with the grounder.
+    ("atom-argument-list-pool", "q(X) :- p(X; a).\n"),
     //   A directive pool — `#external p(a; X) : q.` leaves `X` unbound in the body — unsafe.
     ("external-atom-list-pool", "#external p(a; X) : q.\n"),
     //   A head pool where every unpooled rule is safe — `p(X):-p(X).` and `p(f(X)):-p(X).` — safe to
@@ -302,6 +305,18 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
     ("aggregate-element-pool", "q :- 1 <= #count { p(a; b) }.\n"),
     ("choice-element-pool", "{ p(a; b) }.\n"),
     ("disjunction-element-pool", "p(X; a) | q :- r(X).\n"),
+    //   A residual pooled disjunct of HETEROGENEOUS arities is several head predicates read
+    //   per-alternative: `p(X; f(X), Y)` is p/1 and p/2, and `Y` lives only in the p/2 alternative,
+    //   unbound by the body — unsafe to both, the safety-side proof that every alternative's variables
+    //   are read (not just the first alternative's).
+    (
+        "disjunction-element-pool-heterogeneous",
+        "p(X; f(X), Y) | q :- r(X).\n",
+    ),
+    (
+        "disjunction-element-pool-both-unbound",
+        "p(X; Y) | q :- r.\n",
+    ),
     ("conditional-condition-pool", "q :- p : r(a; b).\n"),
     // ---- The matching-`=` dialect boundary (§5): clingo decomposes an `=` against a tuple, and chains
     // a multi-step `=`, to bind — where the strict ASP-Core-2 standard does not. Recorded divergences;
@@ -342,8 +357,8 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
         "atom-overflow-coefficient",
         "r(X) :- p((1073741824 * 2) * X).\n",
     ),
-    // A pooled directive atom: the grounder unpools `#project p((X;a))` per alternative (each safe); this
-    // tier reads the pool as not invertible, the same conservative pool boundary as a body atom's.
+    // A pooled directive atom: the grounder unpools `#project p((X;a))` per alternative, and this
+    // tier's `unpool` (program §9) does the same before analysis, so their readings agree.
     ("project-atom-pool", "#project p((X;a)).\n"),
 ];
 
@@ -605,14 +620,13 @@ fn a_holds_verdict_grounds_within_the_bound() {
     }
 }
 
-/// The pooled-head false `Holds` the grounder differential surfaced, and the faithful-raise gate that
-/// shuts it. `p(X; f(X)) :- p(X).` is an atom-level head pool: the grounder unpools it into the grower
-/// `p(f(X)) :- p(X).` and grounds unboundedly. The program reads only the truncated `p(X) :- p(X).`,
-/// which the finiteness analysis — correctly, for that reading — proves `Holds`: a false `Holds` were
-/// the truncation trusted. The raise flags the pool (`PooledArgumentList`, program §8), so the composed
-/// `raised_faithfully && Holds` gate is false. The boundary is held closed not by the analysis but by
-/// refusing to trust analysis of a reading the value could not represent (§5) — the direct proof that
-/// the fail-closed reading holds the grounding-DoS boundary the pool truncation had opened.
+/// The pooled-head false `Holds` the grounder differential surfaced, and the pass that shuts it.
+/// `p(X; f(X)) :- p(X).` is an atom-level head pool: `unpool` (program §9) expands it into the grower
+/// `p(f(X)) :- p(X).` (alongside `p(X) :- p(X).`), which grounds unboundedly, so finiteness — reading
+/// the unpooled program — correctly does *not* report `Holds`. The truncated first-alternative reading
+/// `p(X) :- p(X).` alone IS `Holds`, the latent false `Holds`; it is shut not by trusting that
+/// truncation but by the faithful unpool exposing the grower to the growth check (§5) — the direct
+/// proof that the pass holds the grounding-DoS boundary the pool truncation had opened.
 #[test]
 fn a_pooled_head_atom_does_not_yield_a_false_holds() {
     let grower = "p(a).\np(X; f(X)) :- p(X).\n";
@@ -622,10 +636,10 @@ fn a_pooled_head_atom_does_not_yield_a_false_holds() {
         our_holds(truncated),
         "the truncated reading is Holds — the false Holds the gate must shut: {truncated:?}",
     );
-    // But the pooled program raises with the lossy diagnostic, so the composed verdict fails closed.
+    // But `unpool` exposes the grower `p(f(X)) :- p(X).`, so finiteness does not report a false Holds.
     assert!(
         !our_holds(grower),
-        "the pooled head must fail closed, not report a false Holds: {grower:?}",
+        "the pooled head, unpooled, exposes the grower and is not a false Holds: {grower:?}",
     );
     // And the grounder confirms the pool grounds unboundedly — a real false Holds, were the reading
     // trusted.
@@ -634,5 +648,104 @@ fn a_pooled_head_atom_does_not_yield_a_false_holds() {
         capped && !grounded,
         "the grounder unpools the pool into a grower and hits the cap \
          (grounded={grounded}, capped={capped}): {grower:?}",
+    );
+}
+
+#[test]
+fn a_pooled_disjunct_grower_does_not_yield_a_false_holds() {
+    // `p(f(X); X) | q :- p(X).` — a grower hidden in a pooled disjunct. `unpool` LEAVES the pool
+    // (a pooled disjunct literal needs a conjunctive head group a single-literal element cannot
+    // hold, program §9; the statement split that would realise it is exponential over K disjuncts,
+    // so the pool is left, read per-alternative by analysis). Finiteness reads every alternative of
+    // the residual head, so it sees the `p(f(X))` growth and reports no false `Holds` — in either
+    // pooled position, so the reading is not first-alternative-only. The grounder confirms unbounded.
+    for grower in [
+        "p(a).\np(f(X); X) | q :- p(X).\n",
+        "p(a).\np(X; f(X)) | q :- p(X).\n",
+    ] {
+        assert!(
+            !our_holds(grower),
+            "a grower in a residual pooled disjunct must not be a false Holds: {grower:?}",
+        );
+        let (grounded, capped) = authority_ground(grower);
+        assert!(
+            capped && !grounded,
+            "the grounder grows the pooled disjunct and hits the cap \
+             (grounded={grounded}, capped={capped}): {grower:?}",
+        );
+    }
+}
+
+#[test]
+fn a_theory_atom_pool_defers_the_analysis_gate() {
+    // A theory-atom argument-list pool `&sum(a; b)` is deferred to the solve stage (program §4.9,
+    // §8): the raise reads only the first alternative and marks the rest `PooledArgumentList`, so
+    // `unpool` cannot expose the dropped alternatives and the composed gate must fail closed — never
+    // certifying safety or `Holds` on that truncated reading. The `raised_faithfully` guard is what
+    // shuts it; here it is exercised end to end at the analysis boundary, not just at the raise.
+    let theory_pool = ":- &sum(a; b) { x }.\n";
+    assert!(
+        !our_safe(theory_pool),
+        "a theory-atom pool defers — the safety gate fails closed on the truncated reading: {theory_pool:?}",
+    );
+    assert!(
+        !our_holds(theory_pool),
+        "a theory-atom pool defers — the finiteness gate fails closed on the truncated reading: {theory_pool:?}",
+    );
+    // Its structural twin, the *ordinary*-atom pool `p(a; b)`, raises faithfully and IS analyzed
+    // (unpooled to the ground facts `p(a). p(b).`, safe), so the deferral is specific to theory terms.
+    let ordinary_pool = "p(a; b).\n";
+    assert!(
+        our_safe(ordinary_pool),
+        "an ordinary-atom pool raises faithfully and is analyzed, not deferred: {ordinary_pool:?}",
+    );
+}
+
+#[test]
+fn a_heterogeneous_arity_pooled_disjunct_grower_does_not_yield_a_false_holds() {
+    // A residual pooled disjunct of HETEROGENEOUS arities — `p(X; f(X), Y)` is p/1 (`p(X)`) and p/2
+    // (`p(f(X), Y)`) — hides the grower in the p/2 alternative, which feeds the p/2 body. Were the
+    // finiteness check to find the atom's component by its FIRST alternative's signature (p/1, here
+    // non-recursive), it would never reach the growing p/2 — a false `Holds` (the F4 gap option B
+    // reopened). The per-alternative signature read (depend `atom_alternative_signatures`) visits
+    // p/2's component and catches it, in either alternative order. The grounder confirms unbounded.
+    for grower in [
+        "p(a, a).\np(X; f(X), Y) | r :- p(X, Y).\n",
+        // the same grower with the alternatives reversed, so the recursive one is not first
+        "p(a, a).\np(f(X), Y; X) | r :- p(X, Y).\n",
+        // deeper heterogeneity — the grower is the THIRD alternative (p/3), neither p/1 nor p/2
+        "p(a, a, a).\np(X; Y, X; f(X), Y, Z) | r :- p(X, Y, Z).\n",
+        // two independent pooled disjuncts, each a grower, in one head
+        "p(a).\nq(a).\np(X; f(X)) | q(Y; g(Y)) :- p(X), q(Y).\n",
+    ] {
+        assert!(
+            !our_holds(grower),
+            "a grower in a heterogeneous-arity residual pooled disjunct must not be a false Holds: {grower:?}",
+        );
+        let (grounded, capped) = authority_ground(grower);
+        assert!(
+            capped && !grounded,
+            "the grounder grows the pooled disjunct's higher-arity alternative and hits the cap \
+             (grounded={grounded}, capped={capped}): {grower:?}",
+        );
+    }
+}
+
+#[test]
+fn a_lone_conditional_pooled_head_fails_closed_in_safety() {
+    // A body conditional whose head literal is pooled — `q :- p(X; a) : r.` — is the residual `unpool`
+    // leaves (it would need a disjunctive clause `(p(X); p(a)) : r` a single-literal conditional cannot
+    // hold, program §9), the structural twin of a pooled disjunct. Its pooled head binds nothing
+    // (safe.rs `bind_positive_atom`), so `X` stays required and unbound and the rule is **unsafe** —
+    // fail-closed, where its non-pooled twin `q :- p(X) : r.` binds `X` locally and is safe. This is
+    // the safety-side witness that the conditional residual fails closed, as the disjunct residual does
+    // above for finiteness.
+    assert!(
+        !our_safe("q :- p(X; a) : r.\n"),
+        "a pooled conditional head binds nothing, so its variable is unbound → unsafe",
+    );
+    assert!(
+        our_safe("q :- p(X) : r.\n"),
+        "the non-pooled twin binds X locally → safe",
     );
 }

@@ -303,6 +303,12 @@ fn scan_atom(atom: &Atom, found: &mut BTreeSet<Construct>) {
     if atom.sign == Sign::Negative {
         found.insert(Construct::StrongNegation);
     }
+    if atom.is_pooled() {
+        // An argument-list pool `p(a; b)` is pooling at the atom's own level — the same
+        // `Construct::Pool` a `Term::Pool` reports (§0), so a reader learns pooling once and the
+        // faithful scan reports it whichever spelling the source used.
+        found.insert(Construct::Pool);
+    }
     for term in atom.argument_terms() {
         scan_term(term, found);
     }

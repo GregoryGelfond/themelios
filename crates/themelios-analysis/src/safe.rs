@@ -27,7 +27,9 @@ use themelios_program::term::{BinaryOp, Term, TermParts, UnaryOp, Variable, eval
 use themelios_program::transform::{Rewrite, unpool};
 
 use crate::classify::Verdict;
-use crate::depend::{Component, DependencyGraph, atom_signature, external_pseudo_rule};
+use crate::depend::{
+    Component, DependencyGraph, atom_alternative_signatures, external_pseudo_rule,
+};
 
 /// Two facts about grounding a program (§5): which statements are not safe, and whether
 /// grounding is finite.
@@ -39,7 +41,8 @@ pub struct Safety {
 
 impl Safety {
     /// Read a program's safety and grounding finiteness (§5). `O(rules · variables +
-    /// program + edges)`. Builds the dependency graph and delegates to `from_graph`;
+    /// unpooled + edges)` — over the pool-eliminated program (§5). Builds the dependency graph and
+    /// delegates to `from_graph`;
     /// the assembled `Analysis` (§3) builds the graph once and shares it.
     pub fn of(program: &Program) -> Safety {
         let unpooled = unpool(program);
@@ -96,9 +99,10 @@ impl Safety {
     /// alone would be unsound. The composed gate refuses it, being unsafe; that is the
     /// reading the boundary must use. One precondition rides beneath it: on a boundary whose
     /// program was **raised from text**, the composed verdict is trustworthy only on a **faithful
-    /// raise** — one that reported no lossy diagnostic (today a `PooledArgumentList`, an atom-level
-    /// pool the raise cannot yet represent, program §8; analysis §12) — since this analysis reads
-    /// the truncated program, not the pool's dropped alternatives. This analysis sees only a
+    /// raise** — one that reported no lossy diagnostic (today a `PooledArgumentList`, a *theory*-atom
+    /// argument-list pool deferred to the solve stage, program §8; analysis §12; an ordinary-atom
+    /// pool raises faithfully and is unpooled before this reads it) — since this analysis reads the
+    /// truncated theory reading, not the pool's dropped alternatives. This analysis sees only a
     /// `Program`, so a text-boundary consumer gates on the raise's own diagnostics.
     pub fn finiteness(&self) -> &Verdict {
         &self.finiteness
@@ -1057,26 +1061,32 @@ fn growing_component(rule: &Rule, graph: &DependencyGraph) -> Option<Component> 
     // computed once (a seed traversal) and reused across the head's atoms.
     let mut deepening: BTreeMap<Signature, BTreeSet<Variable>> = BTreeMap::new();
     for atom in head_atoms(rule.head().get()) {
-        let signature = atom_signature(atom);
-        let Some(component) = graph.component_of(&signature) else {
-            continue;
-        };
-        if !component.is_recursive() {
-            continue;
-        }
-        // `decompose` gives every component at least one member (each pops its own root), so this
-        // arm is unreachable; the guard keeps the read total. Were it ever reached, `continue`
-        // skips the growth check — erring toward `Holds` — so it must stay unreachable (§6.1).
-        let Some(key) = component.members().next() else {
-            continue;
-        };
-        let empty = BTreeSet::new();
-        let carried = context.component_roots.get(key).unwrap_or(&empty);
-        let reaching = deepening
-            .entry(key.clone())
-            .or_insert_with(|| context.reaching(carried));
-        if context.atom_deepens(atom, carried, reaching) {
-            return Some(component.clone());
+        // Every alternative under its own signature (§9): a residual pooled head atom is several
+        // predicates (`p(X; f(X), Y)` is p/1 and p/2), and a growing higher-arity alternative whose
+        // first-alternative sibling is non-recursive would otherwise never be checked — a false
+        // `Holds`. `atom_deepens` already reads every alternative's terms, so only the component
+        // lookup needs to visit each alternative's signature.
+        for signature in atom_alternative_signatures(atom) {
+            let Some(component) = graph.component_of(&signature) else {
+                continue;
+            };
+            if !component.is_recursive() {
+                continue;
+            }
+            // `decompose` gives every component at least one member (each pops its own root), so this
+            // arm is unreachable; the guard keeps the read total. Were it ever reached, `continue`
+            // skips the growth check — erring toward `Holds` — so it must stay unreachable (§6.1).
+            let Some(key) = component.members().next() else {
+                continue;
+            };
+            let empty = BTreeSet::new();
+            let carried = context.component_roots.get(key).unwrap_or(&empty);
+            let reaching = deepening
+                .entry(key.clone())
+                .or_insert_with(|| context.reaching(carried));
+            if context.atom_deepens(atom, carried, reaching) {
+                return Some(component.clone());
+            }
         }
     }
     None
@@ -1182,7 +1192,7 @@ impl BodyGrowth {
     /// The `=`-class roots that *deepen* one of `carried_roots` — a seed traversal from the carried
     /// roots through the reverse deepening graph, on a heap stack (§8, spec §5.2). Computed once per
     /// recursive component the head derives into and reused across its head atoms, so the pass stays
-    /// `O(program + edges)`; a component whose head never queries it pays nothing. Forward
+    /// `O(unpooled + edges)`; a component whose head never queries it pays nothing. Forward
     /// reachability from a fixed seed, so a cyclic assignment (`X = f(Y), Y = f(X)`) terminates on
     /// the `visited` set with no tentative-`false` hazard. Every node reached as the *target* of a
     /// deepening edge is a strict deepener of a carried root, so it is recorded — **including a
@@ -1344,11 +1354,17 @@ fn class_root<'a>(
 }
 
 /// Push an atom's argument variables as carriers of its signature — the growth check's read of
-/// where a variable flows around the recursion, at the same term depth.
+/// where a variable flows around the recursion, at the same term depth. Each **alternative** carries
+/// under *its own* signature (§9): a residual pool of heterogeneous arities — `p(X; f(X), Y)` is p/1
+/// and p/2 — is several predicates, so a higher-arity alternative's carriers must land on its own
+/// node, not lumped under the first alternative's (which would under-collect it and miss a growth
+/// cycle through it — a false `Holds`), matching the graph's per-alternative edges.
 fn push_atom_carriers(atom: &Atom, carriers: &mut BTreeMap<Signature, BTreeSet<Variable>>) {
-    let entry = carriers.entry(atom_signature(atom)).or_default();
-    for term in atom.argument_terms() {
-        term_named_vars(term, entry);
+    for (signature, alternative) in atom_alternative_signatures(atom).zip(atom.alternatives()) {
+        let entry = carriers.entry(signature).or_default();
+        for term in alternative {
+            term_named_vars(term, entry);
+        }
     }
 }
 
@@ -1564,7 +1580,10 @@ fn condition_signatures(condition: &Condition, out: &mut BTreeSet<Signature>) {
 
 fn literal_signature(literal: &Literal, out: &mut BTreeSet<Signature>) {
     if let LiteralInner::Atom(atom) = &literal.inner {
-        out.insert(atom_signature(atom.get()));
+        // Every alternative under its own signature (§9): an aggregate element (this function's only
+        // caller) is expanded by unpool, never a residual pool, but reading each alternative keeps
+        // this correct were one ever to reach it — uniform with the growth check's per-alternative reads.
+        out.extend(atom_alternative_signatures(atom.get()));
     }
 }
 

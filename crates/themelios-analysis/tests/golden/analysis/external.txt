@@ -1,4 +1,5 @@
 constructs:
+  Pool: p(true; false; free; release; undefined).
   ExternalStatement: #external a(X) : p(X). [X]
 dependencies:
   predicates: p/1

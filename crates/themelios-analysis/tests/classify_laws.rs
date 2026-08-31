@@ -218,22 +218,24 @@ fn naive_stratified(graph: &DependencyGraph) -> bool {
     true
 }
 
-fn atom_signature(atom: &Atom) -> Signature {
-    Signature {
-        sign: atom.sign,
-        name: atom.name.clone(),
-        arity: u32::try_from(atom.argument_terms().count()).expect("an arity that fits a u32"),
-    }
-}
-
 fn disjunct_signatures(disjunction: &Disjunction) -> Vec<Signature> {
-    disjunction
-        .elements()
-        .filter_map(|element| match &element.get().literal().inner {
-            LiteralInner::Atom(atom) => Some(atom_signature(atom.get())),
-            _ => None,
-        })
-        .collect()
+    // Per alternative (§9), matching production's `atom_alternative_signatures`: a residual pooled
+    // disjunct is several head atoms, each carrying its own alternative's arity — a first-alternative
+    // (or all-terms-flattened) read would misjudge the head cycle.
+    let mut signatures = Vec::new();
+    for element in disjunction.elements() {
+        if let LiteralInner::Atom(atom) = &element.get().literal().inner {
+            let atom = atom.get();
+            for alternative in atom.alternatives() {
+                signatures.push(Signature {
+                    sign: atom.sign,
+                    name: atom.name.clone(),
+                    arity: u32::try_from(alternative.len()).expect("an arity that fits a u32"),
+                });
+            }
+        }
+    }
+    signatures
 }
 
 // Head-cycle-free iff no two atoms of a disjunctive head lie in one recursive positive
@@ -462,6 +464,38 @@ fn tightness_is_a_sound_predicate_level_verdict() {
         Verdict::Holds,
         "a negative cycle has no positive recursion",
     );
+}
+
+#[test]
+fn a_pooled_disjunct_head_couples_per_alternative() {
+    // `p(X; Y) | s :- p(X).` — a residual pooled disjunct whose two alternatives are both p/1, in a
+    // rule that makes p/1 recursive (the head p/1 depends on the body p/1). The pool's alternatives
+    // are two p/1 head atoms of the one rule, so they close a head cycle in the recursive p/1
+    // component — NOT head-cycle-free. Reading only the FIRST alternative's signature would register
+    // p/1 once and miss the coupling (a false head-cycle-free); the per-alternative read
+    // (`atom_alternative_signatures`, §9) sees both. A pooled disjunct is a conjunctive head group, so
+    // treating its alternatives as coupled head atoms is the conservative-safe reading — never a false
+    // `Holds`, at worst a spurious `Unknown`.
+    let pooled = Atom::pooled(name("p"), [vec![var("X")], vec![var("Y")]]).expect("non-empty pool");
+    let rule = Statement::Rule(
+        Head::Disjunction(Disjunction::new([
+            DisjunctionElement::new(Literal::from(pooled), Condition::empty()),
+            DisjunctionElement::new(Literal::from(atom("s")), Condition::empty()),
+        ]))
+        .when(pred1("p", "X")),
+    );
+    match classes_of([rule]).head_cycle_free() {
+        Verdict::Unknown { witness } => {
+            assert!(witness.is_recursive());
+            assert_eq!(
+                member_set(witness.members().cloned()),
+                [pos("p", 1)].into_iter().collect(),
+            );
+        }
+        Verdict::Holds => {
+            panic!("two p/1 head atoms from a pooled disjunct in one positive cycle is not hcf")
+        }
+    }
 }
 
 #[test]

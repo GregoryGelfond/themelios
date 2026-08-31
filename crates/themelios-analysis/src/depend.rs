@@ -35,7 +35,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use themelios_program::program::{Arguments, Atom, External, Program, Statement};
+use themelios_program::program::{Atom, External, Program, Statement};
 use themelios_program::transform::unpool;
 
 // Three types reused from the program tier rather than redefined — the one
@@ -47,28 +47,26 @@ pub use themelios_program::analyze::DependencyKind;
 pub use themelios_program::program::Rule;
 pub use themelios_program::symbol::Signature;
 
-/// The predicate signature of an atom — its sign, name, and arity, the node identity in
-/// the dependency graph (§4). The crate-local atom→signature the facets share (safety's
-/// §5, classify's §6), reading it the one way, matching the substrate's own (program §12.1).
-pub(crate) fn atom_signature(atom: &Atom) -> Signature {
-    // The dependency graph is built after `unpool` (§4), so an atom here is `Single` — a pool
-    // was expanded into distinct atoms of their own arities. Reading the sole tuple's arity
-    // (not one alternative of a pool) keeps the truncation this feature removes unreachable;
-    // a pooled atom here is a broken invariant, failed loud, the grounder's own discipline
-    // (`simplify` aborts if run before `unpool`).
-    let arity = match &atom.arguments {
-        Arguments::Single(terms) => terms.len(),
-        Arguments::Pooled(_) => {
-            unreachable!("a pooled atom reached the post-unpool dependency graph (§4)")
-        }
-    };
-    Signature {
+/// The predicate signature of **every** alternative of an atom — its sign and name with, for each
+/// alternative, that alternative's own arity (§4): one signature for a `Single` atom (the common
+/// case, every atom being `Single` after `unpool`), one **per alternative** for a residual pool the
+/// pass leaves (§9). The crate-local atom→signature the facets share (safety's §5, classify's §6),
+/// reading it the one way, matching the substrate's own (program §12.1) and the graph's
+/// `alternative_signatures` (program `analyze` §6.3). A residual pool of **heterogeneous arities** —
+/// `p(X; f(X), Y)` is `p/1` and `p/2` — is several distinct predicates, so any soundness-bearing read
+/// of it (growth carriers §5, the growth check, classify's head-cycle §6.2) must visit each
+/// alternative under its own signature: reading only the *first* alternative's would miss a growing or
+/// coupling higher-arity alternative — a false `Holds` or a false head-cycle-free. There is
+/// deliberately **no** single-signature accessor, so no facet can reintroduce that first-alternative
+/// truncation. Never panics (nothing in this crate does, §9).
+pub(crate) fn atom_alternative_signatures(atom: &Atom) -> impl Iterator<Item = Signature> + '_ {
+    atom.alternatives().map(|alternative| Signature {
         sign: atom.sign,
         name: atom.name.clone(),
         // A predicate carries no more arguments than a `Vec` holds, far under `u32::MAX`
         // (the workspace `cast_possible_truncation` allowance).
-        arity: arity as u32,
-    }
+        arity: alternative.len() as u32,
+    })
 }
 
 /// The predicate dependency graph (§4). Nodes are predicate signatures — `p` and

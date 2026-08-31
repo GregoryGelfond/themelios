@@ -333,7 +333,8 @@ pass expands `p((X;a))` into `p(X)` and `p(a)` before safety runs, so it is unsa
 *because the `p(a)` alternative drops `X`* — the every-alternative rule falling out of
 the expansion, not a bespoke check. A pool as not invertible (above), and a *pooled atom*
 binding nothing, are the **defensive fail-closed guards** for a residual pool the pass
-leaves (a theory atom, or a lone body conditional's pooled head, program §9). A global
+leaves (a theory atom, a lone body conditional's pooled head, or a pooled disjunct
+literal, program §9). A global
 variable is bound by
 the body; an aggregate- or condition-*local* variable within its own element; a
 variable by an assignment `X = t` whose right side is itself bound. A
@@ -830,6 +831,12 @@ Named reserved seams — deferred with their reasons and their arriving consumer
   over the structural facts here; deferred until a router names the need, so that
   v1 ships the *definite* facts and *sound* classes without a heuristic whose
   calibration is policy (§1).
+- **The theory-atom argument-list pool** (§5, program §8/§9/§17) — an *ordinary* atom's
+  argument-list pool `p(a; b)` is eliminated by `unpool` (program §9) and analysed per alternative,
+  in genuine agreement with the grounder; a *theory* atom's `&t(a; b)` is raised with
+  `PooledArgumentList` and the composed `is_safe() && Holds` gate fails closed on it (§5), because
+  theory terms are a peer algebra deferred to the solve stage — its arriving consumer, which will
+  analyse the faithful theory-pool reading.
 - **Further classes** — the literature carries more (order-consistency, signing,
   and kin); each is admitted when a consumer's method names it, over the same
   graph and the same verdict discipline (§6).
@@ -877,11 +884,14 @@ successor carries them.
   *distinct atoms*), is now **represented faithfully** and eliminated by the **unpool pass** (program
   §9) before this analysis reads it, so a pooled program's safety **agrees with the grounder** at
   every position — the every-alternative rule falling out of the expansion, closing the *silent*
-  false safe (and, at a head, the false `Holds`) the earlier truncated reading once reached. Two
+  false safe (and, at a head, the false `Holds`) the earlier truncated reading once reached. Three
   **representation-gap** pools stay deferred, fail-closed via the raise's diagnostic or the analysis
-  guard (§5, program §17): a **theory-atom pool** (`&t(a;b)`, raised with `PooledArgumentList`), and a
-  pooled derived literal in a **lone body conditional** (a disjunctive clause a single-literal
-  conditional cannot hold); the composed `is_safe() && Holds` verdict is trustworthy on a faithfully
+  guard (§5, program §17): a **theory-atom pool** (`&t(a;b)`, raised with `PooledArgumentList`), and
+  two structural twins — a pooled derived literal in a **lone body conditional** (a disjunctive clause
+  a single-literal conditional cannot hold) and a pooled **disjunct literal** (a conjunctive head
+  group `(p(a) ∧ p(b)) ∨ q` a single-literal `DisjunctionElement` cannot hold, program §9); each is
+  read per-alternative by safety and the graph, so it fails closed. The composed `is_safe() && Holds`
+  verdict is trustworthy on a faithfully
   raised program, so a consumer and the differential fail it closed on the theory diagnostic. Whether
   clingcon's grounder admits a further notion stays a differential obligation and, if
   material, a dialect parameterization (§5) — recorded so the question is pinned, not

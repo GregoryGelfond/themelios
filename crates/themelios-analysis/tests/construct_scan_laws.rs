@@ -63,6 +63,19 @@ fn scan_of(statements: impl IntoIterator<Item = Statement>) -> Constructs {
     Constructs::of(&Program::of(statements.into_iter().map(wp)))
 }
 
+#[test]
+fn an_argument_list_pool_reports_pooling() {
+    // `p(a; b)` (an `Arguments::Pooled` atom) is pooling at the atom's own level — the same
+    // `Construct::Pool` a term pool `p((a; b))` reports (§0); the faithful scan reports it.
+    let scan = scan_of([Statement::Rule(Rule::fact(
+        Atom::pooled(name("p"), [vec![num(0)], vec![num(1)]]).expect("a non-empty pool"),
+    ))]);
+    assert!(
+        scan.uses(Construct::Pool),
+        "an argument-list pool is pooling"
+    );
+}
+
 fn guard(relation: Relation, term: Term) -> Guard {
     Guard {
         relation: Some(relation),

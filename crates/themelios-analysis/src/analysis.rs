@@ -8,7 +8,8 @@
 //! because they share the predicate dependency graph: safety's finiteness (§5) and
 //! every recursion class (§6.2) read it, so a per-facet recompute would rebuild the
 //! graph each time. One pass builds the graph and the construct scan once, and the
-//! facets read them — `O(program + edges)`, a facet read `O(1)`, a witness read
+//! facets read them — `O(unpooled + edges)` (the graph reads the pool-eliminated program,
+//! §5), a facet read `O(1)`, a witness read
 //! `O(the witness)`; clone is linear and equality structural (§3, §8).
 //!
 //! The reading is total on **every** program, including one recovered from a
@@ -46,8 +47,9 @@ impl Analysis {
     /// Read a program and report its facts (§3): the single door. One pass builds the
     /// construct scan and the dependency graph, and the facets that share the graph —
     /// safety (§5) and the classes (§6) — read it rather than rebuild it.
-    /// `O(program + edges)`. Total on every program, including one recovered from a
-    /// malformed parse (§8).
+    /// `O(unpooled + edges)` — the graph and facets read the pool-eliminated program (§5), which
+    /// a pool can expand (an output-size fact, §5). Total on every program, including one recovered
+    /// from a malformed parse (§8).
     pub fn of(program: &Program) -> Analysis {
         // The one shared-graph pass (§3): the construct scan and the dependency graph
         // (with its strongly-connected components) are each built once, and the facets
