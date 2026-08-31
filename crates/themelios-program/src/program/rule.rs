@@ -70,8 +70,9 @@ pub struct Atom {
 /// whole tuples is the atom's own shape, not a [`Term::Pool`] (one argument position) —
 /// the one pooling concept at the level the term/atom split gives it (§4.6). The two-or-
 /// more normal form is canonicalization's (§5.1): a one-alternative pool collapses to
-/// `Single`, an empty one is refused at the door — not a private invariant, so this is a
-/// public value like `Term::Pool`.
+/// `Single`, an empty one is refused at the constructor door ([`Atom::pooled`](crate::program::Atom::pooled)
+/// returns `Err`) — the ≥2 shape is a normal form, so this stays a public value like `Term::Pool`,
+/// which carries the same non-empty precondition.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Arguments {
     /// One argument tuple, `p(a, b)`.

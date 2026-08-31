@@ -5,8 +5,8 @@
 //! equality, ordering, hashing, debug, and the `fold` rebuild — is iterative
 //! (§13), so a term tens of thousands of levels deep is handled without touching
 //! the call stack. Term-level canonicalization collapses maximal ground
-//! constructor subterms to symbols and drops a degenerate one-alternative pool
-//! (§5.1); operators never fold (§3.5).
+//! constructor subterms to symbols, drops a degenerate one-alternative pool, and
+//! flattens nested pools (§5.1); operators never fold (§3.5).
 
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
@@ -170,7 +170,35 @@ impl Term {
             .subterms()
             .any(|term| matches!(term, Term::Variable(_)))
     }
+
+    /// A pool of alternatives `(a; b; …)` (§5.1), refusing an empty one — a pool is a disjunction
+    /// of one or more alternatives, and a zero-alternative pool is a malformed value, not a normal
+    /// form (a validity invariant refused at the door, §7.2). One alternative collapses to its term
+    /// at canonicalization, nested pools flatten (§5.1). This is the door a caller builds a pool
+    /// through; the `Pool` variant stays public for reading and carries the same non-empty
+    /// precondition. `O(alternatives)`.
+    pub fn pool(alternatives: impl IntoIterator<Item = Term>) -> Result<Term, EmptyPool> {
+        let alternatives: Vec<Term> = alternatives.into_iter().collect();
+        if alternatives.is_empty() {
+            return Err(EmptyPool);
+        }
+        Ok(Term::Pool(alternatives).canonicalize())
+    }
 }
+
+/// A pool constructed with no alternatives — a malformed value refused at the constructor door
+/// (§5.1, §7.2). A pool is a disjunction of one or more alternatives; its ≥2 normal form is
+/// canonicalization's (§5.1), but the emptiness is a validity invariant a constructor refuses.
+/// Returned by [`Term::pool`] and [`Atom::pooled`](crate::program::Atom::pooled).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EmptyPool;
+
+impl std::fmt::Display for EmptyPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a pool has no alternatives")
+    }
+}
+impl std::error::Error for EmptyPool {}
 
 /// One level of a term unrolled, its children a generic `T`, the leaves kept whole
 /// (§3.6). A boxed child of `Term` is an unboxed `T` here (`From` re-boxes). At
@@ -334,12 +362,15 @@ impl Term {
     /// negative numeral, grammar §4.3), so `Number(-5)` is its canonical form — the
     /// number's spelling, not arithmetic evaluation — and a double `-(-5)` folds to
     /// `Number(5)`, the authority's own reading; `-(1 + 2)` is not a number and stays
-    /// a `BinaryOperation`. A pass, not a constructor guarantee: a caller can build a
-    /// non-canonical term directly, and every door that admits a term into a program
-    /// runs this.
+    /// a `BinaryOperation`. A pool holding a pool is flattened afterward in one
+    /// top-down pass ([`flatten_pools`]), also O(nodes) and only when the fold met one,
+    /// so the whole canonicalization is O(nodes) whatever the nesting. A pass, not a
+    /// constructor guarantee: a caller can build a non-canonical term directly, and
+    /// every door that admits a term into a program runs this.
     #[must_use]
     pub fn canonicalize(self) -> Term {
-        self.fold(|parts| match parts {
+        let mut nested_pool = false;
+        let folded = self.fold(|parts| match parts {
             TermParts::Function { name, arguments } => match into_symbols(arguments) {
                 // Ground: a term-position function bears no strong sign (§3.3, §4.6),
                 // so the collapsed symbol is `Positive`.
@@ -355,6 +386,13 @@ impl Term {
                 Err(items) => Term::Tuple(items),
             },
             TermParts::Pool(mut items) => {
+                // The ≥2 normal form (§5.1) and a flag for a pool holding a pool; the flattening
+                // itself is one top-down pass below (`flatten_pools`), so a nested chain is O(depth)
+                // in *either* nesting direction, never re-merging a growing vector. A one-alternative
+                // pool collapses to its element (§5.1); an empty pool is refused at the constructor
+                // door ([`Term::pool`] returns `Err`), the raw `Pool` variant carrying the same
+                // non-empty precondition, so a hand-built empty one is kept, not refused here.
+                nested_pool |= items.iter().any(|item| matches!(item, Term::Pool(_)));
                 if items.len() == 1 {
                     items.pop().expect("a one-alternative pool has its element")
                 } else {
@@ -369,7 +407,15 @@ impl Term {
                 argument,
             } => negate_number(argument),
             other => Term::from(other),
-        })
+        });
+        // Pooling is associative — `((a; b); c)` is `(a; b; c)`, verified against clingo 5.8.2 — so
+        // flatten a pool holding a pool, but only when the bottom-up fold met one (the common flat
+        // pool skips this entirely). One top-down pass, O(nodes) in *either* nesting direction.
+        if nested_pool {
+            flatten_pools(folded)
+        } else {
+            folded
+        }
     }
 }
 
@@ -541,6 +587,70 @@ fn assemble_parts<T>(shell: Shell, mut children: Vec<T>) -> TermParts<T> {
             arguments: children,
         },
     }
+}
+
+/// Flatten every nested pool of `term` — `((a; b); c)` to `(a; b; c)`, pooling being associative
+/// (verified against clingo 5.8.2) — in one top-down pass, O(nodes) in *both* nesting directions,
+/// so neither a left- nor a right-nested chain re-merges a growing vector (`canonicalize`'s bottom-up
+/// reuse trick was O(depth²) right-nested). Iterative (§13): the work list and the spine descent hold
+/// depth on the heap, never the call stack. `canonicalize` runs this only when its fold met a pool
+/// holding a pool, so a flat pool — the common case — never reaches here.
+fn flatten_pools(term: Term) -> Term {
+    enum Frame {
+        Enter(Term),
+        Assemble(Shell, usize),
+    }
+    let mut work = vec![Frame::Enter(term)];
+    let mut done: Vec<Term> = Vec::new();
+    while let Some(frame) = work.pop() {
+        match frame {
+            Frame::Enter(term) => match term.into_parts() {
+                // Splice the whole maximal pool spine into one flat alternative list in a single
+                // descent, then re-enter each alternative so a pool nested inside a compound
+                // alternative (`f((a; b))`) is flattened too. The spine's inner pools are consumed
+                // here, so every gathered alternative is itself pool-free at the top.
+                TermParts::Pool(items) => {
+                    let alternatives = gather_pool_spine(items);
+                    work.push(Frame::Assemble(Shell::Pool, alternatives.len()));
+                    for alternative in alternatives.into_iter().rev() {
+                        work.push(Frame::Enter(alternative));
+                    }
+                }
+                parts => {
+                    let (shell, children) = split_parts(parts);
+                    work.push(Frame::Assemble(shell, children.len()));
+                    for child in children.into_iter().rev() {
+                        work.push(Frame::Enter(child));
+                    }
+                }
+            },
+            Frame::Assemble(shell, arity) => {
+                let children = done.split_off(done.len() - arity);
+                done.push(Term::from(assemble_parts(shell, children)));
+            }
+        }
+    }
+    done.pop()
+        .expect("flatten_pools leaves exactly the rewritten root")
+}
+
+/// The flat alternatives of a (possibly nested) pool, document order preserved — a `Pool`
+/// alternative's own alternatives spliced in place of it, pooling being associative. One iterative
+/// descent, O(total alternatives) whatever the nesting direction: each alternative is visited once,
+/// and the nesting depth lives on the heap work stack, not the call stack (§13). Returned
+/// alternatives are pool-free at the top (a nested pool is spliced, never emitted).
+fn gather_pool_spine(alternatives: Vec<Term>) -> Vec<Term> {
+    let mut flat = Vec::new();
+    // Reversed so the first alternative is popped first — a `Pool` is spliced by pushing its own
+    // (reversed) alternatives, keeping the left-to-right reading of the whole spine.
+    let mut stack: Vec<Term> = alternatives.into_iter().rev().collect();
+    while let Some(alternative) = stack.pop() {
+        match alternative.into_parts() {
+            TermParts::Pool(nested) => stack.extend(nested.into_iter().rev()),
+            parts => flat.push(Term::from(parts)),
+        }
+    }
+    flat
 }
 
 /// Pushes a term's immediate child references onto `stack`, reversed so a pre-order

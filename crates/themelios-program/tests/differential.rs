@@ -870,8 +870,7 @@ fn canonical_equality_agrees_with_the_authoritys_parse_then_unparse() {
             let theirs = canonical_i == canonical_j;
             assert_eq!(
                 ours, theirs,
-                "the arbiter disagrees: here {ours}, authority {theirs}\n  a = {:?}\n  b = {:?}",
-                canonical_i, canonical_j,
+                "the arbiter disagrees: here {ours}, authority {theirs}\n  a = {canonical_i:?}\n  b = {canonical_j:?}",
             );
             // Within a group, this tier's canonicalization has merged the spellings into
             // one rendered text; across groups it has not — the render is the witness.

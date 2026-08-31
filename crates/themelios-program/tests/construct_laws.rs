@@ -38,8 +38,22 @@ fn num(n: i32) -> Term {
 // p/2). A one-alternative pool is a `Single` atom by canonicalization (§5.1). ----
 
 #[test]
+fn an_empty_pool_is_refused_at_the_constructor_door() {
+    // A pool is a disjunction of one or more alternatives; an empty one is a malformed value
+    // (§7.2). `Atom::pooled` and `Term::pool` refuse it with a typed error, rather than a silent
+    // value that would delete its statement at `unpool` (§9). A one-alternative pool is valid — it
+    // collapses to the single tuple/term at canonicalization (§5.1).
+    assert!(Atom::pooled(name("p"), Vec::<Vec<Term>>::new()).is_err());
+    assert!(Term::pool(Vec::<Term>::new()).is_err());
+    assert!(Atom::pooled(name("p"), [vec![num(0)], vec![num(1)]]).is_ok());
+    assert!(Term::pool([num(0), num(1)]).is_ok());
+    assert!(Term::pool([num(0)]).is_ok());
+}
+
+#[test]
 fn a_pooled_atom_carries_every_alternative() {
-    let atom = Atom::pooled(name("p"), [vec![num(1)], vec![num(2), num(3)]]);
+    let atom =
+        Atom::pooled(name("p"), [vec![num(1)], vec![num(2), num(3)]]).expect("a non-empty pool");
     assert!(atom.is_pooled());
     let alternatives: Vec<Vec<Term>> = atom.alternatives().map(<[Term]>::to_vec).collect();
     assert_eq!(alternatives, vec![vec![num(1)], vec![num(2), num(3)]]);
@@ -47,7 +61,7 @@ fn a_pooled_atom_carries_every_alternative() {
 
 #[test]
 fn a_one_alternative_pool_canonicalizes_to_a_single_atom() {
-    let atom = Atom::pooled(name("p"), [vec![num(1)]]);
+    let atom = Atom::pooled(name("p"), [vec![num(1)]]).expect("a non-empty pool");
     assert!(!atom.is_pooled());
     let alternatives: Vec<Vec<Term>> = atom.alternatives().map(<[Term]>::to_vec).collect();
     assert_eq!(alternatives, vec![vec![num(1)]]);

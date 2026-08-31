@@ -108,16 +108,14 @@ pub enum LowerErrorKind {
     /// or an interval where a constant term must stand (§4.8). The value is carried
     /// unevaluated all the same; this marks it as one a constant may not take.
     NonConstantValue,
-    /// An atom's argument list is pooled (`p(a; b)`, grammar §8): an atom-level pool — its
-    /// alternatives are distinct atoms, not one atom over a pooled *term* (contrast `f(a; b)`,
-    /// a [`Term::Pool`], which the value does represent) — that the value does not yet
-    /// represent. The grounder unpools it into distinct literals (`PredicateLiteral::unpool`,
-    /// `libgringo/src/input/literals.cc`) before safety runs. The raise reads the first
-    /// alternative as a best-effort partial and marks the rest here (§8), never dropping them
-    /// in silence, so a consumer that gates on a clean raise does not trust safety or finiteness
-    /// of the truncated reading. A theory atom's argument list (`&t(a; b)`) raises through the
-    /// same door and is marked alike. The faithful per-alternative reading arrives with the pool
-    /// representation.
+    /// A **theory** atom's argument list is pooled (`&t(a; b)`, grammar §8): its alternatives are
+    /// distinct theory atoms this tier does not yet represent — theory terms are a peer algebra
+    /// deferred to the solve stage (§7, §4.9). An *ordinary*-atom argument-list pool `p(a; b)`
+    /// raises faithfully to [`Arguments::Pooled`](crate::program::Arguments::Pooled) and is not
+    /// marked here; only a theory-atom pool reaches this door. The raise reads the first
+    /// alternative as a best-effort partial and marks the rest here (§8), never dropping them in
+    /// silence, so a consumer that gates on a clean raise does not trust safety or finiteness of
+    /// the truncated theory reading.
     PooledArgumentList,
 }
 
@@ -152,7 +150,7 @@ impl LowerErrorKind {
             ),
             LowerErrorKind::PooledArgumentList => (
                 DiagnosticId::new("program", "pooled-argument-list"),
-                "a pooled atom argument list is read only as its first alternative",
+                "a theory atom's pooled argument list is read only as its first alternative",
             ),
         }
     }
@@ -296,7 +294,7 @@ fn assemble(
             parse,
             errors,
         ),
-        ast::Term::Abs(_) => raise_absolute(children),
+        ast::Term::Abs(_) => raise_absolute(node, children, parse, errors),
         ast::Term::Constant(constant) => raise_constant(constant, parse, errors),
         ast::Term::Variable(variable) => raise_variable(variable, parse, errors),
         ast::Term::Splice(_) => {
@@ -424,7 +422,14 @@ fn unary_operator(kind: SyntaxKind) -> UnaryOp {
 }
 
 /// Raise a parenthesized form (grammar §5.1): a lone term parenthesized is that term;
-/// one tuple is a `Tuple`; several pooled tuples are a `Pool` of the tuple-or-terms.
+/// one tuple is a `Tuple`; several pooled tuples are a `Pool` of the tuple-or-terms. No
+/// zero-alternative `Pool` can arise: the parser wraps every parenthesized form in at least one
+/// `TUPLE` — an empty `()` is *one* empty tuple, not zero (`parse::terms::tuple_start` opens a tuple
+/// the instant a pool frame does, and each pooling `;` starts another; pinned by the `term("()")` →
+/// `(POOL ( (TUPLE) ))` parser test) — and an `ast::Pool` only ever wraps a parser-produced node, so
+/// `pool.tuples()` is non-empty. This is the asymmetry with [`raise_absolute`], whose empty-`||`
+/// guard *is* reachable: `|terms|` holds its terms with no tuple wrapper, so `||` has zero children
+/// and can reach the raise empty, whereas a pool cannot.
 fn raise_pool(pool: &ast::Pool, children: Vec<Term>) -> Term {
     let shape: Vec<(usize, bool)> = pool
         .tuples()
@@ -514,17 +519,32 @@ fn apply(application: Application, name: Name, arguments: Vec<Term>) -> Term {
 }
 
 /// Raise an absolute-value term (grammar §5.1): `|a|` is `Absolute(a)`; a pooled
-/// `|a; b|` distributes to a `Pool` of absolute values.
-fn raise_absolute(children: Vec<Term>) -> Term {
-    if children.len() == 1 {
-        Term::Absolute(Box::new(children.into_iter().next().expect("one operand")))
-    } else {
-        Term::Pool(
+/// `|a; b|` distributes to a `Pool` of absolute values. An empty `||`, which the grammar does
+/// not admit but a recovered parse can reach, is not a term (clingo rejects it): it is refused
+/// with a diagnostic and a placeholder, so no zero-alternative pool escapes to silently delete
+/// a statement at `unpool` (§8).
+fn raise_absolute(
+    node: &ast::Term,
+    children: Vec<Term>,
+    parse: &dyn Reads,
+    errors: &mut Vec<LowerError>,
+) -> Term {
+    match children.len() {
+        0 => {
+            errors.push(located(
+                parse,
+                node.syntax().text_range(),
+                LowerErrorKind::IncompleteTerm,
+            ));
+            placeholder()
+        }
+        1 => Term::Absolute(Box::new(children.into_iter().next().expect("one operand"))),
+        _ => Term::Pool(
             children
                 .into_iter()
                 .map(|term| Term::Absolute(Box::new(term)))
                 .collect(),
-        )
+        ),
     }
 }
 

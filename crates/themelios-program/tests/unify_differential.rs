@@ -362,13 +362,11 @@ fn mgu_agrees_with_swi_prolog_on_the_constructor_fragment() {
         expected.push(outcome.is_some());
         let mut variables: BTreeMap<String, String> = BTreeMap::new();
         let left_rendered: Vec<String> = left
-            .arguments
-            .iter()
+            .argument_terms()
             .map(|term| to_prolog(&to_reference(term), &mut variables))
             .collect();
         let right_rendered: Vec<String> = right
-            .arguments
-            .iter()
+            .argument_terms()
             .map(|term| to_prolog(&to_reference(term), &mut variables))
             .collect();
         // A per-directive clause scopes its own Prolog variables, so each pair is independent.

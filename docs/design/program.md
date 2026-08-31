@@ -1075,6 +1075,11 @@ Canonicalization does the following, each syntactic:
   is not a normal form but a malformed value — the grammar spells no such thing, and
   as an `unpool` cross-product factor it would silently delete a statement — so it is
   refused at the door (§7.2), a validity invariant, not collapsed here.
+- **Pool flattening.** A pool holding a pool is flattened — `((a; b); c)` is
+  `(a; b; c)` — because pooling is associative (the authority's reading, §16); the
+  nested and the flat pool are then one value, so canonical equality reads a parsed
+  `((a; b); c)` and a constructed `(a; b; c)` alike. One top-down pass, run only when
+  a nested pool is present, `O(nodes)` whatever the nesting direction (§13, §15).
 - **Boolean heads.** An un-negated `#true`/`#false` head-literal is folded to
   `Head::Verum`/`Head::Falsum` (§4.4) — the one form of ⊤/⊥ in head position, so a
   `#false.` head and a `:- .` constraint head are one value; the fold is checked
@@ -1333,6 +1338,13 @@ genuinely possible:
   from an `f64` returns `Result<Symbol, NotAnInteger>` (§3.4). The refusal is the
   question the caller can fix, carried as a value (the offending text or number),
   never a rendered string (base §6.5, spec §1.5).
+- A constructor composing typed values under a **cardinality invariant** refuses
+  where the invariant is violable: `Atom::pooled` and `Term::pool` take the pool's
+  alternatives and return `Result<_, EmptyPool>`, because a pool of **no** alternatives
+  is a malformed value the grammar spells nowhere — and, as an `unpool` cross-product
+  factor, would silently delete a statement (§5.1, §9). The refusal is a value
+  (`EmptyPool`), the same door discipline; the ordinary non-empty pool constructors
+  (`Atom::new`, a parsed pool) cannot reach it.
 
 Lexical name classes are enforced at exactly these raw-data doors, once, by the
 syntax tier's classifier (§3.2) — the one well-formedness authority for names,
@@ -1534,18 +1546,22 @@ It is **not** a `Rewrite` (that is one statement → one); its **1→N** shape m
 the grounder's own `Statement::unpool` (`libgringo/src/input/statement.cc`), which
 returns a vector of statements. A pool in a top-level literal, comparison, or
 directive expands into **separate statements** (a head × body cross-product); a pool
-in an aggregate/choice/disjunction/optimize **element**, or a body conditional's
-condition, expands **within its container** (never lifting the pool to the statement
-level) — the position-sensitive split the grounder makes
+in an aggregate/choice/optimize **element**, in any element's **condition**, or in a
+body conditional's condition, expands **within its container** (never lifting the pool
+to the statement level) — the position-sensitive split the grounder makes
 (`clingo_ast_unpool_type_{condition,other}`). It reuses the term `fold` (§3.6, so a
 deep term is stack-safe) and the ingest door (§5.1, so its output is canonical), and
 every produced node carries `Origin::Transformed` unioned with its source origin
 (§6), so a verdict traces back to the source pool. Total; `O(output)` — a
 cross-product of pools is exponential in the number of pooled positions, an
-output-size fact (like `substitute`, §9.2), not a defect. **Two representation-gap
+output-size fact (like `substitute`, §9.2), not a defect. **Three representation-gap
 cases stay pooled** for the analysis tier's fail-closed gate: a theory-atom pool
-(§17), and a pooled derived literal in a lone body conditional, which would need a
-disjunctive clause a single-literal conditional cannot hold.
+(§17), and two structural twins — a pooled derived *literal* in a lone body conditional
+(which would need a disjunctive clause a single-literal conditional cannot hold) and a
+pooled *disjunct literal* (which clingo grounds as a conjunctive head group
+`(p(a) ∧ p(b)) ∨ q` a single-literal `DisjunctionElement` cannot hold). Only the pooled
+*literal* of the twins is left; a disjunction element's condition, and a choice or
+aggregate element's own literal, expand within as usual.
 
 ### 9.2 Substitution and fresh names
 
@@ -2113,6 +2129,14 @@ never gaps:
   is `O(output)`, and a pathological unifier makes that output exponentially larger
   than its input (§9.2, §11.1), which shared structure bounds. v1 is owned by value,
   so v1 pays the output cost; the interner is the measured-need answer to both.
+- **The theory-atom argument-list pool** (§8, §9): an *ordinary* atom's argument-list pool
+  `p(a; b)` raises faithfully to `Arguments::Pooled` and `unpool` (§9) eliminates it before analysis
+  and solve; a *theory* atom's `&t(a; b)` is truncated at raise with a `PooledArgumentList`
+  diagnostic and left fail-closed, because theory terms are a peer algebra (§4.9) this tier carries
+  opaquely. Its consumer is the solve/query stage, where theory terms are handled; the faithful
+  theory-pool reading arrives with it. (The other pool residual — a pooled derived literal in a
+  lone body conditional — `unpool` leaves pooled and safety reads fail-closed, §9; a representation
+  gap, not a seam.)
 - **Semantic equivalence checking** (spec §7.1, §13): ordinary and strong
   equivalence as decision services, deliberately distinct from structural
   equality; the consumer is a verified-rewrite checker or an across-barrier

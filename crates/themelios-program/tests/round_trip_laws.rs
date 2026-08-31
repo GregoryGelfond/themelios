@@ -155,6 +155,12 @@ const GENERATED: &[&str] = &[
     "p((a,)).\n",
     "p(()).\n",
     "p((a; b)) :- q(a), q(b).\n",
+    // Argument-list pools (`Arguments::Pooled`, faithful — §9): a head fact, a body atom, and two
+    // pooled positions, each round-tripping through the pooled render, distinct from the term pool
+    // above (`p((a; b))` is one Pool argument; `p(a; b)` is two argument-list alternatives).
+    "p(a; b).\n",
+    "q(X) :- p(X; a).\n",
+    "p(X; f(X)) :- q(X).\n",
     "p(X) :- q(X), X = |Y|, r(Y).\n",
     "p(X) :- X = @f(1, 2).\n",
     "p(X) :- X = @g.\n",

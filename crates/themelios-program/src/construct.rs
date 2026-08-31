@@ -23,7 +23,7 @@ use crate::program::{
 };
 use crate::provenance::WithProvenance;
 use crate::symbol::{Name, Sign, Symbol};
-use crate::term::{BinaryOp, Term, UnaryOp};
+use crate::term::{BinaryOp, EmptyPool, Term, UnaryOp};
 
 // ---- Strong and arithmetic negation: two operators, one spelling each (§4.6) ----
 
@@ -345,13 +345,20 @@ impl Atom {
     /// argument tuple, the alternatives possibly of different arity. The name is a
     /// validated identifier (§3.2), so this is total (§7.2); the arguments canonicalize
     /// and a one-alternative pool collapses to `Single` at the door (§5.1).
-    pub fn pooled(name: Name, alternatives: impl IntoIterator<Item = Vec<Term>>) -> Atom {
-        Atom {
+    pub fn pooled(
+        name: Name,
+        alternatives: impl IntoIterator<Item = Vec<Term>>,
+    ) -> Result<Atom, EmptyPool> {
+        let alternatives: Vec<Vec<Term>> = alternatives.into_iter().collect();
+        if alternatives.is_empty() {
+            return Err(EmptyPool);
+        }
+        Ok(Atom {
             sign: Sign::Positive,
             name,
-            arguments: Arguments::Pooled(alternatives.into_iter().collect()),
+            arguments: Arguments::Pooled(alternatives),
         }
-        .canonicalize()
+        .canonicalize())
     }
 
     /// A constant `p` — the empty-argument atom (§7.1): its own named constructor, so

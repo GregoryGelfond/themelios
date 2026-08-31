@@ -420,6 +420,22 @@ fn a_theory_atom_argument_list_pool_stays_diagnosed() {
     );
 }
 
+#[test]
+fn an_empty_absolute_is_diagnosed_not_silently_pooled() {
+    // `q(||)` — an empty absolute value — is not a term (clingo rejects it; the grammar admits
+    // none). A recovered parse can reach the raise; it emits a diagnostic and a placeholder, so no
+    // zero-alternative pool escapes to silently delete the statement at `unpool` (§8).
+    let raised = raised("p :- q(||).");
+    assert!(
+        raised
+            .diagnostics()
+            .iter()
+            .any(|error| matches!(error.kind(), LowerErrorKind::IncompleteTerm)),
+        "an empty `||` is diagnosed, not silently pooled: {:?}",
+        raised.diagnostics(),
+    );
+}
+
 // ---- Documentation and parsed provenance ride the raised node (§6, §8) ----
 
 #[test]

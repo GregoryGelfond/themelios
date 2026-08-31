@@ -814,20 +814,63 @@ fn rebuild_const<R: Rewrite + ?Sized>(r: &mut R, constant: Const) -> Const {
 /// condition expands within its container. Not a [`Rewrite`] (that is one statement → one);
 /// the 1→N shape mirrors the grounder's own `Statement::unpool`, which returns a vector.
 ///
-/// Every produced node carries `Origin::Transformed` unioned with its source origin (§6),
-/// so a verdict on `p(a)` traces back to the source `p(a; b)`. Total; `O(output)` — a
-/// cross-product of pools is exponential in the number of pooled positions, an output-size
-/// fact (like [`substitute`](crate::unify), §9.2), not an algorithm defect.
+/// The produced *statement* carries `Origin::Transformed(unpool)` unioned with its source origin
+/// (§6), so a safety verdict on an unpooled statement traces back to the source pool — the
+/// statement-level witness (§9.1); interior nodes an expansion builds carry `Constructed`, not
+/// their source span, which suffices for the analysis witness and defers finer provenance to a
+/// consumer that needs it. Total; `O(output)` — a cross-product of pools is exponential in the
+/// number of pooled positions, an output-size fact (like [`substitute`](crate::unify), §9.2),
+/// not an algorithm defect.
+///
+/// A pool-free program — nearly every program — is returned **unchanged**: with nothing to
+/// expand, the whole per-statement rebuild (clone, unpool, re-canonicalize, re-ingest) is
+/// skipped for one `O(program)` scan, and no node is restamped (a statement `unpool` did not
+/// transform gains no `Transformed(unpool)` origin). The scan reaches every position a pool can
+/// sit (`contains_pool`), so it never skips a program a pool would have expanded.
 pub fn unpool(program: &Program) -> Program {
+    if !contains_pool(program) {
+        return program.clone();
+    }
     let tag = TransformTag::new("unpool");
-    let mut statements = Vec::new();
-    for carrier in program.statements() {
-        let provenance = stamp(carrier.provenance().clone(), tag.clone());
-        for statement in unpool_statement(carrier.get().clone()) {
-            statements.push(WithProvenance::new(statement, provenance.clone()));
+    let mut result = Program::default();
+    for part in program.parts() {
+        for carrier in part.statements() {
+            let provenance = stamp(carrier.provenance().clone(), tag.clone());
+            for statement in unpool_statement(carrier.get().clone()) {
+                result.ingest_into(
+                    part.key().clone(),
+                    WithProvenance::new(statement, provenance.clone()),
+                );
+            }
         }
     }
-    Program::of(statements)
+    result
+}
+
+/// Whether the program carries any ordinary pool that [`unpool`] would expand — a [`Term::Pool`]
+/// in any term position, or an argument-list [`Pooled`](Arguments::Pooled) atom (§9). The
+/// read-only [`Visit`] walk reaches every atom and every term node (§9.1), so a pool is seen
+/// wherever the grammar lets one sit. It is a superset test: a pool `unpool` leaves in place — a
+/// theory-atom pool (deferred, §7), a `#const`-carried pool (§4.8), or a pool in a theory element's
+/// ordinary condition — it may also see, which only holds `unpool` back from the short-circuit
+/// (the full pass then leaves those pools as before) — it never reports pool-free a program a pool
+/// would expand. `O(program)`.
+fn contains_pool(program: &Program) -> bool {
+    struct PoolScan {
+        found: bool,
+    }
+    impl Visit for PoolScan {
+        fn visit_atom(&mut self, atom: &Atom) {
+            self.found |= atom.is_pooled();
+            descend_atom(self, atom);
+        }
+        fn visit_term(&mut self, term: &Term) {
+            self.found |= matches!(term, Term::Pool(_));
+        }
+    }
+    let mut scan = PoolScan { found: false };
+    visit(program, &mut scan);
+    scan.found
 }
 
 fn unpool_statement(statement: Statement) -> Vec<Statement> {
@@ -866,8 +909,13 @@ fn unpool_statement(statement: Statement) -> Vec<Statement> {
             .map(Statement::Query)
             .collect(),
         // A `#const` pool is refused non-constant and carried (§4.8); a theory definition,
-        // `#defined`, `#include`, and a script carry no unpoolable ordinary pool.
-        other => vec![other],
+        // `#defined`, `#include`, and a script carry no unpoolable ordinary pool. Spelled, so a
+        // new statement kind bearing a pool is a compile error here, never a silent pass-through.
+        statement @ (Statement::Const(_)
+        | Statement::Defined(_)
+        | Statement::Include(_)
+        | Statement::Script(_)
+        | Statement::TheoryDefinition(_)) => vec![statement],
     }
 }
 
@@ -889,7 +937,9 @@ fn unpool_head(head: &Head) -> Vec<Head> {
             .into_iter()
             .map(Head::Literal)
             .collect(),
-        // A disjunction has no guards, so it never multiplies: its elements expand within.
+        // A disjunction's conditions expand within (more elements); a pooled disjunct *literal* is
+        // left pooled — a representation gap read per-alternative by analysis, like a lone body
+        // conditional's (§9). One head, never a statement product — see `unpool_disjunction`.
         Head::Disjunction(disjunction) => vec![Head::Disjunction(unpool_disjunction(disjunction))],
         // A choice/head-aggregate's elements expand within; its guards multiply it (a
         // statement-level product).
@@ -962,8 +1012,10 @@ fn unpool_body_element(element: &BodyElement) -> Vec<Vec<BodyElement>> {
                 }]
             })
             .collect(),
-        // A body theory atom is deferred (§7); `BodyElement` is non_exhaustive.
-        _ => vec![vec![element.clone()]],
+        // A body theory atom is deferred (§7). Spelled, so a new body-element kind bearing a pool
+        // is a compile error here, never a silent pass-through (`BodyElement` is `non_exhaustive`,
+        // but exhaustive matching is available in its own crate).
+        BodyElement::TheoryAtom { .. } => vec![vec![element.clone()]],
     }
 }
 
@@ -1192,26 +1244,33 @@ fn unpool_choice_element(element: &ChoiceElement) -> Vec<ChoiceElement> {
     result
 }
 
+/// A disjunction's pool-free images (§9): its conditions expand within (more elements). A pooled
+/// disjunct *literal* would need a **conjunctive** head group `(p(a) ∧ p(b))` a single-literal
+/// `DisjunctionElement` cannot hold — clingo grounds `p(a; b) | q` to `(p(a) ∧ p(b)) ∨ q`, its
+/// alternatives collected into one element's heads (`DisjunctionElem::unpool`, `libgringo/src/
+/// input/aggregates.cc`) — so it is **left pooled**, a representation gap analysis reads
+/// per-alternative (safety §5, the dependency graph over every alternative), exactly like a pooled
+/// literal in a lone body conditional (its structural twin). This never statement-products, so no
+/// cross-product of pooled disjuncts explodes: the pool reaches the solve bridge, which maps it to
+/// the grounder's disjunction directly. A single head, always.
 fn unpool_disjunction(disjunction: &Disjunction) -> Disjunction {
     let elements: Vec<DisjunctionElement> = disjunction
         .elements()
-        .flat_map(|element| unpool_disjunction_element(element.get()))
+        .flat_map(|element| {
+            let element = element.get();
+            if literal_has_pool(element.literal()) {
+                // A pooled disjunct literal is left pooled — the conjunctive-group gap.
+                vec![element.clone()]
+            } else {
+                // A pooled condition expands within, into more elements of the one disjunction.
+                unpool_condition(element.condition())
+                    .into_iter()
+                    .map(|condition| DisjunctionElement::new(element.literal().clone(), condition))
+                    .collect()
+            }
+        })
         .collect();
     Disjunction::new(elements)
-}
-
-fn unpool_disjunction_element(element: &DisjunctionElement) -> Vec<DisjunctionElement> {
-    // A pooled disjunct literal becomes more disjuncts, a pooled condition more elements —
-    // both within the one disjunction (`p(X; a) | q` is `p(X) | p(a) | q`).
-    let literals = unpool_literal(element.literal());
-    let conditions = unpool_condition(element.condition());
-    let mut result = Vec::new();
-    for literal in &literals {
-        for condition in &conditions {
-            result.push(DisjunctionElement::new(literal.clone(), condition.clone()));
-        }
-    }
-    result
 }
 
 fn unpool_head_aggregate(aggregate: &HeadAggregate) -> Vec<HeadAggregate> {
@@ -1479,7 +1538,7 @@ fn term_has_pool(term: &Term) -> bool {
 ///
 /// A **pool-free** term is returned unchanged, without folding: the fold rebuilds every node, and
 /// the cross-product would re-clone the growing subterm at each level of a deep chain — `O(depth²)`
-/// on a term the analysis tier's deep-term scaling forbids (analysis §12.4). The `term_has_pool`
+/// on the deep adversarial term the cost discipline forbids (spec §12.4, §15). The `term_has_pool`
 /// guard is one `O(depth)` iterative walk, so only a term that actually carries a pool is rebuilt.
 fn unpool_term(term: Term) -> Vec<Term> {
     if !term_has_pool(&term) {
@@ -1545,35 +1604,65 @@ fn unpool_term(term: Term) -> Vec<Term> {
 
 /// The cartesian product of a list of positions, each a list of alternatives: one output
 /// tuple per choice of alternative at each position (an empty input yields one empty tuple).
-/// `O(product)` — exponential in the number of pooled positions (§9), an output-size fact.
+/// `O(output)` — exponential in the number of pooled positions (§9), an output-size fact.
+///
+/// A produced tuple's elements are **moved** into it wherever an element joins exactly one
+/// tuple — the sole alternative of a pool-free position, and every alternative when a single
+/// prefix combo is being branched — so nothing that grows down a spine is re-cloned. Cloning
+/// the growing structure at each of a spine's levels is the `O(depth²)` (a deep term) and
+/// `O(N²)` (a wide body) the analysis tier's linear scaling forbids (§9, §13); moving it is
+/// `O(depth)`/`O(N)`, mirroring gringo's single-argument `Term::unpool` move
+/// (`libgringo/gringo/term.hh`). A clone remains only where an element truly joins several
+/// tuples (a genuine multi-position product), where it is an output-size cost.
 fn cross_product<T: Clone>(positions: Vec<Vec<T>>) -> Vec<Vec<T>> {
     let mut combos: Vec<Vec<T>> = vec![Vec::new()];
     for position in positions {
-        match position.as_slice() {
-            // No alternative: an empty pool would delete the statement. It is refused at the
-            // door (§1.4), so this is defensive — fail closed to no combos.
-            [] => return Vec::new(),
-            // One alternative — the pool-free case: extend every combo **in place**, so an
-            // N-position pool-free product (an N-literal body) is `O(N)`, not `O(N²)`. Cloning
-            // the growing prefix at each of N positions is the quadratic the analysis tier's
-            // linear scaling forbids (analysis §8); the in-place extend avoids it.
-            [single] => {
-                for combo in &mut combos {
+        match position.len() {
+            // No alternative: a zero-alternative pool has no image, so the statement is dropped —
+            // the grounder's reading of an empty pool. Valid input never reaches here (the grammar
+            // admits no empty pool, and the raise refuses a recovered `||`, §8); only a hand-
+            // constructed `Term::Pool(vec![])`/`Arguments::Pooled(vec![])` does.
+            0 => return Vec::new(),
+            // One alternative — the pool-free case: extend every combo. The element is moved
+            // onto the last combo and cloned onto the rest, so a pool-free spine (one position
+            // over the one combo) moves its growing child image and a wide pool-free body (N
+            // positions over the one combo) is `O(N)` — neither pays the `O(depth²)`/`O(N²)` a
+            // per-position clone of the growing structure would.
+            1 => {
+                let single = position.into_iter().next().expect("one alternative");
+                let (last, rest) = combos.split_last_mut().expect("combos is never empty");
+                for combo in rest {
                     combo.push(single.clone());
                 }
+                last.push(single);
             }
-            // Two or more — a genuine pool: branch each combo. The clone is `O(output)` (§9),
-            // an output-size cost, since the combos here truly diverge.
-            alternatives => {
-                let mut next = Vec::with_capacity(combos.len().saturating_mul(alternatives.len()));
-                for combo in &combos {
-                    for alternative in alternatives {
-                        let mut extended = combo.clone();
-                        extended.push(alternative.clone());
-                        next.push(extended);
+            // Two or more — a genuine pool. Over a single prefix combo each alternative extends
+            // it exactly once, so the alternatives are moved (only the prefix — empty at a unary
+            // term node — is cloned): a deep spine of pooled nodes is `O(depth)`, not
+            // `O(depth²)`. Over several prefix combos the product truly diverges, so each
+            // (combo, alternative) pairing is materialized by a clone — an output-size cost (§9).
+            _ => {
+                if combos.len() == 1 {
+                    let prefix = combos.pop().expect("combos.len() == 1");
+                    combos = position
+                        .into_iter()
+                        .map(|alternative| {
+                            let mut combo = prefix.clone();
+                            combo.push(alternative);
+                            combo
+                        })
+                        .collect();
+                } else {
+                    let mut next = Vec::with_capacity(combos.len().saturating_mul(position.len()));
+                    for combo in &combos {
+                        for alternative in &position {
+                            let mut extended = combo.clone();
+                            extended.push(alternative.clone());
+                            next.push(extended);
+                        }
                     }
+                    combos = next;
                 }
-                combos = next;
             }
         }
     }
