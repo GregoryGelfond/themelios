@@ -67,7 +67,7 @@ fn fresh_over(atoms: impl IntoIterator<Item = Atom>) -> Fresh {
             .into_iter()
             .map(|a| WithProvenance::constructed(Statement::Rule(Rule::fact(a)))),
     );
-    Fresh::over(&program)
+    Fresh::of(&program)
 }
 
 // ---- soundness (over the RESOLVING substitute, §11.1) ----

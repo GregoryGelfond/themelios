@@ -23,7 +23,7 @@ use crate::program::{
 };
 use crate::provenance::WithProvenance;
 use crate::symbol::{Name, Sign, Symbol};
-use crate::term::{BinaryOp, EmptyPool, Term, UnaryOp};
+use crate::term::{BinaryOp, EmptyPool, Term, UnaryOp, non_empty};
 
 // ---- Strong and arithmetic negation: two operators, one spelling each (§4.6) ----
 
@@ -349,14 +349,10 @@ impl Atom {
         name: Name,
         alternatives: impl IntoIterator<Item = Vec<Term>>,
     ) -> Result<Atom, EmptyPool> {
-        let alternatives: Vec<Vec<Term>> = alternatives.into_iter().collect();
-        if alternatives.is_empty() {
-            return Err(EmptyPool);
-        }
         Ok(Atom {
             sign: Sign::Positive,
             name,
-            arguments: Arguments::Pooled(alternatives),
+            arguments: Arguments::Pooled(non_empty(alternatives)?),
         }
         .canonicalize())
     }

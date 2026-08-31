@@ -200,18 +200,21 @@ pub fn statement_variables(statement: &Statement) -> Vec<&Variable> {
 
 // ---- The signature of an atom ----
 
-/// The signatures an atom heads or depends on: **one per argument-list alternative**
-/// (§8), so a pooled `p(a; b, c)` contributes p/1 and p/2 — the distinct atoms the
-/// grounder unpools it into. A `Single` atom yields exactly one. Never reads a single
-/// alternative alone, so a pool is not silently truncated (§4.6).
-fn alternative_signatures(atom: &Atom) -> impl Iterator<Item = Signature> + '_ {
-    atom.alternatives().map(move |tuple| Signature {
-        sign: atom.sign,
-        name: atom.name.clone(),
-        // A predicate carries no more arguments than a `Vec` holds, far under `u32::MAX`
-        // (the workspace `cast_possible_truncation` allowance, argued in place).
-        arity: tuple.len() as u32,
-    })
+impl Atom {
+    /// This atom's predicate signature(s): **one per argument-list alternative** (§8). A `Single`
+    /// atom yields exactly one; a pooled `p(a; b, c)` yields `p/1` and `p/2` — the distinct
+    /// predicates the grounder unpools it into. Plural by design — there is no single-signature
+    /// accessor, so a pooled atom is never reduced to its first alternative alone (the silent
+    /// truncation §4.6 forbids). `O(alternatives)`.
+    pub fn signatures(&self) -> impl Iterator<Item = Signature> + '_ {
+        self.alternatives().map(|tuple| Signature {
+            sign: self.sign,
+            name: self.name.clone(),
+            // A predicate carries no more arguments than a `Vec` holds, far under `u32::MAX`
+            // (the workspace `cast_possible_truncation` allowance, argued in place).
+            arity: tuple.len() as u32,
+        })
+    }
 }
 
 // ---- Variable occurrences ----
@@ -411,7 +414,7 @@ fn head_signatures(head: &Head, out: &mut Vec<Signature>) {
 
 fn push_literal_signature(literal: &Literal, out: &mut Vec<Signature>) {
     if let LiteralInner::Atom(atom) = &literal.inner {
-        out.extend(alternative_signatures(atom.get()));
+        out.extend(atom.get().signatures());
     }
 }
 
@@ -509,7 +512,7 @@ fn push_literal_dependency(
     let self_negated = is_negated(literal.negation);
     // One dependency per pooled alternative (§8): the grounder unpools a pooled atom into
     // distinct atoms, so each alternative's signature is its own edge.
-    for signature in alternative_signatures(atom.get()) {
+    for signature in atom.get().signatures() {
         match former {
             Former::Plain => {
                 let kind = if self_negated {

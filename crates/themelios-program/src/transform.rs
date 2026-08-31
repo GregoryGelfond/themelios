@@ -1244,15 +1244,16 @@ fn unpool_choice_element(element: &ChoiceElement) -> Vec<ChoiceElement> {
     result
 }
 
-/// A disjunction's pool-free images (§9): its conditions expand within (more elements). A pooled
-/// disjunct *literal* would need a **conjunctive** head group `(p(a) ∧ p(b))` a single-literal
-/// `DisjunctionElement` cannot hold — clingo grounds `p(a; b) | q` to `(p(a) ∧ p(b)) ∨ q`, its
-/// alternatives collected into one element's heads (`DisjunctionElem::unpool`, `libgringo/src/
-/// input/aggregates.cc`) — so it is **left pooled**, a representation gap analysis reads
-/// per-alternative (safety §5, the dependency graph over every alternative), exactly like a pooled
-/// literal in a lone body conditional (its structural twin). This never statement-products, so no
-/// cross-product of pooled disjuncts explodes: the pool reaches the solve bridge, which maps it to
-/// the grounder's disjunction directly. A single head, always.
+/// A disjunction's pool-free images (§9): a condition expands within (more elements) — unless the
+/// element's literal is pooled, when the whole element is kept (below). A pooled disjunct *literal*
+/// would need a **conjunctive** head group `(p(a) ∧ p(b))` a single-literal `DisjunctionElement`
+/// cannot hold — clingo grounds `p(a; b) | q` to `(p(a) ∧ p(b)) ∨ q`, its alternatives collected
+/// into one element's heads (`DisjunctionElem::unpool`, `libgringo/src/input/aggregates.cc`) — so
+/// the element is **left whole**, its literal (and any pool in its own condition) left pooled, a
+/// representation gap analysis reads per-alternative (safety §5, the dependency graph over every
+/// alternative), exactly like a pooled literal in a lone body conditional (its structural twin).
+/// This never statement-products, so no cross-product of pooled disjuncts explodes: the pool reaches
+/// the solve bridge, which maps it to the grounder's disjunction directly. A single head, always.
 fn unpool_disjunction(disjunction: &Disjunction) -> Disjunction {
     let elements: Vec<DisjunctionElement> = disjunction
         .elements()

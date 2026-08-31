@@ -508,7 +508,7 @@ fn substitute_theory_element(element: &TheoryElement, s: &Substitution) -> Theor
 
 /// A source of fresh variables and predicate names colliding with none already in a program
 /// (§9.2) — what rename-apart (§11) and an optimizer's auxiliary predicates draw from.
-/// Seed it with [`over`](Fresh::over), then mint with [`variable`](Fresh::variable) and
+/// Seed it with [`of`](Fresh::of), then mint with [`variable`](Fresh::variable) and
 /// [`predicate`](Fresh::predicate); each minted name is recorded, so a run of mints is
 /// pairwise-distinct as well as free of the program's names.
 pub struct Fresh {
@@ -524,7 +524,7 @@ impl Fresh {
     /// namespace (a theory atom's name, a theory operator) is not the ordinary predicate
     /// namespace and is not collected. `O(program)`.
     #[must_use]
-    pub fn over(program: &Program) -> Fresh {
+    pub fn of(program: &Program) -> Fresh {
         let mut names = Names::default();
         for statement in program.statements() {
             collect_statement(statement.get(), &mut names);
@@ -1617,7 +1617,7 @@ mod tests {
             Atom::new(name("q"), [tvar("Y")]),
         );
         let program = Program::of([WithProvenance::constructed(Statement::Rule(rule))]);
-        let mut fresh = Fresh::over(&program);
+        let mut fresh = Fresh::of(&program);
 
         let first = fresh.variable();
         assert_ne!(first, var("X"));
@@ -1794,7 +1794,7 @@ mod tests {
              #include \"foo.lp\".\n\
              #theory tdef { }.\n",
         );
-        let mut fresh = Fresh::over(&program);
+        let mut fresh = Fresh::of(&program);
 
         // The mints avoid the program's names — its variable X and its predicate p, both
         // reached through this whole-program scan — and a run of mints stays distinct.
@@ -1870,8 +1870,8 @@ mod tests {
             Atom::new(name("p"), [tvar("V0")]),
         );
         let program = Program::of([WithProvenance::constructed(Statement::Rule(rule))]);
-        assert_ne!(Fresh::over(&program).variable(), var("V0"));
-        assert_ne!(Fresh::over(&program).predicate("aux"), name("aux0"));
+        assert_ne!(Fresh::of(&program).variable(), var("V0"));
+        assert_ne!(Fresh::of(&program).predicate("aux"), name("aux0"));
     }
 
     #[test]
@@ -1879,7 +1879,7 @@ mod tests {
         let program = Program::of([WithProvenance::constructed(Statement::Query(Query::new(
             Atom::new(name("qp"), [tvar("X")]),
         )))]);
-        let mut fresh = Fresh::over(&program);
+        let mut fresh = Fresh::of(&program);
         assert_ne!(fresh.variable(), var("X"));
         assert_ne!(fresh.predicate("qp"), name("qp"));
     }

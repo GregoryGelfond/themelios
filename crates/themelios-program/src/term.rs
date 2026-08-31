@@ -178,11 +178,7 @@ impl Term {
     /// through; the `Pool` variant stays public for reading and carries the same non-empty
     /// precondition. `O(alternatives)`.
     pub fn pool(alternatives: impl IntoIterator<Item = Term>) -> Result<Term, EmptyPool> {
-        let alternatives: Vec<Term> = alternatives.into_iter().collect();
-        if alternatives.is_empty() {
-            return Err(EmptyPool);
-        }
-        Ok(Term::Pool(alternatives).canonicalize())
+        Ok(Term::Pool(non_empty(alternatives)?).canonicalize())
     }
 }
 
@@ -199,6 +195,19 @@ impl std::fmt::Display for EmptyPool {
     }
 }
 impl std::error::Error for EmptyPool {}
+
+/// Collect `alternatives`, refusing an empty pool at the constructor door (§5.1, §7.2): a
+/// zero-alternative pool is a malformed value, not a normal form. The one cardinality door
+/// `Term::pool` and `Atom::pooled` share, so both refuse an empty pool the one way — one that, as an
+/// `unpool` cross-product factor, would otherwise silently delete a statement. `O(alternatives)`.
+pub(crate) fn non_empty<T>(alternatives: impl IntoIterator<Item = T>) -> Result<Vec<T>, EmptyPool> {
+    let alternatives: Vec<T> = alternatives.into_iter().collect();
+    if alternatives.is_empty() {
+        Err(EmptyPool)
+    } else {
+        Ok(alternatives)
+    }
+}
 
 /// One level of a term unrolled, its children a generic `T`, the leaves kept whole
 /// (§3.6). A boxed child of `Term` is an unboxed `T` here (`From` re-boxes). At

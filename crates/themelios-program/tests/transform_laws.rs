@@ -128,7 +128,7 @@ struct Signatures {
 impl Visit for Signatures {
     fn visit_atom(&mut self, atom: &Atom) {
         // One signature per argument-list alternative (§8), mirroring the substrate's own
-        // `alternative_signatures`; a `Single` atom yields exactly one.
+        // `Atom::signatures`; a `Single` atom yields exactly one.
         for tuple in atom.alternatives() {
             self.seen.push(Signature {
                 sign: atom.sign,
