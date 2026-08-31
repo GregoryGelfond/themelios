@@ -1105,6 +1105,7 @@ checkpoints.
 
 ## 14. Repository facts
 
-Private remote, MIT licensed, copyright Gregory Gelfond. This
-specification lives at `docs/specification.md` and is the repository's
-founding artifact; the grammar document (§6.1) joins it at stage 2.
+Public remote at `github.com/GregoryGelfond/themelios`, MIT
+licensed, copyright Gregory Gelfond. This specification lives at
+`docs/specification.md` and is the repository's founding artifact;
+the grammar document (§6.1) joins it at stage 2.
