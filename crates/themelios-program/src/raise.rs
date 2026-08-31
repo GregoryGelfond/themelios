@@ -111,7 +111,7 @@ pub enum LowerErrorKind {
     /// A **theory** atom's argument list is pooled (`&t(a; b)`, grammar §8): its alternatives are
     /// distinct theory atoms this tier does not yet represent — theory terms are a peer algebra
     /// deferred to the solve stage (§7, §4.9). An *ordinary*-atom argument-list pool `p(a; b)`
-    /// raises faithfully to [`Arguments::Pooled`](crate::program::Arguments::Pooled) and is not
+    /// raises faithfully to [`Arguments::Pooled`] and is not
     /// marked here; only a theory-atom pool reaches this door. The raise reads the first
     /// alternative as a best-effort partial and marks the rest here (§8), never dropping them in
     /// silence, so a consumer that gates on a clean raise does not trust safety or finiteness of

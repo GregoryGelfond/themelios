@@ -363,7 +363,7 @@ impl Term {
     /// number's spelling, not arithmetic evaluation — and a double `-(-5)` folds to
     /// `Number(5)`, the authority's own reading; `-(1 + 2)` is not a number and stays
     /// a `BinaryOperation`. A pool holding a pool is flattened afterward in one
-    /// top-down pass ([`flatten_pools`]), also O(nodes) and only when the fold met one,
+    /// top-down pass (`flatten_pools`), also O(nodes) and only when the fold met one,
     /// so the whole canonicalization is O(nodes) whatever the nesting. A pass, not a
     /// constructor guarantee: a caller can build a non-canonical term directly, and
     /// every door that admits a term into a program runs this.
