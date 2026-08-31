@@ -317,6 +317,22 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
         "disjunction-element-pool-both-unbound",
         "p(X; Y) | q :- r.\n",
     ),
+    //   A residual disjunct with BOTH a pooled literal and a pooled condition: the pooled literal is
+    //   left whole (its single element cannot split), so its condition is left pooled with it. Here
+    //   `c(d)` leaves `X` unbound in one condition alternative — unsafe to both, the proof that a
+    //   residual pooled *condition* is read too, not dropped.
+    (
+        "disjunction-element-pool-both-residual",
+        "t(X; a) : c(X; d) | q :- r.\n",
+    ),
+    //   The same shape, but the pooled condition binds `X` in every alternative (`c(X; X)`): clingo
+    //   unpools the residual condition and binds through each, so it is safe; this tier reads a
+    //   residual pooled atom as binding nothing (fail-closed, §5) and reports unsafe — a recorded
+    //   divergence, the conservative side, never a false safe.
+    (
+        "disjunction-element-pool-condition-fail-closed",
+        "t(X; a) : c(X; X) | q :- r.\n",
+    ),
     ("conditional-condition-pool", "q :- p : r(a; b).\n"),
     // ---- The matching-`=` dialect boundary (§5): clingo decomposes an `=` against a tuple, and chains
     // a multi-step `=`, to bind — where the strict ASP-Core-2 standard does not. Recorded divergences;
@@ -397,6 +413,14 @@ const RECORDED_DIVERGENCES: &[(&str, &str)] = &[
     // `project-atom-pool` were recorded divergences while the tier fail-closed on a pool; the faithful
     // representation + the unpool pass (program §9) now agree with the grounder, so they are corpus
     // agreement rows, not divergences.)
+    // A residual pooled condition on a pooled-literal disjunct: clingo unpools it and binds through
+    // each alternative (`c(X; X)` binds `X` in both), while this tier reads a residual pooled atom as
+    // binding nothing (the atom-level twin of a `Term::Pool` being `NOT_INVERTIBLE`) — so it reports
+    // unsafe where clingo grounds. The conservative side, never a false safe.
+    (
+        "disjunction-element-pool-condition-fail-closed",
+        "clingo unpools a residual pooled condition and binds through each alternative; this tier reads a residual pooled atom as binding nothing, so it reports unsafe — the conservative side, never a false safe",
+    ),
     // clingo decomposes a former on both sides of `=` when one side is bound (`q(X)` binds X, so
     // `f(X) = f(Y)` binds Y); the strict standard binds only a lone side, so this tier reports Y unsafe
     // — the matching-`=` family, the conservative side, never a false safe.
@@ -707,7 +731,7 @@ fn a_heterogeneous_arity_pooled_disjunct_grower_does_not_yield_a_false_holds() {
     // (`p(f(X), Y)`) — hides the grower in the p/2 alternative, which feeds the p/2 body. Were the
     // finiteness check to find the atom's component by its FIRST alternative's signature (p/1, here
     // non-recursive), it would never reach the growing p/2 — a false `Holds` (the F4 gap option B
-    // reopened). The per-alternative signature read (depend `atom_alternative_signatures`) visits
+    // reopened). The per-alternative signature read (`Atom::signatures`) visits
     // p/2's component and catches it, in either alternative order. The grounder confirms unbounded.
     for grower in [
         "p(a, a).\np(X; f(X), Y) | r :- p(X, Y).\n",

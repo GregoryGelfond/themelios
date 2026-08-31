@@ -219,7 +219,7 @@ fn naive_stratified(graph: &DependencyGraph) -> bool {
 }
 
 fn disjunct_signatures(disjunction: &Disjunction) -> Vec<Signature> {
-    // Per alternative (§9), matching production's `atom_alternative_signatures`: a residual pooled
+    // Per alternative (§9), matching production's `Atom::signatures`: a residual pooled
     // disjunct is several head atoms, each carrying its own alternative's arity — a first-alternative
     // (or all-terms-flattened) read would misjudge the head cycle.
     let mut signatures = Vec::new();
@@ -473,7 +473,7 @@ fn a_pooled_disjunct_head_couples_per_alternative() {
     // are two p/1 head atoms of the one rule, so they close a head cycle in the recursive p/1
     // component — NOT head-cycle-free. Reading only the FIRST alternative's signature would register
     // p/1 once and miss the coupling (a false head-cycle-free); the per-alternative read
-    // (`atom_alternative_signatures`, §9) sees both. A pooled disjunct is a conjunctive head group, so
+    // (`Atom::signatures`, §9) sees both. A pooled disjunct is a conjunctive head group, so
     // treating its alternatives as coupled head atoms is the conservative-safe reading — never a false
     // `Holds`, at worst a spurious `Unknown`.
     let pooled = Atom::pooled(name("p"), [vec![var("X")], vec![var("Y")]]).expect("non-empty pool");

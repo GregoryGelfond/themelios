@@ -27,9 +27,7 @@ use themelios_program::term::{BinaryOp, Term, TermParts, UnaryOp, Variable, eval
 use themelios_program::transform::{Rewrite, unpool};
 
 use crate::classify::Verdict;
-use crate::depend::{
-    Component, DependencyGraph, atom_alternative_signatures, external_pseudo_rule,
-};
+use crate::depend::{Component, DependencyGraph, external_pseudo_rule};
 
 /// Two facts about grounding a program (§5): which statements are not safe, and whether
 /// grounding is finite.
@@ -40,10 +38,9 @@ pub struct Safety {
 }
 
 impl Safety {
-    /// Read a program's safety and grounding finiteness (§5). `O(rules · variables +
-    /// unpooled + edges)` — over the pool-eliminated program (§5). Builds the dependency graph and
-    /// delegates to `from_graph`;
-    /// the assembled `Analysis` (§3) builds the graph once and shares it.
+    /// Read a program's safety and grounding finiteness (§5). `O(rules · variables + unpooled +
+    /// edges)` — over the pool-eliminated program (§5). Builds the dependency graph and delegates
+    /// to `from_graph`; the assembled `Analysis` (§3) builds the graph once and shares it.
     pub fn of(program: &Program) -> Safety {
         let unpooled = unpool(program);
         Safety::from_graph(&unpooled, &DependencyGraph::of_unpooled(&unpooled))
@@ -1066,7 +1063,7 @@ fn growing_component(rule: &Rule, graph: &DependencyGraph) -> Option<Component> 
         // first-alternative sibling is non-recursive would otherwise never be checked — a false
         // `Holds`. `atom_deepens` already reads every alternative's terms, so only the component
         // lookup needs to visit each alternative's signature.
-        for signature in atom_alternative_signatures(atom) {
+        for signature in atom.signatures() {
             let Some(component) = graph.component_of(&signature) else {
                 continue;
             };
@@ -1360,7 +1357,7 @@ fn class_root<'a>(
 /// node, not lumped under the first alternative's (which would under-collect it and miss a growth
 /// cycle through it — a false `Holds`), matching the graph's per-alternative edges.
 fn push_atom_carriers(atom: &Atom, carriers: &mut BTreeMap<Signature, BTreeSet<Variable>>) {
-    for (signature, alternative) in atom_alternative_signatures(atom).zip(atom.alternatives()) {
+    for (signature, alternative) in atom.signatures().zip(atom.alternatives()) {
         let entry = carriers.entry(signature).or_default();
         for term in alternative {
             term_named_vars(term, entry);
@@ -1536,9 +1533,9 @@ fn aggregate_signatures(aggregate: &Aggregate) -> BTreeSet<Signature> {
         Aggregate::Set(set) => {
             for element in set.elements() {
                 match element.get() {
-                    SetElement::Literal(literal) => literal_signature(literal, &mut signatures),
+                    SetElement::Literal(literal) => literal_signatures(literal, &mut signatures),
                     SetElement::ConditionalLiteral(conditional) => {
-                        literal_signature(&conditional.literal, &mut signatures);
+                        literal_signatures(&conditional.literal, &mut signatures);
                         condition_signatures(&conditional.condition, &mut signatures);
                     }
                 }
@@ -1574,16 +1571,17 @@ fn guard_vars(aggregate: &impl HasGuards, out: &mut BTreeSet<Variable>) {
 
 fn condition_signatures(condition: &Condition, out: &mut BTreeSet<Signature>) {
     for literal in condition.literals() {
-        literal_signature(literal.get(), out);
+        literal_signatures(literal.get(), out);
     }
 }
 
-fn literal_signature(literal: &Literal, out: &mut BTreeSet<Signature>) {
+fn literal_signatures(literal: &Literal, out: &mut BTreeSet<Signature>) {
     if let LiteralInner::Atom(atom) = &literal.inner {
-        // Every alternative under its own signature (§9): an aggregate element (this function's only
-        // caller) is expanded by unpool, never a residual pool, but reading each alternative keeps
-        // this correct were one ever to reach it — uniform with the growth check's per-alternative reads.
-        out.extend(atom_alternative_signatures(atom.get()));
+        // Every alternative under its own signature (§9): the aggregate-signature read
+        // (`aggregate_signatures`/`condition_signatures`, its only callers) is expanded by unpool,
+        // never a residual pool, but reading each alternative keeps this correct were one ever to
+        // reach it — uniform with the growth check's per-alternative reads.
+        out.extend(atom.get().signatures());
     }
 }
 

@@ -13,7 +13,7 @@ use themelios_program::symbol::Signature;
 use themelios_program::transform::unpool;
 
 use crate::construct::{Construct, Constructs};
-use crate::depend::{Component, DependencyGraph, Rule, atom_alternative_signatures};
+use crate::depend::{Component, DependencyGraph, Rule};
 
 /// A sound approximation of a ground-program property, read at the predicate level
 /// (§6.1). `Holds` is **proven** — the property is guaranteed of the ground program.
@@ -60,8 +60,8 @@ impl Classes {
     /// Read the classes of a program (§6): its dependency graph and its construct scan,
     /// then the recursion classes off the graph (§6.2) and the syntactic classes off its
     /// structure (§6.3). `O(unpooled + edges)` — off the pool-eliminated program (§5). Builds the
-    /// graph and scan and delegates to
-    /// `from_parts`; the assembled `Analysis` (§3) builds them once and shares them.
+    /// graph and scan and delegates to `from_parts`; the assembled `Analysis` (§3) builds them once
+    /// and shares them.
     pub fn of(program: &Program) -> Classes {
         // The graph and the recursion/membership readings that share it read the unpooled
         // program (§9); the construct scan reads the faithful one (so pooling is reported, §7).
@@ -291,7 +291,7 @@ fn coupling_component(disjunction: &Disjunction, positive: &DependencyGraph) -> 
             // head atoms (`p(X; f(X), Y)` is p/1 and p/2, a conjunctive group), each of which can
             // close a head cycle; reading only the first would miss a coupling higher-arity one and
             // report a false head-cycle-free (an unsafe over-claim, §6.2).
-            for signature in atom_alternative_signatures(atom.get()) {
+            for signature in atom.get().signatures() {
                 if let Some(component) = positive.component_of(&signature)
                     && component.is_recursive()
                     && let Some(representative) = component.members().next()

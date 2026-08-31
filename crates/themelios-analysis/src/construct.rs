@@ -92,7 +92,7 @@ pub enum Construct {
     Comparison,
     /// An interval term, `1 .. 3`.
     Interval,
-    /// A pool term, `(a; b)`.
+    /// A pool — a pool term `(a; b)`, or a pooled argument list `p(a; b)`.
     Pool,
     /// An arithmetic operator term — a unary, binary, or absolute-value operation.
     Arithmetic,
@@ -305,8 +305,8 @@ fn scan_atom(atom: &Atom, found: &mut BTreeSet<Construct>) {
     }
     if atom.is_pooled() {
         // An argument-list pool `p(a; b)` is pooling at the atom's own level — the same
-        // `Construct::Pool` a `Term::Pool` reports (§0), so a reader learns pooling once and the
-        // faithful scan reports it whichever spelling the source used.
+        // `Construct::Pool` a `Term::Pool` reports (program §4.6), so a reader learns pooling once
+        // and the faithful scan reports it whichever spelling the source used.
         found.insert(Construct::Pool);
     }
     for term in atom.argument_terms() {
