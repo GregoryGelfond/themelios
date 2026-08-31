@@ -40,3 +40,20 @@ pub mod analyze;
 pub mod unify;
 pub mod transform;
 pub mod render;
+
+pub mod prelude;
+
+// Crate-root re-exports of the most-used surface (Rust API guideline C-REEXPORT):
+// the types a client names constantly, the conversion and construction traits,
+// and the two foreign types this crate hands across its own boundary — so
+// `themelios_program::Program` (and `Dialect`, `Location`) resolve without
+// walking the module tree or taking a dependency only to name a returned type.
+// The full working vocabulary, for a one-line glob import, is `prelude`.
+pub use crate::program::{
+    Atom, Body, HasGuards, Head, IntoBody, IntoHead, Literal, Program, Rule, Statement,
+};
+pub use crate::provenance::{Origin, Provenance, WithProvenance};
+pub use crate::symbol::{FromSymbol, Name, Sign, Signature, Symbol, ToSymbol};
+pub use crate::term::{Term, Variable};
+pub use themelios_base::span::Location;
+pub use themelios_syntax::dialect::Dialect;
