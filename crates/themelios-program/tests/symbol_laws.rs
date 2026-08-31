@@ -8,7 +8,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use proptest::prelude::*;
-use themelios_program::symbol::{Name, Sign, Symbol, VarName};
+use themelios_program::symbol::{FromSymbol, Name, Sign, Symbol, ToSymbol, VarName};
 
 #[test]
 fn names_are_exactly_the_grammar_s_identifier_and_variable_classes() {
@@ -282,6 +282,26 @@ fn arity_counts_arguments_and_two_strings_order_by_content() {
         Symbol::String("a".to_owned()),
         Symbol::String("b".to_owned())
     );
+}
+
+#[test]
+fn the_conversion_pillar_is_symmetric_on_strings() {
+    // `str` and `String` denote a `Symbol::String` — the inward mirror of
+    // `FromSymbol for String` (§3.4), so the pillar is a special-case-free target
+    // for the extraction expansions and a codec's string field.
+    assert_eq!("edge".to_symbol(), Symbol::String("edge".to_owned()));
+    assert_eq!(
+        String::from("a b").to_symbol(),
+        Symbol::String("a b".to_owned()),
+    );
+    // The round-trip through the inverse holds.
+    assert_eq!(
+        String::from_symbol(&"reachable".to_symbol()),
+        Ok("reachable".to_owned()),
+    );
+    // A string denotes a string, never a constant: a `Symbol::Function` still
+    // comes only from a `Name`, so nothing is guessed.
+    assert!(matches!("p".to_symbol(), Symbol::String(_)));
 }
 
 /// A left-nested function `f(f(f(… c …)))` of `depth` levels — the shape a

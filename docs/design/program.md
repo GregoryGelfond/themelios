@@ -412,12 +412,18 @@ pub struct FromSymbolError { pub expected: &'static str, pub found: Symbol }
 impl ToSymbol for i8  { /* Number */ } impl ToSymbol for i16 { /* Number */ }
 impl ToSymbol for i32 { /* Number */ } impl ToSymbol for u8  { /* Number */ }
 impl ToSymbol for u16 { /* Number */ }
+impl ToSymbol for str { /* String */ } impl ToSymbol for String { /* String */ }
 ```
 
 There is deliberately **no** `ToSymbol for f64` and **no** `ToSymbol for bool`: a
 real has no integer symbol without a stated rounding (below), and a boolean has
 no faithful ASP denotation — a caller that wants the constants `true`/`false`
-constructs them by name, so the absence is the refusal.
+constructs them by name, so the absence is the refusal. `str` and `String`, by
+contrast, **are** admitted: unlike a boolean, a Rust string has one exact
+denotation — `Symbol::String` — so nothing is guessed (a caller who wants a
+*constant* reaches for a `Name`), and admitting them restores the symmetry with
+`FromSymbol for String` and keeps the conversion pillar a complete,
+special-case-free target for the extraction expansions built on it (spec §9.6).
 
 **No blanket `f64` conversion; explicit, fallible rounding instead.** ASP is
 integer-valued: there is no float symbol, and a silent `f64 → Symbol` would

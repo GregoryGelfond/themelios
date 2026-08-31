@@ -704,6 +704,16 @@ impl ToSymbol for u16 {
         Symbol::Number(i32::from(*self))
     }
 }
+impl ToSymbol for str {
+    fn to_symbol(&self) -> Symbol {
+        Symbol::String(self.to_owned())
+    }
+}
+impl ToSymbol for String {
+    fn to_symbol(&self) -> Symbol {
+        self.as_str().to_symbol()
+    }
+}
 
 /// Extract a Rust value from a ground symbol, refusing with the symbol that did not
 /// match — a value, not a rendered string (§3.4, spec §1.5).
