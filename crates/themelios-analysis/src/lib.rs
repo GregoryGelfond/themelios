@@ -33,3 +33,17 @@ pub mod depend;
 pub mod safe;
 pub mod classify;
 pub mod analysis;
+
+pub mod prelude;
+
+// Crate-root re-exports of this crate's own facet vocabulary (Rust API guideline
+// C-REEXPORT): `themelios_analysis::Analysis` and the readings it assembles
+// resolve without a module path. The program types these readings hand back are
+// program-tier types a client already depends on to build the `Program` it reads,
+// so they are not re-exported here; they arrive through `prelude`, which globs the
+// program prelude, letting one import name the whole vocabulary.
+pub use crate::analysis::Analysis;
+pub use crate::classify::{Classes, HornKind, Normality, ProgramClass, Stratification, Verdict};
+pub use crate::construct::{Construct, Constructs};
+pub use crate::depend::{Component, DependencyGraph};
+pub use crate::safe::{Safety, UnsafeStatement};
