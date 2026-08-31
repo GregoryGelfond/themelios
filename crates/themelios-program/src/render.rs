@@ -14,6 +14,10 @@
 //! symbol, and the theory term (§13) — are each rendered by an explicit work list of print
 //! actions, so a value tens of thousands of levels deep renders without touching the call
 //! stack. Total, and `O(output)`.
+//!
+//! A documented variant, `render_documented`, prepends each statement's provenance doc
+//! comments as `%!` lines (grammar §5.11) for a consumer that writes documented source;
+//! the canonical `render` stays provenance-blind, so the version-stable text is unchanged.
 
 use std::fmt;
 
@@ -39,18 +43,36 @@ use crate::term::{BinaryOp, Term, UnaryOp, Variable};
 /// self-recursive family, a bounded recursion across the flat layers between them.
 /// `O(output)`. The one refusal is [`Unspellable`].
 pub fn render(program: &Program, dialect: Dialect) -> Result<String, Unspellable> {
+    render_program(program, dialect, false)
+}
+
+/// Render a program to concrete syntax under a dialect, each statement preceded by its
+/// documentation as `%!` doc-comment lines (grammar §5.11): the doc annotations its
+/// provenance carries, emitted verbatim above the statement they document, one line per
+/// `\n`, in `Ord` order — for a consumer that writes documented source, the documentation
+/// riding along the entries it documents. Unlike `render`, the output is **not** the
+/// canonical form (§10): it carries provenance the canonical form drops, so it is not the
+/// version-stable text. It round-trips — the raise reads the `%!` lines back into each
+/// statement's documentation. Total and iterative in depth (§13). `O(output)`. The one
+/// refusal is [`Unspellable`].
+pub fn render_documented(program: &Program, dialect: Dialect) -> Result<String, Unspellable> {
+    render_program(program, dialect, true)
+}
+
+/// The shared program walk (§10): the base part first without a header, then every other
+/// part under its `#program` header in `PartKey` order, so statements reparse back into
+/// their part (§4.1). `docs` prepends each statement's documentation as `%!` lines — off
+/// for the canonical `render`, on for `render_documented`.
+fn render_program(program: &Program, dialect: Dialect, docs: bool) -> Result<String, Unspellable> {
     let mut out = String::new();
-    // The base part carries the statements before any `#program` delimiter, so it renders
-    // first, without a header (§4.1); every other part renders under its `#program` header,
-    // in `PartKey` order, so its statements land back in it on the reparse.
     let base = base_key();
-    render_part_statements(&mut out, program.base(), dialect)?;
+    render_part_statements(&mut out, program.base(), dialect, docs)?;
     for part in program.parts() {
         if part.key() == &base {
             continue;
         }
         render_part_header(&mut out, part);
-        render_part_statements(&mut out, part, dialect)?;
+        render_part_statements(&mut out, part, dialect, docs)?;
     }
     Ok(out)
 }
@@ -100,17 +122,37 @@ fn render_part_header(out: &mut String, part: &Part) {
     out.push_str(".\n");
 }
 
-/// A part's statements, in `Ord` order (§4), one per line.
+/// A part's statements, in `Ord` order (§4), one per line — each preceded by its
+/// documentation when `docs` is set.
 fn render_part_statements(
     out: &mut String,
     part: &Part,
     dialect: Dialect,
+    docs: bool,
 ) -> Result<(), Unspellable> {
     for statement in part.statements() {
+        if docs {
+            render_docs(out, statement);
+        }
         render_statement(out, statement.get(), dialect)?;
         out.push('\n');
     }
     Ok(())
+}
+
+/// A statement's documentation as leading `%!` doc-comment lines (grammar §5.11), verbatim
+/// and in `Ord` order — the inverse of the raise's doc read, so a documented program
+/// round-trips. Each doc string is emitted one line per `\n`, since the raise joins a
+/// statement's leading doc lines with `\n`; nothing is written after the `%!`, so the
+/// round-trip is a fixpoint (a marker space would accrue on each pass).
+fn render_docs(out: &mut String, statement: &WithProvenance<Statement>) {
+    for doc in statement.provenance().annotations().doc() {
+        for line in doc.split('\n') {
+            out.push_str("%!");
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
 }
 
 /// A statement, including its terminating dot and any bracket the four annotation-after-dot

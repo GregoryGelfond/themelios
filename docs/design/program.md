@@ -1625,6 +1625,14 @@ is the formatter satellite's art (spec §13), and this renderer takes none of it
 /// single work-list walk down the whole spine, statements to terms.
 pub fn render(program: &Program, dialect: Dialect) -> Result<String, Unspellable>;
 
+/// As `render`, but each statement is preceded by its documentation as `%!`
+/// doc-comment lines (grammar §5.11) — the doc annotations its provenance carries,
+/// verbatim and in `Ord` order — for a consumer that writes documented source. NOT
+/// canonical: it carries provenance the canonical form drops, so it is not the
+/// version-stable text; it round-trips, the raise reading the `%!` lines back into
+/// each statement's documentation.
+pub fn render_documented(program: &Program, dialect: Dialect) -> Result<String, Unspellable>;
+
 /// The one refusal: a string symbol whose value has no spelling under the chosen
 /// dialect (grammar §9's owned gap — a macro splice can build a string value
 /// grammar §4.4 cannot spell). The caller states the dialect or the value the
@@ -1641,6 +1649,15 @@ its parentheses and the grammar's trailing comma where it distinguishes (`(a,)`)
 The set-shaped children render in `Ord` order (§4), so the output is
 deterministic. A single applied-form printer serves a function term and an atom,
 so the two cannot drift.
+
+**The documented variant.** `render_documented` prepends each statement's
+provenance doc comments (§6.2) as `%!` lines, for a consumer emitting documented
+concrete syntax — a code generator carrying its source's documentation onto the
+entries it produces. The canonical `render` stays provenance-blind by design: the
+round-trip and version-stability guarantees (spec §7.6) rest on the canonical text
+being a pure function of a program's content, so documentation, which lives in
+provenance, never enters it. Emitting the exact `%!` form the raise reads, the
+documented rendering round-trips a statement's documentation as a fixpoint.
 
 **The round-trip law, and the trap it hides.** The law (the *round-trip* witness,
 spec §3, §7.6):

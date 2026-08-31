@@ -10,9 +10,9 @@ use themelios_syntax::dialect::Dialect;
 use themelios_syntax::parse::parse;
 
 use themelios_program::program::{Atom, Program, Rule, Statement};
-use themelios_program::provenance::WithProvenance;
+use themelios_program::provenance::{Origin, Provenance, WithProvenance};
 use themelios_program::raise::raise;
-use themelios_program::render::{Unspellable, render};
+use themelios_program::render::{Unspellable, render, render_documented};
 use themelios_program::symbol::{Name, Symbol};
 use themelios_program::term::Term;
 
@@ -55,6 +55,63 @@ fn rendering_is_canonical_the_same_program_renders_the_same_text() {
         render(&program, Dialect::Clingo).expect("renders"),
         "a program renders the same text every time",
     );
+}
+
+#[test]
+fn render_documented_prepends_doc_comments_verbatim_and_round_trips_them() {
+    // Two leading doc lines above a fact: the documented rendering emits each `%!` line
+    // verbatim above the statement it documents, and — emitting exactly the form the raise
+    // reads (the marker then the untrimmed content) — a single documented statement is a
+    // textual fixpoint.
+    let source = "%! a fact\n%! spanning two lines\np(a).\n";
+    assert_eq!(
+        render_documented(&raised(source), Dialect::Clingo).expect("renders"),
+        source,
+        "the documented rendering round-trips the doc comments verbatim",
+    );
+}
+
+#[test]
+fn the_canonical_render_stays_provenance_blind() {
+    // The canonical `render` drops provenance, so a documented program renders without any
+    // doc comment — the version-stable text is unchanged by documentation.
+    let rendered = rendered("%! a fact\np(a).\n");
+    assert_eq!(rendered, "p(a).\n");
+    assert!(
+        !rendered.contains("%!"),
+        "no doc comment in the canonical form"
+    );
+}
+
+#[test]
+fn documented_rendering_round_trips_a_constructed_documentation() {
+    // keryx's flow: a statement documented at construction (no leading space in the doc),
+    // rendered with its docs and re-raised, carries the same documentation on the same
+    // statement — the doc survives the round-trip, which the canonical `render`, dropping
+    // provenance, could not witness.
+    let documented = Program::of([WithProvenance::new(
+        Statement::Rule(Rule::fact(Atom::constant(name("reachable")))),
+        Provenance::from(Origin::Constructed).with_doc("the reachable base case"),
+    )]);
+    let text = render_documented(&documented, Dialect::Clingo).expect("renders");
+    let source = Source::new(SourceId::new(0), text).expect("the rendering admits");
+    let reraised = raise(&parse(&source, Dialect::Clingo));
+    assert!(
+        reraised.diagnostics().is_empty(),
+        "the documented text re-raises cleanly"
+    );
+    let docs: Vec<String> = reraised
+        .program()
+        .statements()
+        .flat_map(|statement| {
+            statement
+                .provenance()
+                .annotations()
+                .doc()
+                .map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(docs, ["the reachable base case"]);
 }
 
 #[test]
