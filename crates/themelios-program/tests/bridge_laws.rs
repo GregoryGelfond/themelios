@@ -98,19 +98,10 @@ fn symbol_function(name: &str, arguments: Vec<Symbol>) -> Symbol {
 }
 
 #[test]
-fn evaluate_folds_ground_arithmetic_and_refuses_over_wrapping() {
+fn evaluate_folds_ground_arithmetic() {
     assert_eq!(
         evaluate(&binop(BinaryOp::Add, num(1), num(2))),
         Ok(Symbol::Number(3))
-    );
-    assert_eq!(
-        evaluate(&binop(BinaryOp::Div, num(6), num(0))),
-        Err(EvalError::Undefined)
-    );
-    // Overflow refuses; the wrapped value is never returned.
-    assert_eq!(
-        evaluate(&binop(BinaryOp::Add, num(i32::MAX), num(1))),
-        Err(EvalError::Overflow)
     );
     // A ground constructor evaluates to its symbol.
     assert_eq!(
@@ -124,6 +115,20 @@ fn evaluate_folds_ground_arithmetic_and_refuses_over_wrapping() {
     assert_eq!(
         evaluate(&function("f", vec![binop(BinaryOp::Add, num(1), num(2))])),
         Ok(symbol_function("f", vec![Symbol::Number(3)]))
+    );
+}
+
+#[test]
+fn evaluate_refuses_a_non_denoting_operation() {
+    // Division by zero does not denote: refused, never a wrong answer.
+    assert_eq!(
+        evaluate(&binop(BinaryOp::Div, num(6), num(0))),
+        Err(EvalError::Undefined)
+    );
+    // Overflow refuses; the wrapped value is never returned.
+    assert_eq!(
+        evaluate(&binop(BinaryOp::Add, num(i32::MAX), num(1))),
+        Err(EvalError::Overflow)
     );
 }
 

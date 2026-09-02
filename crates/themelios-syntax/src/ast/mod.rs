@@ -743,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn docs_are_the_statements_and_the_token_wrappers_read_values() {
+    fn a_statement_s_doc_lines_read_its_documentation() {
         let statement = first_statement("%! one \n%! two\np(\"a\\nb\", 0x1F, X, _).");
         let Statement::Rule(rule) = statement else {
             panic!()
@@ -754,6 +754,14 @@ mod tests {
             .collect();
         assert_eq!(lines, [" one ", " two"]);
         assert!(rule.docs_range().is_some());
+    }
+
+    #[test]
+    fn the_token_wrappers_read_their_values() {
+        let statement = first_statement("p(\"a\\nb\", 0x1F, X, _).");
+        let Statement::Rule(rule) = statement else {
+            panic!()
+        };
         let Some(Head::Literal(head)) = rule.head() else {
             panic!()
         };

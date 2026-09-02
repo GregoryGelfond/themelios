@@ -262,10 +262,9 @@ const _: fn() = || {
 // ---- Law: occurrence ----
 
 #[test]
-fn every_construct_that_occurs_is_flagged_and_one_that_does_not_is_not() {
+fn every_construct_that_occurs_is_flagged() {
     let table = one_of_each();
-    let all: Vec<Construct> = table.iter().map(|(construct, _)| *construct).collect();
-    assert_eq!(all.len(), 17, "the table covers all seventeen constructs");
+    assert_eq!(table.len(), 17, "the table covers all seventeen constructs");
 
     for (target, statement) in &table {
         let scan = scan_of([statement.clone()]);
@@ -273,6 +272,17 @@ fn every_construct_that_occurs_is_flagged_and_one_that_does_not_is_not() {
             scan.uses(*target),
             "a program that uses {target:?} flags it"
         );
+    }
+}
+
+#[test]
+fn a_construct_that_does_not_occur_is_not_flagged() {
+    let table = one_of_each();
+    let all: Vec<Construct> = table.iter().map(|(construct, _)| *construct).collect();
+
+    // A program using exactly one construct flags no other.
+    for (target, statement) in &table {
+        let scan = scan_of([statement.clone()]);
         for other in &all {
             if other != target {
                 assert!(
@@ -294,16 +304,23 @@ fn every_construct_that_occurs_is_flagged_and_one_that_does_not_is_not() {
     assert_eq!(plain.all().count(), 0, "the plain fact's scan is empty");
 }
 
-// ---- Law: first names a using statement; all covers exactly the used constructs ----
+// ---- Law: all covers exactly the used constructs; first names a using statement ----
 
 #[test]
-fn first_names_a_using_statement_and_all_covers_exactly_the_used_constructs() {
+fn all_reports_exactly_the_used_constructs() {
     let table = one_of_each();
     let all: BTreeSet<Construct> = table.iter().map(|(construct, _)| *construct).collect();
     let scan = Constructs::of(&Program::of(table.iter().map(|(_, s)| wp(s.clone()))));
 
     let reported: BTreeSet<Construct> = scan.all().map(|(construct, _)| construct).collect();
     assert_eq!(reported, all, "all() reports exactly the used constructs");
+}
+
+#[test]
+fn first_names_a_statement_that_uses_the_construct() {
+    let table = one_of_each();
+    let all: BTreeSet<Construct> = table.iter().map(|(construct, _)| *construct).collect();
+    let scan = Constructs::of(&Program::of(table.iter().map(|(_, s)| wp(s.clone()))));
 
     // Every first() names a statement that genuinely uses that construct — re-scanning
     // the witness alone re-flags it.

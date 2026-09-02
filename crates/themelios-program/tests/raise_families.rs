@@ -232,8 +232,12 @@ fn a_head_function_aggregate_lowers_to_a_head_aggregate() {
 }
 
 #[test]
-fn a_true_head_folds_to_verum_and_a_false_head_to_falsum() {
+fn a_true_head_folds_to_verum() {
     assert!(matches!(only_rule("#true.").head().get(), Head::Verum));
+}
+
+#[test]
+fn a_false_head_folds_to_falsum() {
     assert!(matches!(
         only_rule("#false :- b.").head().get(),
         Head::Falsum

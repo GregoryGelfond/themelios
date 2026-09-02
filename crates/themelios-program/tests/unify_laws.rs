@@ -582,9 +582,8 @@ fn several_variables_collapsing_onto_one_symbol_all_bind() {
 }
 
 #[test]
-fn an_anonymous_variable_unifies_with_anything_and_each_is_distinct() {
-    // p(_) matches p(f(X)): an anonymous variable unifies with any term. And in p(_, _) against
-    // p(1, 2) each `_` is a distinct variable, matching its own argument.
+fn an_anonymous_variable_unifies_with_any_term() {
+    // p(_) matches p(f(X)): an anonymous variable unifies with any term.
     assert!(matches!(
         mgu(
             &atom("p", [Term::Variable(Variable::Anonymous)]),
@@ -592,6 +591,12 @@ fn an_anonymous_variable_unifies_with_anything_and_each_is_distinct() {
         ),
         Ok(Some(_)),
     ));
+}
+
+#[test]
+fn each_anonymous_variable_is_distinct() {
+    // In p(_, _) against p(1, 2) each `_` is a distinct variable, matching its own
+    // argument — were they one variable, 1 and 2 would clash.
     assert!(matches!(
         mgu(
             &atom(

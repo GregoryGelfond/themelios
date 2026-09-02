@@ -1027,16 +1027,21 @@ mod tests {
     }
 
     #[test]
-    fn a_theory_opterm_ends_at_its_condition_colon_and_recovers_over_stray_input() {
-        // The colon that opens a theory element's condition ends the opterm
-        // before it (the base-frame `kind == COLON` synchronizer); and a stray
-        // `$` between elements is carried into one ERROR node, the elements
-        // around it whole — the theory recovery's synchronization.
+    fn a_theory_opterm_ends_at_its_condition_colon() {
+        // The colon that opens a theory element's condition ends the opterm before it
+        // (the base-frame `kind == COLON` synchronizer).
         let sx = |t: &str| sexpr(&crate::parse::parse(&admitted(t), Dialect::Clingo).syntax());
         assert_eq!(
             sx("&a { x : p ; y : q }."),
             "(PROGRAM (RULE (THEORY_ATOM & a (THEORY_ELEMENTS { (THEORY_ELEMENT (THEORY_OPTERM (CONSTANT_TERM x)) : (CONDITION (LITERAL (ATOM p)))) ; (THEORY_ELEMENT (THEORY_OPTERM (CONSTANT_TERM y)) : (CONDITION (LITERAL (ATOM q)))) })) .))"
         );
+    }
+
+    #[test]
+    fn theory_element_recovery_wraps_stray_input() {
+        // A stray `$` between elements is carried into one ERROR node, the elements
+        // around it whole — the theory recovery's synchronization.
+        let sx = |t: &str| sexpr(&crate::parse::parse(&admitted(t), Dialect::Clingo).syntax());
         assert_eq!(
             sx("&a { x $ y }."),
             "(PROGRAM (RULE (THEORY_ATOM & a (THEORY_ELEMENTS { (THEORY_ELEMENT (THEORY_OPTERM (CONSTANT_TERM x))) (ERROR $) (THEORY_ELEMENT (THEORY_OPTERM (CONSTANT_TERM y))) })) .))"
@@ -1073,8 +1078,18 @@ mod tests {
     }
 
     #[test]
-    fn unary_runs_are_flat_and_bind_tighter_than_every_binary_level() {
+    fn unary_runs_are_flat() {
+        // A run of unary operators is one flat node, and a unary applies to its whole
+        // parenthesized operand as a single node.
         assert_eq!(term("- - x"), "(UNARY_TERM - - (CONSTANT_TERM x))");
+        assert_eq!(
+            term("-(1;2)"),
+            "(UNARY_TERM - (POOL ( (TUPLE (CONSTANT_TERM 1)) ; (TUPLE (CONSTANT_TERM 2)) )))"
+        );
+    }
+
+    #[test]
+    fn unary_binds_tighter_than_every_binary_level() {
         assert_eq!(
             term("-2**2"),
             "(BINARY_TERM (UNARY_TERM - (CONSTANT_TERM 2)) ** (CONSTANT_TERM 2))"
@@ -1086,10 +1101,6 @@ mod tests {
         assert_eq!(
             term("~X + 1"),
             "(BINARY_TERM (UNARY_TERM ~ (VARIABLE_TERM X)) + (CONSTANT_TERM 1))"
-        );
-        assert_eq!(
-            term("-(1;2)"),
-            "(UNARY_TERM - (POOL ( (TUPLE (CONSTANT_TERM 1)) ; (TUPLE (CONSTANT_TERM 2)) )))"
         );
     }
 

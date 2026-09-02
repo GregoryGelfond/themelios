@@ -684,9 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn names_take_primes_and_underscores_and_the_lone_underscore_is_anonymous() {
-        assert_eq!(kinds(&normal("__")), [ANONYMOUS, ANONYMOUS]);
-        assert_eq!(kinds(&normal("_1")), [ANONYMOUS, NUMBER]);
+    fn names_take_primes_and_underscores() {
         assert_eq!(
             kinds(&normal("_p 'a a' p'' _X X'")),
             [
@@ -694,10 +692,17 @@ mod tests {
                 VARIABLE, WHITESPACE, VARIABLE
             ]
         );
+        // A word that merely begins with a keyword (`nota`) is still a name, not the keyword.
         assert_eq!(
             kinds(&normal("not nota default")),
             [KW_NOT, WHITESPACE, IDENT, WHITESPACE, IDENT]
         );
+    }
+
+    #[test]
+    fn the_lone_underscore_is_anonymous() {
+        assert_eq!(kinds(&normal("__")), [ANONYMOUS, ANONYMOUS]);
+        assert_eq!(kinds(&normal("_1")), [ANONYMOUS, NUMBER]);
     }
 
     #[test]
@@ -828,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn block_comments_nest_and_silence_under_clingo_and_neither_under_asp_core_2() {
+    fn block_comments_nest_and_silence_under_clingo() {
         assert_eq!(
             kinds(&normal("%* a %* b *% c *%p.")),
             [BLOCK_COMMENT, IDENT, DOT]
@@ -840,6 +845,10 @@ mod tests {
         assert_eq!(kinds(&normal("%* a % *% b *%")), [ERROR]);
         assert_eq!(kinds(&normal("%* %* *%")), [ERROR]);
         assert_eq!(kinds(&normal("%* %! *%")), [ERROR]);
+    }
+
+    #[test]
+    fn block_comments_do_neither_under_asp_core_2() {
         let core = |text: &str| tile(text, LexMode::Normal, Dialect::AspCore2);
         assert_eq!(
             kinds(&core("%* a % *% b *%")),

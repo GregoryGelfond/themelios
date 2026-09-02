@@ -19,10 +19,16 @@ fn num(n: i32) -> Term {
 }
 
 #[test]
-fn a_theory_atom_s_elements_are_a_set_and_its_guard_optional() {
+fn a_theory_atom_s_elements_are_a_set() {
     let element = || TheoryElement::new([TheoryTerm::Symbolic(Symbol::Number(1))], None);
     let atom = TheoryAtom::new(name("sum"), [], [element(), element()], None);
     assert_eq!(atom.elements().count(), 1); // a duplicate element vanishes
+}
+
+#[test]
+fn a_theory_atom_s_guard_is_optional() {
+    let element = || TheoryElement::new([TheoryTerm::Symbolic(Symbol::Number(1))], None);
+    let atom = TheoryAtom::new(name("sum"), [], [element()], None);
     assert!(atom.guard().is_none());
     let guarded = TheoryAtom::new(
         name("sum"),

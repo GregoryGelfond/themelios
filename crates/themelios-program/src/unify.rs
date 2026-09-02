@@ -1568,7 +1568,26 @@ mod tests {
     }
 
     #[test]
-    fn rule_substitution_is_total_and_preserves_provenance() {
+    fn rule_substitution_rewrites_the_whole_rule() {
+        // p(X) :- q(X). {X↦1} = p(1) :- q(1). — the substitution reaches both the head and the body.
+        let rule = Rule::new(
+            Atom::new(name("p"), [tvar("X")]),
+            Atom::new(name("q"), [tvar("X")]),
+        );
+
+        let substituted = substitute(rule, &pairs([(var("X"), num(1))]));
+
+        assert_eq!(
+            substituted,
+            Rule::new(
+                Atom::new(name("p"), [num(1)]),
+                Atom::new(name("q"), [num(1)]),
+            ),
+        );
+    }
+
+    #[test]
+    fn rule_substitution_preserves_provenance() {
         // p(X) :- q(X). with a distinct annotation on the head and the body carrier.
         let head = WithProvenance::new(
             Head::Literal(Literal::from(Atom::new(name("p"), [tvar("X")]))),
@@ -1582,14 +1601,6 @@ mod tests {
 
         let substituted = substitute(rule, &pairs([(var("X"), num(1))]));
 
-        // Content: p(1) :- q(1). (equality is up to provenance).
-        assert_eq!(
-            substituted,
-            Rule::new(
-                Atom::new(name("p"), [num(1)]),
-                Atom::new(name("q"), [num(1)]),
-            ),
-        );
         // The head and body carriers keep their provenance.
         assert!(
             substituted

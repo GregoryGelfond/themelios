@@ -203,7 +203,7 @@ fn a_predicate_inside_a_condition_is_reached() {
 // ---- Law: each head predicate gets an edge; edges_from yields every kind ----
 
 #[test]
-fn each_head_predicate_gets_an_edge_and_edges_from_yields_every_kind() {
+fn each_head_predicate_gets_an_edge() {
     // p | q :- r.   → p→r and q→r.
     let disjunction = Head::Disjunction(Disjunction::new([
         DisjunctionElement::new(Literal::from(atom("p")), Condition::empty()),
@@ -237,7 +237,10 @@ fn each_head_predicate_gets_an_edge_and_edges_from_yields_every_kind() {
         out(&graph, &pos("q", 0)),
         edge(DependencyKind::Positive, pos("r", 0)),
     );
+}
 
+#[test]
+fn edges_from_yields_every_edge_kind() {
     // p :- q, not q.   → edges_from(p) yields both kinds.
     let graph = graph_of([Statement::Rule(Rule::new(
         atom("p"),
@@ -254,11 +257,30 @@ fn each_head_predicate_gets_an_edge_and_edges_from_yields_every_kind() {
     );
 }
 
-// ---- Law: positive() retains exactly the Positive edges ----
+// ---- Law: positive() retains the Positive edges and drops the rest ----
 
 #[test]
-fn positive_retains_the_positive_edges_and_drops_the_rest() {
-    // p :- q, not r, #count { X : s(X) } >= 1.
+fn positive_retains_the_positive_edges() {
+    // p :- q, not r, #count { X : s(X) } >= 1.  — the Positive q-edge survives positive().
+    let graph = graph_of([Statement::Rule(Rule::new(
+        atom("p"),
+        vec![
+            BodyElement::from(atom("q")),
+            not(atom("r")),
+            count_over(DefaultNegation::None, "s"),
+        ],
+    ))]);
+    let positive = graph.positive();
+    assert!(
+        out(&positive, &pos("p", 0)).contains(&(DependencyKind::Positive, pos("q", 0))),
+        "positive() keeps the Positive edge",
+    );
+}
+
+#[test]
+fn positive_drops_the_non_positive_edges() {
+    // p :- q, not r, #count { X : s(X) } >= 1.  — the full graph carries a Negative and a
+    // ThroughAggregate edge beside the Positive one; positive() drops those, keeping every node.
     let graph = graph_of([Statement::Rule(Rule::new(
         atom("p"),
         vec![
@@ -279,10 +301,14 @@ fn positive_retains_the_positive_edges_and_drops_the_rest() {
     );
 
     let positive = graph.positive();
-    assert_eq!(
-        out(&positive, &pos("p", 0)),
-        edge(DependencyKind::Positive, pos("q", 0)),
-        "positive() keeps only the Positive edge",
+    let positive_out = out(&positive, &pos("p", 0));
+    assert!(
+        !positive_out.contains(&(DependencyKind::Negative, pos("r", 0))),
+        "positive() drops the Negative edge",
+    );
+    assert!(
+        !positive_out.contains(&(DependencyKind::ThroughAggregate, pos("s", 1))),
+        "positive() drops the ThroughAggregate edge",
     );
     assert_eq!(
         nodes(&positive),

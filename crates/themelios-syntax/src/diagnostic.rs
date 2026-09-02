@@ -836,10 +836,17 @@ mod tests {
     }
 
     #[test]
-    fn identities_are_in_the_syntax_namespace_and_only_the_doc_warning_warns() {
+    fn error_identities_are_in_the_syntax_namespace() {
         for kind in representatives() {
             let error = SyntaxError::new(kind.clone(), at(0, 1));
-            assert_eq!(error.id().namespace(), "syntax");
+            assert_eq!(error.id().namespace(), "syntax", "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn only_the_doc_comment_warning_warns() {
+        for kind in representatives() {
+            let error = SyntaxError::new(kind.clone(), at(0, 1));
             let expected = if matches!(kind, SyntaxErrorKind::MisplacedDocComment { .. }) {
                 Severity::Warning
             } else {

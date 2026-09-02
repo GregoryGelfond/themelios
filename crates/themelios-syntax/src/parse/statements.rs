@@ -1170,7 +1170,7 @@ mod tests {
     }
 
     #[test]
-    fn documentation_belongs_to_the_statement_and_a_doc_line_inside_one_is_trivia() {
+    fn leading_documentation_belongs_to_the_statement() {
         assert_eq!(shape("%! doc\np."), "(RULE %! doc (LITERAL (ATOM p)) .)");
         assert!(kinds("%! doc\np.").is_empty());
         assert_eq!(
@@ -1178,6 +1178,10 @@ mod tests {
             "(RULE %! a %! b (LITERAL (ATOM p)) .)"
         );
         assert!(kinds("%! a\n\n%! b\np.").is_empty());
+    }
+
+    #[test]
+    fn a_doc_line_inside_a_statement_is_trivia() {
         let inside = kinds("p :- %! x\n q.");
         assert_eq!(inside.len(), 1);
         assert!(matches!(

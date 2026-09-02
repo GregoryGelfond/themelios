@@ -724,16 +724,25 @@ proptest! {
 // ---- The graph and components, against the naive reachability reference ----
 
 proptest! {
-    /// The components partition the predicates, agree with the naive reachability
-    /// reference, and are in reverse-topological order (§4).
+    /// The components agree with the naive reachability reference: the Tarjan
+    /// partition equals the naive one, so the components are exactly the
+    /// predicates' partition into strongly-connected sets (§4).
     #[test]
-    fn the_components_agree_with_the_naive_reference_and_are_reverse_topological(
+    fn the_components_agree_with_the_naive_reference(
         program in any_program(),
     ) {
         let analysis = Analysis::of(&program);
         let reference = DependencyGraph::of(&program);
         prop_assert_eq!(tarjan_partition(analysis.dependencies()), naive_partition(&reference));
+    }
 
+    /// The components are in reverse-topological order: every edge that crosses
+    /// components runs from a later component to an earlier one (§4).
+    #[test]
+    fn the_components_are_reverse_topological(
+        program in any_program(),
+    ) {
+        let analysis = Analysis::of(&program);
         let graph = analysis.dependencies();
         let position: BTreeMap<BTreeSet<Signature>, usize> = graph
             .components()

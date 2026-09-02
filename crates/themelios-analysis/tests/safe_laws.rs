@@ -1343,11 +1343,10 @@ fn safety_vets_more_bodied_directives() {
     );
 }
 
-/// Two directive-binding readings, each pinned by a `SAFETY_CORPUS` row against the grounder: a body-less
-/// `#show t.` binds nothing (a variable in the shown term is unsafe), and a `#heuristic` atom's domain
-/// match binds its bracket terms (`#heuristic p(X). [X@1, true]` is safe).
+/// A body-less `#show t.` binds nothing: a variable in the shown term is unsafe (`#show f(X).` is
+/// flagged, matching the grounder), while a ground shown term is safe. Pinned by a `SAFETY_CORPUS` row.
 #[test]
-fn safety_vets_body_less_show_and_heuristic_bracket_binding() {
+fn safety_vets_a_body_less_show() {
     // #show f(X).  — a body-less show binds nothing, so the shown term's X is unbound: unsafe. clingo
     // flags `#show f(X).`; the old `NoObligation` reading was a false `safe`.
     assert_eq!(
@@ -1365,7 +1364,13 @@ fn safety_vets_body_less_show_and_heuristic_bracket_binding() {
         .is_empty(),
         "a body-less #show with a ground shown term is safe",
     );
+}
 
+/// A `#heuristic` atom's domain match binds its bracket terms (`#heuristic p(X). [X@1, 1]` is safe),
+/// but only its own variables — an unrelated bracket variable stays unbound. Pinned by a
+/// `SAFETY_CORPUS` row against the grounder.
+#[test]
+fn safety_vets_heuristic_bracket_binding() {
     // #heuristic p(X). [X@1, 1]  — the atom domain-matches, binding X, so the bracket bias X is bound
     // even with an empty body: safe. clingo reads the atom as binding the bracket; the old wildcard
     // model read this unsafe.
