@@ -714,7 +714,7 @@ fn uses_disjunction_and_uses_choice_report_the_head_extensions() {
 // ---- Correctness: the routable projection ----
 
 #[test]
-fn confirmed_projects_the_proven_classes_and_omits_the_unproven() {
+fn confirmed_yields_exactly_the_proven_classes() {
     // a :- b.  b :- a.  — a positive cycle: NOT tight, but normal, Horn, stratified,
     // head-cycle-free, non-disjunctive, and choice-free.
     let confirmed: BTreeSet<ProgramClass> = classes_of([rule("a", "b"), rule("b", "a")])

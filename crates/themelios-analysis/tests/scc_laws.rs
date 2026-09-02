@@ -221,7 +221,7 @@ proptest! {
 }
 
 #[test]
-fn is_recursive_and_the_internal_edge_kinds_are_reported() {
+fn a_component_reports_its_internal_cycle_structure() {
     // A positive cycle: p :- q.  q :- p.
     let graph = graph_of([
         Statement::Rule(Rule::new(atom("p"), atom("q"))),

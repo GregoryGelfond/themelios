@@ -58,7 +58,7 @@ fn rendering_is_canonical_the_same_program_renders_the_same_text() {
 }
 
 #[test]
-fn render_documented_prepends_doc_comments_verbatim_and_round_trips_them() {
+fn render_documented_round_trips_the_doc_comments_verbatim() {
     // Two leading doc lines above a fact: the documented rendering emits each `%!` line
     // verbatim above the statement it documents, and — emitting exactly the form the raise
     // reads (the marker then the untrimmed content) — a single documented statement is a

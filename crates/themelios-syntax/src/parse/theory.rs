@@ -407,7 +407,9 @@ mod tests {
     }
 
     #[test]
-    fn the_guard_is_greedy_and_the_first_token_that_does_not_continue_it_is_read_in_normal_mode() {
+    fn the_guard_is_greedy() {
+        // The guard consumes as far as it can; the first token that does not continue it
+        // (here the `,`) is read back in normal mode.
         assert_eq!(
             shape("&a { x } > - not - , p."),
             "(RULE (THEORY_ATOM & a (THEORY_ELEMENTS { (THEORY_ELEMENT (THEORY_OPTERM (CONSTANT_TERM x))) }) (THEORY_GUARD > (THEORY_OPTERM - not -))) (ERROR , p) .)"
@@ -437,7 +439,8 @@ mod tests {
     }
 
     #[test]
-    fn theory_definitions_take_term_and_atom_definitions_with_operator_positions_in_theory_mode() {
+    fn theory_definitions_take_term_and_atom_definitions() {
+        // The operator positions in the op definitions (`- : 3, unary`, …) are read in theory mode.
         let text = "#theory cp { var_term { }; sum_term { - : 3, unary; ** : 2, binary, right; + : 0, binary, left }; &sum/0 : sum_term, {<=,=,!=,<,>,>=}, sum_term, any; &show/0 : sum_term, directive }.";
         assert!(member(text));
         let shape = shape(text);

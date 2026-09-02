@@ -59,7 +59,7 @@ fn signature(predicate: &str, arity: u32) -> Signature {
 }
 
 #[test]
-fn a_body_is_a_set_a_duplicate_vanishes_and_a_reordering_is_the_same_value() {
+fn a_body_is_a_set() {
     let p = || BodyElement::Literal(positive(atom("p", vec![])));
     let q = || BodyElement::Literal(positive(atom("q", vec![])));
 

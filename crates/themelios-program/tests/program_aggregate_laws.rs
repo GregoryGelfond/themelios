@@ -62,7 +62,7 @@ fn aggregate_and_optimize_elements_are_sets() {
 }
 
 #[test]
-fn has_guards_reads_both_guards_and_an_absent_relation_is_none() {
+fn has_guards_reads_both_guards() {
     let left = Guard {
         relation: Some(Relation::Le),
         term: number(1),
@@ -138,7 +138,7 @@ fn an_element_canonicalizes_its_terms_at_the_door() {
 }
 
 #[test]
-fn a_weight_carries_an_optional_priority_and_both_forms_share_it() {
+fn a_weight_carries_an_optional_priority() {
     // weight(w) is at the default level; .at_priority(p) raises it, and the priority is
     // part of the weight's identity, so the two differ (`w` vs `w@p`).
     let plain = weight(number(1));
