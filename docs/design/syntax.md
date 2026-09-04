@@ -696,9 +696,10 @@ parent's children is a trivia-kind token or a `DOC_COMMENT` — a
 significant token or a child node ends that leading prefix. `role` reads
 the rule for one token; `roles_of` reads it for a whole node's children
 in one pass, for a consumer that reads a node's roles together — as the
-crate's own bulk readers do: `HasDocs::doc_lines` (§8.2) and the bulk
-attachment walk (§9.3) read a node's roles in one forward pass, so a
-k-line doc block costs them O(k), never the O(k²) of `role` per line.
+crate's own bulk readers do: `HasDocs::doc_lines` (§8.2), the bulk
+attachment walk (§9.3), and the token-stream projections (§11.1) read a
+node's roles in one forward pass, so a k-line doc block costs them O(k),
+never the O(k²) of `role` per line.
 When the reserved inner-docs form (§17) arrives, this definition moves
 and the sites do not.
 
@@ -2313,8 +2314,10 @@ once.
 
 **Computational cost.** `equivalent` is O(|left| + |right|), a single
 zip over two lazy iterators; `non_whitespace_tokens`, `token_stream`,
-and `comment_sequence` are lazy preorder walks; `canonical_spelling` is
-O(1).
+and `comment_sequence` are lazy preorder walks, O(subtree) — the two
+projections read each token's role forward per node as the walk descends
+(§5.4), so a doc block costs its length, not its square;
+`canonical_spelling` is O(1).
 
 ## 12. Posture
 
@@ -2650,10 +2653,12 @@ what it proves and what it cannot (spec §10.2).
   consumer holds — refused far beyond it and admitted at it with margin to
   spare, and the file door `parse` itself refused and held there.
 - **Scaling shapes (criterion):** parse linear in text; the certificate
-  linear in both texts; bulk attachment linear in the tree; the oracle
-  constant per pair; the whitespace facts constant in the tree size (each
-  reads only the trivia between its two elements, §9.3). Shape assertions
-  in the checks; absolute numbers out of band (spec §10.2).
+  linear in both texts; bulk attachment linear in the tree; bulk
+  attachment, the significant-child walk, and the token stream linear in
+  a `%!` doc block (the docs-position shape, §5.4); the oracle constant
+  per pair; the whitespace facts constant in the tree size (each reads
+  only the trivia between its two elements, §9.3). Shape assertions in
+  the checks; absolute numbers out of band (spec §10.2).
 - **The identity table**, snapshot-tested: Appendix B is the shipped
   table; a change is a visible diff.
 - **The trust checks:** the closure allow-list over Cargo's resolved

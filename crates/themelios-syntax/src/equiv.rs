@@ -11,7 +11,8 @@ use themelios_base::span::Location;
 use crate::ast::{line_or_shebang_content, script_body_value};
 use crate::parse::Parse;
 use crate::tree::{
-    Asp, AstNode, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, TokenRole, role,
+    Asp, AstNode, NodeOrToken, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, TokenRole,
+    WalkEvent, keeps_leading, role_of,
 };
 
 /// Every non-whitespace token under `node`, in order — the sequence the
@@ -23,18 +24,80 @@ pub fn non_whitespace_tokens(node: &SyntaxNode) -> impl Iterator<Item = SyntaxTo
         .filter(|token| token.kind() != SyntaxKind::WHITESPACE)
 }
 
+/// One node the walk of `token_roles` is inside: the two facts a token's
+/// role is decided by (`role_of`) — whether the node is a statement, and
+/// whether its leading prefix is still intact where the walk stands.
+#[derive(Clone, Copy)]
+struct Frame {
+    is_statement: bool,
+    leading: bool,
+}
+
+/// The non-whitespace tokens under `node` with their roles, in document
+/// order, in one pass — the roles `token_stream` and `comment_sequence`
+/// filter by, read forward per node instead of scanned backward per
+/// token (`role`), which cost a k-line doc block O(k²). A stack of one
+/// `Frame` per open node: a token reads its role off the top frame, its
+/// parent's; an element that does not keep the prefix (`keeps_leading`)
+/// ends it there, a child node before opening its own frame — so the
+/// frame a token finds holds exactly what `role` would read over its
+/// preceding siblings. Total — the walk enters `node` before any token
+/// under it, so a token always finds its parent's frame; O(subtree);
+/// lazy, as the certificate reads two streams in lockstep.
+fn token_roles(node: &SyntaxNode) -> impl Iterator<Item = (SyntaxToken, TokenRole)> {
+    let mut frames: Vec<Frame> = Vec::new();
+    node.preorder_with_tokens()
+        .filter_map(move |event| match event {
+            WalkEvent::Enter(element) => {
+                let yielded = match &element {
+                    NodeOrToken::Token(token) if token.kind() != SyntaxKind::WHITESPACE => {
+                        let Frame {
+                            is_statement,
+                            leading,
+                        } = *frames.last().expect("a token stands inside its node");
+                        Some((token.clone(), role_of(token.kind(), is_statement, leading)))
+                    }
+                    NodeOrToken::Token(_) | NodeOrToken::Node(_) => None,
+                };
+                if !keeps_leading(&element)
+                    && let Some(parent) = frames.last_mut()
+                {
+                    parent.leading = false;
+                }
+                if let NodeOrToken::Node(child) = &element {
+                    frames.push(Frame {
+                        is_statement: child.kind().is_statement(),
+                        leading: true,
+                    });
+                }
+                yielded
+            }
+            WalkEvent::Leave(NodeOrToken::Node(_)) => {
+                frames.pop();
+                None
+            }
+            WalkEvent::Leave(NodeOrToken::Token(_)) => None,
+        })
+}
+
 /// The significant tokens of the tree under `node`, in order: every
 /// token whose role is not `Trivia` — all non-comment, non-whitespace
-/// tokens plus `DOC_COMMENT` tokens in docs position. Total; lazy.
+/// tokens plus `DOC_COMMENT` tokens in docs position. Total; O(subtree),
+/// the roles read forward in one pass (`token_roles`) with no per-token
+/// scan; lazy.
 pub fn token_stream(node: &SyntaxNode) -> impl Iterator<Item = SyntaxToken> {
-    non_whitespace_tokens(node).filter(|token| role(token) != TokenRole::Trivia)
+    token_roles(node)
+        .filter(|(_, role)| *role != TokenRole::Trivia)
+        .map(|(token, _)| token)
 }
 
 /// The trivia comments under `node`, in order: role `Trivia`, kind a
-/// comment. Total; lazy.
+/// comment. Total; O(subtree), the roles read forward in one pass
+/// (`token_roles`) with no per-token scan; lazy.
 pub fn comment_sequence(node: &SyntaxNode) -> impl Iterator<Item = SyntaxToken> {
-    non_whitespace_tokens(node)
-        .filter(|token| token.kind().is_comment() && role(token) == TokenRole::Trivia)
+    token_roles(node)
+        .filter(|(token, role)| *role == TokenRole::Trivia && token.kind().is_comment())
+        .map(|(token, _)| token)
 }
 
 /// A token's content for the sequence (docs/design/syntax.md §11.1): the
@@ -227,7 +290,8 @@ mod tests {
     use crate::ast::Program;
     use crate::dialect::Dialect;
     use crate::parse::{Parse, parse};
-    use crate::tree::SyntaxKind;
+    use crate::tree::role_shapes::role_corpus;
+    use crate::tree::{NodeOrToken, SyntaxElement, SyntaxKind, keeps_leading, role};
 
     fn program(text: &str, id: u32) -> Parse<Program> {
         let source = Source::new(SourceId::new(id), text.to_owned()).expect("admits");
@@ -236,6 +300,104 @@ mod tests {
 
     fn certified(left: &str, right: &str, certificate: Certificate) -> Result<(), Mismatch> {
         equivalent(&program(left, 1), &program(right, 2), certificate)
+    }
+
+    /// The first element before `token` among its parent's children that
+    /// ends the leading prefix, if any: a significant token, or a child
+    /// node — the two ways a `DOC_COMMENT` under a statement comes to be
+    /// trivia, which the witnesses below tell apart.
+    fn ends_the_prefix(token: &SyntaxToken) -> Option<SyntaxElement> {
+        token
+            .parent()?
+            .children_with_tokens()
+            .take_while(|element| element.as_token() != Some(token))
+            .find(|element| !keeps_leading(element))
+    }
+
+    #[test]
+    fn token_stream_agrees_with_the_per_token_reading_on_every_node() {
+        // The stream's one-pass reading of roles and `role` per token are
+        // one reading: on every node of the docs-position corpus the stream
+        // is exactly the non-whitespace tokens `role` does not call trivia,
+        // in order. With a witness that the corpus reaches each way a
+        // DOC_COMMENT's role is decided — kept as documentation; dropped
+        // after a significant token; dropped after a child node with no
+        // significant token before it, which only a walk that ends the
+        // prefix on entering a child node reads right; and dropped under a
+        // node that is no statement.
+        let mut documented = 0usize;
+        let mut after_a_token = 0usize;
+        let mut after_a_node_only = 0usize;
+        let mut outside_a_statement = 0usize;
+        for root in role_corpus() {
+            for node in root.descendants() {
+                let expected: Vec<SyntaxToken> = non_whitespace_tokens(&node)
+                    .filter(|token| role(token) != TokenRole::Trivia)
+                    .collect();
+                let read: Vec<SyntaxToken> = token_stream(&node).collect();
+                assert_eq!(read, expected, "{}", node.kind());
+            }
+            for token in
+                non_whitespace_tokens(&root).filter(|token| token.kind() == SyntaxKind::DOC_COMMENT)
+            {
+                let parent = token.parent().expect("a token has a parent");
+                if !parent.kind().is_statement() {
+                    outside_a_statement += 1;
+                    continue;
+                }
+                match ends_the_prefix(&token) {
+                    None => documented += 1,
+                    Some(NodeOrToken::Token(_)) => after_a_token += 1,
+                    Some(NodeOrToken::Node(_)) => after_a_node_only += 1,
+                }
+            }
+        }
+        assert!(documented > 0 && after_a_token > 0);
+        assert!(after_a_node_only > 0 && outside_a_statement > 0);
+    }
+
+    #[test]
+    fn comment_sequence_agrees_with_the_per_token_reading_on_every_node() {
+        // The mirror law for the other projection: on every node of the
+        // corpus the sequence is exactly the comment-kind tokens `role`
+        // calls trivia, in order — with a witness that the role decides the
+        // admission both ways for a DOC_COMMENT, and that a plain comment
+        // inside a doc block is admitted while the doc lines around it are
+        // not.
+        let mut doc_kind_admitted = 0usize;
+        let mut doc_kind_refused = 0usize;
+        let mut plain_inside_a_block = 0usize;
+        for root in role_corpus() {
+            for node in root.descendants() {
+                let expected: Vec<SyntaxToken> = non_whitespace_tokens(&node)
+                    .filter(|token| token.kind().is_comment() && role(token) == TokenRole::Trivia)
+                    .collect();
+                let read: Vec<SyntaxToken> = comment_sequence(&node).collect();
+                assert_eq!(read, expected, "{}", node.kind());
+            }
+            let admitted: Vec<SyntaxToken> = comment_sequence(&root).collect();
+            for token in
+                non_whitespace_tokens(&root).filter(|token| token.kind() == SyntaxKind::DOC_COMMENT)
+            {
+                if admitted.contains(&token) {
+                    doc_kind_admitted += 1;
+                } else {
+                    doc_kind_refused += 1;
+                }
+            }
+            plain_inside_a_block += admitted
+                .iter()
+                .filter(|token| {
+                    token.kind() != SyntaxKind::DOC_COMMENT
+                        && token
+                            .parent()
+                            .is_some_and(|parent| parent.kind().is_statement())
+                        && ends_the_prefix(token).is_none()
+                })
+                .count();
+        }
+        assert!(doc_kind_admitted > 0 && doc_kind_refused > 0);
+        assert!(plain_inside_a_block > 0);
     }
 
     #[test]

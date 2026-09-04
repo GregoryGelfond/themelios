@@ -2,8 +2,9 @@
 //! only, held by the median over five interleaved wall-clock ratios with
 //! tolerances wide enough for any CI machine — parse linear in text, the
 //! certificate linear in both texts, bulk attachment linear in the tree,
-//! the significant-child walk linear in the children, the oracle constant
-//! per pair. What they prove: the claimed class (a quadratic parse, a
+//! the significant-child walk linear in the children, those two walks and
+//! the token stream linear in a `%!` doc block, the oracle constant per
+//! pair. What they prove: the claimed class (a quadratic parse, a
 //! re-scanning attachment, a certificate that re-walks). What they
 //! cannot: absolute speed — that lives in the out-of-band benches.
 //!
@@ -18,7 +19,7 @@ use std::time::Instant;
 use themelios_base::source::{Source, SourceId};
 use themelios_syntax::attach::{attachments, empty_line_between, significant_children};
 use themelios_syntax::dialect::Dialect;
-use themelios_syntax::equiv::{Certificate, equivalent};
+use themelios_syntax::equiv::{Certificate, equivalent, token_stream};
 use themelios_syntax::fusion::separator;
 use themelios_syntax::parse::parse;
 use themelios_syntax::tree::{SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
@@ -302,6 +303,34 @@ fn bulk_attachment_is_linear_in_a_doc_block() {
     assert!(
         ratio < LINEAR_CEILING * RATIO_SCALE,
         "attachment's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over a x{SIZE_RATIO} doc block; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[test]
+fn the_token_stream_is_linear_in_a_doc_block() {
+    // The stream over a program whose one rule carries a k-line doc block:
+    // it keeps each doc line by its role, and a reading of the role that
+    // scanned the line's preceding siblings would be O(k²) here and show
+    // as a ratio near SIZE_RATIO², past the ceiling. (UNIT's plain-comment
+    // run was linear already: a plain comment's role is a fact of its kind.)
+    let small_root = tree_of(doc_block_text(64));
+    let big_root = tree_of(doc_block_text(64 * SIZE_RATIO));
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(token_stream(&small_root).count());
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(token_stream(&big_root).count());
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "the token stream's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over a x{SIZE_RATIO} doc block; the linear shape allows at most x{LINEAR_CEILING}"
     );
 }
 
