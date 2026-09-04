@@ -79,7 +79,7 @@ fn every_trivia_comment_of_the_corpus_attaches_once_and_the_two_forms_agree() {
                 comment.text()
             );
             assert!(
-                comments(&single.anchor, single.slot).any(|c| &c == comment.syntax()),
+                comments(&single.anchor, single.slot).any(|c| &c == comment),
                 "{name}: the inverse form yields {}",
                 comment.text()
             );

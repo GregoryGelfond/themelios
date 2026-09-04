@@ -136,7 +136,12 @@ pub fn significant_children(node: &SyntaxNode) -> impl Iterator<Item = SyntaxEle
 /// the attachment policy's `prev` (`Direction::Prev`) or `next`
 /// (`Direction::Next`) of the element (docs/design/syntax.md §9.2) — or
 /// `None` when only skipped siblings, or none, remain. Total; O(the
-/// siblings stepped over).
+/// siblings stepped over), each read by `is_skipped` — and a stepped
+/// `DOC_COMMENT`'s role is `role`'s O(preceding siblings), so on a
+/// statement carrying a k-line doc block and a run of m misplaced `%!`
+/// lines after its head, a step across the run is O(k·m). For a whole
+/// node's significant children, `significant_children` is one pass,
+/// O(the node's children).
 pub fn non_trivia_sibling(element: SyntaxElement, direction: Direction) -> Option<SyntaxElement> {
     iter::successors(Some(element), |element| match direction {
         Direction::Next => element.next_sibling_or_token(),
@@ -150,7 +155,11 @@ pub fn non_trivia_sibling(element: SyntaxElement, direction: Direction) -> Optio
 /// token in `direction`, in document order — across node boundaries, as
 /// `next_token` and `prev_token` step — or `None` when the tree ends
 /// first. Trivia is `role`'s: a `DOC_COMMENT` in docs position stops the
-/// walk, a stray one is stepped over. Total; O(the trivia stepped over).
+/// walk, a stray one is stepped over. Total; O(the trivia stepped over),
+/// each read by `role` — and a stepped `DOC_COMMENT` costs O(its
+/// preceding siblings), so crossing a run of m misplaced `%!` lines
+/// after the head of a statement carrying a k-line doc block is O(k·m).
+/// `roles_of` reads a node's roles in one pass, O(the node's children).
 pub fn skip_trivia_token(mut token: SyntaxToken, direction: Direction) -> Option<SyntaxToken> {
     while role(&token) == TokenRole::Trivia {
         token = match direction {
@@ -205,8 +214,12 @@ fn is_empty_line(element: &SyntaxElement) -> bool {
 
 /// A comment's attachment. Refuses a token that is not a trivia comment
 /// — a doc line in docs position (structure) or any significant token —
-/// with the reason. Total otherwise; O(the trivia between `prev` and
-/// `next` around the comment), allocation-free.
+/// with the reason. Total otherwise, allocation-free; O(the trivia
+/// between `prev` and `next` around the comment), each read by
+/// `is_skipped` — a stepped `DOC_COMMENT`'s role is `role`'s O(preceding
+/// siblings), so beside a run of m misplaced `%!` lines under a k-line
+/// doc block it is O(k·m). For all of a tree's comments, `attachments`
+/// is the bulk form, O(subtree).
 pub fn attachment(comment: &SyntaxToken) -> Result<Attachment, NotAttachable> {
     if !comment.kind().is_comment() {
         return Err(NotAttachable::NotAComment {
@@ -342,19 +355,33 @@ fn resolve_children(parent: &SyntaxNode) -> Vec<(Comment, Attachment)> {
     out
 }
 
-/// The comments attached to `anchor` in `slot`, in source order — the
-/// inverse direction, for a consumer walking anchors. Total; O(the
-/// trivia adjacent to the anchor) for `Leading` and `Trailing`, O(the
-/// anchor's children) for `Dangling`.
-pub fn comments(anchor: &SyntaxElement, slot: Slot) -> impl Iterator<Item = SyntaxToken> {
-    let found: Vec<SyntaxToken> = match slot {
-        Slot::Trailing => trailing(anchor),
-        Slot::Leading => leading(anchor),
+/// The comments attached to `anchor` in `slot`, as the typed `Comment`,
+/// in source order — the inverse direction, for a consumer walking
+/// anchors. Total; O(the trivia adjacent to the anchor) for `Trailing`,
+/// O(the anchor's children) for `Dangling`; for `Leading`, the run
+/// before the anchor is read with the same per-`DOC_COMMENT` role read
+/// the directional walks make — `role`'s O(preceding siblings) — so on
+/// a statement carrying a k-line doc block and a run of m misplaced
+/// `%!` lines after its head it is O(k·m). For all of a tree's
+/// comments, `attachments` is the bulk form, O(subtree).
+pub fn comments(anchor: &SyntaxElement, slot: Slot) -> impl Iterator<Item = Comment> {
+    let found: Vec<Comment> = match slot {
+        // `trailing` and `leading` yield the token, each established a
+        // trivia comment by `is_trivia_comment`: the wrapper is built from
+        // that fact, never by a cast that would read `role` again.
+        Slot::Trailing => trailing(anchor)
+            .into_iter()
+            .map(Comment::from_trivia_comment)
+            .collect(),
+        Slot::Leading => leading(anchor)
+            .into_iter()
+            .map(Comment::from_trivia_comment)
+            .collect(),
         Slot::Dangling => match anchor {
             NodeOrToken::Node(node) => resolve_children(node)
                 .into_iter()
                 .filter(|(_, attachment)| attachment.slot == Slot::Dangling)
-                .map(|(comment, _)| comment.syntax().clone())
+                .map(|(comment, _)| comment)
                 .collect(),
             NodeOrToken::Token(_) => Vec::new(),
         },
@@ -729,22 +756,45 @@ mod tests {
     }
 
     #[test]
+    fn comments_yields_the_typed_comment() {
+        // The inverse form yields the `Comment` wrapper as the bulk form
+        // does, in every slot, so a consumer reads the content — the
+        // trailing blanks the line rule swallowed, trimmed — off the
+        // yield itself, with no cast at the call site.
+        let root = parsed("% lead  \np. % trail  \n\n% dangling  \n");
+        let rule = SyntaxElement::Node(node_of_kind(&root, SyntaxKind::RULE));
+        let lead = comments(&rule, Slot::Leading)
+            .next()
+            .expect("a leading comment");
+        assert_eq!(lead.content(), "% lead");
+        let trail = comments(&rule, Slot::Trailing)
+            .next()
+            .expect("a trailing comment");
+        assert_eq!(trail.content(), "% trail");
+        let program = SyntaxElement::Node(root.clone());
+        let dangling = comments(&program, Slot::Dangling)
+            .next()
+            .expect("a dangling comment");
+        assert_eq!(dangling.content(), "% dangling");
+    }
+
+    #[test]
     fn the_two_forms_agree_and_the_bulk_form_yields_every_comment_once() {
         let root = parsed("% lead\np(1, % after comma\n 2). % trail\n\n% dangling\n");
         let all: Vec<(Comment, Attachment)> = attachments(&root).collect();
         assert_eq!(all.len(), 4);
         for (comment, att) in &all {
             assert_eq!(attachment(comment.syntax()).as_ref(), Ok(att));
-            let back: Vec<SyntaxToken> = comments(&att.anchor, att.slot).collect();
+            let back: Vec<Comment> = comments(&att.anchor, att.slot).collect();
             assert!(
-                back.contains(comment.syntax()),
+                back.contains(comment),
                 "the inverse form yields {}",
                 comment.text()
             );
         }
         let program = SyntaxElement::Node(root.clone());
         let dangling: Vec<String> = comments(&program, Slot::Dangling)
-            .map(|t| t.text().to_owned())
+            .map(|comment| comment.text().to_owned())
             .collect();
         assert_eq!(dangling, ["% dangling"]);
     }

@@ -117,7 +117,7 @@ fn holds<T: AstNode<Language = Asp>>(parse: &Parse<T>, text: &str) {
         );
         assert!(
             themelios_syntax::attach::comments(&attachment.anchor, attachment.slot)
-                .any(|c| &c == comment.syntax())
+                .any(|c| &c == comment)
         );
     }
     // The certificate is reflexive: a parse certifies against itself under

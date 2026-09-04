@@ -1963,10 +1963,11 @@ pub fn attachment(comment: &SyntaxToken) -> Result<Attachment, NotAttachable>;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NotAttachable { NotAComment { kind: SyntaxKind }, Documentation }
 
-/// The comments attached to `anchor` in `slot`, in source order — the
-/// inverse direction, for a consumer walking anchors.
+/// The comments attached to `anchor` in `slot`, as the typed `Comment`
+/// (§8.3), in source order — the inverse direction, for a consumer
+/// walking anchors.
 pub fn comments(anchor: &SyntaxElement, slot: Slot)
-    -> impl Iterator<Item = SyntaxToken>;
+    -> impl Iterator<Item = Comment>;
 
 /// Every trivia comment under `node`, as the typed `Comment` (§8.3),
 /// with its attachment, in source order, computed in one pass — the
@@ -1998,12 +1999,18 @@ pub fn line_breaks_between(a: &SyntaxElement, b: &SyntaxElement) -> u32;
 ```
 
 **Computational cost.** `attachment(c)` is O(the trivia between `prev`
-and `next` around `c`) — local, allocation-free; `comments(anchor,
+and `next` around `c`), allocation-free; `comments(anchor,
 slot)` is O(the trivia adjacent to the anchor) for `Leading` and
 `Trailing`, and O(the anchor's children) for `Dangling`, whose comments
 are scattered among them — for `PROGRAM`, the whole top level;
 `attachments(node)` is O(subtree) — each node's roles read in one pass
-(§5.4), so a doc block costs its length, not its square. A consumer that
+(§5.4), so a doc block costs its length, not its square. The single-query
+forms — `attachment`, `comments` for `Leading`, and the directional
+steps `non_trivia_sibling` and `skip_trivia_token` — read each `DOC_COMMENT`
+they step over by `role`, O(its preceding siblings), so a statement
+carrying a *k*-line doc block and a run of *m* misplaced `%!` lines
+after its head costs them O(*k*·*m*) where the bulk forms, the roles
+carried along in one pass, pay O(node). A consumer that
 asks `attachment` for each comment of a run of *m* comments pays O(m²)
 across the run, which is why the bulk form exists: a formatter walks
 anchors or takes the bulk pass and pays O(n). The whitespace facts are
