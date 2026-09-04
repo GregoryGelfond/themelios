@@ -71,7 +71,7 @@ fn the_glob_names_the_tree_vocabulary() {
 fn the_glob_names_the_attachment_surface() {
     let parsed = parse(&admitted("% lead\np.\n", 0), Dialect::Clingo);
     let (comment, attachment) = attachments(&parsed.syntax()).next().expect("a comment");
-    assert_eq!(comment.text(), "% lead");
+    assert_eq!(comment.content(), "% lead");
     assert_eq!(attachment.slot, Slot::Leading);
 }
 

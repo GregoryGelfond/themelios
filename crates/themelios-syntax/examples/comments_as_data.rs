@@ -4,11 +4,11 @@
 //! retrieved through the public API; the tree's text is the input, byte
 //! for byte, so an emit preserves every comment.
 
+use themelios_syntax::ast::AstToken;
 use themelios_syntax::attach::{Slot, attachment, attachments, comments};
 use themelios_syntax::base::source::{Source, SourceId};
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::parse::parse;
-use themelios_syntax::tree::{TokenRole, role};
 
 fn main() {
     let text = "% every route is a road or a rail\nroute(X, Y) :- road(X, Y). % roads\nroute(X, Y) :- rail(X, Y). % rails\n\n% unreachable? not from here\n";
@@ -20,11 +20,10 @@ fn main() {
     let mut seen = 0;
     for (comment, att) in attachments(&root) {
         seen += 1;
-        assert_eq!(role(&comment), TokenRole::Trivia);
-        assert_eq!(attachment(&comment).as_ref(), Ok(&att));
+        assert_eq!(attachment(comment.syntax()).as_ref(), Ok(&att));
         println!(
             "{:?} -> {:?} of {}",
-            comment.text(),
+            comment.content(),
             att.slot,
             att.anchor.kind()
         );

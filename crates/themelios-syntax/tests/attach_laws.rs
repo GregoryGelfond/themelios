@@ -5,6 +5,7 @@
 
 use proptest::prelude::*;
 use themelios_base::source::{Source, SourceId};
+use themelios_syntax::ast::AstToken;
 use themelios_syntax::attach::{Slot, attachment, attachments, comments};
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::parse::parse;
@@ -69,8 +70,8 @@ fn every_trivia_comment_of_the_corpus_attaches_once_and_the_two_forms_agree() {
             "{name}: the bulk form yields each trivia comment once"
         );
         for ((comment, bulk_attachment), in_tree) in bulk.iter().zip(&comments_in_tree) {
-            assert_eq!(comment, in_tree, "{name}: in source order");
-            let single = attachment(comment).expect("a trivia comment attaches");
+            assert_eq!(comment.syntax(), in_tree, "{name}: in source order");
+            let single = attachment(comment.syntax()).expect("a trivia comment attaches");
             assert_eq!(
                 &single,
                 bulk_attachment,
@@ -78,7 +79,7 @@ fn every_trivia_comment_of_the_corpus_attaches_once_and_the_two_forms_agree() {
                 comment.text()
             );
             assert!(
-                comments(&single.anchor, single.slot).any(|c| &c == comment),
+                comments(&single.anchor, single.slot).any(|c| &c == comment.syntax()),
                 "{name}: the inverse form yields {}",
                 comment.text()
             );

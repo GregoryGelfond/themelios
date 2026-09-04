@@ -18,6 +18,7 @@ use themelios_base::line::PositionRefusal;
 use themelios_base::source::{Source, SourceId, SourceSet};
 use themelios_base::span::ByteOffset;
 use themelios_base::view::human;
+use themelios_syntax::ast::AstToken;
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::parse::{NestingLimit, parse, parse_program};
 use themelios_syntax::token::{LexMode, Token, TokenSource};
@@ -402,11 +403,12 @@ fn attachment_dump(text: &str) -> String {
     let parse = parse(&source, Dialect::Clingo);
     let mut out = String::new();
     for (comment, attachment) in themelios_syntax::attach::attachments(&parse.syntax()) {
+        let token = comment.syntax();
         let _ = writeln!(
             out,
             "{:?} {:?} -> {:?} {}@{:?} {:?}",
-            comment.text_range(),
-            comment.text(),
+            token.text_range(),
+            token.text(),
             attachment.slot,
             attachment.anchor.kind(),
             attachment.anchor.text_range(),

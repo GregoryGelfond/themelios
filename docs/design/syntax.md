@@ -1929,10 +1929,11 @@ pub enum NotAttachable { NotAComment { kind: SyntaxKind }, Documentation }
 pub fn comments(anchor: &SyntaxElement, slot: Slot)
     -> impl Iterator<Item = SyntaxToken>;
 
-/// Every trivia comment under `node` with its attachment, in source
-/// order, computed in one pass — the bulk form.
+/// Every trivia comment under `node`, as the typed `Comment` (§8.3),
+/// with its attachment, in source order, computed in one pass — the
+/// bulk form.
 pub fn attachments(node: &SyntaxNode)
-    -> impl Iterator<Item = (SyntaxToken, Attachment)>;
+    -> impl Iterator<Item = (Comment, Attachment)>;
 ```
 
 The two directions agree by law: `comments(a, s)` yields exactly the

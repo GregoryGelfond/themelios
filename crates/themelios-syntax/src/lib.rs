@@ -34,9 +34,9 @@
 //! let Some(Head::Literal(head)) = fact.head() else { unreachable!() };
 //! assert!(matches!(head.inner(), Some(LiteralInner::Atom(_))));
 //!
-//! // Attachment as API: the comment leads the fact.
+//! // Attachment as API: the typed comment leads the fact.
 //! let (comment, attachment) = attachments(&parsed.syntax()).next().expect("a comment");
-//! assert_eq!(comment.text(), "% a fact");
+//! assert_eq!(comment.content(), "% a fact");
 //! assert_eq!(attachment.slot, Slot::Leading);
 //!
 //! // The certificate a layout-only change earns.

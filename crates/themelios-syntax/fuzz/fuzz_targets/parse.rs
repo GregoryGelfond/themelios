@@ -15,6 +15,7 @@ use themelios_base::diagnostic::Severity;
 use themelios_base::line::PositionRefusal;
 use themelios_base::source::{Source, SourceId};
 use themelios_base::span::ByteOffset;
+use themelios_syntax::ast::AstToken;
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::equiv::{Certificate, equivalent};
 use themelios_syntax::fusion::{Separator, lex_mode_of, separator};
@@ -111,12 +112,12 @@ fn holds<T: AstNode<Language = Asp>>(parse: &Parse<T>, text: &str) {
     assert_eq!(attachments.len(), trivia_comments);
     for (comment, attachment) in &attachments {
         assert_eq!(
-            themelios_syntax::attach::attachment(comment).as_ref(),
+            themelios_syntax::attach::attachment(comment.syntax()).as_ref(),
             Ok(attachment)
         );
         assert!(
             themelios_syntax::attach::comments(&attachment.anchor, attachment.slot)
-                .any(|c| &c == comment)
+                .any(|c| &c == comment.syntax())
         );
     }
     // The certificate is reflexive: a parse certifies against itself under

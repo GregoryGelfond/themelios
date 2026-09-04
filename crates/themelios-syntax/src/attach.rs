@@ -11,6 +11,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::iter;
 
+use crate::ast::{AstToken, Comment};
 use crate::tree::{
     Direction, NodeOrToken, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, TokenRole,
     WalkEvent, role,
@@ -75,7 +76,8 @@ impl std::error::Error for NotAttachable {}
 const LINE_BREAK: char = '\n';
 
 /// Whether `token` is a trivia comment: a comment by kind whose role is
-/// `Trivia` (docs/design/syntax.md §5.4).
+/// `Trivia` (docs/design/syntax.md §5.4) — `Comment::cast`'s own test,
+/// read here by the walks that yield the token rather than the wrapper.
 fn is_trivia_comment(token: &SyntaxToken) -> bool {
     token.kind().is_comment() && role(token) == TokenRole::Trivia
 }
@@ -242,11 +244,14 @@ pub fn attachment(comment: &SyntaxToken) -> Result<Attachment, NotAttachable> {
     })
 }
 
-/// Every trivia comment among `parent`'s children with its attachment,
-/// in order, in one pass: the rules read as cumulative facts along the
-/// children — a line break since the last significant sibling, an empty
-/// line before the next — so each comment resolves in constant time.
-fn resolve_children(parent: &SyntaxNode) -> Vec<(SyntaxToken, Attachment)> {
+/// Every trivia comment among `parent`'s children, as the typed
+/// `Comment`, with its attachment, in order, in one pass: the rules read
+/// as cumulative facts along the children — a line break since the last
+/// significant sibling, an empty line before the next — so each comment
+/// resolves in constant time. The cast is the admission: a token that
+/// casts is a trivia comment by `Comment`'s own reading of kind and role,
+/// so the wrapper exists by construction, never by a second test.
+fn resolve_children(parent: &SyntaxNode) -> Vec<(Comment, Attachment)> {
     let elements: Vec<SyntaxElement> = parent.children_with_tokens().collect();
     let count = elements.len();
     // Forward: the nearest significant sibling before each element and
@@ -286,9 +291,9 @@ fn resolve_children(parent: &SyntaxNode) -> Vec<(SyntaxToken, Attachment)> {
         let NodeOrToken::Token(token) = element else {
             continue;
         };
-        if !is_trivia_comment(token) {
+        let Some(comment) = Comment::cast(token.clone()) else {
             continue;
-        }
+        };
         let attachment = match (prev_of[index], broken_before[index]) {
             (Some(prev), false) => Attachment {
                 anchor: elements[prev].clone(),
@@ -305,7 +310,7 @@ fn resolve_children(parent: &SyntaxNode) -> Vec<(SyntaxToken, Attachment)> {
                 },
             },
         };
-        out.push((token.clone(), attachment));
+        out.push((comment, attachment));
     }
     out
 }
@@ -322,7 +327,7 @@ pub fn comments(anchor: &SyntaxElement, slot: Slot) -> impl Iterator<Item = Synt
             NodeOrToken::Node(node) => resolve_children(node)
                 .into_iter()
                 .filter(|(_, attachment)| attachment.slot == Slot::Dangling)
-                .map(|(comment, _)| comment)
+                .map(|(comment, _)| comment.syntax().clone())
                 .collect(),
             NodeOrToken::Token(_) => Vec::new(),
         },
@@ -391,13 +396,17 @@ fn leading(anchor: &SyntaxElement) -> Vec<SyntaxToken> {
     found
 }
 
-/// Every trivia comment under `node` with its attachment, in source
-/// order, computed in one pass — the bulk form. Total; O(subtree).
-pub fn attachments(node: &SyntaxNode) -> impl Iterator<Item = (SyntaxToken, Attachment)> {
+/// Every trivia comment under `node`, as the typed `Comment`, with its
+/// attachment, in source order, computed in one pass — the bulk form.
+/// Total; O(subtree).
+pub fn attachments(node: &SyntaxNode) -> impl Iterator<Item = (Comment, Attachment)> {
     let mut out = Vec::new();
     // Per open node, its comments' attachments, resolved once, consumed
-    // in token order as the walk meets them.
-    let mut open: Vec<VecDeque<(SyntaxToken, Attachment)>> = Vec::new();
+    // in token order as the walk meets them: the innermost open node is
+    // the token's parent and the front of its queue is that node's next
+    // comment in order, so an entry is taken exactly when the walk meets
+    // the entry's own token — no second reading of what is a comment.
+    let mut open: Vec<VecDeque<(Comment, Attachment)>> = Vec::new();
     for event in node.preorder_with_tokens() {
         match event {
             WalkEvent::Enter(NodeOrToken::Node(inner)) => {
@@ -407,8 +416,9 @@ pub fn attachments(node: &SyntaxNode) -> impl Iterator<Item = (SyntaxToken, Atta
                 open.pop();
             }
             WalkEvent::Enter(NodeOrToken::Token(token)) => {
-                if is_trivia_comment(&token)
-                    && let Some(resolved) = open.last_mut().and_then(VecDeque::pop_front)
+                if let Some(resolved) = open
+                    .last_mut()
+                    .and_then(|queue| queue.pop_front_if(|(comment, _)| comment.syntax() == &token))
                 {
                     out.push(resolved);
                 }
@@ -652,15 +662,26 @@ mod tests {
     }
 
     #[test]
+    fn attachments_yields_the_typed_comment() {
+        // The bulk form yields the `Comment` wrapper, so a consumer reads
+        // the content — the trailing blanks the line rule swallowed,
+        // trimmed — off the yield itself, with no cast at the call site.
+        let root = parsed("% lead  \np.\n");
+        let (comment, attachment) = attachments(&root).next().expect("a comment");
+        assert_eq!(comment.content(), "% lead");
+        assert_eq!(attachment.slot, Slot::Leading);
+    }
+
+    #[test]
     fn the_two_forms_agree_and_the_bulk_form_yields_every_comment_once() {
         let root = parsed("% lead\np(1, % after comma\n 2). % trail\n\n% dangling\n");
-        let all: Vec<(SyntaxToken, Attachment)> = attachments(&root).collect();
+        let all: Vec<(Comment, Attachment)> = attachments(&root).collect();
         assert_eq!(all.len(), 4);
         for (comment, att) in &all {
-            assert_eq!(attachment(comment).as_ref(), Ok(att));
+            assert_eq!(attachment(comment.syntax()).as_ref(), Ok(att));
             let back: Vec<SyntaxToken> = comments(&att.anchor, att.slot).collect();
             assert!(
-                back.contains(comment),
+                back.contains(comment.syntax()),
                 "the inverse form yields {}",
                 comment.text()
             );
