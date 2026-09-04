@@ -221,6 +221,13 @@ impl SyntaxKind {
     /// reads it too.
     pub const ALL: &'static [SyntaxKind];
 }
+
+/// The closer that matches an opener — the bracket-pair table of the
+/// nesting brackets: L_PAREN → R_PAREN, L_BRACKET → R_BRACKET, L_BRACE →
+/// R_BRACE; None for every other kind. PIPE is not in it: `|…|` is one
+/// kind on both sides, and a PIPE is also a disjunction's separator, so
+/// its role is a fact of where it stands (§9.2), not of its kind.
+pub const fn closer_of(open: SyntaxKind) -> Option<SyntaxKind>;
 ```
 
 Every kind carries `Debug` as its SCREAMING_SNAKE name, which is the
@@ -2375,7 +2382,8 @@ bound included, each with its typed diagnostic; the string door
 before a tree exists — the table); `Parse`'s accessors, `has_errors`,
 `is_incomplete`, `location`; every
 tree operation of §5.2 within the depth bound, on a thread of at least
-`REQUIRED_STACK_BYTES` (§6.6); `role`; the coordinate conversions; every
+`REQUIRED_STACK_BYTES` (§6.6); `role`; the bracket-pair table `closer_of`
+(§4.1); the coordinate conversions; every
 `ast` cast and accessor (`Option` is absence under recovery, never a
 refusal); `NumberLit::radix` and `digits`; `DocLine::content`,
 `Comment::content`; `attach::comments`, `attachments`, and the

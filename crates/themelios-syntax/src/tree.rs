@@ -1,7 +1,8 @@
 //! The tree's vocabulary and its rowan realization (docs/design/syntax.md
-//! §4.1, §5.2–§5.4): the kind roster, the language marker, the cursor
-//! aliases, the coordinate seam between rowan's `TextSize`/`TextRange`
-//! and base's `ByteOffset`/`Span`, and the role of a token.
+//! §4.1, §5.2–§5.4): the kind roster and its bracket-pair table, the
+//! language marker, the cursor aliases, the coordinate seam between
+//! rowan's `TextSize`/`TextRange` and base's `ByteOffset`/`Span`, and the
+//! role of a token.
 
 use std::fmt;
 
@@ -397,6 +398,24 @@ impl SyntaxKind {
     }
 }
 
+/// The closer that matches `open` — the bracket-pair table of the nesting
+/// brackets: `L_PAREN` → `R_PAREN`, `L_BRACKET` → `R_BRACKET`, `L_BRACE` →
+/// `R_BRACE`; `None` for every other kind, a closer among them. The
+/// absolute-value delimiter is not in the table: `|…|` is one `PIPE` kind
+/// on both sides, and a `PIPE` is also a disjunction's separator, so
+/// whether a `PIPE` opens, closes, or separates is contextual — a fact of
+/// where the token stands (attachment reads it off the parent,
+/// docs/design/syntax.md §9.2), never of its kind — and an entry here would
+/// invite a consumer to take a disjunction's `|` for a bracket. Total, O(1).
+pub const fn closer_of(open: SyntaxKind) -> Option<SyntaxKind> {
+    match open {
+        SyntaxKind::L_PAREN => Some(SyntaxKind::R_PAREN),
+        SyntaxKind::L_BRACKET => Some(SyntaxKind::R_BRACKET),
+        SyntaxKind::L_BRACE => Some(SyntaxKind::R_BRACE),
+        _ => None,
+    }
+}
+
 impl fmt::Display for SyntaxKind {
     /// The SCREAMING_SNAKE name, as `Debug` renders it — stable, being
     /// what dumps and goldens read (docs/design/syntax.md §12.5).
@@ -644,6 +663,40 @@ mod tests {
         assert!(SyntaxKind::RULE.is_statement());
         assert!(SyntaxKind::QUERY.is_statement());
         assert!(!SyntaxKind::BODY.is_statement());
+    }
+
+    #[test]
+    fn closer_of_pairs_each_opener_with_its_closer() {
+        assert_eq!(closer_of(SyntaxKind::L_PAREN), Some(SyntaxKind::R_PAREN));
+        assert_eq!(
+            closer_of(SyntaxKind::L_BRACKET),
+            Some(SyntaxKind::R_BRACKET)
+        );
+        assert_eq!(closer_of(SyntaxKind::L_BRACE), Some(SyntaxKind::R_BRACE));
+    }
+
+    #[test]
+    fn only_the_three_openers_have_a_closer() {
+        // A closer is not an opener, nor is any non-bracket kind — and the
+        // sweep holds it over the whole roster, not two samples.
+        assert_eq!(closer_of(SyntaxKind::R_PAREN), None);
+        assert_eq!(closer_of(SyntaxKind::IDENT), None);
+        let openers = [
+            SyntaxKind::L_PAREN,
+            SyntaxKind::L_BRACKET,
+            SyntaxKind::L_BRACE,
+        ];
+        for kind in SyntaxKind::ALL {
+            assert_eq!(closer_of(*kind).is_some(), openers.contains(kind), "{kind}");
+        }
+    }
+
+    #[test]
+    fn closer_of_excludes_the_pipe() {
+        // `|` closes an absolute value and separates a disjunction under
+        // one kind, so at the kind level it is no opener: the documented
+        // exclusion.
+        assert_eq!(closer_of(SyntaxKind::PIPE), None);
     }
 
     #[test]

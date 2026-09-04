@@ -80,6 +80,16 @@ fn the_source_text_reader_is_reached_through_tree() {
 }
 
 #[test]
+fn the_bracket_pair_table_is_reached_through_tree() {
+    // The kind-level pair table stands beside the roster and is reached as
+    // `tree`'s helpers are — by its module path, not the glob.
+    assert_eq!(
+        themelios_syntax::tree::closer_of(SyntaxKind::L_BRACE),
+        Some(SyntaxKind::R_BRACE)
+    );
+}
+
+#[test]
 fn the_glob_names_the_attachment_surface() {
     let parsed = parse(&admitted("% lead\np.\n", 0), Dialect::Clingo);
     let (comment, attachment) = attachments(&parsed.syntax()).next().expect("a comment");
