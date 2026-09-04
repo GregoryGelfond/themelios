@@ -1,13 +1,19 @@
 //! Comment attachment, the owned policy (docs/design/syntax.md §9): a
 //! pure reading of the tree, a function of exactly four facts, shipped
 //! in two forms that agree by law — never a table, since this tree
-//! carries every comment in place and nothing can go stale.
+//! carries every comment in place and nothing can go stale. Beside it,
+//! the significant-child walk the policy reads `prev` and `next` over
+//! (§5.4, §9.2) — `is_skipped`, `significant_children`, and the
+//! directional skips — the trivia guard a consumer of the tree would
+//! otherwise re-derive.
 
 use std::collections::VecDeque;
 use std::fmt;
+use std::iter;
 
 use crate::tree::{
-    NodeOrToken, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, TokenRole, WalkEvent, role,
+    Direction, NodeOrToken, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, TokenRole,
+    WalkEvent, role,
 };
 
 /// The slot a comment is attached in.
@@ -74,13 +80,60 @@ fn is_trivia_comment(token: &SyntaxToken) -> bool {
     token.kind().is_comment() && role(token) == TokenRole::Trivia
 }
 
-/// Whether `element` is skipped when looking for `prev` and `next`:
-/// trivia, or an empty node (docs/design/syntax.md §5.4, §9.2).
-fn is_skipped(element: &SyntaxElement) -> bool {
+/// Whether a significant-child walk skips `element`: a trivia token —
+/// whitespace, or a comment that is not a statement's documentation, as
+/// `role` reads it — or an empty node, which holds no token to stand at
+/// (docs/design/syntax.md §5.4, §9.2). The attachment policy's `prev`
+/// and `next` are read over exactly the elements this refuses. Total;
+/// O(1) for every kind but `DOC_COMMENT`, whose role is a fact of
+/// position — `role`'s O(preceding siblings).
+pub fn is_skipped(element: &SyntaxElement) -> bool {
     match element {
         NodeOrToken::Token(token) => role(token) == TokenRole::Trivia,
         NodeOrToken::Node(node) => node.text_range().is_empty(),
     }
+}
+
+/// The children of `node` that are not skipped (`is_skipped`), in order
+/// — the significant-child walk, so a consumer reads the guard here
+/// instead of re-deriving it. One pass over the children, each read once
+/// and tested by `is_skipped`: O(the children), under `is_skipped`'s
+/// bound per child. Total.
+pub fn significant_children(node: &SyntaxNode) -> impl Iterator<Item = SyntaxElement> + '_ {
+    // Single-pass: one read of the children, each tested by `is_skipped`;
+    // never a per-child walk of its siblings, which would make the walk
+    // O(k²) in the child count rather than O(k).
+    node.children_with_tokens()
+        .filter(|element| !is_skipped(element))
+}
+
+/// The nearest sibling of `element` in `direction` that is not skipped —
+/// the attachment policy's `prev` (`Direction::Prev`) or `next`
+/// (`Direction::Next`) of the element (docs/design/syntax.md §9.2) — or
+/// `None` when only skipped siblings, or none, remain. Total; O(the
+/// siblings stepped over).
+pub fn non_trivia_sibling(element: SyntaxElement, direction: Direction) -> Option<SyntaxElement> {
+    iter::successors(Some(element), |element| match direction {
+        Direction::Next => element.next_sibling_or_token(),
+        Direction::Prev => element.prev_sibling_or_token(),
+    })
+    .skip(1)
+    .find(|element| !is_skipped(element))
+}
+
+/// `token` itself when it is not trivia; otherwise the nearest non-trivia
+/// token in `direction`, in document order — across node boundaries, as
+/// `next_token` and `prev_token` step — or `None` when the tree ends
+/// first. Trivia is `role`'s: a `DOC_COMMENT` in docs position stops the
+/// walk, a stray one is stepped over. Total; O(the trivia stepped over).
+pub fn skip_trivia_token(mut token: SyntaxToken, direction: Direction) -> Option<SyntaxToken> {
+    while role(&token) == TokenRole::Trivia {
+        token = match direction {
+            Direction::Next => token.next_token()?,
+            Direction::Prev => token.prev_token()?,
+        };
+    }
+    Some(token)
 }
 
 /// Whether `element` is a closer: a token that ends a construct rather
@@ -462,7 +515,7 @@ mod tests {
     use super::*;
     use crate::dialect::Dialect;
     use crate::parse::parse;
-    use crate::tree::{AstNode, SyntaxKind};
+    use crate::tree::{AstNode, Direction, SyntaxKind};
 
     fn parsed(text: &str) -> SyntaxNode {
         let source = Source::new(SourceId::new(0), text.to_owned()).expect("admits");
@@ -483,6 +536,26 @@ mod tests {
             Ok(Attachment { anchor, slot }) => format!("{slot:?} {}", anchor.kind()),
             Err(refusal) => format!("{refusal:?}"),
         }
+    }
+
+    /// The first token under `root` whose text is `text`.
+    fn token_with_text(root: &SyntaxNode, text: &str) -> SyntaxToken {
+        root.descendants_with_tokens()
+            .filter_map(SyntaxElement::into_token)
+            .find(|token| token.text() == text)
+            .unwrap_or_else(|| panic!("a token {text:?}"))
+    }
+
+    /// The first node under `root` of `kind`.
+    fn node_of_kind(root: &SyntaxNode, kind: SyntaxKind) -> SyntaxNode {
+        root.descendants()
+            .find(|node| node.kind() == kind)
+            .unwrap_or_else(|| panic!("a {kind} node"))
+    }
+
+    /// The kinds of `elements`, in order.
+    fn kinds(elements: impl Iterator<Item = SyntaxElement>) -> Vec<SyntaxKind> {
+        elements.map(|element| element.kind()).collect()
     }
 
     #[test]
@@ -653,5 +726,190 @@ mod tests {
             "the line break after the empty condition is read, not folded to empty"
         );
         assert!(!same_line(&left, &right));
+    }
+
+    #[test]
+    fn whitespace_and_comments_are_skipped() {
+        // A doc line after the last statement is a stray: trivia by role.
+        let root = parsed("p. %* block *% % line\n%! stray\n");
+        for text in [" ", "%* block *%", "% line", "%! stray"] {
+            let token = token_with_text(&root, text);
+            assert!(is_skipped(&SyntaxElement::Token(token)), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_node_and_a_significant_token_are_not_skipped() {
+        let root = parsed("%! doc\np.\n");
+        let rule = node_of_kind(&root, SyntaxKind::RULE);
+        assert!(!is_skipped(&SyntaxElement::Node(rule)));
+        let p = token_with_text(&root, "p");
+        assert!(!is_skipped(&SyntaxElement::Token(p)));
+        // A doc line in docs position is structure the statement owns
+        // (docs/design/syntax.md §5.4).
+        let doc = token_with_text(&root, "%! doc");
+        assert!(!is_skipped(&SyntaxElement::Token(doc)));
+    }
+
+    #[test]
+    fn an_empty_node_is_skipped() {
+        // The empty body of `h :- .` and the empty condition of `a :` hold
+        // no token to stand at (docs/design/syntax.md §5.4, §9.2).
+        let root = parsed("h :- .\n");
+        let body = node_of_kind(&root, SyntaxKind::BODY);
+        assert!(body.text_range().is_empty());
+        assert!(is_skipped(&SyntaxElement::Node(body)));
+        let root = parsed(":- #count { a : } < 1.\n");
+        let condition = node_of_kind(&root, SyntaxKind::CONDITION);
+        assert!(condition.text_range().is_empty());
+        assert!(is_skipped(&SyntaxElement::Node(condition)));
+    }
+
+    #[test]
+    fn significant_children_yields_the_unskipped_children_in_order() {
+        // The stray doc line after the first dot opens the second rule's
+        // docs, and the plain comment inside that run is trivia there.
+        let root = parsed("%! doc\np(1, % c\n 2). %! stray\n\n% lone\nq :- not r.\n");
+        assert_eq!(
+            kinds(significant_children(&root)),
+            [SyntaxKind::RULE, SyntaxKind::RULE]
+        );
+        let rules: Vec<SyntaxNode> = root.children().collect();
+        assert_eq!(
+            kinds(significant_children(&rules[0])),
+            [
+                SyntaxKind::DOC_COMMENT,
+                SyntaxKind::LITERAL,
+                SyntaxKind::DOT
+            ]
+        );
+        assert_eq!(
+            kinds(significant_children(&rules[1])),
+            [
+                SyntaxKind::DOC_COMMENT,
+                SyntaxKind::LITERAL,
+                SyntaxKind::NECK,
+                SyntaxKind::BODY,
+                SyntaxKind::DOT
+            ]
+        );
+        let tuple = node_of_kind(&root, SyntaxKind::TUPLE);
+        assert_eq!(
+            kinds(significant_children(&tuple)),
+            [
+                SyntaxKind::CONSTANT_TERM,
+                SyntaxKind::COMMA,
+                SyntaxKind::CONSTANT_TERM
+            ]
+        );
+    }
+
+    #[test]
+    fn significant_children_yields_strictly_ascending_indices() {
+        // The single-pass guard, as far as the output shows it: one read of
+        // a wide node's children yields each significant child exactly once,
+        // where it stands. The cost law itself is held by the walk's shape —
+        // one `filter` by `is_skipped` — which the invariant comment there
+        // names for the reader.
+        let root = parsed(&"% c\np. % t\n\n".repeat(200));
+        let indices: Vec<usize> = significant_children(&root)
+            .map(|element| element.index())
+            .collect();
+        assert_eq!(indices.len(), 200);
+        assert!(indices.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(significant_children(&root).all(|element| element.kind() == SyntaxKind::RULE));
+    }
+
+    #[test]
+    fn non_trivia_sibling_steps_over_trivia_in_either_direction() {
+        let root = parsed("% lead\np(1).  % trail\n\nq :- r.\t%! stray\n");
+        let rules: Vec<SyntaxNode> = root.children().collect();
+        let first = SyntaxElement::Node(rules[0].clone());
+        let second = SyntaxElement::Node(rules[1].clone());
+        assert_eq!(
+            non_trivia_sibling(first.clone(), Direction::Next),
+            Some(second.clone())
+        );
+        assert_eq!(non_trivia_sibling(second, Direction::Prev), Some(first));
+        let root = parsed("p(1, % c\n 2).\n");
+        let comma = SyntaxElement::Token(token_with_text(&root, ","));
+        let two = non_trivia_sibling(comma, Direction::Next).expect("the 2");
+        assert_eq!(two.kind(), SyntaxKind::CONSTANT_TERM);
+        assert_eq!(two.to_string(), "2");
+    }
+
+    #[test]
+    fn non_trivia_sibling_is_none_when_only_trivia_remains() {
+        let root = parsed("% lead\np(1).  % trail\n\nq :- r.\t%! stray\n");
+        let rules: Vec<SyntaxNode> = root.children().collect();
+        let first = SyntaxElement::Node(rules[0].clone());
+        let second = SyntaxElement::Node(rules[1].clone());
+        assert_eq!(non_trivia_sibling(first, Direction::Prev), None);
+        assert_eq!(non_trivia_sibling(second, Direction::Next), None);
+    }
+
+    #[test]
+    fn non_trivia_sibling_steps_over_an_empty_node() {
+        let root = parsed("h :- .\n");
+        let neck = SyntaxElement::Token(token_with_text(&root, ":-"));
+        let dot = SyntaxElement::Token(token_with_text(&root, "."));
+        assert_eq!(
+            non_trivia_sibling(neck.clone(), Direction::Next),
+            Some(dot.clone())
+        );
+        assert_eq!(non_trivia_sibling(dot, Direction::Prev), Some(neck));
+        let root = parsed(":- #count { a : } < 1.\n");
+        let colon = SyntaxElement::Token(token_with_text(&root, ":"));
+        assert_eq!(non_trivia_sibling(colon, Direction::Next), None);
+    }
+
+    #[test]
+    fn skip_trivia_token_returns_a_significant_token_as_it_stands() {
+        let root = parsed("%! doc\np.\n");
+        let p = token_with_text(&root, "p");
+        assert_eq!(
+            skip_trivia_token(p.clone(), Direction::Next),
+            Some(p.clone())
+        );
+        assert_eq!(skip_trivia_token(p.clone(), Direction::Prev), Some(p));
+    }
+
+    #[test]
+    fn skip_trivia_token_steps_over_trivia_across_node_bounds() {
+        let root = parsed("% lead\np(1).  % trail\n\nq :- r.\t%! stray\n");
+        // Forward from the run after the first rule's dot into the second
+        // rule's first token; backward from the run before the second rule
+        // into the first rule's last.
+        let gap = token_with_text(&root, "  ");
+        let q = token_with_text(&root, "q");
+        assert_eq!(skip_trivia_token(gap, Direction::Next), Some(q));
+        let blank = token_with_text(&root, "\n\n");
+        let dot = token_with_text(&root, ".");
+        assert_eq!(skip_trivia_token(blank, Direction::Prev), Some(dot));
+    }
+
+    #[test]
+    fn skip_trivia_token_is_none_past_either_end_of_the_tree() {
+        let root = parsed("% lead\np(1).  % trail\n\nq :- r.\t%! stray\n");
+        let lead = token_with_text(&root, "% lead");
+        assert_eq!(skip_trivia_token(lead, Direction::Prev), None);
+        let tab = token_with_text(&root, "\t");
+        assert_eq!(skip_trivia_token(tab, Direction::Next), None);
+    }
+
+    #[test]
+    fn skip_trivia_token_reads_a_doc_lines_role_not_its_kind() {
+        // In docs position a doc line is significant and stops the walk;
+        // stray, it is trivia and is stepped over (docs/design/syntax.md §5.4).
+        let root = parsed("%! doc\np.\n");
+        let doc = token_with_text(&root, "%! doc");
+        let break_after_doc = token_with_text(&root, "\n");
+        assert_eq!(
+            skip_trivia_token(break_after_doc, Direction::Prev),
+            Some(doc)
+        );
+        let root = parsed("p. %! stray\n");
+        let space = token_with_text(&root, " ");
+        assert_eq!(skip_trivia_token(space, Direction::Next), None);
     }
 }

@@ -2,10 +2,10 @@
 //! only, held by the median over five interleaved wall-clock ratios with
 //! tolerances wide enough for any CI machine — parse linear in text, the
 //! certificate linear in both texts, bulk attachment linear in the tree,
-//! the oracle constant per pair. What they prove: the claimed class (a
-//! quadratic parse, a re-scanning attachment, a certificate that
-//! re-walks). What they cannot: absolute speed — that lives in the
-//! out-of-band benches.
+//! the significant-child walk linear in the children, the oracle constant
+//! per pair. What they prove: the claimed class (a quadratic parse, a
+//! re-scanning attachment, a certificate that re-walks). What they
+//! cannot: absolute speed — that lives in the out-of-band benches.
 //!
 //! Each ratio is the median over five runs that time the small case and
 //! the large case back-to-back, not the ratio of two separately-median'd
@@ -16,7 +16,7 @@
 use std::time::Instant;
 
 use themelios_base::source::{Source, SourceId};
-use themelios_syntax::attach::{attachments, empty_line_between};
+use themelios_syntax::attach::{attachments, empty_line_between, significant_children};
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::equiv::{Certificate, equivalent};
 use themelios_syntax::fusion::separator;
@@ -176,6 +176,29 @@ fn bulk_attachment_is_linear_in_the_tree() {
     assert!(
         ratio < LINEAR_CEILING * RATIO_SCALE,
         "attachment's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} tree; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[test]
+fn significant_children_is_linear_in_the_children() {
+    let small_root = parse(&admitted(64), Dialect::Clingo).syntax();
+    let big_root = parse(&admitted(64 * SIZE_RATIO), Dialect::Clingo).syntax();
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(significant_children(&small_root).count());
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(significant_children(&big_root).count());
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "the significant-child walk's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} children; the linear shape allows at most x{LINEAR_CEILING}"
     );
 }
 

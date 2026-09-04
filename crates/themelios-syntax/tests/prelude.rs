@@ -76,6 +76,36 @@ fn the_glob_names_the_attachment_surface() {
 }
 
 #[test]
+fn the_trivia_walk_is_reached_through_attach() {
+    // The element-level trivia classification and the walks over it are
+    // reached by their module path; `Direction` is rowan's, behind `tree`.
+    use themelios_syntax::attach::{
+        is_skipped, non_trivia_sibling, significant_children, skip_trivia_token,
+    };
+    use themelios_syntax::tree::Direction;
+
+    let parsed = parse(&admitted("p. % c\nq.\n", 0), Dialect::Clingo);
+    let root = parsed.syntax();
+    let rules: Vec<SyntaxElement> = significant_children(&root).collect();
+    assert_eq!(rules.len(), 2);
+    assert!(rules.iter().all(|rule| !is_skipped(rule)));
+    assert_eq!(
+        non_trivia_sibling(rules[0].clone(), Direction::Next),
+        Some(rules[1].clone())
+    );
+    let comment = root
+        .descendants_with_tokens()
+        .filter_map(SyntaxElement::into_token)
+        .find(|token| token.text() == "% c")
+        .expect("the comment");
+    assert!(is_skipped(&SyntaxElement::Token(comment.clone())));
+    assert_eq!(
+        skip_trivia_token(comment, Direction::Next).map(|token| token.text().to_owned()),
+        Some("q".to_owned())
+    );
+}
+
+#[test]
 fn the_glob_names_the_fusion_oracle() {
     let context = LexContext {
         dialect: Dialect::Clingo,
