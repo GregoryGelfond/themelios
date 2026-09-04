@@ -63,3 +63,19 @@ pub mod ast;
 pub mod attach;
 pub mod fusion;
 pub mod equiv;
+
+pub mod prelude;
+
+// Crate-root re-exports of the most-used surface (Rust API guideline C-REEXPORT):
+// the parse door and its result, the dialect a parse is declared under, the
+// tree's cursors and kind roster, the trait through which every typed node
+// reaches its cursor, and the typed diagnostic — so `themelios_syntax::parse`,
+// `themelios_syntax::Parse`, and `themelios_syntax::Dialect` resolve without
+// walking the module tree. The typed AST stays behind `ast` — `ast::Program`,
+// never a flat `Program` — because its names are the program tier's names too,
+// and a client that globs both tiers must meet no ambiguity. The full working
+// vocabulary, for a one-line glob import, is `prelude`.
+pub use crate::diagnostic::SyntaxError;
+pub use crate::dialect::Dialect;
+pub use crate::parse::{Parse, parse};
+pub use crate::tree::{AstNode, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
