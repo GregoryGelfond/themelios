@@ -13,7 +13,9 @@ use themelios_base::source::{Source, SourceId};
 use themelios_syntax::diagnostic::SyntaxError;
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::parse::{MAX_TREE_DEPTH, parse};
-use themelios_syntax::tree::{NodeOrToken, SyntaxKind, SyntaxNode, TokenRole, WalkEvent, role};
+use themelios_syntax::tree::{
+    NodeOrToken, SyntaxKind, SyntaxNode, SyntaxToken, TokenRole, WalkEvent, role, roles_of,
+};
 
 mod common;
 use common::corpus;
@@ -86,6 +88,34 @@ fn the_four_tree_laws_hold_over_the_corpus() {
                         edge.text()
                     ));
                 }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn roles_of_agrees_with_role_over_the_corpus() {
+    // The per-node forward pass and the per-token reading are one
+    // definition: on every node of every corpus tree the pass yields the
+    // node's token children in order, each with the role `role` reads.
+    let mut failures = Vec::new();
+    for (name, text, dialect) in corpus() {
+        for node in root_of(&text, dialect).descendants() {
+            let expected: Vec<(SyntaxToken, TokenRole)> = node
+                .children_with_tokens()
+                .filter_map(NodeOrToken::into_token)
+                .map(|token| {
+                    let read = role(&token);
+                    (token, read)
+                })
+                .collect();
+            let read: Vec<(SyntaxToken, TokenRole)> = roles_of(&node).collect();
+            if read != expected {
+                failures.push(format!(
+                    "{name}: the pass over {} and `role` disagree",
+                    node.kind()
+                ));
             }
         }
     }

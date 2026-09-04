@@ -90,6 +90,25 @@ fn the_bracket_pair_table_is_reached_through_tree() {
 }
 
 #[test]
+fn the_role_pass_is_reached_through_tree() {
+    // The per-node forward pass over roles stands beside `role` and is
+    // reached as `tree`'s helpers are — by its module path, not the glob.
+    let parsed = parse(&admitted("%! d\np. % c\n", 0), Dialect::Clingo);
+    let rule = parsed.syntax().first_child().expect("the rule");
+    let roles: Vec<TokenRole> = themelios_syntax::tree::roles_of(&rule)
+        .map(|(_, role)| role)
+        .collect();
+    assert_eq!(
+        roles,
+        [
+            TokenRole::Documentation,
+            TokenRole::Trivia,
+            TokenRole::Significant
+        ]
+    );
+}
+
+#[test]
 fn the_glob_names_the_attachment_surface() {
     let parsed = parse(&admitted("% lead\np.\n", 0), Dialect::Clingo);
     let (comment, attachment) = attachments(&parsed.syntax()).next().expect("a comment");

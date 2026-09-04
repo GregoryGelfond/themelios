@@ -513,39 +513,78 @@ pub enum TokenRole {
     Significant,
 }
 
-/// The role of `token` where it stands. Total; O(preceding siblings of
-/// the token).
+/// The role of `token` where it stands — `role_of`, the one definition,
+/// fed the two positional facts read off the token's parent. Total;
+/// O(preceding siblings of the token). `roles_of` reads a whole node's
+/// roles in one pass over its children.
 pub fn role(token: &SyntaxToken) -> TokenRole {
-    match token.kind() {
-        SyntaxKind::DOC_COMMENT if in_docs_position(token) => TokenRole::Documentation,
+    // Only a DOC_COMMENT's role depends on position; every other kind is
+    // O(1) by kind, and the two facts go unread.
+    if token.kind() != SyntaxKind::DOC_COMMENT {
+        return role_of(token.kind(), false, false);
+    }
+    let Some(parent) = token.parent() else {
+        return role_of(token.kind(), false, false);
+    };
+    if !parent.kind().is_statement() {
+        // Not a statement's child: no doc comment here is documentation,
+        // whatever stands before it, so there is no prefix to scan.
+        return role_of(token.kind(), false, false);
+    }
+    // Leading: every element before `token` keeps the prefix — a forward
+    // scan of the preceding siblings.
+    let leading = parent
+        .children_with_tokens()
+        .take_while(|element| element.as_token() != Some(token))
+        .all(|element| keeps_leading(&element));
+    role_of(token.kind(), true, leading)
+}
+
+/// The role of a token of `kind` standing where `is_statement` says its
+/// parent is a statement and `leading` says every element before it is a
+/// trivia-kind token or a `DOC_COMMENT`. The single definition of docs
+/// position (docs/design/syntax.md §5.4), read forward.
+fn role_of(kind: SyntaxKind, is_statement: bool, leading: bool) -> TokenRole {
+    match kind {
+        SyntaxKind::DOC_COMMENT if is_statement && leading => TokenRole::Documentation,
         SyntaxKind::DOC_COMMENT => TokenRole::Trivia,
         kind if kind.is_trivia() => TokenRole::Trivia,
         _ => TokenRole::Significant,
     }
 }
 
-/// A leading child of a statement node with only trivia and doc-comment
-/// tokens before it.
-fn in_docs_position(token: &SyntaxToken) -> bool {
-    let Some(parent) = token.parent() else {
-        return false;
-    };
-    if !parent.kind().is_statement() {
-        return false;
-    }
-    let mut earlier = token.prev_sibling_or_token();
-    while let Some(element) = earlier {
-        match &element {
-            NodeOrToken::Node(_) => return false,
-            NodeOrToken::Token(before) => {
-                if !(before.kind().is_trivia() || before.kind() == SyntaxKind::DOC_COMMENT) {
-                    return false;
-                }
-            }
+/// Whether `element` keeps a node's leading trivia/doc prefix intact: a
+/// trivia-kind token or a `DOC_COMMENT`. A significant token or any child
+/// node ends the prefix.
+fn keeps_leading(element: &SyntaxElement) -> bool {
+    match element {
+        NodeOrToken::Token(token) => {
+            token.kind().is_trivia() || token.kind() == SyntaxKind::DOC_COMMENT
         }
-        earlier = element.prev_sibling_or_token();
+        NodeOrToken::Node(_) => false,
     }
-    true
+}
+
+/// The roles of `node`'s token children, in order, computed in one
+/// forward pass — so a consumer reads a node's roles without the
+/// per-token scan of the preceding siblings `role` makes. Nodes carry no
+/// role (they are not yielded) but end the leading prefix. Total; O(node's
+/// children). Reached as `tree::roles_of`.
+pub fn roles_of(node: &SyntaxNode) -> impl Iterator<Item = (SyntaxToken, TokenRole)> + '_ {
+    let is_statement = node.kind().is_statement();
+    let mut leading = true;
+    node.children_with_tokens().filter_map(move |element| {
+        let yielded = match &element {
+            NodeOrToken::Token(token) => {
+                Some((token.clone(), role_of(token.kind(), is_statement, leading)))
+            }
+            NodeOrToken::Node(_) => None,
+        };
+        if !keeps_leading(&element) {
+            leading = false;
+        }
+        yielded
+    })
 }
 
 /// The tree's shape as one line — `(KIND child …)` for nodes, the text
@@ -611,6 +650,145 @@ mod tests {
         root.descendants_with_tokens()
             .filter_map(SyntaxElement::into_token)
             .collect()
+    }
+
+    /// A tree built by hand around one rule whose children hold every
+    /// docs-position shape at once: a three-line doc block with a plain
+    /// comment inside it, a `DOC_COMMENT` after the head, a `DOC_COMMENT`
+    /// leading a nested `BODY`, and a `DOC_COMMENT` after that child node.
+    fn doc_block_rule() -> SyntaxNode {
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(Asp::kind_to_raw(SyntaxKind::PROGRAM));
+        builder.start_node(Asp::kind_to_raw(SyntaxKind::RULE));
+        builder.token(Asp::kind_to_raw(SyntaxKind::DOC_COMMENT), "%! one");
+        builder.token(Asp::kind_to_raw(SyntaxKind::WHITESPACE), "\n");
+        builder.token(Asp::kind_to_raw(SyntaxKind::DOC_COMMENT), "%! two");
+        builder.token(Asp::kind_to_raw(SyntaxKind::WHITESPACE), "\n");
+        builder.token(Asp::kind_to_raw(SyntaxKind::LINE_COMMENT), "% plain");
+        builder.token(Asp::kind_to_raw(SyntaxKind::WHITESPACE), "\n");
+        builder.token(Asp::kind_to_raw(SyntaxKind::DOC_COMMENT), "%! three");
+        builder.token(Asp::kind_to_raw(SyntaxKind::WHITESPACE), "\n");
+        builder.token(Asp::kind_to_raw(SyntaxKind::IDENT), "p");
+        builder.token(Asp::kind_to_raw(SyntaxKind::WHITESPACE), " ");
+        builder.token(
+            Asp::kind_to_raw(SyntaxKind::DOC_COMMENT),
+            "%! after the head",
+        );
+        builder.token(Asp::kind_to_raw(SyntaxKind::WHITESPACE), "\n");
+        builder.token(Asp::kind_to_raw(SyntaxKind::NECK), ":-");
+        builder.token(Asp::kind_to_raw(SyntaxKind::WHITESPACE), " ");
+        builder.start_node(Asp::kind_to_raw(SyntaxKind::BODY));
+        builder.token(
+            Asp::kind_to_raw(SyntaxKind::DOC_COMMENT),
+            "%! leading a body",
+        );
+        builder.token(Asp::kind_to_raw(SyntaxKind::WHITESPACE), "\n");
+        builder.token(Asp::kind_to_raw(SyntaxKind::IDENT), "q");
+        builder.finish_node();
+        builder.token(Asp::kind_to_raw(SyntaxKind::WHITESPACE), " ");
+        builder.token(
+            Asp::kind_to_raw(SyntaxKind::DOC_COMMENT),
+            "%! after a child node",
+        );
+        builder.token(Asp::kind_to_raw(SyntaxKind::WHITESPACE), "\n");
+        builder.token(Asp::kind_to_raw(SyntaxKind::DOT), ".");
+        builder.finish_node();
+        builder.finish_node();
+        SyntaxNode::new_root(builder.finish())
+    }
+
+    /// The backward reading of docs position — a walk over the preceding
+    /// siblings from the token — kept here as the oracle the forward
+    /// reading `role` makes is held equal to, token for token.
+    fn role_backward(token: &SyntaxToken) -> TokenRole {
+        match token.kind() {
+            SyntaxKind::DOC_COMMENT if in_docs_position_backward(token) => TokenRole::Documentation,
+            SyntaxKind::DOC_COMMENT => TokenRole::Trivia,
+            kind if kind.is_trivia() => TokenRole::Trivia,
+            _ => TokenRole::Significant,
+        }
+    }
+
+    /// A leading child of a statement node with only trivia and doc-comment
+    /// tokens before it, read backward from the token.
+    fn in_docs_position_backward(token: &SyntaxToken) -> bool {
+        let Some(parent) = token.parent() else {
+            return false;
+        };
+        if !parent.kind().is_statement() {
+            return false;
+        }
+        let mut earlier = token.prev_sibling_or_token();
+        while let Some(element) = earlier {
+            match &element {
+                NodeOrToken::Node(_) => return false,
+                NodeOrToken::Token(before) => {
+                    if !(before.kind().is_trivia() || before.kind() == SyntaxKind::DOC_COMMENT) {
+                        return false;
+                    }
+                }
+            }
+            earlier = element.prev_sibling_or_token();
+        }
+        true
+    }
+
+    /// Texts whose trees hold every shape docs position turns on: doc
+    /// blocks and multi-line `%!` runs, with plain comments and blank lines
+    /// inside them; a shebang before the docs; a doc line no statement
+    /// follows; a doc line after a statement's significant token, after a
+    /// child node, and inside nested nodes; a doc run before each statement
+    /// family; empty bodies and empty statements; recovery; the marker's
+    /// exactness; and the empty program.
+    const ROLE_SHAPES: &[&str] = &[
+        "%! doc\np.\n",
+        "%! one\n%! two\n%! three\np(X) :- q(X).\n",
+        "%! one\n% plain\n\n%! two\n%* block *%\n%! three\np.\n",
+        "#! shebang\n%! d\np.\n",
+        "%! d\n",
+        "%! one\n%! two\n%! three\n",
+        "p.\n%! x\n",
+        "p. %! trailing\nq.\n",
+        "p :- %! x\nq.\n",
+        ":- %! x\nq.\n",
+        "#show %! x\np/1.\n",
+        "p(1) %! x\n.\n",
+        "p(%! a\n X, %! b\n Y) :- q(X; %! c\n Y).\n",
+        "&a { %! x\nx }.\n",
+        "%! q\np(1)?\n",
+        "%! d\n#show p/1.\n",
+        "%! d\n#const n = 3.\n",
+        "%! d\n#program base.\n",
+        "%! d\n#theory t { }.\n",
+        "%! d\n:~ p. [1@1]\n",
+        "%! d\n#minimize { 1 : p }.\n",
+        "%! d\n#external p.\n",
+        "%! d\n#include \"f.lp\".\n",
+        "%! d\n#script (python) x #end.\n",
+        "%! d\n#edge (a, b) : p.\n",
+        "%! d\n#heuristic p. [1, sign]\n",
+        "%! d\n#project p/1.\n",
+        "%! d\n#defined p/1.\n",
+        "%! d\np :- .\n",
+        "%! d\n:- .\n",
+        ".\n",
+        "%! d\n.\n",
+        "%! d\n#foo.\np.\n",
+        "%! d\n) p.\n",
+        "%!x\np.\n% !y\nq.\n",
+        "",
+    ];
+
+    /// The trees the equivalence is held over: every shape under both
+    /// dialects, and the two hand-built trees.
+    fn role_corpus() -> Vec<SyntaxNode> {
+        let mut trees = vec![documented_fact(), doc_block_rule()];
+        for text in ROLE_SHAPES {
+            for dialect in [Dialect::Clingo, Dialect::AspCore2] {
+                trees.push(parse(&admitted(text), dialect).syntax());
+            }
+        }
+        trees
     }
 
     #[test]
@@ -791,5 +969,186 @@ mod tests {
         let root = SyntaxNode::new_root(builder.finish());
         let tokens = tokens(&root);
         assert_eq!(role(&tokens[2]), TokenRole::Trivia);
+    }
+
+    #[test]
+    fn role_of_decides_by_kind_statement_and_leading() {
+        // Only a DOC_COMMENT reads the two positional facts, and it is
+        // documentation under both together; every other kind answers by
+        // kind alone.
+        for (is_statement, leading) in [(true, true), (true, false), (false, true), (false, false)]
+        {
+            let of_a_doc_comment = if is_statement && leading {
+                TokenRole::Documentation
+            } else {
+                TokenRole::Trivia
+            };
+            assert_eq!(
+                role_of(SyntaxKind::DOC_COMMENT, is_statement, leading),
+                of_a_doc_comment
+            );
+            for trivia in [
+                SyntaxKind::WHITESPACE,
+                SyntaxKind::LINE_COMMENT,
+                SyntaxKind::BLOCK_COMMENT,
+                SyntaxKind::SHEBANG_COMMENT,
+            ] {
+                assert_eq!(role_of(trivia, is_statement, leading), TokenRole::Trivia);
+            }
+            for significant in [
+                SyntaxKind::IDENT,
+                SyntaxKind::DOT,
+                SyntaxKind::KW_NOT,
+                SyntaxKind::ERROR,
+            ] {
+                assert_eq!(
+                    role_of(significant, is_statement, leading),
+                    TokenRole::Significant
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn roles_of_reads_a_doc_block_in_one_pass() {
+        use TokenRole::{Documentation, Significant, Trivia};
+        let root = doc_block_rule();
+        let rule = root.first_child().expect("the rule");
+        let read: Vec<(String, TokenRole)> = roles_of(&rule)
+            .map(|(token, role)| (token.text().to_owned(), role))
+            .collect();
+        let expected: Vec<(String, TokenRole)> = [
+            ("%! one", Documentation),
+            ("\n", Trivia),
+            ("%! two", Documentation),
+            ("\n", Trivia),
+            ("% plain", Trivia),
+            ("\n", Trivia),
+            ("%! three", Documentation),
+            ("\n", Trivia),
+            ("p", Significant),
+            (" ", Trivia),
+            ("%! after the head", Trivia),
+            ("\n", Trivia),
+            (":-", Significant),
+            (" ", Trivia),
+            (" ", Trivia),
+            ("%! after a child node", Trivia),
+            ("\n", Trivia),
+            (".", Significant),
+        ]
+        .into_iter()
+        .map(|(text, role)| (text.to_owned(), role))
+        .collect();
+        assert_eq!(read, expected);
+    }
+
+    #[test]
+    fn roles_of_reads_a_doc_leading_a_body_as_trivia() {
+        // A `BODY` is no statement, so the doc line leading it is trivia
+        // even with nothing before it.
+        let root = doc_block_rule();
+        let body = root
+            .descendants()
+            .find(|node| node.kind() == SyntaxKind::BODY)
+            .expect("the body");
+        let read: Vec<TokenRole> = roles_of(&body).map(|(_, role)| role).collect();
+        assert_eq!(
+            read,
+            [TokenRole::Trivia, TokenRole::Trivia, TokenRole::Significant]
+        );
+    }
+
+    #[test]
+    fn roles_of_reads_a_doc_after_a_child_node_as_trivia() {
+        // A child node ends the prefix by itself — no significant token
+        // need precede the doc line.
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(Asp::kind_to_raw(SyntaxKind::PROGRAM));
+        builder.start_node(Asp::kind_to_raw(SyntaxKind::RULE));
+        builder.start_node(Asp::kind_to_raw(SyntaxKind::ATOM));
+        builder.token(Asp::kind_to_raw(SyntaxKind::IDENT), "p");
+        builder.finish_node();
+        builder.token(Asp::kind_to_raw(SyntaxKind::WHITESPACE), " ");
+        builder.token(
+            Asp::kind_to_raw(SyntaxKind::DOC_COMMENT),
+            "%! after the head",
+        );
+        builder.token(Asp::kind_to_raw(SyntaxKind::WHITESPACE), "\n");
+        builder.token(Asp::kind_to_raw(SyntaxKind::DOT), ".");
+        builder.finish_node();
+        builder.finish_node();
+        let root = SyntaxNode::new_root(builder.finish());
+        let rule = root.first_child().expect("the rule");
+        let read: Vec<TokenRole> = roles_of(&rule).map(|(_, role)| role).collect();
+        assert_eq!(
+            read,
+            [
+                TokenRole::Trivia,
+                TokenRole::Trivia,
+                TokenRole::Trivia,
+                TokenRole::Significant
+            ]
+        );
+    }
+
+    #[test]
+    fn role_agrees_with_the_backward_reading() {
+        // The law, and a witness that the corpus exhibits each outcome the
+        // definition can reach for a DOC_COMMENT — so the agreement is not
+        // vacuous: documentation; trivia after a significant token or a
+        // child node of a statement; trivia under a node that is no
+        // statement.
+        let mut documented = 0usize;
+        let mut after_significant = 0usize;
+        let mut after_a_node = 0usize;
+        let mut outside_a_statement = 0usize;
+        for root in role_corpus() {
+            for token in tokens(&root) {
+                assert_eq!(
+                    role(&token),
+                    role_backward(&token),
+                    "{:?} {:?}",
+                    token.kind(),
+                    token.text()
+                );
+                if token.kind() != SyntaxKind::DOC_COMMENT {
+                    continue;
+                }
+                let parent = token.parent().expect("a token has a parent");
+                let before_it: Vec<SyntaxElement> = parent
+                    .children_with_tokens()
+                    .take_while(|element| element.as_token() != Some(&token))
+                    .collect();
+                match role(&token) {
+                    TokenRole::Documentation => documented += 1,
+                    _ if !parent.kind().is_statement() => outside_a_statement += 1,
+                    _ if before_it.iter().any(|element| element.as_node().is_some()) => {
+                        after_a_node += 1;
+                    }
+                    _ => after_significant += 1,
+                }
+            }
+        }
+        assert!(documented > 0 && after_significant > 0);
+        assert!(after_a_node > 0 && outside_a_statement > 0);
+    }
+
+    #[test]
+    fn roles_of_agrees_with_role_on_every_node() {
+        for root in role_corpus() {
+            for node in root.descendants() {
+                let expected: Vec<(SyntaxToken, TokenRole)> = node
+                    .children_with_tokens()
+                    .filter_map(SyntaxElement::into_token)
+                    .map(|token| {
+                        let read = role(&token);
+                        (token, read)
+                    })
+                    .collect();
+                let read: Vec<(SyntaxToken, TokenRole)> = roles_of(&node).collect();
+                assert_eq!(read, expected, "{}", node.kind());
+            }
+        }
     }
 }

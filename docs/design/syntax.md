@@ -675,6 +675,13 @@ wrappers over the kind (§8.3), `HasDocs` (§8.2). So it has one name:
 pub enum TokenRole { Documentation, Trivia, Significant }
 
 pub fn role(token: &SyntaxToken) -> TokenRole;
+
+/// The roles of a node's token children, in order, in one forward pass
+/// over the children — the definition `role` reads per token, read once
+/// for the whole node. Nodes carry no role and are not yielded, but end
+/// the leading prefix. Total; O(node's children). Reached as
+/// `tree::roles_of`, by module path.
+pub fn roles_of(node: &SyntaxNode) -> impl Iterator<Item = (SyntaxToken, TokenRole)> + '_;
 ```
 
 `SyntaxKind::is_trivia` (§4.1) answers by kind, for the kinds whose role
@@ -683,6 +690,12 @@ positional answer reads it here — the token stream is every token whose
 role is not `Trivia`; a trivia comment is a token whose role is `Trivia`
 and whose kind is a comment; `DocLine` casts exactly the
 `Documentation` tokens and `Comment` exactly the trivia comments (§8.3).
+Docs position is one rule read forward: a `DOC_COMMENT` is documentation
+when its parent is a statement and every element before it among the
+parent's children is a trivia-kind token or a `DOC_COMMENT` — a
+significant token or a child node ends that leading prefix. `role` reads
+the rule for one token; `roles_of` reads it for a whole node's children
+in one pass, for a consumer that reads a node's roles together.
 When the reserved inner-docs form (§17) arrives, this definition moves
 and the sites do not.
 
@@ -2382,8 +2395,8 @@ bound included, each with its typed diagnostic; the string door
 before a tree exists — the table); `Parse`'s accessors, `has_errors`,
 `is_incomplete`, `location`; every
 tree operation of §5.2 within the depth bound, on a thread of at least
-`REQUIRED_STACK_BYTES` (§6.6); `role`; the bracket-pair table `closer_of`
-(§4.1); the coordinate conversions; every
+`REQUIRED_STACK_BYTES` (§6.6); `role` and `roles_of`; the bracket-pair
+table `closer_of` (§4.1); the coordinate conversions; every
 `ast` cast and accessor (`Option` is absence under recovery, never a
 refusal); `NumberLit::radix` and `digits`; `DocLine::content`,
 `Comment::content`; `attach::comments`, `attachments`, and the
