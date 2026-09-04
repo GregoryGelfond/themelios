@@ -62,7 +62,8 @@ macro_rules! ast_node {
 }
 
 /// Declares one enum over node kinds — a grammar class — casting to the
-/// first alternative whose kind matches.
+/// first alternative whose kind matches and converting from each
+/// alternative's node.
 macro_rules! ast_enum {
     ($(#[$meta:meta])* $name:ident { $( $(#[$variant_meta:meta])* $variant:ident($inner:ty), )+ }) => {
         $(#[$meta])*
@@ -93,6 +94,14 @@ macro_rules! ast_enum {
                 }
             }
         }
+
+        $(
+            impl From<$inner> for $name {
+                fn from(inner: $inner) -> Self {
+                    Self::$variant(inner)
+                }
+            }
+        )+
     };
 }
 
@@ -711,6 +720,26 @@ mod tests {
                 "theory"
             ]
         );
+    }
+
+    #[test]
+    fn statement_from_a_rule_is_the_rule_variant() {
+        let rule = rule("p :- q.");
+        assert_eq!(Statement::from(rule.clone()), Statement::Rule(rule));
+    }
+
+    #[test]
+    fn term_from_a_constant_term_is_the_constant_variant() {
+        let source = Source::new(SourceId::new(0), "a".to_owned()).expect("admits");
+        let lexer = crate::lexer::Lexer::new(&source, Dialect::Clingo);
+        let Some(Term::Constant(constant)) =
+            crate::parse::parse_term(&lexer, crate::parse::NestingLimit::DEFAULT)
+                .tree()
+                .term()
+        else {
+            panic!("a constant term")
+        };
+        assert_eq!(Term::from(constant.clone()), Term::Constant(constant));
     }
 
     #[test]
