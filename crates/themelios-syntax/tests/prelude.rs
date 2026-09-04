@@ -1,5 +1,5 @@
 //! The prelude: one glob import names the tier's working vocabulary — the
-//! parse door, the dialect, the tree and its kind roster, comment
+//! parse doors, the dialect, the tree and its kind roster, comment
 //! attachment, the fusion oracle, the certificates, the typed diagnostics —
 //! and reaches the typed AST through its module, `ast::Program`, never as
 //! a flat glob of the AST's type names: those are the program tier's names
@@ -27,6 +27,19 @@ fn the_glob_names_the_parse_door() {
     let parsed: Parse<ast::Program> = parse(&admitted("p(1). q(X) :- p(X).\n", 0), Dialect::Clingo);
     assert!(!parsed.has_errors());
     assert_eq!(parsed.dialect(), Dialect::Clingo);
+}
+
+#[test]
+fn the_glob_names_the_string_door() {
+    // The door is in the glob; the identity it mints is reached by its
+    // module path, as the advanced surfaces are.
+    let parsed: Parse<ast::Program> =
+        parse_str("p(1). q(X) :- p(X).\n", Dialect::Clingo).expect("admits");
+    assert!(!parsed.has_errors());
+    assert_eq!(
+        parsed.source(),
+        themelios_syntax::parse::STRING_INPUT_SOURCE_ID
+    );
 }
 
 #[test]

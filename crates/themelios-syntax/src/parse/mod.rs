@@ -15,7 +15,7 @@ use std::fmt;
 use std::marker::PhantomData;
 
 use themelios_base::diagnostic::Severity;
-use themelios_base::source::{Source, SourceId};
+use themelios_base::source::{Source, SourceId, TooLarge};
 use themelios_base::span::Location;
 
 use crate::ast;
@@ -307,6 +307,41 @@ pub fn parse(source: &Source, dialect: Dialect) -> Parse<ast::Program> {
     parse_program(&Lexer::new(source, dialect), NestingLimit::DEFAULT)
 }
 
+/// The identity the string door ([`parse_str`]) mints: every `Location`
+/// such a parse produces — `Parse::source`, `Parse::location`, each
+/// diagnostic's loci — carries this id, so a consumer that has only text
+/// never mints one. It is a sentinel, deliberately unresolvable. A host's
+/// catalog mints sequentially from zero (`SourceSet::add`), so a `0` here
+/// would name the host's first file, and its views would render that
+/// file's name and text at the snippet's span; `u32::MAX` lies past any
+/// sequential mint (base §3.1's resource bound), so the views answer it
+/// honestly instead — the human view's `<source …: unresolved>`
+/// placeholder, the editor view's `UnknownSource` refusal. A host that
+/// wants its snippet catalogued and located builds a real `Source` under
+/// the id it minted and parses through [`parse`].
+pub const STRING_INPUT_SOURCE_ID: SourceId = SourceId::new(u32::MAX);
+
+/// The string door: `text` under a dialect, read as [`parse`] reads a
+/// `Source` minted under [`STRING_INPUT_SOURCE_ID`] — the one-shot form
+/// for a consumer with no identity to stamp. A thin convenience: it copies
+/// the text into that `Source` and hands it to `parse`, so the tree, the
+/// diagnostics, and the depth floor are exactly the file door's. Refuses
+/// `TooLarge` — text past `Source::MAX_LEN`, admission's one condition
+/// (base §3.2) — and is total otherwise; O(text).
+///
+/// ```
+/// use themelios_syntax::{Dialect, parse_str};
+///
+/// let parsed = parse_str("p(1). q(X) :- p(X).", Dialect::Clingo)?;
+/// assert!(!parsed.has_errors());
+/// assert_eq!(parsed.tree().statements().count(), 2);
+/// # Ok::<(), themelios_syntax::base::source::TooLarge>(())
+/// ```
+pub fn parse_str(text: &str, dialect: Dialect) -> Result<Parse<ast::Program>, TooLarge> {
+    let source = Source::new(STRING_INPUT_SOURCE_ID, text.to_owned())?;
+    Ok(parse(&source, dialect))
+}
+
 /// The general door for a program: any token source, at `limit`
 /// (docs/design/syntax.md §6.6 — [`NestingLimit::DEFAULT`] holds on a
 /// modest stack; [`NestingLimit::CEILING`] wants [`with_required_stack`]).
@@ -374,7 +409,7 @@ pub fn with_required_stack<R: Send>(work: impl FnOnce() -> R + Send) -> R {
 mod tests {
     use themelios_base::diagnostic::Severity;
     use themelios_base::line::PositionRefusal;
-    use themelios_base::source::{Source, SourceId};
+    use themelios_base::source::{Source, SourceId, SourceSet, Sources};
     use themelios_base::span::ByteOffset;
 
     use super::*;
@@ -684,6 +719,65 @@ mod tests {
         // the determinism law's own repeated-parse equality (same everything)
         // is the direct witness the fields all match.
         assert_eq!(clingo(4, "%! d\np."), clingo(4, "%! d\np."));
+    }
+
+    #[test]
+    fn parse_str_needs_no_caller_built_source() {
+        let parse = parse_str("p(1). q(X) :- p(X).", Dialect::Clingo).expect("admits");
+        assert!(!parse.has_errors());
+        assert_eq!(parse.tree().statements().count(), 2);
+    }
+
+    #[test]
+    fn parse_str_agrees_with_parse_under_the_string_input_id() {
+        // A thin door: the same tree, diagnostics, identity, dialect, and
+        // entry as the file door over a `Source` minted under the constant —
+        // under both dialects, so the dialect is threaded through, not fixed.
+        let text = "p(\"abc";
+        for dialect in [Dialect::Clingo, Dialect::AspCore2] {
+            let source = Source::new(STRING_INPUT_SOURCE_ID, text.to_owned()).expect("admits");
+            assert_eq!(
+                parse_str(text, dialect).expect("admits"),
+                parse(&source, dialect)
+            );
+        }
+    }
+
+    #[test]
+    fn a_catalog_never_resolves_the_string_input_id() {
+        // A host's catalog mints sequentially from zero (`SourceSet::add`),
+        // so a snippet's locations must resolve in no catalog: the sentinel
+        // answers `None` on every facet — never another source's name and
+        // text, which the views would render at the snippet's span.
+        let mut catalog = SourceSet::new();
+        let first = catalog
+            .add("file.lp".to_owned(), "p.".to_owned())
+            .expect("admits");
+        assert_ne!(first, STRING_INPUT_SOURCE_ID);
+        assert!(catalog.name(STRING_INPUT_SOURCE_ID).is_none());
+        assert!(catalog.text(STRING_INPUT_SOURCE_ID).is_none());
+        assert!(catalog.line_index(STRING_INPUT_SOURCE_ID).is_none());
+    }
+
+    #[test]
+    fn parse_str_stamps_the_string_input_id_into_every_location() {
+        // The parse's identity, the location of any element, and each
+        // diagnostic's locus all carry the sentinel — `u32::MAX`, past any
+        // sequential mint.
+        assert_eq!(STRING_INPUT_SOURCE_ID, SourceId::new(u32::MAX));
+        let parse = parse_str("$$$ p.", Dialect::Clingo).expect("admits");
+        assert_eq!(parse.source(), STRING_INPUT_SOURCE_ID);
+        assert_eq!(
+            parse.location(parse.syntax().text_range()).source,
+            STRING_INPUT_SOURCE_ID
+        );
+        assert!(parse.has_errors());
+        assert!(
+            parse
+                .diagnostics()
+                .iter()
+                .all(|d| d.primary().source == STRING_INPUT_SOURCE_ID)
+        );
     }
 
     #[test]

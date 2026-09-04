@@ -1,9 +1,10 @@
 //! The common working vocabulary for parsing and reading source under the
-//! one grammar: the parse door and its result, the declared dialect, the
-//! tree — its cursors, its kind roster, the role of a token — comment
-//! attachment, the fusion oracle, the two certificates, and the typed
-//! diagnostics; plus the typed AST and the base tier, each as a module.
-//! Glob-import it — `use themelios_syntax::prelude::*;`.
+//! one grammar: the parse doors — the file door and the string door — and
+//! their result, the declared dialect, the tree — its cursors, its kind
+//! roster, the role of a token — comment attachment, the fusion oracle, the
+//! two certificates, and the typed diagnostics; plus the typed AST and the
+//! base tier, each as a module. Glob-import it —
+//! `use themelios_syntax::prelude::*;`.
 //!
 //! It is a superset of the crate-root re-exports. The typed AST is reached
 //! through `ast`, never as a flat glob of its type names — `ast::Program`,
@@ -12,11 +13,12 @@
 //! that globs both tiers' preludes must meet no ambiguity. The base tier is
 //! reached the same way — `base::source::Source`. Advanced surfaces are
 //! reached by their module path, not here: the general parse doors,
-//! `NestingLimit`, `EntryPoint`, and `with_required_stack` (`parse`); the
-//! token sources and the lexer (`token`, `lexer`); and, in `tree`, rowan's
-//! `Direction` — the program tier has a `Direction` of its own — and the
-//! coordinate seam, whose `size_of` would shadow the standard prelude's. So
-//! this prelude stays safe to glob.
+//! `NestingLimit`, `EntryPoint`, `with_required_stack`, and the identity the
+//! string door mints, `STRING_INPUT_SOURCE_ID` (`parse`); the token sources
+//! and the lexer (`token`, `lexer`); and, in `tree`, rowan's `Direction` —
+//! the program tier has a `Direction` of its own — and the coordinate seam,
+//! whose `size_of` would shadow the standard prelude's. So this prelude
+//! stays safe to glob.
 //!
 //! ```
 //! use themelios_syntax::prelude::*;
@@ -54,7 +56,7 @@ pub use crate::equiv::{
     non_whitespace_tokens, token_stream,
 };
 pub use crate::fusion::{LexContext, Separator, lex_mode_of, separator, separator_between};
-pub use crate::parse::{Parse, parse};
+pub use crate::parse::{Parse, parse, parse_str};
 pub use crate::token::LexMode;
 pub use crate::tree::{
     Asp, AstChildren, AstNode, AstPtr, GreenNode, NodeOrToken, Preorder, PreorderWithTokens,
