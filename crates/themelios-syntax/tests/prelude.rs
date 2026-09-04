@@ -145,6 +145,21 @@ fn the_glob_names_the_certificates() {
 }
 
 #[test]
+fn the_content_projections_are_reached_through_equiv() {
+    // The per-token projection the certificates compare — `content`, and
+    // `compared` under a certificate — is reached by its module path, not
+    // the glob: the bare names are too generic to flatten.
+    use themelios_syntax::equiv::{compared, content};
+
+    let parsed = parse(&admitted("p. % c  \n", 0), Dialect::Clingo);
+    let comment = non_whitespace_tokens(&parsed.syntax())
+        .find(|token: &SyntaxToken| token.kind() == SyntaxKind::LINE_COMMENT)
+        .expect("the comment");
+    assert_eq!(content(&comment), "% c");
+    assert_eq!(compared(&comment, Certificate::LayoutOnly), "% c");
+}
+
+#[test]
 fn the_glob_names_the_typed_diagnostics() {
     let parsed = parse(&admitted("p(1", 0), Dialect::Clingo);
     assert!(parsed.is_incomplete());

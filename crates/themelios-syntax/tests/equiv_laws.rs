@@ -1,13 +1,20 @@
 //! The certificates' reflexivity through reparse, symmetry, and the
 //! corollary — equal non-whitespace sequences, equal significant-token
 //! shapes, under equal dialects and one root family, outside the aspif
-//! dispatch — and `canonical_spelling` idempotent and closed over the
-//! synonym pairs (docs/design/syntax.md §11, §16).
+//! dispatch — `canonical_spelling` idempotent and closed over the
+//! synonym pairs, and the per-token projection the certificates compare:
+//! `content` per kind, the one rule the typed accessors share, and
+//! `compared` under each certificate (docs/design/syntax.md §11, §16).
+
+use std::borrow::Cow;
 
 use proptest::prelude::*;
 use themelios_base::source::{Source, SourceId};
+use themelios_syntax::ast::{AstToken, Comment, ScriptBody};
 use themelios_syntax::dialect::Dialect;
-use themelios_syntax::equiv::{Certificate, canonical_spelling, equivalent};
+use themelios_syntax::equiv::{
+    Certificate, canonical_spelling, compared, content, equivalent, non_whitespace_tokens,
+};
 use themelios_syntax::fusion::{Separator, separator};
 use themelios_syntax::parse::{Parse, parse};
 use themelios_syntax::tree::{
@@ -179,6 +186,118 @@ fn canonical_spelling_is_idempotent_and_closed_over_the_synonym_pairs() {
                 canonical_spelling(kind, "anything"),
                 "anything",
                 "{kind}: the identity"
+            );
+        }
+    }
+}
+
+/// One token of each kind the content rule names (docs/design/syntax.md
+/// §11.1), each carrying the trailing whitespace the rule decides on.
+const PROJECTION_SNIPPET: &str =
+    "#! run  \n%! d \t\np. % c \t\n%* b  *%\n#script (lua) x = 1 \t #end.\n%! stray  \n";
+
+/// The synonym pairs in their non-canonical spellings, so the
+/// `UpToSpelling` branch respells at least once.
+const SYNONYM_SNIPPET: &str =
+    "p :- X == 1, X <> 2, Y = #infimum, Z != #supremum. #minimise { 1 }. #maximise { 2 }.";
+
+/// The corpus with the two snippets beside it.
+fn corpus_and_snippets() -> Vec<(String, String, Dialect)> {
+    let mut texts = corpus();
+    for (name, text) in [
+        ("projection snippet", PROJECTION_SNIPPET),
+        ("synonym snippet", SYNONYM_SNIPPET),
+    ] {
+        texts.push((name.to_owned(), text.to_owned(), Dialect::Clingo));
+    }
+    texts
+}
+
+#[test]
+fn content_is_the_sequences_per_kind_projection() {
+    let parsed = parse(&admitted(PROJECTION_SNIPPET, 0), Dialect::Clingo);
+    let projected: Vec<(SyntaxKind, String)> = non_whitespace_tokens(&parsed.syntax())
+        .map(|token| (token.kind(), content(&token).to_owned()))
+        .collect();
+    let expected = [
+        // The line forms lose their trailing horizontal whitespace: layout.
+        (SyntaxKind::SHEBANG_COMMENT, "#! run"),
+        // The doc form keeps it, in docs position and stray alike: content.
+        (SyntaxKind::DOC_COMMENT, "%! d \t"),
+        (SyntaxKind::IDENT, "p"),
+        (SyntaxKind::DOT, "."),
+        (SyntaxKind::LINE_COMMENT, "% c"),
+        // A block comment, like every other token, is its text.
+        (SyntaxKind::BLOCK_COMMENT, "%* b  *%"),
+        (SyntaxKind::KW_SCRIPT, "#script"),
+        (SyntaxKind::L_PAREN, "("),
+        (SyntaxKind::IDENT, "lua"),
+        (SyntaxKind::R_PAREN, ")"),
+        // The script body loses the blanks and tabs before `#end`: its value.
+        (SyntaxKind::SCRIPT_BODY, " x = 1"),
+        (SyntaxKind::KW_END, "#end"),
+        (SyntaxKind::DOT, "."),
+        (SyntaxKind::DOC_COMMENT, "%! stray  "),
+    ]
+    .map(|(kind, content)| (kind, content.to_owned()));
+    assert_eq!(projected, expected);
+    let docs: Vec<TokenRole> = non_whitespace_tokens(&parsed.syntax())
+        .filter(|token| token.kind() == SyntaxKind::DOC_COMMENT)
+        .map(|token| role(&token))
+        .collect();
+    assert_eq!(docs, [TokenRole::Documentation, TokenRole::Trivia]);
+    // A carriage return before the line end is layout too.
+    let crlf = parse(&admitted("p. % c \r\n", 1), Dialect::Clingo);
+    let comment = non_whitespace_tokens(&crlf.syntax())
+        .find(|token| token.kind() == SyntaxKind::LINE_COMMENT)
+        .expect("the comment");
+    assert_eq!(content(&comment), "% c");
+}
+
+#[test]
+fn content_agrees_with_the_typed_accessors() {
+    // The trims have one home: on a trivia comment the projection is
+    // `Comment::content`, on a script body `ScriptBody::value`.
+    for (name, text, dialect) in corpus_and_snippets() {
+        let parsed = parse(&admitted(&text, 0), dialect);
+        for token in non_whitespace_tokens(&parsed.syntax()) {
+            if let Some(comment) = Comment::cast(token.clone()) {
+                assert_eq!(content(&token), comment.content(), "{name}: a comment");
+            }
+            if let Some(body) = ScriptBody::cast(token.clone()) {
+                assert_eq!(content(&token), body.value(), "{name}: a script body");
+            }
+        }
+    }
+}
+
+#[test]
+fn compared_is_content_borrowed_under_layout_only() {
+    for (name, text, dialect) in corpus_and_snippets() {
+        let parsed = parse(&admitted(&text, 0), dialect);
+        for token in non_whitespace_tokens(&parsed.syntax()) {
+            let projected = compared(&token, Certificate::LayoutOnly);
+            assert!(
+                matches!(projected, Cow::Borrowed(_)),
+                "{name}: never allocates"
+            );
+            assert_eq!(projected, content(&token), "{name}");
+        }
+    }
+}
+
+#[test]
+fn compared_is_canonical_content_under_up_to_spelling() {
+    for (name, text, dialect) in corpus_and_snippets() {
+        let parsed = parse(&admitted(&text, 0), dialect);
+        for token in non_whitespace_tokens(&parsed.syntax()) {
+            let projected = compared(&token, Certificate::UpToSpelling);
+            let canonical = canonical_spelling(token.kind(), content(&token));
+            assert_eq!(projected, canonical, "{name}");
+            assert_eq!(
+                matches!(projected, Cow::Owned(_)),
+                canonical != content(&token),
+                "{name}: allocates exactly to respell a synonym"
             );
         }
     }

@@ -37,12 +37,23 @@ pub fn comment_sequence(node: &SyntaxNode) -> impl Iterator<Item = SyntaxToken> 
         .filter(|token| token.kind().is_comment() && role(token) == TokenRole::Trivia)
 }
 
-/// A token's content for the sequence (docs/design/syntax.md §11.1): a
-/// line comment or shebang without its trailing horizontal whitespace,
-/// which is layout; a doc comment whole, wherever it stands; a script
-/// body by its value — the grammar's own trimming of the blanks before
-/// `#end`; every other token its text.
-fn content(token: &SyntaxToken) -> &str {
+/// A token's content for the sequence (docs/design/syntax.md §11.1): the
+/// part of its text the certificates compare, per kind. A `LINE_COMMENT`
+/// or `SHEBANG_COMMENT` contributes its text without its trailing
+/// horizontal whitespace — spaces, tabs, and a carriage return — which is
+/// layout the line rule swallowed on its way to the line end (§8.3); a
+/// `DOC_COMMENT` its whole text, wherever it stands, since the doc form's
+/// trailing whitespace is content (§8.3); a `SCRIPT_BODY` its value — the
+/// raw text with the blanks and tabs before `#end` trimmed, the grammar's
+/// own trimming (grammar §4.8); every other token — a `BLOCK_COMMENT`, an
+/// `ERROR` token, every significant token — its text as it stands. This
+/// is the rule's one home: `Comment::content` and `ScriptBody::value` are
+/// the same trims, and a `Side` carries this projection as compared — so
+/// a consumer certifying a claim of its own composes on `content` rather
+/// than re-deriving which whitespace is layout. Total; borrows the
+/// token's text: O(|text|) at worst, for the trim, and O(1) beyond the
+/// text read — no tree walk.
+pub fn content(token: &SyntaxToken) -> &str {
     match token.kind() {
         SyntaxKind::LINE_COMMENT | SyntaxKind::SHEBANG_COMMENT => {
             line_or_shebang_content(token.text())
@@ -118,12 +129,21 @@ impl fmt::Display for Mismatch {
 
 impl std::error::Error for Mismatch {}
 
-/// A token's content as this certificate compares it: its own content
-/// under `LayoutOnly` (§11.1), respelled to canonical under `UpToSpelling`
-/// (§11.3). Borrowed on the common path — a `Cow::Owned` only for a
-/// synonym respelled under `UpToSpelling` — so the certificate's equal
-/// path, the whole cost when it grants, allocates nothing.
-fn compared(token: &SyntaxToken, certificate: Certificate) -> Cow<'_, str> {
+/// A token's content as `certificate` compares it: under `LayoutOnly`,
+/// `content(token)` as it stands (§11.1); under `UpToSpelling`,
+/// `canonical_spelling(token.kind(), content(token))` — the same content,
+/// respelled to canonical where the kind has synonyms (§11.3), and
+/// nothing else. Two tokens agree under a certificate exactly when their
+/// kinds are equal and their `compared` contents are equal: that is what
+/// `equivalent` tests at each index of the sequence and what a `Side`
+/// reports, so a consumer composing a claim of its own — over a
+/// subsequence, or exempting a kind — reads the projection here rather
+/// than restating either branch. Borrowed on the common path — a
+/// `Cow::Owned` only for a synonym respelled under `UpToSpelling` — so
+/// the certificate's equal path, the whole cost when it grants, allocates
+/// nothing. Total; O(|text|) at worst — `content`'s trim and the
+/// respelling's comparison — and O(1) beyond the text read; no tree walk.
+pub fn compared(token: &SyntaxToken, certificate: Certificate) -> Cow<'_, str> {
     match certificate {
         Certificate::LayoutOnly => Cow::Borrowed(content(token)),
         Certificate::UpToSpelling => canonical_spelling(token.kind(), content(token)),
