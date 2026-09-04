@@ -695,7 +695,10 @@ when its parent is a statement and every element before it among the
 parent's children is a trivia-kind token or a `DOC_COMMENT` — a
 significant token or a child node ends that leading prefix. `role` reads
 the rule for one token; `roles_of` reads it for a whole node's children
-in one pass, for a consumer that reads a node's roles together.
+in one pass, for a consumer that reads a node's roles together — as the
+crate's own bulk readers do: `HasDocs::doc_lines` (§8.2) and the bulk
+attachment walk (§9.3) read a node's roles in one forward pass, so a
+k-line doc block costs them O(k), never the O(k²) of `role` per line.
 When the reserved inner-docs form (§17) arrives, this definition moves
 and the sites do not.
 
@@ -1998,11 +2001,12 @@ and `next` around `c`) — local, allocation-free; `comments(anchor,
 slot)` is O(the trivia adjacent to the anchor) for `Leading` and
 `Trailing`, and O(the anchor's children) for `Dangling`, whose comments
 are scattered among them — for `PROGRAM`, the whole top level;
-`attachments(node)` is O(subtree). A consumer that asks `attachment` for
-each comment of a run of *m* comments pays O(m²) across the run, which
-is why the bulk form exists: a formatter walks anchors or takes the bulk
-pass and pays O(n). The whitespace facts are O(the trivia between the
-two elements).
+`attachments(node)` is O(subtree) — each node's roles read in one pass
+(§5.4), so a doc block costs its length, not its square. A consumer that
+asks `attachment` for each comment of a run of *m* comments pays O(m²)
+across the run, which is why the bulk form exists: a formatter walks
+anchors or takes the bulk pass and pays O(n). The whitespace facts are
+O(the trivia between the two elements).
 
 **Why a function and not a table.** kallos kept attachment in a side
 table keyed by node identity because its tree was not lossless and its

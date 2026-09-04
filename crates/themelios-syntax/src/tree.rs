@@ -543,8 +543,10 @@ pub fn role(token: &SyntaxToken) -> TokenRole {
 /// The role of a token of `kind` standing where `is_statement` says its
 /// parent is a statement and `leading` says every element before it is a
 /// trivia-kind token or a `DOC_COMMENT`. The single definition of docs
-/// position (docs/design/syntax.md §5.4), read forward.
-fn role_of(kind: SyntaxKind, is_statement: bool, leading: bool) -> TokenRole {
+/// position (docs/design/syntax.md §5.4), read forward — by `role` and
+/// `roles_of` here, and by the crate's other one-pass walks over a node's
+/// children, which carry the two facts along rather than re-read them.
+pub(crate) fn role_of(kind: SyntaxKind, is_statement: bool, leading: bool) -> TokenRole {
     match kind {
         SyntaxKind::DOC_COMMENT if is_statement && leading => TokenRole::Documentation,
         SyntaxKind::DOC_COMMENT => TokenRole::Trivia,
@@ -556,7 +558,7 @@ fn role_of(kind: SyntaxKind, is_statement: bool, leading: bool) -> TokenRole {
 /// Whether `element` keeps a node's leading trivia/doc prefix intact: a
 /// trivia-kind token or a `DOC_COMMENT`. A significant token or any child
 /// node ends the prefix.
-fn keeps_leading(element: &SyntaxElement) -> bool {
+pub(crate) fn keeps_leading(element: &SyntaxElement) -> bool {
     match element {
         NodeOrToken::Token(token) => {
             token.kind().is_trivia() || token.kind() == SyntaxKind::DOC_COMMENT
@@ -615,23 +617,27 @@ pub(crate) fn sexpr(node: &SyntaxNode) -> String {
     out
 }
 
+/// The trees docs position turns on, shared by the test modules that hold
+/// a reading of roles equal to another — `role` to the backward reading
+/// here, and the one-pass walks of `attach` and `ast` to the per-token
+/// reading — so every such law is held over one corpus.
 #[cfg(test)]
-mod tests {
+pub(crate) mod role_shapes {
     use rowan::{GreenNodeBuilder, Language};
-    use themelios_base::source::{SliceRefusal, Source, SourceId};
-    use themelios_base::span::{ByteOffset, Span};
+    use themelios_base::source::{Source, SourceId};
 
     use super::*;
     use crate::dialect::Dialect;
     use crate::parse::parse;
 
-    fn admitted(text: &str) -> Source {
+    /// The source of `text`, which every test text admits.
+    pub(crate) fn admitted(text: &str) -> Source {
         Source::new(SourceId::new(7), text.to_owned()).expect("test text admits")
     }
 
     /// A tree built by hand: `PROGRAM > RULE > [DOC_COMMENT, WHITESPACE,
     /// IDENT, DOT]`, then a stray `DOC_COMMENT` after the rule.
-    fn documented_fact() -> SyntaxNode {
+    pub(crate) fn documented_fact() -> SyntaxNode {
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(Asp::kind_to_raw(SyntaxKind::PROGRAM));
         builder.start_node(Asp::kind_to_raw(SyntaxKind::RULE));
@@ -646,17 +652,11 @@ mod tests {
         SyntaxNode::new_root(builder.finish())
     }
 
-    fn tokens(root: &SyntaxNode) -> Vec<SyntaxToken> {
-        root.descendants_with_tokens()
-            .filter_map(SyntaxElement::into_token)
-            .collect()
-    }
-
     /// A tree built by hand around one rule whose children hold every
     /// docs-position shape at once: a three-line doc block with a plain
     /// comment inside it, a `DOC_COMMENT` after the head, a `DOC_COMMENT`
     /// leading a nested `BODY`, and a `DOC_COMMENT` after that child node.
-    fn doc_block_rule() -> SyntaxNode {
+    pub(crate) fn doc_block_rule() -> SyntaxNode {
         let mut builder = GreenNodeBuilder::new();
         builder.start_node(Asp::kind_to_raw(SyntaxKind::PROGRAM));
         builder.start_node(Asp::kind_to_raw(SyntaxKind::RULE));
@@ -697,42 +697,6 @@ mod tests {
         SyntaxNode::new_root(builder.finish())
     }
 
-    /// The backward reading of docs position — a walk over the preceding
-    /// siblings from the token — kept here as the oracle the forward
-    /// reading `role` makes is held equal to, token for token.
-    fn role_backward(token: &SyntaxToken) -> TokenRole {
-        match token.kind() {
-            SyntaxKind::DOC_COMMENT if in_docs_position_backward(token) => TokenRole::Documentation,
-            SyntaxKind::DOC_COMMENT => TokenRole::Trivia,
-            kind if kind.is_trivia() => TokenRole::Trivia,
-            _ => TokenRole::Significant,
-        }
-    }
-
-    /// A leading child of a statement node with only trivia and doc-comment
-    /// tokens before it, read backward from the token.
-    fn in_docs_position_backward(token: &SyntaxToken) -> bool {
-        let Some(parent) = token.parent() else {
-            return false;
-        };
-        if !parent.kind().is_statement() {
-            return false;
-        }
-        let mut earlier = token.prev_sibling_or_token();
-        while let Some(element) = earlier {
-            match &element {
-                NodeOrToken::Node(_) => return false,
-                NodeOrToken::Token(before) => {
-                    if !(before.kind().is_trivia() || before.kind() == SyntaxKind::DOC_COMMENT) {
-                        return false;
-                    }
-                }
-            }
-            earlier = element.prev_sibling_or_token();
-        }
-        true
-    }
-
     /// Texts whose trees hold every shape docs position turns on: doc
     /// blocks and multi-line `%!` runs, with plain comments and blank lines
     /// inside them; a shebang before the docs; a doc line no statement
@@ -740,7 +704,7 @@ mod tests {
     /// child node, and inside nested nodes; a doc run before each statement
     /// family; empty bodies and empty statements; recovery; the marker's
     /// exactness; and the empty program.
-    const ROLE_SHAPES: &[&str] = &[
+    pub(crate) const ROLE_SHAPES: &[&str] = &[
         "%! doc\np.\n",
         "%! one\n%! two\n%! three\np(X) :- q(X).\n",
         "%! one\n% plain\n\n%! two\n%* block *%\n%! three\np.\n",
@@ -779,9 +743,9 @@ mod tests {
         "",
     ];
 
-    /// The trees the equivalence is held over: every shape under both
+    /// The trees the equivalences are held over: every shape under both
     /// dialects, and the two hand-built trees.
-    fn role_corpus() -> Vec<SyntaxNode> {
+    pub(crate) fn role_corpus() -> Vec<SyntaxNode> {
         let mut trees = vec![documented_fact(), doc_block_rule()];
         for text in ROLE_SHAPES {
             for dialect in [Dialect::Clingo, Dialect::AspCore2] {
@@ -789,6 +753,60 @@ mod tests {
             }
         }
         trees
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rowan::{GreenNodeBuilder, Language};
+    use themelios_base::source::SliceRefusal;
+    use themelios_base::span::{ByteOffset, Span};
+
+    use super::role_shapes::{admitted, doc_block_rule, documented_fact, role_corpus};
+    use super::*;
+    use crate::dialect::Dialect;
+    use crate::parse::parse;
+
+    fn tokens(root: &SyntaxNode) -> Vec<SyntaxToken> {
+        root.descendants_with_tokens()
+            .filter_map(SyntaxElement::into_token)
+            .collect()
+    }
+
+    /// The backward reading of docs position — a walk over the preceding
+    /// siblings from the token — kept here as the oracle the forward
+    /// reading `role` makes is held equal to, token for token.
+    fn role_backward(token: &SyntaxToken) -> TokenRole {
+        match token.kind() {
+            SyntaxKind::DOC_COMMENT if in_docs_position_backward(token) => TokenRole::Documentation,
+            SyntaxKind::DOC_COMMENT => TokenRole::Trivia,
+            kind if kind.is_trivia() => TokenRole::Trivia,
+            _ => TokenRole::Significant,
+        }
+    }
+
+    /// A leading child of a statement node with only trivia and doc-comment
+    /// tokens before it, read backward from the token.
+    fn in_docs_position_backward(token: &SyntaxToken) -> bool {
+        let Some(parent) = token.parent() else {
+            return false;
+        };
+        if !parent.kind().is_statement() {
+            return false;
+        }
+        let mut earlier = token.prev_sibling_or_token();
+        while let Some(element) = earlier {
+            match &element {
+                NodeOrToken::Node(_) => return false,
+                NodeOrToken::Token(before) => {
+                    if !(before.kind().is_trivia() || before.kind() == SyntaxKind::DOC_COMMENT) {
+                        return false;
+                    }
+                }
+            }
+            earlier = element.prev_sibling_or_token();
+        }
+        true
     }
 
     #[test]

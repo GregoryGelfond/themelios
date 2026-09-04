@@ -13,7 +13,7 @@ use rowan::ast::support;
 
 use crate::tree::{
     Asp, AstChildren, AstNode, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, TextRange,
-    TokenRole, role,
+    TokenRole, roles_of,
 };
 
 pub use self::nodes::{
@@ -427,19 +427,17 @@ pub enum TheoryOpTermItem {
 /// documentation.
 pub trait HasDocs: AstNode<Language = Asp> {
     /// The leading DOC_COMMENT tokens, in order — the statement's
-    /// documentation. Empty when undocumented. Total; O(leading trivia).
+    /// documentation. Empty when undocumented. Total; O(the statement's
+    /// children): one forward pass reads every child's role
+    /// (`tree::roles_of`), so a k-line block costs O(k), where a reading
+    /// of `role` per line would scan the lines before it, O(k²).
     fn doc_lines(&self) -> impl Iterator<Item = DocLine> {
-        self.syntax()
-            .children_with_tokens()
-            .take_while(|element| match element {
-                SyntaxElement::Token(token) => {
-                    token.kind().is_trivia() || token.kind() == SyntaxKind::DOC_COMMENT
-                }
-                SyntaxElement::Node(_) => false,
-            })
-            .filter_map(SyntaxElement::into_token)
-            .filter(|token| role(token) == TokenRole::Documentation)
-            .filter_map(DocLine::cast)
+        // A `Documentation` role is `DocLine`'s own test of kind and
+        // role, read once by the pass — so the wrapper is built from it,
+        // never by `cast`, which would read `role` a second time.
+        roles_of(self.syntax())
+            .filter(|(_, role)| *role == TokenRole::Documentation)
+            .map(|(token, _)| DocLine::from_doc_line(token))
     }
 
     /// The covering range of the documentation, if any. Total.
@@ -500,6 +498,8 @@ mod tests {
     use super::*;
     use crate::dialect::Dialect;
     use crate::parse::parse;
+    use crate::tree::role;
+    use crate::tree::role_shapes::role_corpus;
 
     fn program(text: &str) -> crate::parse::Parse<Program> {
         let source = Source::new(SourceId::new(0), text.to_owned()).expect("admits");
@@ -769,6 +769,79 @@ mod tests {
         };
         assert_eq!(constant.policy(), None);
         assert!(constant.annotation().is_none());
+    }
+
+    /// The doc-line accessor read per token — the reading the one-pass
+    /// accessor is held equal to: the leading trivia/doc prefix of the
+    /// statement's children, its tokens whose `role` is `Documentation`,
+    /// each cast.
+    fn doc_lines_by_role(statement: &SyntaxNode) -> Vec<DocLine> {
+        statement
+            .children_with_tokens()
+            .take_while(|element| match element {
+                SyntaxElement::Token(token) => {
+                    token.kind().is_trivia() || token.kind() == SyntaxKind::DOC_COMMENT
+                }
+                SyntaxElement::Node(_) => false,
+            })
+            .filter_map(SyntaxElement::into_token)
+            .filter(|token| role(token) == TokenRole::Documentation)
+            .filter_map(DocLine::cast)
+            .collect()
+    }
+
+    /// `doc_lines` of a statement of any family.
+    fn doc_lines_of(statement: &Statement) -> Vec<DocLine> {
+        match statement {
+            Statement::Rule(s) => s.doc_lines().collect(),
+            Statement::WeakConstraint(s) => s.doc_lines().collect(),
+            Statement::Optimize(s) => s.doc_lines().collect(),
+            Statement::Show(s) => s.doc_lines().collect(),
+            Statement::Project(s) => s.doc_lines().collect(),
+            Statement::Defined(s) => s.doc_lines().collect(),
+            Statement::Edge(s) => s.doc_lines().collect(),
+            Statement::Heuristic(s) => s.doc_lines().collect(),
+            Statement::External(s) => s.doc_lines().collect(),
+            Statement::Const(s) => s.doc_lines().collect(),
+            Statement::Script(s) => s.doc_lines().collect(),
+            Statement::Include(s) => s.doc_lines().collect(),
+            Statement::ProgramPart(s) => s.doc_lines().collect(),
+            Statement::TheoryDefinition(s) => s.doc_lines().collect(),
+            Statement::Query(s) => s.doc_lines().collect(),
+        }
+    }
+
+    #[test]
+    fn doc_lines_agrees_with_the_per_token_reading() {
+        // On every statement of the docs-position corpus the one-pass
+        // accessor yields the doc lines the per-token reading yields, in
+        // order — with a witness that the corpus has documented and
+        // undocumented statements across more than one family, and a
+        // statement holding a doc line that is not its documentation.
+        let mut documented = std::collections::HashSet::new();
+        let mut undocumented = 0usize;
+        let mut with_a_stray_line = 0usize;
+        for root in role_corpus() {
+            for statement in root.descendants().filter_map(Statement::cast) {
+                let node = statement.syntax();
+                let read = doc_lines_of(&statement);
+                assert_eq!(read, doc_lines_by_role(node), "{}", node.text());
+                if read.is_empty() {
+                    undocumented += 1;
+                } else {
+                    documented.insert(node.kind());
+                }
+                let of_doc_kind = node
+                    .children_with_tokens()
+                    .filter(|element| element.kind() == SyntaxKind::DOC_COMMENT)
+                    .count();
+                if of_doc_kind > read.len() {
+                    with_a_stray_line += 1;
+                }
+            }
+        }
+        assert!(documented.len() > 1 && undocumented > 0);
+        assert!(with_a_stray_line > 0);
     }
 
     #[test]

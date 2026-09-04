@@ -208,6 +208,16 @@ impl AstToken for DocLine {
 }
 
 impl DocLine {
+    /// The wrapper over a token the caller has established is a doc line
+    /// — kind `DOC_COMMENT`, role `Documentation` — without re-reading
+    /// `role`: the doc-line accessor reads a statement's roles in one
+    /// pass (`tree::roles_of`) and builds these from what it read, where
+    /// `cast`'s own reading per token would scan the preceding siblings
+    /// again, O(k²) over a k-line block.
+    pub(crate) fn from_doc_line(token: SyntaxToken) -> DocLine {
+        DocLine(token)
+    }
+
     /// The text after the `%!` marker, untrimmed — comment text whose
     /// meaning is a tool's (grammar §8), trailing whitespace included: a
     /// documentation tool may read it (two trailing spaces are a hard
@@ -272,6 +282,16 @@ pub(crate) fn script_body_value(text: &str) -> &str {
 }
 
 impl Comment {
+    /// The wrapper over a token the caller has established is a trivia
+    /// comment — a comment by kind, role `Trivia` — without re-reading
+    /// `role`: the bulk attachment walk reads a node's roles in one pass
+    /// and builds these from what it read, where `cast`'s own reading per
+    /// token would scan the preceding siblings again, O(k²) over a k-line
+    /// block.
+    pub(crate) fn from_trivia_comment(token: SyntaxToken) -> Comment {
+        Comment(token)
+    }
+
     /// The comment's content: for the line comment and the shebang, the
     /// text minus its trailing horizontal whitespace, since that
     /// whitespace is layout the rule swallowed on its way to the line

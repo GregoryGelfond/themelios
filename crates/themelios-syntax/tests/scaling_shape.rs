@@ -51,6 +51,30 @@ fn admitted(units: usize) -> Source {
     Source::new(SourceId::new(0), text_of(units)).expect("test text admits")
 }
 
+/// One UNIT under a doc block of `lines` `%!` lines — the docs-position
+/// shape (docs/design/syntax.md §5.4): a doc line's role is a fact of the
+/// run before it, so a walk that re-read that run per line would be
+/// quadratic in the block, where a run of plain comments is not.
+fn doc_block_text(lines: usize) -> String {
+    format!("{}{UNIT}", "%! a doc line\n".repeat(lines))
+}
+
+/// A run of `lines` `%!` lines that no statement follows — the root shape:
+/// every line is trivia directly under `PROGRAM`.
+fn doc_run_text(lines: usize) -> String {
+    "%! a doc line\n".repeat(lines)
+}
+
+fn tree_of(text: String) -> SyntaxNode {
+    let source = Source::new(SourceId::new(0), text).expect("test text admits");
+    parse(&source, Dialect::Clingo).syntax()
+}
+
+/// The documented rule of a `doc_block_text` tree: the block is inside it.
+fn documented_rule(root: &SyntaxNode) -> SyntaxNode {
+    root.first_child().expect("the documented rule")
+}
+
 /// One elapsed measurement of `work`, in nanoseconds — floored to 1 so a
 /// sub-nanosecond reading can still divide.
 fn time_once(mut work: impl FnMut()) -> u128 {
@@ -199,6 +223,85 @@ fn significant_children_is_linear_in_the_children() {
     assert!(
         ratio < LINEAR_CEILING * RATIO_SCALE,
         "the significant-child walk's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} children; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[test]
+fn significant_children_is_linear_in_a_doc_block() {
+    // The walk over a statement with a k-line doc block: a reading that
+    // scanned each doc line's preceding siblings for its role would be
+    // O(k²) here and show as a ratio near SIZE_RATIO², past the ceiling.
+    let small_rule = documented_rule(&tree_of(doc_block_text(64)));
+    let big_rule = documented_rule(&tree_of(doc_block_text(64 * SIZE_RATIO)));
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(significant_children(&small_rule).count());
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(significant_children(&big_rule).count());
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "the significant-child walk's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over a x{SIZE_RATIO} doc block; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[test]
+fn significant_children_is_linear_in_a_root_doc_run() {
+    // The walk over a root holding a k-line `%!` run with no statement:
+    // every line is trivia under PROGRAM, which is no statement, so no
+    // reading of a line's role may scan the run before it.
+    let small_root = tree_of(doc_run_text(64));
+    let big_root = tree_of(doc_run_text(64 * SIZE_RATIO));
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(significant_children(&small_root).count());
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(significant_children(&big_root).count());
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "the significant-child walk's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over a x{SIZE_RATIO} root doc run; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[test]
+fn bulk_attachment_is_linear_in_a_doc_block() {
+    // The bulk form over a statement with a k-line doc block: it reads
+    // whether each child is skipped and whether each token is a trivia
+    // comment, and a reading of either that scanned the doc line's
+    // preceding siblings would be O(k²) here.
+    let small_root = tree_of(doc_block_text(64));
+    let big_root = tree_of(doc_block_text(64 * SIZE_RATIO));
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(attachments(&small_root).count());
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(attachments(&big_root).count());
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "attachment's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over a x{SIZE_RATIO} doc block; the linear shape allows at most x{LINEAR_CEILING}"
     );
 }
 

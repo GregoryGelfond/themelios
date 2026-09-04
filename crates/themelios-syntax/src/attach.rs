@@ -14,7 +14,7 @@ use std::iter;
 use crate::ast::{AstToken, Comment};
 use crate::tree::{
     Direction, NodeOrToken, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, TokenRole,
-    WalkEvent, role,
+    WalkEvent, keeps_leading, role, role_of,
 };
 
 /// The slot a comment is attached in.
@@ -96,17 +96,40 @@ pub fn is_skipped(element: &SyntaxElement) -> bool {
     }
 }
 
+/// Each child of `node` with `is_skipped`'s answer for it, read in one
+/// forward pass over the children: the two positional facts `role`
+/// scans a token's preceding siblings for — whether the parent is a
+/// statement, whether every element so far keeps the leading trivia/doc
+/// prefix — are carried along the pass and fed to `role_of`, the one
+/// definition, so a doc line's role costs O(1) here rather than O(its
+/// preceding siblings), and a k-line doc block O(k) rather than O(k²).
+/// Total; O(the children).
+fn skipped_children(node: &SyntaxNode) -> impl Iterator<Item = (SyntaxElement, bool)> + '_ {
+    let is_statement = node.kind().is_statement();
+    let mut leading = true;
+    node.children_with_tokens().map(move |element| {
+        let skipped = match &element {
+            NodeOrToken::Token(token) => {
+                role_of(token.kind(), is_statement, leading) == TokenRole::Trivia
+            }
+            NodeOrToken::Node(node) => node.text_range().is_empty(),
+        };
+        if !keeps_leading(&element) {
+            leading = false;
+        }
+        (element, skipped)
+    })
+}
+
 /// The children of `node` that are not skipped (`is_skipped`), in order
 /// — the significant-child walk, so a consumer reads the guard here
-/// instead of re-deriving it. One pass over the children, each read once
-/// and tested by `is_skipped`: O(the children), under `is_skipped`'s
-/// bound per child. Total.
+/// instead of re-deriving it. One forward pass over the children
+/// (`skipped_children`), each read once with the role facts carried
+/// along, never a per-child scan of its siblings: O(the children). Total.
 pub fn significant_children(node: &SyntaxNode) -> impl Iterator<Item = SyntaxElement> + '_ {
-    // Single-pass: one read of the children, each tested by `is_skipped`;
-    // never a per-child walk of its siblings, which would make the walk
-    // O(k²) in the child count rather than O(k).
-    node.children_with_tokens()
-        .filter(|element| !is_skipped(element))
+    skipped_children(node)
+        .filter(|(_, skipped)| !skipped)
+        .map(|(element, _)| element)
 }
 
 /// The nearest sibling of `element` in `direction` that is not skipped —
@@ -248,11 +271,14 @@ pub fn attachment(comment: &SyntaxToken) -> Result<Attachment, NotAttachable> {
 /// `Comment`, with its attachment, in order, in one pass: the rules read
 /// as cumulative facts along the children — a line break since the last
 /// significant sibling, an empty line before the next — so each comment
-/// resolves in constant time. The cast is the admission: a token that
-/// casts is a trivia comment by `Comment`'s own reading of kind and role,
-/// so the wrapper exists by construction, never by a second test.
+/// resolves in constant time. The roles are read once, by the forward
+/// pass `skipped_children` makes, and that reading is the admission: a
+/// comment by kind that the pass skips is a trivia comment by
+/// `Comment`'s own test of kind and role, so the wrapper is built from
+/// the fact already read — never by a cast, which would read `role` a
+/// second time per token. O(the children).
 fn resolve_children(parent: &SyntaxNode) -> Vec<(Comment, Attachment)> {
-    let elements: Vec<SyntaxElement> = parent.children_with_tokens().collect();
+    let (elements, skipped): (Vec<SyntaxElement>, Vec<bool>) = skipped_children(parent).unzip();
     let count = elements.len();
     // Forward: the nearest significant sibling before each element and
     // whether a line break stands between it and the element.
@@ -260,13 +286,13 @@ fn resolve_children(parent: &SyntaxNode) -> Vec<(Comment, Attachment)> {
     let mut broken_before: Vec<bool> = Vec::with_capacity(count);
     let mut last_significant = None;
     let mut broken = false;
-    for element in &elements {
+    for (index, element) in elements.iter().enumerate() {
         prev_of.push(last_significant);
         broken_before.push(broken);
-        if is_skipped(element) {
+        if skipped[index] {
             broken |= breaks_line(element);
         } else {
-            last_significant = Some(prev_of.len() - 1);
+            last_significant = Some(index);
             broken = false;
         }
     }
@@ -279,7 +305,7 @@ fn resolve_children(parent: &SyntaxNode) -> Vec<(Comment, Attachment)> {
     for (index, element) in elements.iter().enumerate().rev() {
         next_of[index] = next_significant;
         gap_after[index] = gap;
-        if is_skipped(element) {
+        if skipped[index] {
             gap |= is_empty_line(element);
         } else {
             next_significant = Some(index);
@@ -291,9 +317,10 @@ fn resolve_children(parent: &SyntaxNode) -> Vec<(Comment, Attachment)> {
         let NodeOrToken::Token(token) = element else {
             continue;
         };
-        let Some(comment) = Comment::cast(token.clone()) else {
+        if !(token.kind().is_comment() && skipped[index]) {
             continue;
-        };
+        }
+        let comment = Comment::from_trivia_comment(token.clone());
         let attachment = match (prev_of[index], broken_before[index]) {
             (Some(prev), false) => Attachment {
                 anchor: elements[prev].clone(),
@@ -525,6 +552,7 @@ mod tests {
     use super::*;
     use crate::dialect::Dialect;
     use crate::parse::parse;
+    use crate::tree::role_shapes::{doc_block_rule, documented_fact, role_corpus};
     use crate::tree::{AstNode, Direction, SyntaxKind};
 
     fn parsed(text: &str) -> SyntaxNode {
@@ -566,6 +594,34 @@ mod tests {
     /// The kinds of `elements`, in order.
     fn kinds(elements: impl Iterator<Item = SyntaxElement>) -> Vec<SyntaxKind> {
         elements.map(|element| element.kind()).collect()
+    }
+
+    /// The bulk form read per token — the reading the one-pass walk is
+    /// held equal to: every token `Comment::cast` admits, by kind and
+    /// `role`, with the single form's attachment, which reads `role`
+    /// through `is_skipped` at every neighbor it steps over.
+    fn attachments_by_role(root: &SyntaxNode) -> Vec<(Comment, Attachment)> {
+        root.descendants_with_tokens()
+            .filter_map(SyntaxElement::into_token)
+            .filter_map(Comment::cast)
+            .map(|comment| {
+                let attached = attachment(comment.syntax()).expect("a trivia comment attaches");
+                (comment, attached)
+            })
+            .collect()
+    }
+
+    /// The text, slot, and anchor kind of each of `root`'s attachments.
+    fn summarized(root: &SyntaxNode) -> Vec<(String, Slot, SyntaxKind)> {
+        attachments(root)
+            .map(|(comment, attachment)| {
+                (
+                    comment.text().to_owned(),
+                    attachment.slot,
+                    attachment.anchor.kind(),
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -826,12 +882,91 @@ mod tests {
     }
 
     #[test]
+    fn significant_children_agrees_with_is_skipped_on_every_node() {
+        // The one-pass walk and the per-element predicate are one reading:
+        // on every node of the docs-position corpus the walk yields exactly
+        // the children `is_skipped` refuses, in order — with a witness that
+        // the corpus reaches both answers for a DOC_COMMENT child, the one
+        // answer that turns on position.
+        let mut doc_lines_kept = 0usize;
+        let mut doc_lines_skipped = 0usize;
+        for root in role_corpus() {
+            for node in root.descendants() {
+                let expected: Vec<SyntaxElement> = node
+                    .children_with_tokens()
+                    .filter(|element| !is_skipped(element))
+                    .collect();
+                let read: Vec<SyntaxElement> = significant_children(&node).collect();
+                assert_eq!(read, expected, "{}", node.kind());
+                for element in node.children_with_tokens() {
+                    if element.kind() != SyntaxKind::DOC_COMMENT {
+                        continue;
+                    }
+                    if is_skipped(&element) {
+                        doc_lines_skipped += 1;
+                    } else {
+                        doc_lines_kept += 1;
+                    }
+                }
+            }
+        }
+        assert!(doc_lines_kept > 0 && doc_lines_skipped > 0);
+    }
+
+    #[test]
+    fn attachments_agrees_with_the_per_token_reading() {
+        // On every tree of the docs-position corpus the bulk form yields
+        // exactly the comments and attachments the per-token reading
+        // yields, in order — with a witness that the admission the role
+        // decides is exercised both ways: a DOC_COMMENT admitted as a
+        // trivia comment, and one refused as documentation.
+        let mut doc_kind_admitted = 0usize;
+        let mut doc_kind_refused = 0usize;
+        for root in role_corpus() {
+            let read: Vec<(Comment, Attachment)> = attachments(&root).collect();
+            assert_eq!(read, attachments_by_role(&root), "{}", root.text());
+            let admitted = read
+                .iter()
+                .filter(|(comment, _)| comment.syntax().kind() == SyntaxKind::DOC_COMMENT)
+                .count();
+            let of_doc_kind = root
+                .descendants_with_tokens()
+                .filter(|element| element.kind() == SyntaxKind::DOC_COMMENT)
+                .count();
+            doc_kind_admitted += admitted;
+            doc_kind_refused += of_doc_kind - admitted;
+        }
+        assert!(doc_kind_admitted > 0 && doc_kind_refused > 0);
+    }
+
+    #[test]
+    fn attachments_of_every_docs_position_shape_at_once() {
+        // The hand-built rule holds every shape at once; its attachments,
+        // frozen: the plain comment inside the block leads the doc line
+        // after it; the doc line after the head trails the head; the one
+        // leading a body is trivia there and leads the body's first token;
+        // the one after the body trails the body node. And a stray doc
+        // line after the last statement dangles in the program.
+        let expected = [
+            ("% plain", Slot::Leading, SyntaxKind::DOC_COMMENT),
+            ("%! after the head", Slot::Trailing, SyntaxKind::IDENT),
+            ("%! leading a body", Slot::Leading, SyntaxKind::IDENT),
+            ("%! after a child node", Slot::Trailing, SyntaxKind::BODY),
+        ]
+        .map(|(text, slot, kind)| (text.to_owned(), slot, kind));
+        assert_eq!(summarized(&doc_block_rule()), expected);
+        let expected = [("%! stray".to_owned(), Slot::Dangling, SyntaxKind::PROGRAM)];
+        assert_eq!(summarized(&documented_fact()), expected);
+    }
+
+    #[test]
     fn significant_children_yields_strictly_ascending_indices() {
         // The single-pass guard, as far as the output shows it: one read of
         // a wide node's children yields each significant child exactly once,
         // where it stands. The cost law itself is held by the walk's shape —
-        // one `filter` by `is_skipped` — which the invariant comment there
-        // names for the reader.
+        // one forward pass, `skipped_children`, the roles carried along —
+        // which its comment names for the reader, and by the doc-block
+        // tripwires in `tests/scaling_shape.rs`.
         let root = parsed(&"% c\np. % t\n\n".repeat(200));
         let indices: Vec<usize> = significant_children(&root)
             .map(|element| element.index())
