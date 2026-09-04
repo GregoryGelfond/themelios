@@ -576,6 +576,21 @@ wrapping every cursor operation to rename a `u32` would be exactly the
 surface §14 declines to duplicate. Two spellings of one number, each
 where its audience expects it, converted at the seam and nowhere else.
 
+One reader composes the seam with base's slice, so a node's, token's, or
+element's `text_range()` reads its original substring straight off the
+source without restating the composition at every site:
+
+```rust
+pub fn source_text(source: &Source, range: TextRange) -> Result<&str, SliceRefusal>;
+// source.slice(span_of(range)) in one call; O(1) beyond base's own
+// char-boundary check
+```
+
+It refuses exactly as `Source::slice` does (base §3.2; §13) — a range past
+the end of `source` or off a character boundary — which a range drawn from
+a tree parsed over that same `source` never is; the `Result` stays because
+a range from another source may.
+
 ### 5.4 The tree's laws
 
 Four laws, each held by an instrument (§16), and two definitions the
@@ -2344,16 +2359,21 @@ exactly the operation's error type (base §3.2's discipline).
 | operation | refuses with | cost |
 |---|---|---|
 | `TokenSource::token_at` (the file lexer's) | `PositionRefusal` (`OutOfBounds` \| `NotCharBoundary`) — base's condition, at the door where offset meets text | O(token) |
+| `tree::source_text` | `SliceRefusal` (`OutOfBounds` \| `NotCharBoundary`) — base's condition, at the door where span meets text (§5.3) | O(1) beyond base's char-boundary check |
+| `parse_str` (the string door) | `TooLarge` — base's admission ceiling `Source::MAX_LEN`, at the door where text meets admission (base §3.2): the door admits its text itself, and admission is the one thing a text can fail | O(text) |
 | `StringLit::value` | `InvalidStringLiteral` — a spelling not the dialect's | O(token) |
 | `Parse::string_value` | `InvalidStringLiteral` — as above, under this parse's dialect | O(token) |
 | `attach::attachment` | `NotAttachable` (`NotAComment` \| `Documentation`) | O(neighborhood) |
 | `equiv::equivalent` | `Err(Mismatch)` — the answer, carrying its witness; not a refusal (§12.4) | O(left + right) |
 
 Total (never refuse, never panic): `Lexer::new`; `check_token_source_laws`
-(an empty report is the laws holding); `parse` and every entry point
-(every input yields a tree — aspif input, unlawful token sources, and
-nesting past the bound included, each with its typed diagnostic);
-`Parse`'s accessors, `has_errors`, `is_incomplete`, `location`; every
+(an empty report is the laws holding); `parse` and every entry point over
+admitted text, a `Source` or a token source (§4.3) over one (every input
+yields a tree — aspif input, unlawful token sources, and nesting past the
+bound included, each with its typed diagnostic; the string door
+`parse_str` admits its text itself, and is the one door that can refuse
+before a tree exists — the table); `Parse`'s accessors, `has_errors`,
+`is_incomplete`, `location`; every
 tree operation of §5.2 within the depth bound, on a thread of at least
 `REQUIRED_STACK_BYTES` (§6.6); `role`; the coordinate conversions; every
 `ast` cast and accessor (`Option` is absence under recovery, never a

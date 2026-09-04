@@ -5,6 +5,7 @@
 
 use std::fmt;
 
+use themelios_base::source::{SliceRefusal, Source};
 use themelios_base::span::{ByteOffset, Span};
 
 pub use rowan::ast::{AstChildren, AstNode, AstPtr};
@@ -467,6 +468,16 @@ pub fn size_of(offset: ByteOffset) -> TextSize {
     TextSize::new(offset.get())
 }
 
+/// The text of `source` that `range` spans — `source.slice(span_of(range))`
+/// in one call, so a node's, token's, or element's `text_range()` reads its
+/// original substring straight off the source. Refuses (`SliceRefusal`)
+/// only a range past the end of `source` or off a character boundary —
+/// never a range drawn from a tree parsed over this same `source`; O(1)
+/// beyond base's own char-boundary check, introducing no walk (base §3.2).
+pub fn source_text(source: &Source, range: TextRange) -> Result<&str, SliceRefusal> {
+    source.slice(span_of(range))
+}
+
 /// What a token is, where it stands (docs/design/syntax.md §5.4).
 /// `Documentation`: a `DOC_COMMENT` in docs position — a leading child
 /// of a statement node with only trivia and other `DOC_COMMENT` tokens
@@ -549,9 +560,16 @@ pub(crate) fn sexpr(node: &SyntaxNode) -> String {
 #[cfg(test)]
 mod tests {
     use rowan::{GreenNodeBuilder, Language};
+    use themelios_base::source::{SliceRefusal, Source, SourceId};
     use themelios_base::span::{ByteOffset, Span};
 
     use super::*;
+    use crate::dialect::Dialect;
+    use crate::parse::parse;
+
+    fn admitted(text: &str) -> Source {
+        Source::new(SourceId::new(7), text.to_owned()).expect("test text admits")
+    }
 
     /// A tree built by hand: `PROGRAM > RULE > [DOC_COMMENT, WHITESPACE,
     /// IDENT, DOT]`, then a stray `DOC_COMMENT` after the rule.
@@ -655,6 +673,36 @@ mod tests {
         assert_eq!(span_of(range), span);
         assert_eq!(offset_of(size_of(ByteOffset::new(42))), ByteOffset::new(42));
         assert_eq!(size_of(offset_of(TextSize::new(7))), TextSize::new(7));
+    }
+
+    #[test]
+    fn source_text_reads_the_substring_a_range_spans() {
+        let source = admitted("p(1, 2).");
+        let root = parse(&source, Dialect::Clingo).syntax();
+        let arguments = root
+            .descendants()
+            .find(|node| node.kind() == SyntaxKind::ARGUMENTS)
+            .expect("the atom's arguments");
+        assert_eq!(source_text(&source, arguments.text_range()), Ok("(1, 2)"));
+        let second_number = tokens(&root)
+            .into_iter()
+            .filter(|token| token.kind() == SyntaxKind::NUMBER)
+            .nth(1)
+            .expect("the second number");
+        assert_eq!(source_text(&source, second_number.text_range()), Ok("2"));
+    }
+
+    #[test]
+    fn source_text_refuses_a_range_past_the_end() {
+        let source = admitted("p(1, 2).");
+        let past_the_end = TextRange::new(TextSize::new(0), TextSize::new(9));
+        assert_eq!(
+            source_text(&source, past_the_end),
+            Err(SliceRefusal::OutOfBounds {
+                end: ByteOffset::new(9),
+                max: ByteOffset::new(8),
+            })
+        );
     }
 
     #[test]

@@ -68,6 +68,18 @@ fn the_glob_names_the_tree_vocabulary() {
 }
 
 #[test]
+fn the_source_text_reader_is_reached_through_tree() {
+    // The reader composes the coordinate seam and is reached as the seam
+    // is — by its module path, not the glob.
+    let source = admitted("p(1, 2).", 0);
+    let root: SyntaxNode = parse(&source, Dialect::Clingo).syntax();
+    assert_eq!(
+        themelios_syntax::tree::source_text(&source, root.text_range()),
+        Ok("p(1, 2).")
+    );
+}
+
+#[test]
 fn the_glob_names_the_attachment_surface() {
     let parsed = parse(&admitted("% lead\np.\n", 0), Dialect::Clingo);
     let (comment, attachment) = attachments(&parsed.syntax()).next().expect("a comment");
