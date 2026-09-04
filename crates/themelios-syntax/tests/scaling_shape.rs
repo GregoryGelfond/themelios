@@ -3,10 +3,12 @@
 //! tolerances wide enough for any CI machine — parse linear in text, the
 //! certificate linear in both texts, bulk attachment linear in the tree,
 //! the significant-child walk linear in the children, those two walks and
-//! the token stream linear in a `%!` doc block, the oracle constant per
-//! pair. What they prove: the claimed class (a quadratic parse, a
-//! re-scanning attachment, a certificate that re-walks). What they
-//! cannot: absolute speed — that lives in the out-of-band benches.
+//! the token stream linear in a `%!` doc block, the inverse leading form
+//! and the directional previous-sibling step linear in a `%!` doc block
+//! they walk back across, the oracle constant per pair. What they prove:
+//! the claimed class (a quadratic parse, a re-scanning attachment, a
+//! certificate that re-walks). What they cannot: absolute speed — that
+//! lives in the out-of-band benches.
 //!
 //! Each ratio is the median over five runs that time the small case and
 //! the large case back-to-back, not the ratio of two separately-median'd
@@ -17,12 +19,14 @@
 use std::time::Instant;
 
 use themelios_base::source::{Source, SourceId};
-use themelios_syntax::attach::{attachments, empty_line_between, significant_children};
+use themelios_syntax::attach::{
+    Slot, attachments, comments, empty_line_between, non_trivia_sibling, significant_children,
+};
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::equiv::{Certificate, equivalent, token_stream};
 use themelios_syntax::fusion::separator;
 use themelios_syntax::parse::parse;
-use themelios_syntax::tree::{SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
+use themelios_syntax::tree::{Direction, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
 /// One rule with a comment run and a theory atom, so every size
 /// exercises the parser's families, the comment run, and the modes.
@@ -74,6 +78,17 @@ fn tree_of(text: String) -> SyntaxNode {
 /// The documented rule of a `doc_block_text` tree: the block is inside it.
 fn documented_rule(root: &SyntaxNode) -> SyntaxNode {
     root.first_child().expect("the documented rule")
+}
+
+/// The head of a `doc_block_text` tree's documented rule — its first child
+/// node, the significant element after the block and UNIT's plain
+/// `% leading` line. A reading that walks back from it meets the block's
+/// last doc line, whose role is a fact of the whole block before it.
+fn head_after_the_block(root: &SyntaxNode) -> SyntaxElement {
+    documented_rule(root)
+        .first_child()
+        .expect("the head after the block")
+        .into()
 }
 
 /// One elapsed measurement of `work`, in nanoseconds — floored to 1 so a
@@ -331,6 +346,94 @@ fn the_token_stream_is_linear_in_a_doc_block() {
     assert!(
         ratio < LINEAR_CEILING * RATIO_SCALE,
         "the token stream's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over a x{SIZE_RATIO} doc block; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[test]
+fn the_leading_comments_are_linear_in_a_doc_block() {
+    // The inverse form from the head of a rule under a k-line doc block:
+    // it walks back from the anchor to the first sibling not skipped —
+    // past the plain `% leading` line to the block's last doc line, which
+    // is documentation, read by one role scan of the block before it —
+    // O(k). A form that stepped on across the block reading each line's
+    // role by a scan of its own would be O(k²) here and show as a ratio
+    // near SIZE_RATIO², past the ceiling. One call is microseconds, so
+    // each measurement repeats it a fixed number of times at both sizes.
+    const REPEAT: usize = 256;
+    let small_head = head_after_the_block(&tree_of(doc_block_text(64)));
+    let big_head = head_after_the_block(&tree_of(doc_block_text(64 * SIZE_RATIO)));
+    // The shape's witness: the walk crosses the plain line to the block —
+    // exactly UNIT's `% leading` line leads the head.
+    assert_eq!(comments(&big_head, Slot::Leading).count(), 1);
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                for _ in 0..REPEAT {
+                    std::hint::black_box(
+                        comments(std::hint::black_box(&small_head), Slot::Leading).count(),
+                    );
+                }
+            })
+        },
+        || {
+            time_once(|| {
+                for _ in 0..REPEAT {
+                    std::hint::black_box(
+                        comments(std::hint::black_box(&big_head), Slot::Leading).count(),
+                    );
+                }
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "the leading comments' median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over a x{SIZE_RATIO} doc block; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[test]
+fn non_trivia_sibling_is_linear_in_a_doc_block() {
+    // The directional skip from the head of a rule under a k-line doc
+    // block toward the block: it steps over the trivia before the head and
+    // stops at the block's last doc line, the first sibling not skipped,
+    // read by one role scan of the block before it — O(k). A step that
+    // read each doc line's role by a scan of its own would be O(k²) here.
+    // One call is microseconds, so each measurement repeats it a fixed
+    // number of times at both sizes.
+    const REPEAT: usize = 256;
+    let small_head = head_after_the_block(&tree_of(doc_block_text(64)));
+    let big_head = head_after_the_block(&tree_of(doc_block_text(64 * SIZE_RATIO)));
+    // The shape's witness: the step lands on the block's last doc line.
+    let found =
+        non_trivia_sibling(big_head.clone(), Direction::Prev).expect("the block's last line");
+    assert_eq!(found.kind(), SyntaxKind::DOC_COMMENT);
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                for _ in 0..REPEAT {
+                    std::hint::black_box(non_trivia_sibling(
+                        std::hint::black_box(small_head.clone()),
+                        Direction::Prev,
+                    ));
+                }
+            })
+        },
+        || {
+            time_once(|| {
+                for _ in 0..REPEAT {
+                    std::hint::black_box(non_trivia_sibling(
+                        std::hint::black_box(big_head.clone()),
+                        Direction::Prev,
+                    ));
+                }
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "the previous-sibling step's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over a x{SIZE_RATIO} doc block; the linear shape allows at most x{LINEAR_CEILING}"
     );
 }
 

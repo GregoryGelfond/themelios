@@ -284,6 +284,7 @@ pub fn canonical_spelling(kind: SyntaxKind, content: &str) -> Cow<'_, str> {
 
 #[cfg(test)]
 mod tests {
+    use rowan::{GreenNodeBuilder, Language};
     use themelios_base::source::{Source, SourceId};
 
     use super::*;
@@ -398,6 +399,57 @@ mod tests {
         }
         assert!(doc_kind_admitted > 0 && doc_kind_refused > 0);
         assert!(plain_inside_a_block > 0);
+    }
+
+    #[test]
+    fn a_doc_line_after_an_empty_statement_is_trivia() {
+        // A deliberate off-grammar robustness test of the stack walk in
+        // `token_roles`, not of any real input: this tree is one the parser
+        // never produces — an empty statement, a RULE holding one
+        // DOC_COMMENT and no significant token. What it exercises is the
+        // `pop` at a node's `Leave`. On every tree the parser emits, a
+        // statement's significant token ends its frame's leading prefix
+        // before the `Leave`, so a frame a missing `pop` left on the stack
+        // would read no differently from the one beneath it, and the
+        // corpus laws above cannot tell the two apart. Here the RULE's
+        // frame is still (statement, leading) at its `Leave`: the
+        // DOC_COMMENT after the rule, a child of PROGRAM — no statement —
+        // reads PROGRAM's frame and is trivia; over an un-popped RULE frame
+        // it would read as documentation.
+        let mut builder = GreenNodeBuilder::new();
+        builder.start_node(Asp::kind_to_raw(SyntaxKind::PROGRAM));
+        builder.start_node(Asp::kind_to_raw(SyntaxKind::RULE));
+        builder.token(
+            Asp::kind_to_raw(SyntaxKind::DOC_COMMENT),
+            "%! inside the empty rule",
+        );
+        builder.finish_node();
+        builder.token(
+            Asp::kind_to_raw(SyntaxKind::DOC_COMMENT),
+            "%! after the rule",
+        );
+        builder.finish_node();
+        let root = SyntaxNode::new_root(builder.finish());
+        let roles: Vec<(String, TokenRole)> = token_roles(&root)
+            .map(|(token, role)| (token.text().to_owned(), role))
+            .collect();
+        assert_eq!(
+            roles,
+            [
+                (
+                    "%! inside the empty rule".to_owned(),
+                    TokenRole::Documentation
+                ),
+                ("%! after the rule".to_owned(), TokenRole::Trivia),
+            ]
+        );
+        // The same two roles as the public projections read them.
+        let stream: Vec<String> = token_stream(&root).map(|t| t.text().to_owned()).collect();
+        assert_eq!(stream, ["%! inside the empty rule"]);
+        let comments: Vec<String> = comment_sequence(&root)
+            .map(|t| t.text().to_owned())
+            .collect();
+        assert_eq!(comments, ["%! after the rule"]);
     }
 
     #[test]
