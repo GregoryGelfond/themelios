@@ -1979,7 +1979,11 @@ pub fn attachments(node: &SyntaxNode)
 The two directions agree by law: `comments(a, s)` yields exactly the
 comments `c` with `attachment(c) == Ok(Attachment { anchor: a, slot: s })`,
 and `attachments(root)` yields each trivia comment under the root exactly
-once — totality and single-valuedness (§16).
+once — totality and single-valuedness (§16). The law holds over every
+element, not only the anchors the rule can name: `comments(a, s)` yields
+nothing when `a` is a trivia token or an empty node — what the walk to
+`prev` and `next` steps over (§5.4) — since the rule never names one as
+an anchor.
 
 **Whitespace facts, exposed because the policy reads them and every
 consumer re-derives them otherwise:**

@@ -169,10 +169,11 @@ fn the_inverse_form_equals_the_bulk_partition() {
     // above, whose reading of the inverse form is one direction only: it
     // yields each comment the bulk form attaches. `leading` and `trailing`
     // are a second reading of the rule, so the inverse form is held to the
-    // bulk form's partition element for element: at every anchor — every
-    // element that is not skipped, the root included — and every slot, the
-    // comments the bulk form attaches there, in source order, none extra,
-    // none repeated, none where the bulk form attaches nothing. With two
+    // bulk form's partition element for element: at every element —
+    // skipped or not, the root included — and every slot, the comments the
+    // bulk form attaches there, in source order, none extra, none
+    // repeated, none where the bulk form attaches nothing, and so nothing
+    // at a skipped element, which the rule never names. With two
     // witnesses: a leading run and a trailing run of two or more are
     // reached, where order and repetition are not vacuous; and a comment
     // on its own line before each closer is reached — the `(closer,
@@ -191,10 +192,7 @@ fn the_inverse_form_equals_the_bulk_partition() {
         let root = root(&text);
         let groups = partition(&root);
         let mut reached = 0usize;
-        for anchor in root
-            .descendants_with_tokens()
-            .filter(|element| !is_skipped(element))
-        {
+        for anchor in root.descendants_with_tokens() {
             for slot in [Slot::Leading, Slot::Trailing, Slot::Dangling] {
                 let read: Vec<Comment> = comments(&anchor, slot).collect();
                 let group = groups.get(&Attachment {
@@ -227,7 +225,7 @@ fn the_inverse_form_equals_the_bulk_partition() {
         assert_eq!(
             reached,
             groups.len(),
-            "{name}: every anchor the bulk form attaches to is an unskipped element"
+            "{name}: the walk reaches every anchor the bulk form attaches to"
         );
     }
     assert!(
@@ -245,6 +243,50 @@ fn the_inverse_form_equals_the_bulk_partition() {
         ]),
         "a comment on its own line before each closer is reached"
     );
+}
+
+#[test]
+fn a_skipped_anchor_yields_no_comments() {
+    // The rule never attaches to a skipped anchor — `prev` and `next` are
+    // found by stepping over exactly the skipped elements, and a dangling
+    // comment's parent holds the comment, so is not empty — so the inverse
+    // form yields nothing there, in any slot (docs/design/syntax.md §9.3).
+    // Both kinds of skipped element, each in a shape where the anchor-side
+    // walk alone would yield: `%* b *%` stands on the line of the trivia
+    // comment `%* a *%` and trails the rule; `% c` stands on the line of
+    // the empty body of `h :- .` (§5.4) and trails the neck.
+    let attached = |comment: &SyntaxToken| {
+        attachment(comment).map(|attachment| (attachment.slot, attachment.anchor.kind()))
+    };
+    let with_block_comments = root("p. %* a *% %* b *%\n");
+    let comments_in_tree = trivia_comments(&with_block_comments);
+    let [a, b] = comments_in_tree.as_slice() else {
+        panic!("two trivia comments");
+    };
+    assert_eq!(attached(b), Ok((Slot::Trailing, SyntaxKind::RULE)));
+    let with_empty_body = root("h :- % c\n.\n");
+    let comments_in_tree = trivia_comments(&with_empty_body);
+    let [c] = comments_in_tree.as_slice() else {
+        panic!("one trivia comment");
+    };
+    assert_eq!(attached(c), Ok((Slot::Trailing, SyntaxKind::NECK)));
+    let body = with_empty_body
+        .descendants()
+        .find(|node| node.kind() == SyntaxKind::BODY && node.text_range().is_empty())
+        .expect("the empty body");
+    let mut yielded: Vec<(SyntaxKind, Slot, Vec<String>)> = Vec::new();
+    for anchor in [SyntaxElement::Token(a.clone()), SyntaxElement::Node(body)] {
+        assert!(is_skipped(&anchor), "{}", anchor.kind());
+        for slot in [Slot::Leading, Slot::Trailing, Slot::Dangling] {
+            let read: Vec<String> = comments(&anchor, slot)
+                .map(|comment| comment.text().to_owned())
+                .collect();
+            if !read.is_empty() {
+                yielded.push((anchor.kind(), slot, read));
+            }
+        }
+    }
+    assert!(yielded.is_empty(), "a skipped anchor yields {yielded:?}");
 }
 
 /// A whitespace token's text re-spaced within its class: no line break

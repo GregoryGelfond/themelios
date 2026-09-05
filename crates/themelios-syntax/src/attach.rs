@@ -357,34 +357,42 @@ fn resolve_children(parent: &SyntaxNode) -> Vec<(Comment, Attachment)> {
 
 /// The comments attached to `anchor` in `slot`, as the typed `Comment`,
 /// in source order — the inverse direction, for a consumer walking
-/// anchors. Total; O(the trivia adjacent to the anchor) for `Trailing`,
-/// O(the anchor's children) for `Dangling`; for `Leading`, the run
-/// before the anchor is read with the same per-`DOC_COMMENT` role read
-/// the directional walks make — `role`'s O(preceding siblings) — so on
-/// a statement carrying a k-line doc block and a run of m misplaced
-/// `%!` lines after its head it is O(k·m). For all of a tree's
-/// comments, `attachments` is the bulk form, O(subtree).
+/// anchors. Nothing for a skipped anchor (`is_skipped`) — a trivia token
+/// or an empty node — which the policy never attaches to: `prev` and
+/// `next` are found by stepping over exactly the skipped elements, and a
+/// dangling comment's parent holds the comment, so is not empty. Total;
+/// one `is_skipped` read of the anchor, then O(the trivia adjacent to
+/// the anchor) for `Trailing`, O(the anchor's children) for `Dangling`;
+/// for `Leading`, the run before the anchor is read with the same
+/// per-`DOC_COMMENT` role read the directional walks make — `role`'s
+/// O(preceding siblings) — so on a statement carrying a k-line doc block
+/// and a run of m misplaced `%!` lines after its head it is O(k·m). For
+/// all of a tree's comments, `attachments` is the bulk form, O(subtree).
 pub fn comments(anchor: &SyntaxElement, slot: Slot) -> impl Iterator<Item = Comment> {
-    let found: Vec<Comment> = match slot {
-        // `trailing` and `leading` yield the token, each established a
-        // trivia comment by `is_trivia_comment`: the wrapper is built from
-        // that fact, never by a cast that would read `role` again.
-        Slot::Trailing => trailing(anchor)
-            .into_iter()
-            .map(Comment::from_trivia_comment)
-            .collect(),
-        Slot::Leading => leading(anchor)
-            .into_iter()
-            .map(Comment::from_trivia_comment)
-            .collect(),
-        Slot::Dangling => match anchor {
-            NodeOrToken::Node(node) => resolve_children(node)
+    let found: Vec<Comment> = if is_skipped(anchor) {
+        Vec::new()
+    } else {
+        match slot {
+            // `trailing` and `leading` yield the token, each established a
+            // trivia comment by `is_trivia_comment`: the wrapper is built
+            // from that fact, never by a cast that would read `role` again.
+            Slot::Trailing => trailing(anchor)
                 .into_iter()
-                .filter(|(_, attachment)| attachment.slot == Slot::Dangling)
-                .map(|(comment, _)| comment)
+                .map(Comment::from_trivia_comment)
                 .collect(),
-            NodeOrToken::Token(_) => Vec::new(),
-        },
+            Slot::Leading => leading(anchor)
+                .into_iter()
+                .map(Comment::from_trivia_comment)
+                .collect(),
+            Slot::Dangling => match anchor {
+                NodeOrToken::Node(node) => resolve_children(node)
+                    .into_iter()
+                    .filter(|(_, attachment)| attachment.slot == Slot::Dangling)
+                    .map(|(comment, _)| comment)
+                    .collect(),
+                NodeOrToken::Token(_) => Vec::new(),
+            },
+        }
     };
     found.into_iter()
 }
