@@ -14,7 +14,7 @@
 //! corpus — the universal law is the naive-reference proptest (safe_laws). Finiteness's
 //! `Holds`-**soundness** is backed here now, by a bounded grounding check
 //! (`a_holds_verdict_grounds_within_the_bound`): a `Holds` program must ground within a rule-count
-//! cap, and one that does not is a false `Holds`. The full ground-level **classification** differential
+//! cap, and one that hits the cap is a false `Holds`. The full ground-level **classification** differential
 //! (exact tightness / head-cycle-freeness against the ground graph, and finiteness *precision*) still
 //! needs a ground dependency graph, hence a grounder, and is the solve stage's — deferred, named in
 //! that test's doc so it is not silently dropped (§10, §11).
@@ -22,9 +22,11 @@
 #![cfg(feature = "differential")]
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -111,7 +113,12 @@ fn raised_faithfully(lowered: &Raised) -> bool {
 /// only on a faithful raise (§5).
 fn our_safe(text: &str) -> bool {
     let source = Source::new(SourceId::new(0), text.to_owned()).expect("the fixture admits");
-    let lowered = raise(&parse(&source, Dialect::Clingo));
+    let parsed = parse(&source, Dialect::Clingo);
+    assert!(
+        !parsed.has_errors(),
+        "differential fixture must parse cleanly: {text:?}",
+    );
+    let lowered = raise(&parsed);
     raised_faithfully(&lowered) && Safety::of(lowered.program()).is_safe()
 }
 
@@ -333,6 +340,16 @@ const SAFETY_CORPUS: &[(&str, &str)] = &[
         "disjunction-element-pool-condition-fail-closed",
         "t(X; a) : c(X; X) | q :- r.\n",
     ),
+    //   The term-level twin: the residual condition's argument is a `Term::Pool` wrapping an arithmetic
+    //   former (`t((X + 1; X - 1))`), every alternative of which binds `X`. clingo unpools the term pool
+    //   per alternative and binds through each, so it is safe (and, seeded, grounds it unbounded in both
+    //   directions); this tier reads a `Term::Pool` operand as not invertible — binding nothing, the
+    //   term-level twin of the residual pooled atom — and reports unsafe. A recorded divergence, the
+    //   conservative side, never a false safe.
+    (
+        "disjunction-element-term-pool-condition-fail-closed",
+        "t(X; a) : t((X + 1; X - 1)) | q :- r.\n",
+    ),
     ("conditional-condition-pool", "q :- p : r(a; b).\n"),
     // ---- The matching-`=` dialect boundary (§5): clingo decomposes an `=` against a tuple, and chains
     // a multi-step `=`, to bind — where the strict ASP-Core-2 standard does not. Recorded divergences;
@@ -421,6 +438,17 @@ const RECORDED_DIVERGENCES: &[(&str, &str)] = &[
         "disjunction-element-pool-condition-fail-closed",
         "clingo unpools a residual pooled condition and binds through each alternative; this tier reads a residual pooled atom as binding nothing, so it reports unsafe — the conservative side, never a false safe",
     ),
+    // The term-level twin: a residual condition whose argument is a `Term::Pool` wrapping an arithmetic
+    // former (`t((X + 1; X - 1))`). clingo unpools the term pool per alternative and binds `X` through
+    // each (seeded, it grounds the program unbounded in both directions), while this tier reads a
+    // `Term::Pool` operand as not invertible — binding nothing — so it reports unsafe where clingo
+    // grounds. The conservative side, never a false safe — and the guard that matters: no deepener reads
+    // a pool's alternatives, so admitting a residual term-pool position as binding must first make the
+    // deepener read them, or the unread former would reach a trusted `Holds`.
+    (
+        "disjunction-element-term-pool-condition-fail-closed",
+        "clingo unpools a residual condition's term pool and binds through each alternative; this tier reads a `Term::Pool` operand as binding nothing, so it reports unsafe — the conservative side, never a false safe",
+    ),
     // clingo decomposes a former on both sides of `=` when one side is bound (`q(X)` binds X, so
     // `f(X) = f(Y)` binds Y); the strict standard binds only a lone side, so this tier reports Y unsafe
     // — the matching-`=` family, the conservative side, never a false safe.
@@ -500,17 +528,63 @@ fn our_safety_agrees_with_the_authority_or_the_divergence_is_recorded() {
 /// proven **term-depth**-finite (`Holds`, §5), the property a grounder relies on.
 fn our_holds(text: &str) -> bool {
     let source = Source::new(SourceId::new(0), text.to_owned()).expect("the fixture admits");
-    let lowered = raise(&parse(&source, Dialect::Clingo));
+    let parsed = parse(&source, Dialect::Clingo);
+    assert!(
+        !parsed.has_errors(),
+        "differential fixture must parse cleanly: {text:?}",
+    );
+    let lowered = raise(&parsed);
     raised_faithfully(&lowered)
         && matches!(Safety::of(lowered.program()).finiteness(), Verdict::Holds)
 }
 
-/// Whether the authority grounds the program within a rule-count cap (§5, §10): `(grounded, capped)`.
-/// A term-depth-finite program grounds; one that grounds unboundedly hits the cap. Bounded in memory
-/// and time — a counting backend observer aborts past the cap, so there is no timeout and no
-/// exhaustion (the driver's `ground` mode; clingo interns nested terms, so the aborted grounding
-/// stays bounded).
-fn authority_ground(program: &str) -> (bool, bool) {
+/// The authority's grounding of a program under the finiteness backstop (§5): what the counting
+/// observer saw before the driver returned — or, the observer never regaining control, nothing.
+#[derive(PartialEq, Eq, Debug)]
+enum Grounding {
+    /// Grounded within the rule-count cap: bounded, as a term-depth-finite program is.
+    Bounded,
+    /// Hit the cap: grounds unboundedly, through rules or a domain-extending `#external`.
+    Capped,
+    /// The authority refused the program at grounding (its message: the integer limit, or an
+    /// unsafe program) — not bounded, though not cap-witnessed either.
+    Refused(String),
+    /// Neither the cap nor the end within the wall-clock deadline (`GROUND_TIMEOUT`), so the driver
+    /// was killed: a grounding the counting observer cannot bound. **Never a witness** — not of a
+    /// false `Holds`, not of boundedness; a consumer that meets one says so, and reads it neither way.
+    Inconclusive,
+}
+
+/// The wall-clock deadline on one grounding — the bound the counting observer cannot give (§5). The
+/// observer bounds a **rule-emitting** grower, aborting the moment the rule past the cap is emitted;
+/// but a grounding that expands *between* rule emissions never returns control to it: a
+/// **conditioned head** (a head conditional `p(X) : p(X + 1) | q :- r.`, or a head aggregate) has
+/// its element condition instantiated in full before the next rule is emitted, so the descent runs
+/// inside one instantiation and grinds — growing without bound over time, though slowly: the
+/// observed grinder sat at some 130 MB after a minute — without ever reaching the cap. So the
+/// deadline is enforced from this side, by killing the driver. Generous by design: a bounded corpus
+/// program grounds in well under a second and a plain rule-emitting grower reaches the cap in about
+/// as long, so on the normal path the deadline never fires and its size costs nothing; it only ever
+/// bounds such a grinder. Its size is set by the slowest cap-witnessed corpus rows — the pooled
+/// *disjunctive* growers (`pooled-disjunct-grows`, `heterogeneous-pooled-disjunct-grows`), a
+/// disjunctive rule per step — which reach the cap in some ten seconds on a laptop, and by a hosted
+/// CI runner that can be several times slower than one on single-threaded python + clingo: two
+/// minutes keeps a wide margin over both. And an `Inconclusive` is never read as a verdict.
+const GROUND_TIMEOUT: Duration = Duration::from_mins(2);
+
+/// The poll interval of the deadline loop.
+const GROUND_POLL: Duration = Duration::from_millis(50);
+
+/// Whether the authority grounds the program within a rule-count cap (§5): the driver's `ground`
+/// mode, under a counting backend observer that aborts past the cap. For a **rule-emitting**
+/// grounding this is bounded in memory and time by the observer alone — clingo interns nested terms,
+/// so the aborted grounding stays bounded, and no timeout is needed. A **non-rule-emitting** grinder
+/// (a conditioned head, `GROUND_TIMEOUT`) is bounded only by the wall-clock deadline enforced here:
+/// the driver is polled until it exits or the deadline passes, and past the deadline it is killed
+/// and reaped and the grounding reported `Inconclusive`. The driver's reply is one small JSON object
+/// written only at completion, so a still-grinding driver writes nothing and no pipe fills while it
+/// is polled.
+fn authority_ground(program: &str) -> Grounding {
     let mut child = Command::new("python")
         .arg(authority_py())
         .arg("ground")
@@ -519,11 +593,24 @@ fn authority_ground(program: &str) -> (bool, bool) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("python runs: run this harness through `pixi run differential-analysis`");
+    // Write the program and drop the handle: the driver reads stdin to its end.
     let _ = child
         .stdin
         .take()
         .expect("piped stdin")
         .write_all(program.as_bytes());
+    let deadline = Instant::now() + GROUND_TIMEOUT;
+    loop {
+        match child.try_wait().expect("the authority can be polled") {
+            Some(_) => break,
+            None if Instant::now() >= deadline => {
+                child.kill().expect("the grinding authority can be killed");
+                let _ = child.wait();
+                return Grounding::Inconclusive;
+            }
+            None => std::thread::sleep(GROUND_POLL),
+        }
+    }
     let output = child.wait_with_output().expect("the authority answers");
     assert!(
         output.status.success(),
@@ -536,10 +623,19 @@ fn authority_ground(program: &str) -> (bool, bool) {
         Some(AUTHORITY_VERSION),
         "docs/grammar.md §3: the authority is pinned at v{AUTHORITY_VERSION}"
     );
-    (
-        value["grounded"].as_bool().expect("grounded is a bool"),
-        value["capped"].as_bool().expect("capped is a bool"),
-    )
+    let grounded = value["grounded"].as_bool().expect("grounded is a bool");
+    let capped = value["capped"].as_bool().expect("capped is a bool");
+    match (grounded, capped) {
+        (true, false) => Grounding::Bounded,
+        (false, true) => Grounding::Capped,
+        (false, false) => Grounding::Refused(
+            value["error"]
+                .as_str()
+                .expect("a refusal carries the authority's message")
+                .to_owned(),
+        ),
+        (true, true) => panic!("the driver reports a grounding as both grounded and capped"),
+    }
 }
 
 /// The programs this tier proves grounding-finite (`Holds`, §5): non-recursive term formers and
@@ -620,11 +716,12 @@ fn a_holds_verdict_grounds_within_the_bound() {
             our_holds(program),
             "[{label}] this tier must prove Holds for a finiteness-corpus program: {program:?}",
         );
-        let (grounded, capped) = authority_ground(program);
+        let grounding = authority_ground(program);
         assert!(
-            grounded && !capped,
+            grounding == Grounding::Bounded,
             "[{label}] this tier proves Holds, but the authority did not ground it within the cap — \
-             a false Holds (grounded={grounded}, capped={capped}): {program:?}",
+             a false Holds if it capped or refused; an Inconclusive is unexpected here, a Holds \
+             program grounding in well under the deadline (got {grounding:?}): {program:?}",
         );
     }
 
@@ -635,11 +732,12 @@ fn a_holds_verdict_grounds_within_the_bound() {
             !our_holds(control),
             "[{label}] the infinite control must be Unknown, not Holds: {control:?}",
         );
-        let (grounded, capped) = authority_ground(control);
+        let grounding = authority_ground(control);
         assert!(
-            capped && !grounded,
-            "[{label}] the infinite control must hit the cap, or the backstop is vacuous \
-             (grounded={grounded}, capped={capped}): {control:?}",
+            grounding == Grounding::Capped,
+            "[{label}] the infinite control must hit the cap, or the backstop is vacuous — an \
+             Inconclusive means the observer never regained control, and a control must be a \
+             rule-emitting grower (got {grounding:?}): {control:?}",
         );
     }
 }
@@ -667,11 +765,10 @@ fn a_pooled_head_atom_does_not_yield_a_false_holds() {
     );
     // And the grounder confirms the pool grounds unboundedly — a real false Holds, were the reading
     // trusted.
-    let (grounded, capped) = authority_ground(grower);
+    let grounding = authority_ground(grower);
     assert!(
-        capped && !grounded,
-        "the grounder unpools the pool into a grower and hits the cap \
-         (grounded={grounded}, capped={capped}): {grower:?}",
+        grounding == Grounding::Capped,
+        "the grounder unpools the pool into a grower and hits the cap (got {grounding:?}): {grower:?}",
     );
 }
 
@@ -691,11 +788,10 @@ fn a_pooled_disjunct_grower_does_not_yield_a_false_holds() {
             !our_holds(grower),
             "a grower in a residual pooled disjunct must not be a false Holds: {grower:?}",
         );
-        let (grounded, capped) = authority_ground(grower);
+        let grounding = authority_ground(grower);
         assert!(
-            capped && !grounded,
-            "the grounder grows the pooled disjunct and hits the cap \
-             (grounded={grounded}, capped={capped}): {grower:?}",
+            grounding == Grounding::Capped,
+            "the grounder grows the pooled disjunct and hits the cap (got {grounding:?}): {grower:?}",
         );
     }
 }
@@ -746,11 +842,11 @@ fn a_heterogeneous_arity_pooled_disjunct_grower_does_not_yield_a_false_holds() {
             !our_holds(grower),
             "a grower in a heterogeneous-arity residual pooled disjunct must not be a false Holds: {grower:?}",
         );
-        let (grounded, capped) = authority_ground(grower);
+        let grounding = authority_ground(grower);
         assert!(
-            capped && !grounded,
+            grounding == Grounding::Capped,
             "the grounder grows the pooled disjunct's higher-arity alternative and hits the cap \
-             (grounded={grounded}, capped={capped}): {grower:?}",
+             (got {grounding:?}): {grower:?}",
         );
     }
 }
@@ -772,4 +868,208 @@ fn a_lone_conditional_pooled_head_fails_closed_in_safety() {
         our_safe("q :- p(X) : r.\n"),
         "the non-pooled twin binds X locally → safe",
     );
+}
+
+mod common;
+
+/// The corpus's true boundedness against the grounder (§5): the fact each row argues, checked against
+/// clingo — never read from themelios. A SOUNDNESS template must ground unbounded (hit the cap); a
+/// PRECISION and a DOCUMENTED-CONSERVATISM template are both truly bounded, so the grounder grounds them
+/// within the cap — the conservatism rows proving they are a *precision* gap, not unsoundness. Rows whose
+/// growth is by aggregate re-evaluation, or by another delayed construct the counting observer does not
+/// reach at the cap (CAP_TIMING_EXCLUDED), stand on the verdict corpus + the safe_laws extremum laws
+/// instead, not this cap-based check. An `Inconclusive` grounding (the deadline fired before the cap or
+/// the end) is a witness of nothing: on a SOUNDNESS row it is a grower the observer cannot bound that
+/// the author must mark CAP_TIMING_EXCLUDED or investigate — a coverage gap, failed as such; on a
+/// bounded row, which grounds tiny, it is unexpected and failed as such.
+#[test]
+fn the_finiteness_corpus_boundedness_matches_the_authority() {
+    for (label, program) in common::SOUNDNESS {
+        if common::CAP_TIMING_EXCLUDED.contains(label) {
+            continue;
+        }
+        let grounding = authority_ground(program);
+        println!("[{label}] unbounded: authority {grounding:?}  {program:?}");
+        assert!(
+            grounding != Grounding::Inconclusive,
+            "[{label}] the authority reached neither the cap nor the end within the deadline: a \
+             grower the counting observer cannot bound (a conditioned head?) — mark it \
+             CAP_TIMING_EXCLUDED so its ground truth stands on the verdict corpus, or investigate; \
+             it is a witness of nothing either way: {program:?}",
+        );
+        assert!(
+            grounding == Grounding::Capped,
+            "[{label}] a soundness template must ground unbounded (hit the cap) \
+             (got {grounding:?}): {program:?}",
+        );
+    }
+    for (label, program) in common::PRECISION
+        .iter()
+        .chain(common::DOCUMENTED_CONSERVATISM)
+    {
+        let grounding = authority_ground(program);
+        println!("[{label}] bounded: authority {grounding:?}  {program:?}");
+        assert!(
+            grounding != Grounding::Inconclusive,
+            "[{label}] a bounded template grounds tiny, so the deadline must never fire on one — \
+             an Inconclusive here is a harness fault, or the row is not bounded; it is no verdict: \
+             {program:?}",
+        );
+        assert!(
+            grounding == Grounding::Bounded,
+            "[{label}] a bounded template must ground within the cap (got {grounding:?}): {program:?}",
+        );
+    }
+}
+
+/// A tiny deterministic PRNG (SplitMix64): a fixed seed makes the fuzz reproducible in CI (§5); no
+/// dependency added.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    fn below(&mut self, n: u64) -> usize {
+        (self.next() % n) as usize
+    }
+}
+
+/// One recursive-arithmetic program (§5). One or two unary predicates, a seed fact, and K recursive rules
+/// over three positions — a body-atom former `pred_i(HEAD) :- pred_j(BODY)`, or a body-`=` deepener
+/// `pred_i(Y) :- pred_j(X), Y = form(X)`. Every rule carries one logical carrier variable and one predicate
+/// on each side, so a draw is always safe and has no cross-predicate join; no comparison guard, no
+/// aggregate/disjunction/external (their delayed-construct growth is not cap-visible).
+fn generate(rng: &mut Rng) -> String {
+    let preds = ["p", "q"];
+    let npreds = 1 + rng.below(2); // 1 or 2 predicates (mutual recursion when 2)
+    let mut program = format!("{}(0).\n", preds[0]);
+    let nrules = 1 + rng.below(3);
+    for _ in 0..nrules {
+        let head_pred = preds[rng.below(npreds as u64)];
+        let body_pred = preds[rng.below(npreds as u64)];
+        if rng.below(2) == 0 {
+            // body-atom former: pred_i(HEAD) :- pred_j(BODY).
+            writeln!(
+                program,
+                "{head_pred}({}) :- {body_pred}({}).",
+                form(rng),
+                form(rng),
+            )
+            .expect("writing to a String never fails");
+        } else {
+            // body-`=` deepener: pred_i(Y) :- pred_j(X), Y = form(X).
+            writeln!(
+                program,
+                "{head_pred}(Y) :- {body_pred}(X), Y = {}.",
+                form_of(rng, "X"),
+            )
+            .expect("writing to a String never fails");
+        }
+    }
+    program
+}
+
+/// A single-variable term over `X`: a bare carrier, a linear arithmetic former (translation or small
+/// multiplier), or a Herbrand constructor. Never a division/interval/pool (which would break safety on this
+/// position) and never two variables (no cross-product).
+fn form(rng: &mut Rng) -> String {
+    form_of(rng, "X")
+}
+
+fn form_of(rng: &mut Rng, v: &str) -> String {
+    match rng.below(5) {
+        0 => v.to_string(),
+        1 => format!("{v} + {}", 1 + rng.below(3)),
+        2 => format!("{v} - {}", 1 + rng.below(3)),
+        3 => format!("{} * {v}", 2 + rng.below(2)),
+        _ => format!("f({v})"),
+    }
+}
+
+/// The false-`Holds` witness (§5): this tier proved `Holds`, but the grounder did NOT ground it within the
+/// cap (it capped, or refused on the integer limit) — a program not term-depth-bounded. An `Inconclusive`
+/// grounding (the deadline fired, the observer never regaining control) is **no witness**: it says nothing
+/// either way, so it reads as none — never as a false `Holds`; the fuzz loop fails loud on one as a
+/// signal, and the minimizer, reading it as none, never takes a candidate the deadline cannot bound as
+/// the reproducer. `Bounded`/`Capped`/`Refused` is a function of the program, and the deadline — the one
+/// runner-dependent state — can only withhold a witness, never fabricate one, so no runner-dependent
+/// flake can masquerade as a false `Holds`. `authority_ground` is only called for a program we call
+/// `Holds`, so a grower (which we call `Unknown`) never reaches the observer — no delayed-construct
+/// concern arises from the plain-rule grammar.
+fn is_false_holds(program: &str) -> bool {
+    our_holds(program)
+        && matches!(
+            authority_ground(program),
+            Grounding::Capped | Grounding::Refused(_)
+        )
+}
+
+/// The finiteness fuzz (§5): randomized recursive-arithmetic programs (head-atom, body-atom, body-`=`
+/// positions), a fixed seed and a bounded budget (deterministic), each `Holds` draw checked against the
+/// grounder for a false `Holds`. Zero witnesses is the success criterion; a witness is minimized (greedy
+/// statement drop) and reported, and a `Holds` draw the grounder can neither ground nor cap within the
+/// deadline fails as a signal, mirroring the corpus cross-check. The oracle is clingo's grounding,
+/// independent of this analysis's reasoning.
+#[test]
+fn the_fuzz_finds_no_false_holds() {
+    const SEED: u64 = 0x5E_EDF1_77E5;
+    const ITERATIONS: usize = 400; // CI budget (a fixed-seed, deterministic draw)
+    // Oracle liveness: the grounder must cap a known unbounded grower, or a false Holds could pass
+    // vacuously (our_holds is false for it post-fix, so the loop's Holds gate would skip it; this pins
+    // that the authority side is live).
+    let liveness = authority_ground("p(0).\np(X) :- p(X + 1).\n");
+    assert!(
+        liveness == Grounding::Capped,
+        "fuzz oracle is not live: the grounder must cap a known unbounded grower (got {liveness:?})",
+    );
+    let mut rng = Rng(SEED);
+    for _ in 0..ITERATIONS {
+        let program = generate(&mut rng);
+        if !our_holds(&program) {
+            continue; // this tier does not claim Holds — nothing for the grounder to contradict
+        }
+        match authority_ground(&program) {
+            // Both agree the program is finite.
+            Grounding::Bounded => {}
+            // The grounder cannot ground it within the cap, or refuses on the integer limit — a
+            // false Holds.
+            Grounding::Capped | Grounding::Refused(_) => panic!(
+                "false Holds — this tier proved finite, the grounder did not ground within the \
+                 cap:\n{}",
+                minimize(&program),
+            ),
+            // A Holds draw that neither grounds nor caps within the deadline: unreachable under the
+            // current plain-rule grammar (every grounding is rule-emitting), but a signal, not
+            // silence, the moment the grammar admits a conditioned head or aggregate.
+            Grounding::Inconclusive => panic!(
+                "a Holds draw was inconclusive — neither grounded nor capped within the deadline \
+                 (a non-emitting false Holds, or a harness fault): {program:?}",
+            ),
+        }
+    }
+}
+
+/// Greedily drop statements while the program stays a false-`Holds` witness — the minimal reproducer.
+fn minimize(program: &str) -> String {
+    let mut lines: Vec<&str> = program.lines().filter(|l| !l.is_empty()).collect();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for i in 0..lines.len() {
+            let mut candidate = lines.clone();
+            candidate.remove(i);
+            let text = format!("{}\n", candidate.join("\n"));
+            if is_false_holds(&text) {
+                lines = candidate;
+                changed = true;
+                break;
+            }
+        }
+    }
+    format!("{}\n", lines.join("\n"))
 }

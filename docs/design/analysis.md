@@ -394,21 +394,36 @@ graph does not read as a plain atom* — an aggregate's lone-variable guard, whi
 to a member value of the predicates it ranges over — never a variable the graph makes
 recursive that the growth check cannot see. A head-atom argument deepens a carried
 variable when it is a term-former (`f`, a tuple, an arithmetic operation) over it, by one
-of **four** paths: written directly (`q(f(Y)) :- q(Y)`); reached through a body
+of **five** paths: written directly (`q(f(Y)) :- q(Y)`); reached through a body
 `=`-assignment that makes a variable deepen a carried one (`q(X) :- q(Y), X = f(Y)`,
 transitively along a chain); over a variable a **head element's own condition** carries
 (`p(f(X)) : p(X) :- base.` — the condition `p(X)` makes `p` recursive and carries `X` to
-the derived `p(f(X))`, so its carriers are read exactly as a body atom's are); or through a
+the derived `p(f(X))`, so its carriers are read exactly as a body atom's are); through a
 **`#max`/`#min` aggregate whose element value-term *is or aliases* a former** (`p(X) :- X =
 #max { f(Y) : p(Y) }.` — the extremum returns a member value-*term*, so `f(Y)` makes the guard
 `X` one former deeper than the members it maxes over, exactly the body `p(Y), X = f(Y)`; and the
 value's depth is read from the element's own `=`-relations, so the aliased spelling `X = #max { Z
 : p(Y), Z = f(Y) }` deepens the same way; the member variables are carried so the deepening is
-reachable). The `=`-assignment case is the one to
+reachable); or — the head **bare** — over a variable a **positive body atom** carries through
+an **invertible arithmetic** former (`p(X) :- p(X+1).` — the head's `X` is matched to the body's
+`X+1` under inversion, so each step descends by one, `p(0), p(-1), …`, without bound: the carried
+variable deepens *itself*, and the bare head `p(X)` deepens with it; a head element's condition,
+`p(X) : p(X+1)`, is read by the same walk). The `=`-assignment case is the one to
 hold carefully: `X = f(Y)` embeds a successor — a Church numeral — so it *deepens*, where
 the aliasing `X = Y` does not; treating the two alike would miss an unbounded grounding, a
 **false `Holds`**. The term successor `X = f(Y)` and the arithmetic successor `X = Y + 1`
-are the same act — generating unbounded naturals — and both deepen. This enumeration, the
+are the same act — generating unbounded naturals — and both deepen. The body-atom former is
+that successor's inverse-match analogue, and there **head and body are asymmetric**: a
+Herbrand former *grows* in the head (`q(f(Y)) :- q(Y)`) and *shrinks* in the body
+(`q(X) :- q(f(X))` is matched under `f`, each step one constructor shallower, so it is
+bounded), whereas an invertible arithmetic body former *descends* — the grounder binds `X` by
+inverting the linear form `m·x+n` (the same invertible position safety reads, above), and
+inverting a successor only turns the walk around: it steps downward, still without bound. So
+the body-atom test is narrower than the head's: a former that is *also* a linear arithmetic
+form (`is_former ∧ Arith::Linear`, where the head reads any `is_former`), a Herbrand body
+former excluded; and it reads every invertible arithmetic body former as deepening, the
+contracting `q(X) :- q(2*X)` (bounded) included — a spurious `Unknown`, never a false `Holds`
+(§6.1). This enumeration, the
 carrier-graph congruence, and the argument that each path is caught, is the soundness
 obligation `Holds` answers to; it is discharged by the growth laws (§10), by a **bounded
 grounding differential** now — a `Holds` program must ground within a rule-count cap against
@@ -439,15 +454,16 @@ characterized dialect boundary; the solve-tier grounder differential carries it 
 expected divergence.
 
 **Scope: term depth, not integer value.** `finiteness` proves finiteness of the
-**Herbrand term** instantiation — unbounded function-symbol nesting. A program can be
-Herbrand-depth-finite yet ground infinitely through an unbounded **integer** value
-(`q(M) :- M = #count { X : q(X) }` grows `q(0), q(1), …` without deepening any term), and
-this crate reports `Holds` for it: a *correct* statement of term-depth boundedness, and
-out of this facet's scope — integer-domain growth and its stratification are read
-elsewhere (§6). A consumer that needs full grounding finiteness conjoins `Holds` with
-those. Within its scope the reading is a sound over-approximation: it may report `Unknown`
-where the ground program is in fact finite (a deepening a lower stratum in fact bounds),
-never a false `Holds`.
+**Herbrand term** instantiation — unbounded function-symbol nesting, with an arithmetic
+former on the recursion read as a former (above). A program can be Herbrand-depth-finite
+yet ground infinitely through an unbounded **integer** value an **aggregate** computes
+(`q(M) :- M = #count { X : q(X) }` grows `q(0), q(1), …` with no former over a carried
+variable — the value is the count's, not a term written on the recursion), and this crate
+reports `Holds` for it: a *correct* statement of term-depth boundedness, and out of this
+facet's scope — integer-domain growth and its stratification are read elsewhere (§6). A
+consumer that needs full grounding finiteness conjoins `Holds` with those. Within its scope
+the reading is a sound over-approximation: it may report `Unknown` where the ground program
+is in fact finite (a deepening a lower stratum in fact bounds), never a false `Holds`.
 
 **Computational cost.** Safety is `O(rules · variables)` — one pass per rule
 collecting binding occurrences; finiteness reads the components (§4) and the

@@ -987,15 +987,23 @@ fn close_within(
 // ---- Finiteness: the sound growth approximation (§5, §6.1) ----
 
 /// Grounding is proven finite (`Holds`) unless a recursive component's rules deepen a term on the
-/// recursion — a head former over a carried variable (`q(f(Y)) :- q(Y)`), or a carried variable an
-/// `=`-assignment deepens (`q(X) :- q(Y), X = f(Y)`), §5 — then `Unknown` carries that component.
-/// Conservative: any recursive component with a growth witness is reported, never a false `Holds`.
+/// recursion, by one of the five paths §5 names (enumerated on `growing_component`) — among them a
+/// head former over a carried variable (`q(f(Y)) :- q(Y)`), a carried variable an `=`-assignment
+/// deepens (`q(X) :- q(Y), X = f(Y)`), and a carried variable a *positive body atom* passes through
+/// an **invertible arithmetic** former (`p(X) :- p(X+1)`: the head's `X` is matched to the body's
+/// `X+1` under inversion, so the recursion descends without bound) — then `Unknown` carries that
+/// component. The third is asymmetric with the first on Herbrand: a Herbrand
+/// former grows in the head and *shrinks* in the body (`q(X) :- q(f(X))`, matched under `f`, is
+/// bounded), where an invertible arithmetic body former descends — the inverse-match analogue of
+/// the body `=`-successor `X = Y + 1`. Conservative: any recursive component with a growth witness
+/// is reported, never a false `Holds`.
 ///
 /// Each rule is charged `O(rule)`: its growth-context (`BodyGrowth`) — the classes each recursive
-/// component carries, the reverse `=`-deepening graph, and the `=`-aliases — is built once, and each
-/// recursive head component's deepening set is a seed traversal computed once and reused across its
-/// head atoms. `BodyGrowth` collects carriers and `=`-relations at every position that reaches the
-/// head (body literals, aggregate guards, and each head-element condition — atoms *and* comparisons)
+/// component carries, the reverse deepening graph (the `=`-deepenings and the body-former
+/// self-edges), and the `=`-aliases — is built once, and each recursive head component's deepening
+/// set is a seed traversal computed once and reused across its head atoms. `BodyGrowth` collects
+/// carriers, `=`-relations, and positive body-atom formers at every position that reaches the head
+/// (body literals, aggregate guards, and each head-element condition — atoms *and* comparisons)
 /// and soundly skips those that bind only element-local variables, so no variable the graph makes
 /// recursive is a carrier the growth check misses (its congruence is stated on `BodyGrowth`).
 fn finiteness_verdict(program: &Program, graph: &DependencyGraph) -> Verdict {
@@ -1041,8 +1049,13 @@ fn finiteness_verdict(program: &Program, graph: &DependencyGraph) -> Verdict {
 
 /// The recursive component a rule grows, if any (§5): a head atom on a member of a recursive
 /// component that deepens, under a term-former, a variable *carried* through that component's
-/// recursion — written directly (`q(f(Y)) :- q(Y)`) or through a body `=`-assignment that makes a
-/// variable *deepen* a carried one (`q(X) :- q(Y), X = f(Y)`), or a head-element condition (§5).
+/// recursion — by one of the five paths §5 names: written directly (`q(f(Y)) :- q(Y)`); through a
+/// body `=`-assignment that makes a variable *deepen* a carried one (`q(X) :- q(Y), X = f(Y)`);
+/// over a variable a head-element condition carries, read as a body position; through a
+/// `#max`/`#min` aggregate whose element value-term is or aliases a former (`p(M) :- M = #max {
+/// f(Y) : p(Y) }` — the guard one former deeper than the members it ranges over,
+/// `collect_aggregate_growth`); or through a positive body atom's invertible arithmetic former
+/// (`p(X) :- p(X+1)`, descending under inversion).
 /// The rule's body growth-context is built once and each head atom is a lookup against its own
 /// component, so the rule costs `O(rule)`.
 ///
@@ -1094,19 +1107,23 @@ fn growing_component(rule: &Rule, graph: &DependencyGraph) -> Option<Component> 
 ///   of an atom the dependency graph reads a dependency from — a body literal, or a *head element's
 ///   condition* (`p(f(X)) : p(X)` carries `X`, matching `head_dependencies`, program §12.1) — plus a
 ///   lone-variable aggregate guard over a member. Only recursive components are kept.
-/// - `deepens_into` — the reverse `=`-deepening graph: each `=`-class root mapped to the roots one
-///   term-former *deeper* than it (`X = f(Y)` records `Y → X`). A component's deepening set — the
-///   roots that deepen one of its carried roots — is the seed traversal of its carried roots through
-///   this graph (`reaching`), so the growth an `=`-assignment carries to a bare head is caught.
+/// - `deepens_into` — the reverse deepening graph: each `=`-class root mapped to the roots one
+///   term-former *deeper* than it, from two sources — a body `=`-assignment (`X = f(Y)` records
+///   `Y → X`) and a *positive* body atom's **invertible arithmetic** former (`p(X+1)` records the
+///   self-edge `X → X`: matched under inversion, the recursion descends, so the carried root deepens
+///   itself). A component's deepening set — the roots that deepen one of its carried roots — is the
+///   seed traversal of its carried roots through this graph (`reaching`), so the growth an
+///   `=`-assignment or a body former carries to a bare head is caught.
 /// - `equality_root` — each variable → its `=`-alias class's canonical least member, so carrying
 ///   and deepening are read up to aliasing.
 ///
-/// Carriers and `=`-relations are collected by one literal walk (`collect_literal`) at each position
-/// that reaches the head — body literals, aggregate guards, and every head-element condition (atoms
-/// *and* comparisons). The positions the graph reads that bind only element-local variables — a body
-/// conditional, an aggregate element's own condition, theory (§4.9) — reach no head atom and are
-/// soundly skipped: a head-atom variable is global, hence bound and carried at top level. So a
-/// variable the graph makes recursive is never a carrier the growth check misses (§6.1's `Holds`).
+/// Carriers, `=`-relations, and body-atom formers are collected by one literal walk
+/// (`collect_literal`) at each position that reaches the head — body literals, aggregate guards, and
+/// every head-element condition (atoms *and* comparisons). The positions the graph reads that bind
+/// only element-local variables — a body conditional, an aggregate element's own condition, theory
+/// (program §4.9) — reach no head atom and are soundly skipped: a head-atom variable is global,
+/// hence bound and carried at top level. So a variable the graph makes recursive is never a carrier
+/// the growth check misses (§6.1's `Holds`).
 struct BodyGrowth {
     component_roots: BTreeMap<Signature, BTreeSet<Variable>>,
     deepens_into: BTreeMap<Variable, Vec<Variable>>,
@@ -1116,7 +1133,8 @@ struct BodyGrowth {
 impl BodyGrowth {
     fn of(rule: &Rule, graph: &DependencyGraph) -> BodyGrowth {
         // Collect over the whole rule: the variables each signature carries, the `=`-alias groups
-        // (`X = Y`), and the `=`-deepenings (`X = f(Y)`).
+        // (`X = Y`), and the deepenings — `=`-assignments (`X = f(Y)`) and positive invertible body
+        // formers (`p(X+1)`).
         let mut carriers: BTreeMap<Signature, BTreeSet<Variable>> = BTreeMap::new();
         let mut aliases: Vec<BTreeSet<Variable>> = Vec::new();
         let mut deepenings: Vec<(Variable, BTreeSet<Variable>)> = Vec::new();
@@ -1161,8 +1179,9 @@ impl BodyGrowth {
                 roots.insert(class_root(&equality_root, variable).clone());
             }
         }
-        // The reverse deepening graph, keyed by `=`-class root: `X = f(…Y…)` records `Y → X`, so a
-        // seed traversal from a component's carried roots (`reaching`) reaches every deepener.
+        // The reverse deepening graph, keyed by `=`-class root: `X = f(…Y…)` records `Y → X` and a
+        // body former `p(X+1)` records `X → X`, so a seed traversal from a component's carried roots
+        // (`reaching`) reaches every deepener.
         let mut deepens_into: BTreeMap<Variable, Vec<Variable>> = BTreeMap::new();
         for (deep, sources) in &deepenings {
             let deep_root = class_root(&equality_root, deep).clone();
@@ -1216,8 +1235,11 @@ impl BodyGrowth {
 
     /// Whether a head atom deepens its component's recursion (§5): an argument that is a term-former
     /// over a *carried* variable (`q(f(Y)) :- q(Y)`), or that mentions — former or bare — a variable
-    /// that *deepens* a carried one (`q(X) :- q(Y), X = f(Y)`). A bare carried variable does not
-    /// deepen (`X = Y` is finite); a bare deepening one does.
+    /// in the deepening set: one that *deepens* a carried one through an `=`-assignment
+    /// (`q(X) :- q(Y), X = f(Y)`), or a carried one a positive body atom's invertible arithmetic
+    /// former deepens into *itself* (`p(X) :- p(X+1)` — the self-edge `push_atom_deepeners` seeds,
+    /// so the bare head `p(X)` fires: matched under inversion, the recursion descends). A bare
+    /// carried variable does not deepen (`X = Y` is finite); a bare deepening one does.
     fn atom_deepens(
         &self,
         atom: &Atom,
@@ -1355,7 +1377,9 @@ fn class_root<'a>(
 /// under *its own* signature (§9): a residual pool of heterogeneous arities — `p(X; f(X), Y)` is p/1
 /// and p/2 — is several predicates, so a higher-arity alternative's carriers must land on its own
 /// node, not lumped under the first alternative's (which would under-collect it and miss a growth
-/// cycle through it — a false `Holds`), matching the graph's per-alternative edges.
+/// cycle through it — a false `Holds`), matching the graph's per-alternative edges. Its sibling
+/// `push_atom_deepeners` records the *deepener* an invertible arithmetic body former makes: a
+/// carrier is collected regardless of negation, the deepener from a positive atom only.
 fn push_atom_carriers(atom: &Atom, carriers: &mut BTreeMap<Signature, BTreeSet<Variable>>) {
     for (signature, alternative) in atom.signatures().zip(atom.alternatives()) {
         let entry = carriers.entry(signature).or_default();
@@ -1365,12 +1389,44 @@ fn push_atom_carriers(atom: &Atom, carriers: &mut BTreeMap<Signature, BTreeSet<V
     }
 }
 
+/// Record each invertible-arithmetic body former as a self-directed deepening edge (§5): a *positive*
+/// atom argument that **is a former** (`is_former`, not a bare variable) and classifies as a **linear
+/// arithmetic form** `m·x+n` (`Arith::Linear`) descends the recursion under inversion — `p(X) :- p(X+1)`
+/// matches the head's `X` to the body's `X+1`, walking `p(0)→p(-1)→…` unbounded — so the carried
+/// variable deepens *itself*: `X → X` in the deepening graph, seeding `reaching` so the bare head `p(X)`
+/// fires in `atom_deepens`. The single-variable analogue of `collect_equalities`'s two-variable
+/// `X = f(Y)` → `Y → X`.
+///
+/// **Both conjuncts are load-bearing, and asymmetric with the head by design.** `Arith::Linear` *alone*
+/// includes a bare carried variable (`X` folds to `Arith::Linear`, m=1) — a *carrier*, not a *deepener* —
+/// so testing it alone would flag every recursive rule and collapse precision. `is_former` *alone* fires
+/// for every former, a Herbrand constructor included — but a Herbrand former **grows in the head**
+/// (`q(f(Y)):-q(Y)`) and **shrinks in the body** (`q(X):-q(f(X))`, matched under `f`; `Arith::Other`, so
+/// the `Arith::Linear` conjunct excludes it). Arithmetic inversion descends where Herbrand matching
+/// shrinks — the crux of this edge's soundness (the split mirrors gringo's `getInvertibility`).
+/// Conservative: an invertible former always deepens, the contracting `|m|>1` case (`q(X):-q(2*X)`,
+/// bounded) included — a *spurious* `Unknown`, never a false `Holds` (§6.1). `O(rule)`: at most one
+/// self-edge per argument term, fed to the same `reaching` traversal as the `=`-deepenings.
+fn push_atom_deepeners(atom: &Atom, deepenings: &mut Vec<(Variable, BTreeSet<Variable>)>) {
+    for term in atom.argument_terms() {
+        if is_former(term)
+            && let (_, Arith::Linear(variable)) = term.clone().fold(classify_arith)
+        {
+            deepenings.push((variable.clone(), BTreeSet::from([variable])));
+        }
+    }
+}
+
 /// Feed one literal to the growth-context (§5): an atom's variables carry — **regardless of
 /// negation**, a conservative over-collection (a negated atom's variable can still be the carried one
-/// a head deepens, and over-carrying only risks a spurious `Unknown`, never a false `Holds`); a
-/// *positive* `=` comparison aliases (`X = Y`) or deepens (`X = f(Y)`), while a negated comparison is
-/// a disequality that carries nothing. The single walk used for a body literal *and* every
-/// head-element condition literal, so a comparison is never handled at one position and dropped at
+/// a head deepens, and over-carrying only risks a spurious `Unknown`, never a false `Holds`) — and a
+/// *positive* atom's **invertible arithmetic** former is recorded as a self-deepener
+/// (`push_atom_deepeners`: `p(X+1)` is matched under inversion, so the recursion descends),
+/// positive-only, since a default-negated atom binds nothing and so drives no descent — its variable
+/// is bound at a positive occurrence, where its own former, if any, is read; a *positive* `=`
+/// comparison aliases (`X = Y`) or deepens (`X = f(Y)`), while a negated comparison is a disequality
+/// that carries nothing. The single walk used for a body literal *and* every head-element condition
+/// literal, so a comparison or a body former is never handled at one position and dropped at
 /// another.
 fn collect_literal(
     literal: &Literal,
@@ -1379,7 +1435,14 @@ fn collect_literal(
     deepenings: &mut Vec<(Variable, BTreeSet<Variable>)>,
 ) {
     match &literal.inner {
-        LiteralInner::Atom(atom) => push_atom_carriers(atom.get(), carriers),
+        LiteralInner::Atom(atom) => {
+            // Carriers regardless of negation (a negated atom's variable can still be the carried one a
+            // head deepens); the invertible-former self-deepener is positive-only (§5).
+            push_atom_carriers(atom.get(), carriers);
+            if literal.negation == DefaultNegation::None {
+                push_atom_deepeners(atom.get(), deepenings);
+            }
+        }
         LiteralInner::Comparison(comparison) if literal.negation == DefaultNegation::None => {
             collect_equalities(comparison.get(), aliases, deepenings);
         }

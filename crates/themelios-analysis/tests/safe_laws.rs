@@ -1925,6 +1925,33 @@ fn finiteness_flags_a_head_condition_equality_deepening() {
 }
 
 #[test]
+fn finiteness_flags_a_head_condition_arithmetic_body_former() {
+    // p(X) : p(X + 1) :- base.  — the head-element condition carries X through the body atom p(X+1),
+    // whose invertible arithmetic former descends the recursion under inversion; the derived p(X) then
+    // deepens. The former is INSIDE the head condition's body atom — the position the atom-only carrier
+    // walk dropped, closed by the SAME lift as the body-atom case. A spurious Unknown on a bounded/empty
+    // grounding is sound (Holds ⇒ bounded is one-sided).
+    let head = Head::Disjunction(Disjunction::new([DisjunctionElement::new(
+        Literal::from(pred("p", &["X"])),
+        Condition::new([Literal::from(Atom::new(
+            name("p"),
+            [Term::BinaryOperation {
+                operator: BinaryOp::Add,
+                left: Box::new(var("X")),
+                right: Box::new(num(1)),
+            }],
+        ))]),
+    )]));
+    match finiteness_of([Statement::Rule(head.when(Atom::constant(name("base"))))]) {
+        Verdict::Unknown { witness } => assert!(
+            witness.members().any(|s| s.name.as_str() == "p"),
+            "the growing component is p",
+        ),
+        Verdict::Holds => panic!("a head-element condition arithmetic body former must be Unknown"),
+    }
+}
+
+#[test]
 fn finiteness_flags_a_head_condition_alias_under_a_former() {
     // { p(g(X)) : X = Y, p(Y) } :- base.  — the head condition aliases X = Y (not a former); the
     // derived p(g(X)) = p(g(Y)) deepens the aliased carried Y. A choice head.
@@ -2030,6 +2057,7 @@ enum Grow {
     HeadConditionEquality,
     AggregateExtremum,
     MutualRecursion,
+    BodyAtomFormer,
 }
 
 // The statements that grow the recursion of `p`, injecting the growth at `grow`'s position under
@@ -2109,6 +2137,16 @@ fn injected_growth(grow: &Grow, former: &Former, kind: &HeadKind, depth: u8) -> 
             Rule::new(Atom::new(name("p"), [deeper("Y")]), pred("q", &["Y"])),
             Rule::new(pred("q", &["X"]), pred("p", &["X"])),
         ],
+        // p(X) :- p(X + 1).  — an arithmetic body-atom former descends the recursion under inversion.
+        // A Herbrand body former (p(f(X))) would SHRINK (bounded), so this position injects arithmetic
+        // only, regardless of the sampled `former`.
+        Grow::BodyAtomFormer => vec![Rule::new(
+            pred("p", &["X"]),
+            vec![BodyElement::from(Atom::new(
+                name("p"),
+                [nested_former(depth, &Former::Arithmetic, var("X"))],
+            ))],
+        )],
     };
     rules.into_iter().map(Statement::Rule).collect()
 }
@@ -2123,6 +2161,7 @@ fn any_grow() -> impl Strategy<Value = (Grow, Former, HeadKind, u8)> {
             Just(Grow::HeadConditionEquality),
             Just(Grow::AggregateExtremum),
             Just(Grow::MutualRecursion),
+            Just(Grow::BodyAtomFormer),
         ],
         prop_oneof![Just(Former::Function), Just(Former::Arithmetic)],
         prop_oneof![

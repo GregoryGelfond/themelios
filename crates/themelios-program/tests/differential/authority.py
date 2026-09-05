@@ -1,10 +1,10 @@
 """The authority's readings for the program and analysis differentials
 (docs/design/program.md §16; docs/design/analysis.md §10; docs/grammar.md §3):
-the pinned clingo 5.8.2, driven in one of four modes chosen by the first
+the pinned clingo 5.8.2, driven in one of five modes chosen by the first
 argument, one JSON object leaving on stdout. Both tiers' tests/differential.rs
 spawn this one driver — the program tier for `parse`, `eval`, and `order`, the
-analysis tier for `safety`. Test-only: run under the pixi environment; never
-shipped, never imported by anything.
+analysis tier for `safety` and `ground`. Test-only: run under the pixi
+environment; never shipped, never imported by anything.
 
 - `parse`: the program arrives on stdin; the reply is the clingo version, whether
   the parser accepted it, and the statements it built — each as its AST type and
@@ -27,6 +27,10 @@ shipped, never imported by anything.
 - `safety`: the program arrives on stdin; the authority grounds it and the reply
   says whether it is safe — the authority reports an unsafe variable on the
   diagnostic logger and stops grounding, so `safe` is the absence of that report.
+- `ground`: the program arrives on stdin; the authority grounds it under a
+  counting observer that aborts past a cap on ground rules and external atoms,
+  and the reply says whether it grounded within the cap or hit it — the
+  analysis tier's finiteness backstop (`read_ground` states the bound's scope).
 """
 
 import json
@@ -164,8 +168,15 @@ def read_ground() -> dict:
     (docs/design/analysis.md §5, §10): the finiteness backstop. Reads the program on stdin and grounds
     it under a counting observer that aborts past the cap — a term-depth-finite program grounds
     (`grounded`), one that grounds unboundedly, through rules or a domain-extending `#external`, is
-    `capped`. Bounded in memory and time: no timeout, no exhaustion. A safety error (an unsafe program)
-    leaves `grounded` false with the message, so the corpus must be safe."""
+    `capped`. For a **rule-emitting** grower this is bounded in memory and time by the observer
+    alone: the abort comes at the next emitted rule, so no timeout is needed there and nothing is
+    exhausted. A grounding that expands *between* rule emissions — a conditioned head (a head
+    conditional or a head aggregate), whose element condition gringo instantiates in full before it
+    emits the next rule — never returns control to the observer and can grind without reaching the
+    cap; that case is bounded by the caller's wall-clock deadline, not here (the analysis
+    differential kills this process past it and reads the grounding as inconclusive, never as a
+    verdict). A safety error (an unsafe program) leaves `grounded` false with the message, so the
+    corpus must be safe."""
     program = sys.stdin.read()
     messages: list[str] = []
     control = clingo.Control(
