@@ -382,7 +382,8 @@ ast_enum! {
     }
 }
 
-/// A literal's inner form (grammar §5.2).
+/// A literal's inner form (grammar §5.2). Converts from an atom or a
+/// comparison; `#true` and `#false` hold a bare token.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum LiteralInner {
     /// `#true`.
@@ -395,7 +396,9 @@ pub enum LiteralInner {
     Comparison(Comparison),
 }
 
-/// A constant term's constant (grammar §5.1).
+/// A constant term's constant (grammar §5.1). Converts from an
+/// identifier, a numeral, or a string; `#inf` and `#sup` hold a bare
+/// token.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Constant {
     /// An identifier.
@@ -411,13 +414,55 @@ pub enum Constant {
 }
 
 /// One item of a theory opterm's flat sequence (grammar §5.8): an
-/// operator token — `THEORY_OP` or `not` — or a theory term.
+/// operator token — `THEORY_OP` or `not` — or a theory term. Converts
+/// from a theory term; the operator holds a bare token.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum TheoryOpTermItem {
     /// An operator.
     Op(SyntaxToken),
     /// A term.
     Term(TheoryTerm),
+}
+
+// The hand-written enums convert from their typed alternatives, as the
+// macro's do. A bare-token variant has no `From<SyntaxToken>`: it would
+// admit a token of any kind unchecked, and two such variants could not
+// both hold the one impl.
+
+impl From<Atom> for LiteralInner {
+    fn from(atom: Atom) -> Self {
+        Self::Atom(atom)
+    }
+}
+
+impl From<Comparison> for LiteralInner {
+    fn from(comparison: Comparison) -> Self {
+        Self::Comparison(comparison)
+    }
+}
+
+impl From<Ident> for Constant {
+    fn from(ident: Ident) -> Self {
+        Self::Symbol(ident)
+    }
+}
+
+impl From<NumberLit> for Constant {
+    fn from(number: NumberLit) -> Self {
+        Self::Number(number)
+    }
+}
+
+impl From<StringLit> for Constant {
+    fn from(string: StringLit) -> Self {
+        Self::String(string)
+    }
+}
+
+impl From<TheoryTerm> for TheoryOpTermItem {
+    fn from(term: TheoryTerm) -> Self {
+        Self::Term(term)
+    }
 }
 
 // ---- the traits -------------------------------------------------------
@@ -740,6 +785,97 @@ mod tests {
             panic!("a constant term")
         };
         assert_eq!(Term::from(constant.clone()), Term::Constant(constant));
+    }
+
+    /// The constant of the constant term `text` parses to.
+    fn constant(text: &str) -> Constant {
+        let source = Source::new(SourceId::new(0), text.to_owned()).expect("admits");
+        let lexer = crate::lexer::Lexer::new(&source, Dialect::Clingo);
+        let Some(Term::Constant(term)) =
+            crate::parse::parse_term(&lexer, crate::parse::NestingLimit::DEFAULT)
+                .tree()
+                .term()
+        else {
+            panic!("a constant term: {text}")
+        };
+        term.constant().expect("a constant")
+    }
+
+    #[test]
+    fn literal_inner_from_an_atom_is_the_atom_variant() {
+        let Some(Head::Literal(head)) = rule("p.").head() else {
+            panic!("a literal head")
+        };
+        let Some(LiteralInner::Atom(atom)) = head.inner() else {
+            panic!("an atom")
+        };
+        assert_eq!(LiteralInner::from(atom.clone()), LiteralInner::Atom(atom));
+    }
+
+    #[test]
+    fn literal_inner_from_a_comparison_is_the_comparison_variant() {
+        let Some(BodyElement::Literal(literal)) =
+            rule(":- 1 < X.").body().expect("a body").elements().next()
+        else {
+            panic!("a literal")
+        };
+        let Some(LiteralInner::Comparison(comparison)) = literal.inner() else {
+            panic!("a comparison")
+        };
+        assert_eq!(
+            LiteralInner::from(comparison.clone()),
+            LiteralInner::Comparison(comparison)
+        );
+    }
+
+    #[test]
+    fn constant_from_an_ident_is_the_symbol_variant() {
+        let Constant::Symbol(ident) = constant("a") else {
+            panic!("a symbol")
+        };
+        assert_eq!(Constant::from(ident.clone()), Constant::Symbol(ident));
+    }
+
+    #[test]
+    fn constant_from_a_number_lit_is_the_number_variant() {
+        let Constant::Number(number) = constant("1") else {
+            panic!("a numeral")
+        };
+        assert_eq!(Constant::from(number.clone()), Constant::Number(number));
+    }
+
+    #[test]
+    fn constant_from_a_string_lit_is_the_string_variant() {
+        let Constant::String(string) = constant("\"s\"") else {
+            panic!("a string")
+        };
+        assert_eq!(Constant::from(string.clone()), Constant::String(string));
+    }
+
+    #[test]
+    fn theory_op_term_item_from_a_theory_term_is_the_term_variant() {
+        let Some(BodyElement::TheoryAtom(atom)) = rule(":- &t { x }.")
+            .body()
+            .expect("a body")
+            .elements()
+            .next()
+        else {
+            panic!("a theory atom")
+        };
+        let element = atom
+            .elements()
+            .expect("elements")
+            .elements()
+            .next()
+            .expect("an element");
+        let opterm = element.opterms().next().expect("an opterm");
+        let Some(TheoryOpTermItem::Term(term)) = opterm.items().next() else {
+            panic!("a theory term")
+        };
+        assert_eq!(
+            TheoryOpTermItem::from(term.clone()),
+            TheoryOpTermItem::Term(term)
+        );
     }
 
     #[test]
