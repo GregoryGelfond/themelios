@@ -117,6 +117,29 @@ fn the_glob_names_the_attachment_surface() {
 }
 
 #[test]
+fn the_glob_names_the_token_trait() {
+    // `Comment`'s own accessors need no trait; the token behind it —
+    // `syntax`, `text`, and `cast` back from the token — is `AstToken`'s,
+    // in scope through the glob exactly as `AstNode` is.
+    let parsed = parse(&admitted("p. % c\n", 0), Dialect::Clingo);
+    let (comment, _) = attachments(&parsed.syntax()).next().expect("a comment");
+    let token: &SyntaxToken = comment.syntax();
+    assert_eq!(token.kind(), SyntaxKind::LINE_COMMENT);
+    assert_eq!(comment.text(), "% c");
+    let recast = ast::Comment::cast(token.clone());
+    assert_eq!(recast, Some(comment));
+}
+
+#[test]
+fn the_crate_root_names_the_token_trait() {
+    // `themelios_syntax::AstToken` resolves beside `themelios_syntax::AstNode`
+    // — the path form, with no import of the trait in sight.
+    let parsed = parse(&admitted("p. % c\n", 0), Dialect::Clingo);
+    let (comment, _) = attachments(&parsed.syntax()).next().expect("a comment");
+    assert_eq!(themelios_syntax::AstToken::text(&comment), "% c");
+}
+
+#[test]
 fn the_trivia_walk_is_reached_through_attach() {
     // The element-level trivia classification and the walks over it are
     // reached by their module path; `Direction` is rowan's, behind `tree`.

@@ -1,8 +1,9 @@
 //! The common working vocabulary for parsing and reading source under the
 //! one grammar: the parse doors — the file door and the string door — and
 //! their result, the declared dialect, the tree — its cursors, its kind
-//! roster, the role of a token — comment attachment, the fusion oracle, the
-//! two certificates, and the typed diagnostics; plus the typed AST and the
+//! roster, the role of a token, the traits of its typed views, `AstNode`
+//! and `AstToken` — comment attachment, the fusion oracle, the two
+//! certificates, and the typed diagnostics; plus the typed AST and the
 //! base tier, each as a module. Glob-import it —
 //! `use themelios_syntax::prelude::*;`.
 //!
@@ -10,7 +11,9 @@
 //! through `ast`, never as a flat glob of its type names — `ast::Program`,
 //! `ast::Statement`, `ast::Rule`, `ast::Atom` — because those names are the
 //! program tier's names too (`themelios_program::Program`, …), and a client
-//! that globs both tiers' preludes must meet no ambiguity. The base tier is
+//! that globs both tiers' preludes must meet no ambiguity; the `AstToken`
+//! trait is flat beside `AstNode`, so the token behind a yielded `Comment`
+//! — `syntax`, `text` — needs no second import. The base tier is
 //! reached the same way — `base::source::Source`. Advanced surfaces are
 //! reached by their module path, not here: the general parse doors,
 //! `NestingLimit`, `EntryPoint`, `with_required_stack`, and the identity the
@@ -40,7 +43,7 @@
 //! fn takes(_program: Program) {}
 //! ```
 
-pub use crate::ast;
+pub use crate::ast::{self, AstToken};
 pub use crate::attach::{
     Attachment, NotAttachable, Slot, attachment, attachments, comments, empty_line_between,
     line_breaks_between, same_line,
