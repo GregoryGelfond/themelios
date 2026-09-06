@@ -244,8 +244,8 @@ impl Part {
 
 /// A part-structured set of statements, giving cheap part-wise access for multi-shot use
 /// (§4.1). `base` is the implicit default part, always present — seeded at construction
-/// (`Default`, `of`, and `of_nodes`), so `base` is total and the empty program has one
-/// form.
+/// (`Default`, `empty`, `of`, and `of_nodes`), so `base` is total and the empty program
+/// has one form.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Program {
     parts: BTreeMap<PartKey, Part>,
@@ -269,13 +269,22 @@ impl Default for Program {
 }
 
 impl Program {
+    /// The empty program — the base part present and empty (§4.1, §7.1): the named empty
+    /// case, as [`Body::empty`](crate::program::Body::empty) and
+    /// [`Condition::empty`](crate::program::Condition::empty) give theirs. Equal to
+    /// `Program::default()`. Total.
+    pub fn empty() -> Program {
+        Program::default()
+    }
+
     /// Build a program from bare statements (§7.1): each value becomes a [`Statement`]
     /// through its `From` — a `Statement` itself by the reflexive one — is given a
     /// `Constructed` origin (§6.2), and is admitted into the base part through
     /// [`of_nodes`](Program::of_nodes), so the one ingest door (§6.3) canonicalizes it
     /// and merges it with any content-equal statement already present. The collection
-    /// is homogeneous: two families meet at `Statement::from`. `of` over no statements
-    /// is the empty program, equal to `Program::default()`.
+    /// is homogeneous: two families meet at `Statement::from`. The empty program is
+    /// [`empty`](Program::empty) (or `Program::default()`), not `of` over a bare `[]`,
+    /// whose element type this generic door cannot infer.
     ///
     /// ```
     /// use themelios_program::prelude::*;

@@ -232,6 +232,21 @@ fn the_empty_program_has_a_present_empty_base_and_one_form() {
 }
 
 #[test]
+fn the_named_empty_program_is_the_default_program() {
+    // The family names its empty case — `Body::empty`, `Condition::empty` — and `Program::empty`
+    // is that name for the one empty program (§7.1), the value `Default` gives.
+    assert_eq!(Program::empty(), Program::default());
+}
+
+#[test]
+fn the_named_empty_program_holds_only_the_present_empty_base() {
+    // The base part is present and empty (§4.1): the one part, holding no statement.
+    let empty = Program::empty();
+    assert_eq!(empty.base().statements().count(), 0);
+    assert_eq!(empty.parts().count(), 1);
+}
+
+#[test]
 fn the_bare_door_is_the_provenance_door_over_a_constructed_wrap() {
     // `of` over a bare statement is exactly `of_nodes` over that statement under a
     // `Constructed` origin — one door behind two spellings, so the ingest's
