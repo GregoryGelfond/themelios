@@ -617,6 +617,54 @@ fn a_tuple_through_the_constructor_collapses_exactly_when_ground() {
 }
 
 #[test]
+fn a_pool_through_the_door_is_the_deep_pass_over_canonical_alternatives() {
+    // `Term::pool` canonicalizes one level at the door, assuming canonical alternatives (§5.1,
+    // §7.2), as `function` and `tuple` do their children — so over canonical alternatives it is
+    // exactly the deep pass over the same raw pool: two or more flat alternatives are kept; one
+    // alternative collapses to its term; a flat pool among the alternatives is spliced in place,
+    // one level of splicing being the whole flattening; and a deep canonical compound alternative
+    // is kept as an alternative, not re-walked (the O(depth) claim tests/scaling_shape.rs holds).
+    let x = || Term::variable(var_name("X"));
+    let one_two = || Term::Pool(vec![Term::from(1), Term::from(2)]);
+    let deep = || (0..64).fold(x(), |inner, _| Term::function(name("f"), [inner]));
+    let rows = [
+        (
+            vec![Term::from(1), x()],
+            Term::Pool(vec![Term::from(1), x()]),
+        ),
+        (vec![x()], x()),
+        (
+            vec![one_two(), x()],
+            Term::Pool(vec![Term::from(1), Term::from(2), x()]),
+        ),
+        (
+            vec![deep(), Term::from(0)],
+            Term::Pool(vec![deep(), Term::from(0)]),
+        ),
+    ];
+    for (alternatives, canonical) in rows {
+        // The fixture is honest: every alternative is a fixed point of the deep pass.
+        for alternative in &alternatives {
+            assert_eq!(
+                alternative.clone().canonicalize(),
+                *alternative,
+                "an alternative of {alternatives:?} is canonical"
+            );
+        }
+        assert_eq!(
+            Term::pool(alternatives.clone()).expect("a non-empty pool"),
+            canonical,
+            "the door over {alternatives:?}"
+        );
+        assert_eq!(
+            Term::Pool(alternatives.clone()).canonicalize(),
+            canonical,
+            "the deep pass over {alternatives:?}"
+        );
+    }
+}
+
+#[test]
 fn constructors_composed_bottom_up_yield_the_deep_canonical_form() {
     // Each constructor assumes canonical children (§7.2), and a value built through the
     // constructors has them at every step, so a nest composed bottom-up is the very value the
@@ -666,6 +714,8 @@ fn every_value_constructor_yields_a_canonical_value() {
         Term::anonymous(),
         Term::tuple([Term::from(1), Term::from(2)]),
         Term::tuple([x()]),
+        Term::pool([Term::from(1), x()]).expect("a non-empty pool"),
+        Term::pool([x()]).expect("a non-empty pool"),
     ];
     for value in values {
         assert_eq!(

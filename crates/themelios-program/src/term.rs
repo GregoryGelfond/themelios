@@ -220,14 +220,20 @@ impl Term {
         Term::Variable(Variable::Anonymous)
     }
 
-    /// A pool of alternatives `(a; b; …)` (§5.1), refusing an empty one — a pool is a disjunction
-    /// of one or more alternatives, and a zero-alternative pool is a malformed value, not a normal
-    /// form (a validity invariant refused at the door, §7.2). One alternative collapses to its term
-    /// at canonicalization, nested pools flatten (§5.1). This is the door a caller builds a pool
-    /// through; the `Pool` variant stays public for reading and carries the same non-empty
-    /// precondition. `O(alternatives)`.
+    /// A pool of alternatives `(a; b; …)` (§5.1, §7.1), refusing an empty one — a pool is a
+    /// disjunction of one or more alternatives, and a zero-alternative pool is a malformed value,
+    /// not a normal form (a validity invariant refused at the door, §7.2). Canonicalized one level
+    /// at the door (§5.1), assuming canonical alternatives, as [`function`](Term::function) does
+    /// its arguments and [`tuple`](Term::tuple) its elements: one alternative collapses to its
+    /// term, and an alternative that is itself a pool is spliced in place — canonical alternatives
+    /// are already flat, so one level of splicing is the whole flattening. It does not descend to
+    /// repair a raw non-canonical alternative: the deep pass stays the atom, ingest, and statement
+    /// doors' whole-value repair (§5.1, §7.2). This is the door a caller builds a pool through; the
+    /// `Pool` variant stays public for reading and carries the same non-empty precondition.
+    /// O(alternatives), never a re-walk of them, so a nest of pools built bottom-up is O(depth)
+    /// (§7.1).
     pub fn pool(alternatives: impl IntoIterator<Item = Term>) -> Result<Term, EmptyPool> {
-        Ok(Term::Pool(non_empty(alternatives)?).canonicalize())
+        Ok(canonicalize_one_level(Term::Pool(non_empty(alternatives)?)))
     }
 }
 

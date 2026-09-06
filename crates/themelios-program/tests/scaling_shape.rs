@@ -1,9 +1,9 @@
 //! Shape assertions for the checks (docs/design/program.md §15, §16): complexity
 //! shape only, held by the median over five interleaved wall-clock ratios with
 //! tolerances wide enough for any machine the checks run on — equality, clone,
-//! rendering, and traversal linear in the structure, construction of an operator chain
-//! through the doors linear in its depth (each door canonicalizing one level, §7.1),
-//! `mgu` near-linear in both
+//! rendering, and traversal linear in the structure, construction of an operator chain,
+//! a function nest, and a pool nest through the doors linear in depth (each door
+//! canonicalizing one level, §7.1), `mgu` near-linear in both
 //! atoms (the Martelli–Montanari shape a monolithic ground representation would
 //! make quadratic, §11.1), a match against an answer set logarithmic via
 //! `signature_range` (§11.3), and part-wise access logarithmic in the parts
@@ -301,6 +301,54 @@ fn building_a_function_nest_through_the_constructor_is_linear_in_depth() {
     assert!(
         ratio < LINEAR_CEILING * RATIO_SCALE,
         "the nest's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} depth; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+/// `f((f((… X …; 0)); 0))` — `depth` pools, each under a function application, built
+/// bottom-up through `Term::pool` and `Term::function`. The function wrapper keeps each
+/// pool's growing alternative a non-pool, so the pool door's one-level splice meets nothing
+/// to splice and only a deep re-walk of the nest below would grow with the depth. (A pool
+/// accreted directly onto a pool, `(… ; x)` over `(…)`, is spliced at every step — a spine
+/// copy Θ(depth²) in either version, which would not tell the two apart.) Non-ground on
+/// purpose, as `function_nest`.
+fn pool_nest(depth: usize) -> Term {
+    let f = name("f");
+    let mut term = Term::variable(VarName::new("X").expect("a valid variable name"));
+    for _ in 0..depth {
+        let pool = Term::pool([term, Term::from(0)]).expect("two alternatives");
+        term = Term::function(f.clone(), [pool]);
+    }
+    term
+}
+
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
+#[test]
+fn building_a_pool_nest_through_the_door_is_linear_in_depth() {
+    // `Term::pool` canonicalizes one level, O(its alternatives), assuming canonical alternatives
+    // (§5.1, §7.1, §7.2) — the same contract as the function and tuple constructors — so a nest
+    // of pools built bottom-up is O(depth). A door that ran the deep pass over the nest-so-far at
+    // every step would be Θ(depth²): ~x256 over x16 depth, past the x64 ceiling. One build per
+    // measurement, as for the function nest: allocation-bound at DEPTH, far above timer
+    // resolution, with the nest's linear drop inside the window.
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(pool_nest(DEPTH));
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(pool_nest(DEPTH * SIZE_RATIO));
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "the pool nest's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} depth; the linear shape allows at most x{LINEAR_CEILING}"
     );
 }
 
