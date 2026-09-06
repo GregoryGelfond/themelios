@@ -821,11 +821,32 @@ pub struct Const {
     pub policy: Option<ConstPolicy>,
 }
 
+impl Const {
+    /// A constant directive of the given name, value (canonicalized, §5.1), and optional
+    /// policy: the value is a raw term, so this is a deep-repair door as `External::new`'s
+    /// is (§7.2), not the operator doors' one-level step.
+    pub fn new(name: Name, value: Term, policy: Option<ConstPolicy>) -> Const {
+        Const {
+            name,
+            value: value.canonicalize(),
+            policy,
+        }
+    }
+}
+
 /// A `#defined` directive (grammar §5.9): a signature.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Defined {
     /// The declared signature.
     pub signature: Signature,
+}
+
+impl Defined {
+    /// A `#defined` declaration of the given signature — no term to canonicalize, so the
+    /// constructor is the struct literal (§7.1).
+    pub fn new(signature: Signature) -> Defined {
+        Defined { signature }
+    }
 }
 
 /// The target of an `#include` directive (grammar §5.9): a quoted path or an
@@ -1202,5 +1223,68 @@ impl Const {
             value: self.value.canonicalize(),
             policy: self.policy,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Const, ConstPolicy, Defined};
+    use crate::symbol::{Name, Sign, Signature, Symbol};
+    use crate::term::{Term, UnaryOp, canonicalize_one_level};
+
+    fn name(text: &str) -> Name {
+        Name::new(text).expect("a valid identifier")
+    }
+
+    fn number(value: i32) -> Term {
+        Term::Symbolic(Symbol::Number(value))
+    }
+
+    // ---- The body-free directives' constructors (§7.1): total, a term canonicalized at
+    // the door (§5.1) ----
+
+    #[test]
+    fn defined_new_carries_its_signature() {
+        // No term to canonicalize: the constructor is the struct literal (§7.1).
+        let signature = Signature::new(Sign::Positive, name("p"), 2);
+        let defined = Defined::new(signature.clone());
+        assert_eq!(defined.signature, signature);
+        assert_eq!(defined, Defined { signature });
+    }
+
+    #[test]
+    fn const_new_builds_the_directive_from_its_parts() {
+        assert_eq!(
+            Const::new(name("n"), number(1), Some(ConstPolicy::Override)),
+            Const {
+                name: name("n"),
+                value: number(1),
+                policy: Some(ConstPolicy::Override),
+            }
+        );
+    }
+
+    #[test]
+    fn const_new_canonicalizes_its_value_at_the_door() {
+        // The value is a raw term, so this is a deep-repair door (§5.1, §7.2), as `External::new`
+        // is: `f(-5)` spelled as the uncollapsed function over the unfolded negation collapses to
+        // its ground symbol, the inner `-5` folded first. The fixture is honest about "deep": the
+        // one-level step, given that raw child, leaves the function uncollapsed.
+        let raw = Term::Function {
+            name: name("f"),
+            arguments: vec![Term::UnaryOperation {
+                operator: UnaryOp::Negate,
+                argument: Box::new(number(5)),
+            }],
+        };
+        let collapsed = Term::Symbolic(Symbol::Function {
+            name: name("f"),
+            arguments: vec![Symbol::Number(-5)],
+            sign: Sign::Positive,
+        });
+        assert_ne!(canonicalize_one_level(raw.clone()), collapsed);
+        let constant = Const::new(name("n"), raw.clone(), None);
+        assert_eq!(constant.value, collapsed);
+        assert_eq!(constant.value, raw.canonicalize());
     }
 }

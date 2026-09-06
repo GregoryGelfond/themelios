@@ -155,6 +155,15 @@ pub struct Signature {
     pub arity: u32,
 }
 
+impl Signature {
+    /// The identity of the given sign, name, and arity — a flat value with no term to
+    /// canonicalize, so the constructor is the struct literal, given so that every family
+    /// a program carries has its `new` (§7.1). O(1).
+    pub fn new(sign: Sign, name: Name, arity: u32) -> Signature {
+        Signature { sign, name, arity }
+    }
+}
+
 impl Symbol {
     /// The functor name — `Some` for a function or constant, `None` otherwise. O(1).
     pub fn name(&self) -> Option<&Name> {
@@ -951,7 +960,7 @@ impl std::error::Error for FromSymbolError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{Name, Sign, Symbol, ToSymbol};
+    use super::{Name, Sign, Signature, Symbol, ToSymbol};
 
     fn name(text: &str) -> Name {
         Name::new(text).expect("a valid identifier")
@@ -1045,6 +1054,22 @@ mod tests {
         assert_eq!(
             Symbol::from(String::from("a")),
             String::from("a").to_symbol()
+        );
+    }
+
+    // ---- The signature (§3.7): the identity from its parts (§7.1) ----
+
+    #[test]
+    fn signature_new_builds_the_identity_from_its_parts() {
+        // A flat identity with no term to canonicalize: the constructor is the struct literal,
+        // given so that every family a program carries has its `new` (§7.1).
+        assert_eq!(
+            Signature::new(Sign::Positive, name("p"), 2),
+            Signature {
+                sign: Sign::Positive,
+                name: name("p"),
+                arity: 2,
+            }
         );
     }
 }
