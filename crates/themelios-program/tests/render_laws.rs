@@ -85,7 +85,7 @@ fn the_canonical_render_stays_provenance_blind() {
 
 #[test]
 fn documented_rendering_round_trips_a_constructed_documentation() {
-    // keryx's flow: a statement documented at construction (no leading space in the doc),
+    // A statement documented at construction (no leading space in the doc),
     // rendered with its docs and re-raised, carries the same documentation on the same
     // statement — the doc survives the round-trip, which the canonical `render`, dropping
     // provenance, could not witness.
