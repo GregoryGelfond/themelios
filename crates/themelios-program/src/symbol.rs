@@ -205,6 +205,77 @@ impl Symbol {
     }
 }
 
+impl Symbol {
+    /// A constant `c` — the empty-argument function (§3.1), its own named
+    /// constructor so a simple thing stays simple (§7.1). Total (§7.2): the name
+    /// is an already validated identifier. Canonical by construction (§5.1) — a
+    /// symbol has no canonicalization pass — so this is the positive `Function`
+    /// over no arguments built directly: exactly [`function`](Symbol::function)
+    /// over no arguments under `Sign::Positive`. O(1).
+    pub fn constant(name: Name) -> Symbol {
+        Symbol::Function {
+            name,
+            arguments: Vec::new(),
+            sign: Sign::Positive,
+        }
+    }
+
+    /// A function or predicate `f(s, …)` under its strong sign — `-f(s, …)`
+    /// under `Sign::Negative` (§3.1, §7.1). Total (§7.2): the name is an already
+    /// validated identifier and the arguments are ground symbols. Canonical by
+    /// construction (§5.1): the variant is built directly, its arguments
+    /// collected as given and never re-walked. O(arguments).
+    pub fn function(name: Name, arguments: impl IntoIterator<Item = Symbol>, sign: Sign) -> Symbol {
+        Symbol::Function {
+            name,
+            arguments: arguments.into_iter().collect(),
+            sign,
+        }
+    }
+
+    /// A tuple `(s, …)` — the anonymous functor over its elements, the
+    /// one-element `(s,)` and the empty `()` included (§3.1, §7.1). Total (§7.2).
+    /// Canonical by construction (§5.1): the variant built directly, its elements
+    /// collected as [`function`](Symbol::function) collects its arguments.
+    /// O(elements).
+    pub fn tuple(elements: impl IntoIterator<Item = Symbol>) -> Symbol {
+        Symbol::Tuple(elements.into_iter().collect())
+    }
+
+    /// A number — `i32`, the engine's own width (§3.1, §7.1). Total; a leaf,
+    /// canonical by construction (§5.1). O(1).
+    pub fn number(value: i32) -> Symbol {
+        Symbol::Number(value)
+    }
+
+    /// A string (§3.1, §7.1). Total; a leaf, canonical by construction (§5.1).
+    /// O(1) given an owned `String`, O(text) to own a borrowed one.
+    pub fn string(text: impl Into<String>) -> Symbol {
+        Symbol::String(text.into())
+    }
+}
+
+// ---- Coercion widens the one obvious spelling; it never adds a second (§7.1) ----
+
+impl From<i32> for Symbol {
+    /// A number is a symbol (§3.1, §3.4): `i32`, the engine's own width, lifted
+    /// to the `Number` leaf — [`Symbol::number`], and the twin of `From<i32>` for
+    /// `Term`. Wider or narrower integers reach a symbol through their `ToSymbol`
+    /// (§3.4); this widens the one obvious spelling, it does not add a second.
+    fn from(value: i32) -> Symbol {
+        Symbol::number(value)
+    }
+}
+
+impl From<&str> for Symbol {
+    /// A string literal is a symbol (§3.1, §3.4): the text owned into the
+    /// `String` leaf — [`Symbol::string`]. This widens the one obvious spelling,
+    /// it does not add a second.
+    fn from(text: &str) -> Symbol {
+        Symbol::string(text)
+    }
+}
+
 /// One level of a symbol unrolled, its children a generic `T`, the leaves kept
 /// whole (§3.6). At `T = Symbol` it is the owned decomposition (`From`
 /// rebuilds); inside `fold` it is what the step sees with children already
@@ -865,3 +936,88 @@ impl std::fmt::Display for FromSymbolError {
     }
 }
 impl std::error::Error for FromSymbolError {}
+
+#[cfg(test)]
+mod tests {
+    use super::{Name, Sign, Symbol, ToSymbol};
+
+    fn name(text: &str) -> Name {
+        Name::new(text).expect("a valid identifier")
+    }
+
+    // ---- The builders (§7.1): total, canonical by construction (§5.1) ----
+
+    #[test]
+    fn constant_is_the_positive_nullary_function() {
+        // A constant is the empty-argument function (§3.1), built directly: a symbol has
+        // no canonicalization pass to collapse a raw spelling (§5.1).
+        assert_eq!(
+            Symbol::constant(name("c")),
+            Symbol::Function {
+                name: name("c"),
+                arguments: Vec::new(),
+                sign: Sign::Positive,
+            }
+        );
+    }
+
+    #[test]
+    fn constant_equals_function_over_no_arguments() {
+        // The constant/empty-function identity (§3.1): one value, two spellings.
+        assert_eq!(
+            Symbol::constant(name("c")),
+            Symbol::function(name("c"), [], Sign::Positive)
+        );
+    }
+
+    #[test]
+    fn function_carries_its_name_arguments_and_sign() {
+        assert_eq!(
+            Symbol::function(name("f"), [Symbol::number(1)], Sign::Negative),
+            Symbol::Function {
+                name: name("f"),
+                arguments: vec![Symbol::Number(1)],
+                sign: Sign::Negative,
+            }
+        );
+    }
+
+    #[test]
+    fn tuple_holds_its_elements_in_order() {
+        assert_eq!(
+            Symbol::tuple([Symbol::number(1), Symbol::number(2)]),
+            Symbol::Tuple(vec![Symbol::Number(1), Symbol::Number(2)])
+        );
+    }
+
+    #[test]
+    fn number_is_the_number_leaf() {
+        assert_eq!(Symbol::number(7), Symbol::Number(7));
+    }
+
+    #[test]
+    fn string_is_the_string_leaf() {
+        assert_eq!(Symbol::string("a"), Symbol::String("a".to_owned()));
+    }
+
+    // ---- The scalar coercions (§7.1): the one obvious spelling, widened ----
+
+    #[test]
+    fn an_i32_coerces_to_its_number() {
+        assert_eq!(Symbol::from(1), Symbol::Number(1));
+        assert_eq!(Symbol::from(1), Symbol::number(1));
+    }
+
+    #[test]
+    fn a_str_coerces_to_its_string() {
+        assert_eq!(Symbol::from("a"), Symbol::String("a".to_owned()));
+        assert_eq!(Symbol::from("a"), Symbol::string("a"));
+    }
+
+    #[test]
+    fn the_coercions_agree_with_to_symbol() {
+        // The encode coercion and the denotation trait (§3.4) are two doors to one value.
+        assert_eq!(Symbol::from(1), 1_i32.to_symbol());
+        assert_eq!(Symbol::from("a"), "a".to_symbol());
+    }
+}
