@@ -2,7 +2,8 @@
 //! benchmarks: the absolute curves whose *shapes* the checks assert in
 //! tests/scaling_shape.rs. Each operation the tier's cost table names is measured over a
 //! growing input — equality, clone, rendering, and traversal over a deep term (linear in
-//! structure); `mgu` over a deep ground symbol against its non-ground twin (the near-linear
+//! structure); construction of an operator chain through the doors (linear in its depth, each
+//! door canonicalizing one level, §7.1); `mgu` over a deep ground symbol against its non-ground twin (the near-linear
 //! decision §11.1/§15 promises, the case a monolithic ground representation would make
 //! quadratic) and over two non-ground terms; a match against an answer set via
 //! `signature_range` (O(log n + k), §11.3); and part-wise access (O(log parts), §4.1). A
@@ -140,6 +141,28 @@ fn structural_scaling(c: &mut Criterion) {
     subterms_group.finish();
 }
 
+/// `((X + 1) + 1) + …` — `depth` additions built bottom-up through the operator door.
+fn operator_chain(depth: usize) -> Term {
+    let mut term = variable("X");
+    for _ in 0..depth {
+        term = term + 1;
+    }
+    term
+}
+
+/// Construction through the operator doors — each canonicalizes one level, O(its node's
+/// arity), so a chain built bottom-up is linear in its depth (§5.1, §7.1); a door that ran
+/// the deep pass over the chain-so-far at every step would be quadratic.
+fn construction_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("construct/operator_chain_depth");
+    for depth in DEPTHS {
+        group.bench_with_input(BenchmarkId::from_parameter(depth), &depth, |b, &depth| {
+            b.iter(|| operator_chain(depth));
+        });
+    }
+    group.finish();
+}
+
 /// The fixed number of `p(_)` symbols the pattern `p(X)` matches, whatever the answer
 /// set's size.
 const TARGETS: usize = 8;
@@ -236,6 +259,7 @@ pub fn scaling() {
     let mut criterion: Criterion = Criterion::default().configure_from_args();
     mgu_scaling(&mut criterion);
     structural_scaling(&mut criterion);
+    construction_scaling(&mut criterion);
     matching_scaling(&mut criterion);
     part_access_scaling(&mut criterion);
 }

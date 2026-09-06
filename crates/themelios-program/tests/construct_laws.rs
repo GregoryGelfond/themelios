@@ -205,6 +205,38 @@ fn atom_new_canonicalizes_ground_function_arguments() {
 }
 
 #[test]
+fn atom_new_deep_repairs_a_raw_non_canonical_argument() {
+    // The atom, ingest, and statement doors are the deep-repair boundary (§5.1, §7.2): a raw term a
+    // caller assembles by hand — a ground function never collapsed — is repaired whole when it
+    // enters through `Atom::new`, at the top of an argument and, the discriminating half, nested
+    // under an operator where a one-level step would never reach it. The operator doors' one-level
+    // canonicalization (§7.1) rests on this boundary for the program-wide invariant, so an atom
+    // door routed to one level would fail here.
+    let raw = || Term::Function {
+        name: name("f"),
+        arguments: vec![num(1)],
+    };
+    let repaired = || {
+        Term::Symbolic(Symbol::Function {
+            name: name("f"),
+            arguments: vec![Symbol::Number(1)],
+            sign: Sign::Positive,
+        })
+    };
+    let under_an_operator = |inner: Term| Term::BinaryOperation {
+        operator: BinaryOp::Add,
+        left: Box::new(var("X")),
+        right: Box::new(inner),
+    };
+    let atom = Atom::new(name("p"), [raw(), under_an_operator(raw())]);
+    assert_eq!(
+        atom.arguments,
+        Arguments::Single(vec![repaired(), under_an_operator(repaired())]),
+        "the atom door repairs a raw argument at its top and below it",
+    );
+}
+
+#[test]
 fn a_rule_built_through_the_surface_is_already_canonical() {
     let ground = Term::Function {
         name: name("f"),

@@ -428,6 +428,55 @@ impl Term {
     }
 }
 
+/// One rule level of canonicalization at the top node (§5.1), its children assumed already
+/// canonical — the operator doors' step (§7.1): the same per-node rule the deep
+/// [`Term::canonicalize`] applies bottom-up, applied once, at O(this node's arity). A value
+/// built bottom-up through the doors is canonical at every step, so a chain of `depth` doors
+/// costs O(depth), not the Θ(depth²) a deep pass at each door would. It does not descend to
+/// repair a raw non-canonical child: the deep pass stays the whole-value repair at the
+/// ingest, atom, and statement doors (§5.1, §7.2), where a hand-filled struct literal is made
+/// canonical on entry. The one difference from the fold's step is the `Pool` arm, which
+/// splices a nested pool inline rather than flag it for a deferred pass: canonical children
+/// are already flat, so one level of splicing is the whole flattening, O(alternatives).
+pub(crate) fn canonicalize_one_level(term: Term) -> Term {
+    match term.into_parts() {
+        // Ground collapse (§5.1): all-`Symbolic` children fold to a ground symbol; a
+        // term-position functor bears no strong sign (§3.3, §4.6), so `Positive`.
+        TermParts::Function { name, arguments } => match into_symbols(arguments) {
+            Ok(symbols) => Term::Symbolic(Symbol::Function {
+                name,
+                arguments: symbols,
+                sign: Sign::Positive,
+            }),
+            Err(arguments) => Term::Function { name, arguments },
+        },
+        TermParts::Tuple(items) => match into_symbols(items) {
+            Ok(symbols) => Term::Symbolic(Symbol::Tuple(symbols)),
+            Err(items) => Term::Tuple(items),
+        },
+        // Degenerate and nested pools (§5.1): a pool holding a pool is spliced flat, and a
+        // one-alternative pool collapses to its element.
+        TermParts::Pool(items) => {
+            let mut alternatives = gather_pool_spine(items);
+            if alternatives.len() == 1 {
+                alternatives
+                    .pop()
+                    .expect("a one-alternative pool has its element")
+            } else {
+                Term::Pool(alternatives)
+            }
+        }
+        // The one operator that folds (§3.5, §5.1): unary minus of a number to its negation.
+        TermParts::UnaryOperation {
+            operator: UnaryOp::Negate,
+            argument,
+        } => negate_number(argument),
+        // Unchanged given canonical children: an operator never folds (§3.5); an interval, an
+        // absolute value, an external call, and a leaf are already normal.
+        other => Term::from(other),
+    }
+}
+
 /// Fold unary minus of a number to its negation (§5.1, §3.5) — the one operator canonicalization,
 /// so a double `-(-5)` folds to `Number(5)` (the authority's reading). A non-number argument, or a
 /// value whose negation leaves the `i32` range (`-i32::MIN`), keeps the `Negate` form.
@@ -1235,3 +1284,143 @@ impl std::fmt::Display for EvalError {
     }
 }
 impl std::error::Error for EvalError {}
+
+#[cfg(test)]
+mod tests {
+    use super::{BinaryOp, Term, UnaryOp, Variable, canonicalize_one_level, split_parts};
+    use crate::symbol::{Name, Sign, Symbol, VarName};
+
+    fn name(text: &str) -> Name {
+        Name::new(text).expect("a valid identifier")
+    }
+
+    fn variable(text: &str) -> Term {
+        Term::Variable(Variable::Named(
+            VarName::new(text).expect("a valid variable name"),
+        ))
+    }
+
+    fn number(value: i32) -> Term {
+        Term::Symbolic(Symbol::Number(value))
+    }
+
+    fn function(functor: &str, arguments: Vec<Term>) -> Term {
+        Term::Function {
+            name: name(functor),
+            arguments,
+        }
+    }
+
+    fn symbol(functor: &str, arguments: Vec<Symbol>) -> Symbol {
+        Symbol::Function {
+            name: name(functor),
+            arguments,
+            sign: Sign::Positive,
+        }
+    }
+
+    fn unary(operator: UnaryOp, argument: Term) -> Term {
+        Term::UnaryOperation {
+            operator,
+            argument: Box::new(argument),
+        }
+    }
+
+    fn binary(operator: BinaryOp, left: Term, right: Term) -> Term {
+        Term::BinaryOperation {
+            operator,
+            left: Box::new(left),
+            right: Box::new(right),
+        }
+    }
+
+    /// A term the rule keeps as it is, paired with itself.
+    fn kept(term: Term) -> (Term, Term) {
+        (term.clone(), term)
+    }
+
+    /// Terms whose children are already canonical — every arm of the one-level rule, its folding
+    /// branch and its kept branch both — each paired with the canonical form the rule yields, so
+    /// the agreement below is non-vacuous: the folding arms are seen to fold.
+    fn corpus() -> Vec<(Term, Term)> {
+        let x = || variable("X");
+        let one_two = || vec![number(1), number(2)];
+        vec![
+            // Ground collapse (§5.1): an all-`Symbolic` function — a constant included — and an
+            // all-`Symbolic` tuple fold to a ground symbol; one variable argument keeps the term.
+            (
+                function("f", vec![number(1), Term::Symbolic(symbol("a", vec![]))]),
+                Term::Symbolic(symbol("f", vec![Symbol::Number(1), symbol("a", vec![])])),
+            ),
+            (function("c", vec![]), Term::Symbolic(symbol("c", vec![]))),
+            kept(function("f", vec![x()])),
+            (
+                Term::Tuple(one_two()),
+                Term::Symbolic(Symbol::Tuple(vec![Symbol::Number(1), Symbol::Number(2)])),
+            ),
+            (Term::Tuple(vec![]), Term::Symbolic(Symbol::Tuple(vec![]))),
+            kept(Term::Tuple(vec![x(), number(1)])),
+            // Pools (§5.1): a pool holding a flat pool splices it in place; one alternative
+            // collapses to its element; two or more flat alternatives are the normal form; a
+            // hand-built empty pool is kept, not refused (the constructor door refuses it).
+            (
+                Term::Pool(vec![Term::Pool(one_two()), x()]),
+                Term::Pool(vec![number(1), number(2), x()]),
+            ),
+            (Term::Pool(vec![x()]), x()),
+            kept(Term::Pool(vec![number(1), x()])),
+            kept(Term::Pool(vec![])),
+            // The one operator that folds (§3.5): unary minus of a number. `i32::MIN`'s negation
+            // leaves the range, a non-number keeps the operator, and `~` never folds.
+            (unary(UnaryOp::Negate, number(5)), number(-5)),
+            kept(unary(UnaryOp::Negate, number(i32::MIN))),
+            kept(unary(UnaryOp::Negate, x())),
+            kept(unary(UnaryOp::BitwiseNot, number(5))),
+            // Unchanged given canonical children: an operator never folds, ground or not; an
+            // interval, an absolute value, an external call, a variable, and a ground leaf are
+            // already normal.
+            kept(binary(BinaryOp::Add, number(1), number(2))),
+            kept(binary(BinaryOp::Mul, x(), number(2))),
+            kept(Term::Interval {
+                lower: Box::new(number(1)),
+                upper: Box::new(x()),
+            }),
+            kept(Term::Absolute(Box::new(x()))),
+            kept(Term::External {
+                name: name("f"),
+                arguments: vec![number(1)],
+            }),
+            kept(x()),
+            kept(number(7)),
+        ]
+    }
+
+    /// The one-level rule agrees with the deep pass wherever the deep pass's per-node step would
+    /// see already-folded children — the operator doors' law (§5.1, §7.1): a value built
+    /// bottom-up through the doors is canonical at O(this node's arity) a step. Held over every
+    /// arm, folding and kept branches both, against the canonical form each yields.
+    #[test]
+    fn one_level_agrees_with_the_deep_pass_given_canonical_children() {
+        for (term, canonical) in corpus() {
+            // The fixture is honest: every immediate child is a fixed point of the deep pass.
+            let (_, children) = split_parts(term.clone().into_parts());
+            for child in &children {
+                assert_eq!(
+                    child.clone().canonicalize(),
+                    *child,
+                    "a child of {term:?} is canonical"
+                );
+            }
+            assert_eq!(
+                canonicalize_one_level(term.clone()),
+                canonical,
+                "one level over {term:?}"
+            );
+            assert_eq!(
+                term.clone().canonicalize(),
+                canonical,
+                "the deep pass over {term:?}"
+            );
+        }
+    }
+}

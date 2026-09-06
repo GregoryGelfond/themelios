@@ -499,11 +499,64 @@ fn unary_minus_of_a_number_folds_to_its_negation() {
 }
 
 #[test]
+fn the_operator_doors_yield_the_deep_canonical_form() {
+    // Each operator door canonicalizes one level, assuming canonical operands (§5.1, §7.1), and
+    // yields the very value the deep pass yields over the same raw term. Unary minus is the one
+    // door that folds: `-5` is `Number(-5)`, and negating that folds through to `Number(5)` —
+    // the authority's reading of `- -5`. A composed `X + 1` is the deep-canonicalized twin of the
+    // raw `BinaryOperation`.
+    let x = || Term::Variable(Variable::Named(VarName::new("X").expect("variable")));
+    let negate = |t: Term| Term::UnaryOperation {
+        operator: UnaryOp::Negate,
+        argument: Box::new(t),
+    };
+    let minus_five = -Term::from(5);
+    assert_eq!(minus_five, Term::from(-5));
+    assert_eq!(minus_five, negate(Term::from(5)).canonicalize());
+    let minus_minus_five = -minus_five;
+    assert_eq!(minus_minus_five, Term::from(5));
+    assert_eq!(
+        minus_minus_five,
+        negate(negate(Term::from(5))).canonicalize()
+    );
+    let sum = Term::BinaryOperation {
+        operator: BinaryOp::Add,
+        left: Box::new(x()),
+        right: Box::new(Term::from(1)),
+    };
+    assert_eq!(x() + 1, sum.canonicalize());
+}
+
+#[test]
 fn a_one_alternative_pool_becomes_its_term() {
     // (a) is a, but (a; b) and (a,) are not degenerate (grammar §5.1).
     let inside = Term::Symbolic(Symbol::Number(7));
     let pool = Term::Pool(vec![inside.clone()]);
     assert_eq!(pool.canonicalize(), inside);
+}
+
+#[test]
+fn a_nested_pool_is_flattened_through_a_compound_node() {
+    // The flatten is one top-down pass that enters every compound node (§5.1): a nested pool
+    // below a function is reached through the function — `f(((1; 2); 3))` is `f((1; 2; 3))` —
+    // and a compound alternative of a nested pool is entered in turn, its own nested pool
+    // flattened — `((f(((1; 2); 3)); 4); 5)` is `(f((1; 2; 3)); 4; 5)`. A pool under a function
+    // is no ground symbol (a pool is a set-former), so the function is kept, not collapsed.
+    // Pinned directly: the generated laws above reach this re-entry only when a draw happens to
+    // nest a pool under a compound node.
+    let n = |value: i32| Term::from(value);
+    let nested = || Term::Pool(vec![Term::Pool(vec![n(1), n(2)]), n(3)]);
+    let flat = || Term::Pool(vec![n(1), n(2), n(3)]);
+    let f = |argument: Term| Term::Function {
+        name: Name::new("f").expect("identifier"),
+        arguments: vec![argument],
+    };
+    assert_eq!(f(nested()).canonicalize(), f(flat()));
+    let outer = Term::Pool(vec![Term::Pool(vec![f(nested()), n(4)]), n(5)]);
+    assert_eq!(
+        outer.canonicalize(),
+        Term::Pool(vec![f(flat()), n(4), n(5)])
+    );
 }
 
 #[test]

@@ -13,9 +13,12 @@
 //! `not` in head position does not compile (§4.5, §7.3). Arithmetic and intervals
 //! compose as written over anything term-shaped, the right-hand side coercing so a
 //! number needs no wrapping (§7.1). Canonicalization (§5.1) runs at every door here
-//! that takes a raw term, so the ergonomic path never yields a non-canonical value
-//! (§7.2); the one value that can carry a non-canonical term is a struct literal a
-//! caller fills directly, which the ingest door collapses on entry (§5.1).
+//! that takes a raw term — deeply at the doors that take an atom, an aggregate, or a
+//! theory atom; one level at the operator doors, which assume canonical operands, as a
+//! term built through these doors always is — so the ergonomic path never yields a
+//! non-canonical value (§7.2); the one value that can carry a non-canonical term is a
+//! struct literal a caller fills directly, which the atom and ingest doors repair whole
+//! on entry (§5.1).
 
 use crate::program::{
     Aggregate, Arguments, Atom, Body, BodyElement, DefaultNegation, Direction, Head, IntoBody,
@@ -23,7 +26,7 @@ use crate::program::{
 };
 use crate::provenance::WithProvenance;
 use crate::symbol::{Name, Sign, Symbol};
-use crate::term::{BinaryOp, EmptyPool, Term, UnaryOp, non_empty};
+use crate::term::{BinaryOp, EmptyPool, Term, UnaryOp, canonicalize_one_level, non_empty};
 
 // ---- Strong and arithmetic negation: two operators, one spelling each (§4.6) ----
 
@@ -53,9 +56,11 @@ impl std::ops::Neg for Term {
     type Output = Term;
 
     /// Arithmetic negation (§4.6, grammar §5.1): `-(X + 1)` wraps the term in
-    /// `UnaryOp::Negate` and canonicalizes (§5.1). A ground *operator* term does not
-    /// fold (§3.5), so a double negation stays a `UnaryOperation`; the involution is
-    /// strong negation's ([`Neg`](std::ops::Neg) on an [`Atom`]), not this one's.
+    /// `UnaryOp::Negate` and canonicalizes one level (§5.1), assuming a canonical
+    /// operand. Unary minus of a number is the one operator that folds (§3.5): `-5` is
+    /// `Number(-5)`. An *operator* term never folds, ground or not, so `-(-(X + 1))`
+    /// stays nested `UnaryOperation`s; the involution is strong negation's
+    /// ([`Neg`](std::ops::Neg) on an [`Atom`]), not this one's.
     fn neg(self) -> Term {
         unary(UnaryOp::Negate, self)
     }
@@ -173,8 +178,8 @@ impl Rule {
 
 // ---- Arithmetic and intervals compose as written (§7.1) ----
 
-// Each arithmetic operator builds its `BinaryOperation` and canonicalizes at the door
-// (§5.1); the right-hand side coerces (`impl Into<Term>`), so `X + 1` needs no
+// Each arithmetic operator builds its `BinaryOperation` and canonicalizes one level at
+// the door (§5.1); the right-hand side coerces (`impl Into<Term>`), so `X + 1` needs no
 // wrapping (§7.1). `Rem` (`%`) is ASP's `\` (`Mod`) and `BitOr` (`|`) is ASP's `?`;
 // exponentiation has no Rust operator and is `Term::pow`, and bitwise complement is
 // `Term::complement` (Rust's `!` is reserved for a meaning §4.6 does not spell here).
@@ -199,15 +204,15 @@ binary_operator!(BitOr, bitor, BitOr);
 binary_operator!(BitXor, bitxor, BitXor);
 
 impl Term {
-    /// The interval `a .. b` (grammar §5.1), a semantic term-former canonicalized at
-    /// the door (§5.1); the upper bound coerces, so `a.to(10)` needs no wrapping.
+    /// The interval `a .. b` (grammar §5.1), a semantic term-former canonicalized one
+    /// level at the door (§5.1), assuming canonical bounds; the upper bound coerces, so
+    /// `a.to(10)` needs no wrapping.
     #[must_use]
     pub fn to(self, upper: impl Into<Term>) -> Term {
-        Term::Interval {
+        canonicalize_one_level(Term::Interval {
             lower: Box::new(self),
             upper: Box::new(upper.into()),
-        }
-        .canonicalize()
+        })
     }
 
     /// Exponentiation `a ** b` (grammar §5.1): a method, since Rust has no `**`. The
@@ -225,31 +230,34 @@ impl Term {
         unary(UnaryOp::BitwiseNot, self)
     }
 
-    /// Absolute value `|a|` (grammar §5.1), canonicalized at the door (§5.1).
+    /// Absolute value `|a|` (grammar §5.1), canonicalized one level at the door (§5.1),
+    /// assuming a canonical operand.
     #[must_use]
     pub fn abs(self) -> Term {
-        Term::Absolute(Box::new(self)).canonicalize()
+        canonicalize_one_level(Term::Absolute(Box::new(self)))
     }
 }
 
-/// Build a canonicalized binary-operation term (§5.1): the operand terms collapse
-/// where the algebra folds them, the operator itself never does (§3.5).
+/// Build a binary-operation term canonicalized one level (§5.1): the operands are
+/// assumed canonical — as a term built through these doors always is — and the operator
+/// itself never folds (§3.5), so the step is O(1) and a chain built bottom-up is linear
+/// in its depth (§7.1). The deep pass is the ingest doors' whole-value repair (§7.2).
 fn binary(operator: BinaryOp, left: Term, right: Term) -> Term {
-    Term::BinaryOperation {
+    canonicalize_one_level(Term::BinaryOperation {
         operator,
         left: Box::new(left),
         right: Box::new(right),
-    }
-    .canonicalize()
+    })
 }
 
-/// Build a canonicalized unary-operation term (§5.1), as [`binary`] for one operand.
+/// Build a unary-operation term canonicalized one level (§5.1), as [`binary`] for one
+/// operand: unary minus of a number folds to its negation, the one operator that does
+/// (§3.5).
 fn unary(operator: UnaryOp, argument: Term) -> Term {
-    Term::UnaryOperation {
+    canonicalize_one_level(Term::UnaryOperation {
         operator,
         argument: Box::new(argument),
-    }
-    .canonicalize()
+    })
 }
 
 // ---- Coercion widens the one obvious spelling; it never adds a second (§7.1) ----

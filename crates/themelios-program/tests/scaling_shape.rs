@@ -1,7 +1,9 @@
 //! Shape assertions for the checks (docs/design/program.md §15, §16): complexity
 //! shape only, held by the median over five interleaved wall-clock ratios with
 //! tolerances wide enough for any machine the checks run on — equality, clone,
-//! rendering, and traversal linear in the structure, `mgu` near-linear in both
+//! rendering, and traversal linear in the structure, construction of an operator chain
+//! through the doors linear in its depth (each door canonicalizing one level, §7.1),
+//! `mgu` near-linear in both
 //! atoms (the Martelli–Montanari shape a monolithic ground representation would
 //! make quadratic, §11.1), a match against an answer set logarithmic via
 //! `signature_range` (§11.3), and part-wise access logarithmic in the parts
@@ -214,6 +216,48 @@ fn traversal_is_linear_in_term_depth() {
     assert!(
         ratio < LINEAR_CEILING * RATIO_SCALE,
         "traversal's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} depth; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+/// `((X + 1) + 1) + …` — `depth` additions built bottom-up through the operator door,
+/// each step canonicalizing the node it adds.
+fn operator_chain(depth: usize) -> Term {
+    let mut term = variable("X");
+    for _ in 0..depth {
+        term = term + 1;
+    }
+    term
+}
+
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
+#[test]
+fn building_an_operator_chain_through_the_doors_is_linear_in_depth() {
+    // Each operator door canonicalizes one level, O(its node's arity), assuming canonical
+    // operands (§5.1, §7.1) — so a chain built bottom-up through the doors is O(depth). A door
+    // that ran the deep pass over the chain-so-far at every step would be Θ(depth²): ~x256 over
+    // x16 depth, past the x64 ceiling. One build per measurement: a build at DEPTH is
+    // allocation-bound at hundreds of microseconds, far above timer resolution, so no repeat is
+    // needed; the built chain's drop, itself linear (§13), falls inside the window and cannot
+    // change the shape.
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(operator_chain(DEPTH));
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(operator_chain(DEPTH * SIZE_RATIO));
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "construction's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} depth; the linear shape allows at most x{LINEAR_CEILING}"
     );
 }
 
