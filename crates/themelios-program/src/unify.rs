@@ -1627,7 +1627,7 @@ mod tests {
             Atom::new(name("p"), [tvar("X")]),
             Atom::new(name("q"), [tvar("Y")]),
         );
-        let program = Program::of([WithProvenance::constructed(Statement::Rule(rule))]);
+        let program = Program::of([rule]);
         let mut fresh = Fresh::of(&program);
 
         let first = fresh.variable();
@@ -1880,16 +1880,14 @@ mod tests {
             Atom::constant(name("aux0")),
             Atom::new(name("p"), [tvar("V0")]),
         );
-        let program = Program::of([WithProvenance::constructed(Statement::Rule(rule))]);
+        let program = Program::of([rule]);
         assert_ne!(Fresh::of(&program).variable(), var("V0"));
         assert_ne!(Fresh::of(&program).predicate("aux"), name("aux0"));
     }
 
     #[test]
     fn fresh_scans_a_query() {
-        let program = Program::of([WithProvenance::constructed(Statement::Query(Query::new(
-            Atom::new(name("qp"), [tvar("X")]),
-        )))]);
+        let program = Program::of([Query::new(Atom::new(name("qp"), [tvar("X")]))]);
         let mut fresh = Fresh::of(&program);
         assert_ne!(fresh.variable(), var("X"));
         assert_ne!(fresh.predicate("qp"), name("qp"));

@@ -8,16 +8,20 @@
 //! `compile_fail` doc example on `construct::not`, and on the aggregate coercion for
 //! a negated aggregate.
 
+use std::collections::BTreeSet;
+
 use themelios_program::construct::{maximize, minimize, not, not_not};
 use themelios_program::program::{
     Aggregate, AggregateFunction, Arguments, Atom, Body, BodyElement, Choice, ChoiceElement,
-    Comparison, Condition, ConditionalLiteral, DefaultNegation, Direction, Disjunction,
-    DisjunctionElement, Guard, Head, HeadAggregate, HeadAggregateElement, IntoBody, IntoHead,
-    Literal, LiteralInner, OptimizeElement, Program, Relation, Rule, SetAggregate, SetElement,
-    Statement, TheoryAtom, TheoryElement, TheoryTerm, WeakConstraint, weight,
+    Comparison, Condition, ConditionalLiteral, Const, DefaultNegation, Defined, Direction,
+    Disjunction, DisjunctionElement, Edge, External, Guard, Head, HeadAggregate,
+    HeadAggregateElement, Heuristic, Include, IncludeTarget, IntoBody, IntoHead, Literal,
+    LiteralInner, Optimize, OptimizeElement, Program, Project, Query, Relation, Rule, Script,
+    SetAggregate, SetElement, Show, Statement, TheoryAtom, TheoryDefinition, TheoryElement,
+    TheoryTerm, WeakConstraint, weight,
 };
-use themelios_program::provenance::WithProvenance;
-use themelios_program::symbol::{Name, Sign, Symbol, VarName};
+use themelios_program::provenance::{Origin, WithProvenance};
+use themelios_program::symbol::{Name, Sign, Signature, Symbol, VarName};
 use themelios_program::term::{BinaryOp, Term, UnaryOp, Variable};
 
 // ---- small helpers (the terse spellings are the macro tier's, §7.1) ----
@@ -456,7 +460,7 @@ fn the_one_element(rule: &Rule) -> &BodyElement {
 /// The rule as the ingest door admits it — deep-canonicalized (§5.1, §6.3): the public
 /// oracle for "already canonical".
 fn ingested(rule: &Rule) -> Rule {
-    let program = Program::of([WithProvenance::constructed(Statement::Rule(rule.clone()))]);
+    let program = Program::of([rule.clone()]);
     let mut statements = program.statements();
     let statement = statements.next().expect("one statement");
     assert!(statements.next().is_none(), "one statement");
@@ -787,7 +791,7 @@ fn reachability_through_the_surface() -> Program {
 
     let must_edge = Rule::constraint(not(Atom::new(name("edge"), [Term::from(1), Term::from(2)])));
 
-    program_of([edge_fact, reach_base, reach_step, step, must_edge])
+    Program::of([edge_fact, reach_base, reach_step, step, must_edge])
 }
 
 /// The same program assembled from the primitive constructors — explicitly built
@@ -852,11 +856,7 @@ fn reachability_through_the_primitives() -> Program {
         })]),
     );
 
-    program_of([edge_fact, reach_base, reach_step, step, must_edge])
-}
-
-fn program_of(rules: [Rule; 5]) -> Program {
-    Program::of(rules.map(|rule| WithProvenance::constructed(Statement::Rule(rule))))
+    Program::of([edge_fact, reach_base, reach_step, step, must_edge])
 }
 
 #[test]
@@ -868,5 +868,140 @@ fn the_two_audiences_converge_on_one_value() {
         "the declarative surface and the primitive constructors build one program",
     );
     // Both are canonical: ingesting the program's own statements changes nothing.
-    assert_eq!(declarative, Program::of(declarative.statements().cloned()));
+    assert_eq!(
+        declarative,
+        Program::of_nodes(declarative.statements().cloned())
+    );
+}
+
+// ---- The statement coercion class, and the bare assembly door (§4.2, §7.1) ----
+//
+// For every statement family `X`: `From<X> for Statement`, the variant wrapped as built
+// (canonicalization is the ingest door's, §6.3). `Program::of` takes bare values through
+// that class — a `Statement` itself by the reflexive `From` — mints a `Constructed` origin
+// for each, and routes them through the provenance door `Program::of_nodes`, so the one
+// ingest door canonicalizes and merges exactly as it does for a carried node.
+
+/// The nullary atom `p`.
+fn p() -> Atom {
+    Atom::constant(name("p"))
+}
+
+#[test]
+fn every_statement_family_coerces_to_its_variant() {
+    let rule = Rule::fact(p());
+    assert_eq!(Statement::from(rule.clone()), Statement::Rule(rule));
+
+    let weak = WeakConstraint::new(Body::empty(), weight(1), []);
+    assert_eq!(
+        Statement::from(weak.clone()),
+        Statement::WeakConstraint(weak)
+    );
+
+    let element = OptimizeElement::new(weight(1), [], Condition::empty());
+    let optimize = Optimize::new(Direction::Minimize, [element]);
+    assert_eq!(
+        Statement::from(optimize.clone()),
+        Statement::Optimize(optimize)
+    );
+
+    assert_eq!(Statement::from(Show::All), Statement::Show(Show::All));
+
+    let project = Project::atom_body(p(), Body::empty());
+    assert_eq!(
+        Statement::from(project.clone()),
+        Statement::Project(project)
+    );
+
+    let defined = Defined {
+        signature: Signature {
+            sign: Sign::Positive,
+            name: name("p"),
+            arity: 0,
+        },
+    };
+    assert_eq!(
+        Statement::from(defined.clone()),
+        Statement::Defined(defined)
+    );
+
+    let edge = Edge::new([(Term::from(1), Term::from(2))], Body::empty());
+    assert_eq!(Statement::from(edge.clone()), Statement::Edge(edge));
+
+    let heuristic = Heuristic::new(p(), Body::empty(), 1, None, Term::constant(name("sign")));
+    assert_eq!(
+        Statement::from(heuristic.clone()),
+        Statement::Heuristic(heuristic)
+    );
+
+    let external = External::new(p(), Body::empty(), None);
+    assert_eq!(
+        Statement::from(external.clone()),
+        Statement::External(external)
+    );
+
+    let constant = Const {
+        name: name("n"),
+        value: Term::from(1),
+        policy: None,
+    };
+    assert_eq!(
+        Statement::from(constant.clone()),
+        Statement::Const(constant)
+    );
+
+    let include = Include::new(IncludeTarget::Path("file.lp".to_owned()));
+    assert_eq!(
+        Statement::from(include.clone()),
+        Statement::Include(include)
+    );
+
+    let script = Script::new(name("python"), "pass");
+    assert_eq!(Statement::from(script.clone()), Statement::Script(script));
+
+    let theory = TheoryDefinition {
+        name: name("t"),
+        terms: BTreeSet::new(),
+        atoms: BTreeSet::new(),
+    };
+    assert_eq!(
+        Statement::from(theory.clone()),
+        Statement::TheoryDefinition(theory)
+    );
+
+    let query = Query::new(p());
+    assert_eq!(Statement::from(query.clone()), Statement::Query(query));
+}
+
+#[test]
+fn a_program_assembles_from_bare_rules() {
+    // No carrier and no variant at the element: the rules go in as written.
+    let program = Program::of([Rule::fact(p()), Rule::fact(Atom::constant(name("q")))]);
+    let admitted: Vec<&WithProvenance<Statement>> = program.base().statements().collect();
+    assert_eq!(admitted.len(), 2, "both rules join the base part");
+    for statement in admitted {
+        assert!(matches!(statement.get(), Statement::Rule(_)));
+        assert_eq!(
+            statement.provenance().origins().collect::<Vec<_>>(),
+            vec![&Origin::Constructed],
+            "the bare door mints a Constructed origin"
+        );
+    }
+}
+
+#[test]
+fn mixed_families_assemble_through_statement() {
+    // The collection is homogeneous, so two families meet at `Statement`.
+    let program = Program::of([Statement::from(Rule::fact(p())), Statement::from(Show::All)]);
+    assert_eq!(program.base().statements().count(), 2);
+    assert!(
+        program
+            .statements()
+            .any(|statement| matches!(statement.get(), Statement::Rule(_)))
+    );
+    assert!(
+        program
+            .statements()
+            .any(|statement| matches!(statement.get(), Statement::Show(Show::All)))
+    );
 }

@@ -17,7 +17,6 @@ use themelios_program::program::{
     Aggregate, AggregateFunction, Atom, BodyAggregateElement, BodyElement, Condition,
     DefaultNegation, FunctionAggregate, Guard, Literal, Program, Relation, Rule, Statement,
 };
-use themelios_program::provenance::WithProvenance;
 use themelios_program::symbol::{Name, Sign, Symbol, VarName};
 use themelios_program::term::{Term, Variable};
 
@@ -54,9 +53,7 @@ fn pos(text: &str, arity: u32) -> Signature {
 }
 
 fn graph_of(statements: impl IntoIterator<Item = Statement>) -> DependencyGraph {
-    DependencyGraph::of(&Program::of(
-        statements.into_iter().map(WithProvenance::constructed),
-    ))
+    DependencyGraph::of(&Program::of(statements))
 }
 
 // `[not] #count { X : predicate(X) } >= 1` as a body element.

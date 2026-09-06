@@ -60,7 +60,7 @@ fn pred1(text: &str, arg: &str) -> Atom {
 }
 
 fn program_of(statements: impl IntoIterator<Item = Statement>) -> Program {
-    Program::of(statements.into_iter().map(WithProvenance::constructed))
+    Program::of(statements)
 }
 
 fn analysis_of(statements: impl IntoIterator<Item = Statement>) -> Analysis {
@@ -773,7 +773,7 @@ proptest! {
         let analysis = Analysis::of(&program);
         prop_assert_eq!(analysis.constructs(), &Constructs::of(&program));
         for (construct, witness) in analysis.constructs().all() {
-            let witnessed = Constructs::of(&Program::of([witness]));
+            let witnessed = Constructs::of(&Program::of_nodes([witness]));
             prop_assert!(
                 witnessed.uses(construct),
                 "the witness statement bears the construct it is recorded for",

@@ -278,12 +278,11 @@ fn visit_descends_every_statement_and_head_shape() {
 #[test]
 fn a_query_is_visited_and_rewritten() {
     use themelios_program::program::Query;
-    use themelios_program::provenance::WithProvenance;
     use themelios_program::symbol::VarName;
 
     let variable = Term::Variable(Variable::Named(VarName::new("X").expect("valid")));
     let query = Statement::Query(Query::new(Atom::new(name("qp"), [variable])));
-    let program = Program::of([WithProvenance::constructed(query)]);
+    let program = Program::of([query]);
 
     // The visitor reaches the query's atom.
     let mut visitor = Signatures::default();
@@ -341,19 +340,17 @@ fn rewrite_rebuilds_a_multi_step_comparison() {
         Atom::new(name("mc"), [x()]),
         Body::new([BodyElement::Literal(literal)]),
     );
-    let program = Program::of([WithProvenance::constructed(Statement::Rule(rule))]);
+    let program = Program::of([rule]);
     assert_eq!(rewrite(program.clone(), &mut Identity), program);
 }
 
 /// A one-fact program `p(<term>).` built through the primitive door — for the depth law,
 /// where a term is too deep to spell.
 fn single_fact_program(argument: Term) -> Program {
-    use themelios_program::provenance::WithProvenance;
     let atom = Atom {
         sign: Sign::Positive,
         name: name("p"),
         arguments: Arguments::Single(vec![argument]),
     };
-    let rule = Rule::fact(atom);
-    Program::of([WithProvenance::constructed(Statement::Rule(rule))])
+    Program::of([Rule::fact(atom)])
 }

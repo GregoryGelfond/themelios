@@ -82,7 +82,7 @@ fn through_the_surface() -> Program {
     let edge_must_hold =
         Rule::constraint(not(Atom::new(name("edge"), [Term::from(1), Term::from(2)])));
 
-    program_of([
+    Program::of([
         edge,
         reach_from_edge,
         reach_transitively,
@@ -125,7 +125,7 @@ fn through_the_primitives() -> Program {
         })]),
     );
 
-    program_of([
+    Program::of([
         edge,
         reach_from_edge,
         reach_transitively,
@@ -285,10 +285,6 @@ fn push_atom_name<'a>(literal: &'a Literal, names: &mut Vec<&'a Name>) {
 // =====================================================================================
 // construction helpers (the estate's vocabulary, shared by first-solve)
 // =====================================================================================
-
-fn program_of(rules: [Rule; 5]) -> Program {
-    Program::of(rules.map(|rule| WithProvenance::constructed(Statement::Rule(rule))))
-}
 
 fn name(text: &str) -> Name {
     Name::new(text).expect("a valid identifier")

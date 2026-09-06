@@ -44,9 +44,8 @@ use std::thread;
 use themelios_syntax::dialect::Dialect;
 
 use themelios_program::program::{
-    Atom, Head, Program, Rule, Statement, TheoryAtom, TheoryElement, TheoryTerm,
+    Atom, Head, Program, Rule, TheoryAtom, TheoryElement, TheoryTerm,
 };
-use themelios_program::provenance::WithProvenance;
 use themelios_program::render::render;
 use themelios_program::symbol::{Name, Sign, Symbol, VarName};
 use themelios_program::term::{BinaryOp, Term, UnaryOp, Variable};
@@ -203,7 +202,7 @@ fn var(index: usize) -> Term {
 /// construction door (§5.1), then walked by `render`.
 fn fact_of(argument: Term) -> Program {
     let fact = Rule::fact(Atom::new(name("p"), [argument]));
-    Program::of([WithProvenance::constructed(Statement::Rule(fact))])
+    Program::of([fact])
 }
 
 /// A one-fact program whose head is the theory atom `&a { theory_term }.` — the door
@@ -211,7 +210,7 @@ fn fact_of(argument: Term) -> Program {
 fn theory_fact_of(term: TheoryTerm) -> Program {
     let atom = TheoryAtom::new(name("a"), [], [TheoryElement::new([term], None)], None);
     let fact = Rule::fact(Head::TheoryAtom(atom));
-    Program::of([WithProvenance::constructed(Statement::Rule(fact))])
+    Program::of([fact])
 }
 
 /// A deliberately recursive reference walk over a term — what a naive or compiler-derived

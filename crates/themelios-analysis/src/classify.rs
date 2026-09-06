@@ -8,7 +8,6 @@
 use std::collections::BTreeSet;
 
 use themelios_program::program::{Disjunction, Head, LiteralInner, Program, Statement};
-use themelios_program::provenance::WithProvenance;
 use themelios_program::symbol::Signature;
 use themelios_program::transform::unpool;
 
@@ -372,7 +371,7 @@ fn horn_of(program: &Program, normality: &Normality) -> HornKind {
 /// `Horn` for a rule the scan would count as negated (§6.1's error direction). A directive
 /// scanned here would show its negation, so only the rule is scanned.
 fn rule_has_negation(rule: &Rule) -> bool {
-    let program = Program::of([WithProvenance::constructed(Statement::Rule(rule.clone()))]);
+    let program = Program::of([rule.clone()]);
     let scan = Constructs::of(&program);
     scan.uses(Construct::DefaultNegation) || scan.uses(Construct::StrongNegation)
 }

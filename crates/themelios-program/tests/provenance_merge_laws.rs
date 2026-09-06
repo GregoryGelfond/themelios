@@ -36,7 +36,7 @@ fn origin(tag: &str) -> Provenance {
 fn content_equal_statements_from_distinct_origins_collapse_with_unioned_provenance() {
     let here = WithProvenance::new(fact("p"), origin("here"));
     let there = WithProvenance::new(fact("p"), origin("there"));
-    let program = Program::of([here, there]);
+    let program = Program::of_nodes([here, there]);
 
     let admitted: Vec<&WithProvenance<Statement>> = program.base().statements().collect();
     assert_eq!(
@@ -56,9 +56,29 @@ fn content_equal_statements_from_distinct_origins_collapse_with_unioned_provenan
 }
 
 #[test]
+fn content_equal_bare_statements_collapse_with_the_one_constructed_origin() {
+    // The bare door mints `Constructed` for each; the union of two equal origin facts is
+    // that one fact — the merge is idempotent (§6.2) — so the collapse leaves exactly it,
+    // through the same door the carried nodes above take.
+    let program = Program::of([fact("p"), fact("p")]);
+    let admitted: Vec<&WithProvenance<Statement>> = program.base().statements().collect();
+    assert_eq!(
+        admitted.len(),
+        1,
+        "the two content-equal statements collapse to one"
+    );
+    let origins: Vec<&Origin> = admitted[0].provenance().origins().collect();
+    assert_eq!(
+        origins,
+        vec![&Origin::Constructed],
+        "the union of two Constructed origins is the one Constructed fact"
+    );
+}
+
+#[test]
 fn a_single_statement_keeps_exactly_its_provenance() {
     let one = WithProvenance::new(fact("p"), origin("sole"));
-    let program = Program::of([one]);
+    let program = Program::of_nodes([one]);
     let admitted = program.base().statements().next().expect("one statement");
     let origins: Vec<&Origin> = admitted.provenance().origins().collect();
     assert_eq!(
@@ -71,6 +91,6 @@ fn a_single_statement_keeps_exactly_its_provenance() {
 fn distinct_statements_do_not_merge() {
     let p = WithProvenance::new(fact("p"), origin("a"));
     let q = WithProvenance::new(fact("q"), origin("b"));
-    let program = Program::of([p, q]);
+    let program = Program::of_nodes([p, q]);
     assert_eq!(program.base().statements().count(), 2);
 }

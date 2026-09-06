@@ -20,8 +20,7 @@ use themelios_syntax::dialect::Dialect;
 use themelios_syntax::parse::parse;
 
 use themelios_analysis::analysis::Analysis;
-use themelios_program::program::{Atom, IntoHead, Program, Statement};
-use themelios_program::provenance::WithProvenance;
+use themelios_program::program::{Atom, IntoHead, Program};
 use themelios_program::raise::raise;
 use themelios_program::symbol::Name;
 use themelios_program::term::Term;
@@ -169,9 +168,7 @@ fn the_crate_is_total_on_a_constructed_program_with_no_source_span() {
     let nullary = |text: &str| Atom::new(name(text), Vec::<Term>::new());
     let p_from_q = nullary("p").into_head().when(nullary("q"));
     let q_from_p = nullary("q").into_head().when(nullary("p"));
-    let program = Program::of(
-        [p_from_q, q_from_p].map(|rule| WithProvenance::constructed(Statement::Rule(rule))),
-    );
+    let program = Program::of([p_from_q, q_from_p]);
     let analysis = Analysis::of(&program);
     exercise_every_accessor(&analysis);
 }

@@ -62,9 +62,7 @@ fn assign(lhs: &str, rhs: Term) -> BodyElement {
 }
 
 fn safety_of(statements: impl IntoIterator<Item = Statement>) -> Safety {
-    Safety::of(&Program::of(
-        statements.into_iter().map(WithProvenance::constructed),
-    ))
+    Safety::of(&Program::of(statements))
 }
 
 fn unbound_of(rule: Rule) -> BTreeSet<Variable> {
@@ -1675,8 +1673,8 @@ fn finiteness_flags_external_borne_generation_growth() {
 
 #[test]
 fn finiteness_reads_structure_not_provenance() {
-    let constructed = Program::of([WithProvenance::constructed(growing_rule())]);
-    let tagged = Program::of([WithProvenance::new(
+    let constructed = Program::of([growing_rule()]);
+    let tagged = Program::of_nodes([WithProvenance::new(
         growing_rule(),
         Provenance::from(Origin::Transformed(TransformTag::new("t"))),
     )]);

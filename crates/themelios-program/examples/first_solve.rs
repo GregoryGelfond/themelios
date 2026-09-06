@@ -12,7 +12,7 @@
 use themelios_program::construct::not;
 use themelios_program::program::{
     Arguments, Atom, Body, BodyElement, DefaultNegation, Head, IntoHead, Literal, LiteralInner,
-    Program, Rule, Statement,
+    Program, Rule,
 };
 use themelios_program::provenance::WithProvenance;
 use themelios_program::symbol::{Name, Sign, Symbol, VarName};
@@ -64,7 +64,7 @@ fn through_the_surface() -> Program {
     let edge_must_hold =
         Rule::constraint(not(Atom::new(name("edge"), [Term::from(1), Term::from(2)])));
 
-    program_of([
+    Program::of([
         edge,
         reach_from_edge,
         reach_transitively,
@@ -108,7 +108,7 @@ fn through_the_primitives() -> Program {
         })]),
     );
 
-    program_of([
+    Program::of([
         edge,
         reach_from_edge,
         reach_transitively,
@@ -118,10 +118,6 @@ fn through_the_primitives() -> Program {
 }
 
 // ---- construction helpers ----
-
-fn program_of(rules: [Rule; 5]) -> Program {
-    Program::of(rules.map(|rule| WithProvenance::constructed(Statement::Rule(rule))))
-}
 
 fn name(text: &str) -> Name {
     Name::new(text).expect("a valid identifier")

@@ -15,8 +15,7 @@ use themelios_base::source::{Source, SourceId};
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::parse::parse;
 
-use themelios_program::program::{Atom, Program, Rule, Statement};
-use themelios_program::provenance::WithProvenance;
+use themelios_program::program::{Atom, Program, Rule};
 use themelios_program::raise::raise;
 use themelios_program::render::render;
 use themelios_program::symbol::{Name, Sign, Signature, Symbol, VarName};
@@ -80,7 +79,7 @@ fn fact_program() -> impl Strategy<Value = Program> {
     prop::collection::vec(
         ("[pqr]", prop::collection::vec(term(true), 1..3)).prop_map(|(name, arguments)| {
             let atom = Atom::new(Name::new(name).expect("a valid identifier"), arguments);
-            WithProvenance::constructed(Statement::Rule(Rule::fact(atom)))
+            Rule::fact(atom)
         }),
         1..4,
     )

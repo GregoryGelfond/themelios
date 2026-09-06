@@ -16,7 +16,6 @@ use themelios_program::program::{
     Condition, ConditionalLiteral, DefaultNegation, Disjunction, DisjunctionElement,
     FunctionAggregate, Guard, Head, Literal, Program, Relation, Rule, Statement,
 };
-use themelios_program::provenance::WithProvenance;
 use themelios_program::symbol::{Name, Sign, Symbol, VarName};
 use themelios_program::term::{Term, Variable};
 
@@ -61,9 +60,7 @@ fn neg(text: &str, arity: u32) -> Signature {
 }
 
 fn graph_of(statements: impl IntoIterator<Item = Statement>) -> DependencyGraph {
-    DependencyGraph::of(&Program::of(
-        statements.into_iter().map(WithProvenance::constructed),
-    ))
+    DependencyGraph::of(&Program::of(statements))
 }
 
 fn out(graph: &DependencyGraph, from: &Signature) -> BTreeSet<(DependencyKind, Signature)> {

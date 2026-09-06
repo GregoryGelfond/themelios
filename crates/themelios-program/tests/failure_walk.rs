@@ -20,7 +20,7 @@ use themelios_syntax::dialect::Dialect;
 use themelios_syntax::parse::parse;
 
 use themelios_program::program::{Atom, Program, Rule, Statement};
-use themelios_program::provenance::{TransformTag, WithProvenance};
+use themelios_program::provenance::TransformTag;
 use themelios_program::raise::raise;
 use themelios_program::render::{Unspellable, render};
 use themelios_program::symbol::{
@@ -63,7 +63,7 @@ fn atom(functor: &str, arguments: impl IntoIterator<Item = Term>) -> Atom {
     Atom::new(name(functor), arguments)
 }
 fn program_of(statement: Statement) -> Program {
-    Program::of([WithProvenance::constructed(statement)])
+    Program::of([statement])
 }
 
 // ---- the refusing doors of §15, one each, carrying the offending value ----

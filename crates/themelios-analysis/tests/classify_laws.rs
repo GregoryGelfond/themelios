@@ -62,7 +62,7 @@ fn pos(text: &str, arity: u32) -> Signature {
 }
 
 fn program_of(statements: impl IntoIterator<Item = Statement>) -> Program {
-    Program::of(statements.into_iter().map(WithProvenance::constructed))
+    Program::of(statements)
 }
 
 fn classes_of(statements: impl IntoIterator<Item = Statement>) -> Classes {

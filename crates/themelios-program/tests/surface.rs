@@ -10,11 +10,13 @@ use themelios_program::prelude::*;
 
 #[test]
 fn the_prelude_names_the_working_vocabulary_and_its_traits() {
-    // Types reached bare through the prelude glob, with no module path in sight.
-    let program: Program = Program::of([WithProvenance::constructed(Statement::Rule(Rule::fact(
-        Atom::constant(Name::new("p").expect("a valid identifier")),
-    )))]);
+    // Types reached bare through the prelude glob, with no module path in sight: the
+    // bare assembly door over a rule, and the provenance door over a carried node.
+    let fact = || Rule::fact(Atom::constant(Name::new("p").expect("a valid identifier")));
+    let program: Program = Program::of([fact()]);
     assert_eq!(program.statements().count(), 1);
+    let carried: WithProvenance<Statement> = WithProvenance::constructed(Statement::from(fact()));
+    assert_eq!(Program::of_nodes([carried]), program);
 
     // The conversion traits are in scope — the traits-first reason a prelude
     // exists — so `to_symbol`/`from_symbol` resolve as methods with no extra use.

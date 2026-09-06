@@ -98,8 +98,7 @@ fn a_constructed_negative_number_round_trips() {
     // A negative integer reaches a program only by construction — the raise reads `-5` as unary
     // minus of 5. render writes `-5`, and the reparse canonicalizes it back to `Number(-5)` (the
     // §5.1 numeral fold); before that fold the reparse was `UnaryOp(Negate, 5)`, and this failed.
-    use themelios_program::program::{Atom, Rule, Statement};
-    use themelios_program::provenance::WithProvenance;
+    use themelios_program::program::{Atom, Rule};
     use themelios_program::symbol::Name;
     use themelios_program::term::Term;
 
@@ -119,9 +118,7 @@ fn a_constructed_negative_number_round_trips() {
             ],
         );
         for atom in [flat, nested] {
-            let program = Program::of([WithProvenance::constructed(Statement::Rule(Rule::fact(
-                atom,
-            )))]);
+            let program = Program::of([Rule::fact(atom)]);
             constructed_round_trips(&program, Dialect::Clingo);
         }
     }

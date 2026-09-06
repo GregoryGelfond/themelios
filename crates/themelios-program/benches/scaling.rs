@@ -16,8 +16,7 @@ use criterion::{BenchmarkId, Criterion};
 
 use themelios_base::source::{Source, SourceId};
 
-use themelios_program::program::{Atom, PartKey, Program, Rule, Statement};
-use themelios_program::provenance::WithProvenance;
+use themelios_program::program::{Atom, PartKey, Program, Rule};
 use themelios_program::raise::raise;
 use themelios_program::render::render;
 use themelios_program::symbol::{Name, Sign, Symbol, VarName};
@@ -60,7 +59,7 @@ fn deep_program(depth: usize) -> Program {
         Atom::constant(name("q")),
         Atom::new(name("p"), [deep_term(depth)]),
     );
-    Program::of([WithProvenance::constructed(Statement::Rule(rule))])
+    Program::of([rule])
 }
 
 const DEPTHS: [usize; 5] = [1_000, 2_000, 4_000, 8_000, 16_000];

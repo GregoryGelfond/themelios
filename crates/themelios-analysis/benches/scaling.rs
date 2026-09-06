@@ -17,7 +17,7 @@ use themelios_analysis::depend::DependencyGraph;
 use themelios_analysis::safe::Safety;
 use themelios_program::program::{
     Atom, BodyElement, Comparison, Condition, DefaultNegation, Disjunction, DisjunctionElement,
-    Head, Literal, LiteralInner, Program, Relation, Rule, Statement,
+    Head, Literal, LiteralInner, Program, Relation, Rule,
 };
 use themelios_program::provenance::WithProvenance;
 use themelios_program::symbol::{Name, Symbol, VarName};
@@ -35,11 +35,11 @@ fn variable(i: usize) -> Term {
     ))
 }
 
-fn edge(head: usize, body: usize) -> WithProvenance<Statement> {
-    WithProvenance::constructed(Statement::Rule(Rule::new(
+fn edge(head: usize, body: usize) -> Rule {
+    Rule::new(
         Atom::constant(name(&format!("p{head}"))),
         Atom::constant(name(&format!("p{body}"))),
-    )))
+    )
 }
 
 /// A chain `p0 :- p1. … p_{n-1} :- p_n.` — a deep acyclic dependency graph.
@@ -73,9 +73,7 @@ fn assignment_chain(n: usize) -> Program {
         ));
     }
     let head = Atom::new(name("p"), [variable(n)]);
-    Program::of([WithProvenance::constructed(Statement::Rule(Rule::new(
-        head, body,
-    )))])
+    Program::of([Rule::new(head, body)])
 }
 
 /// The decomposition (`DependencyGraph::of`, the walk and the iterative Tarjan) over a
@@ -116,14 +114,11 @@ fn disjunctive_over_cycle(n: usize) -> Program {
     let elements =
         (0..n).map(|i| DisjunctionElement::new(Literal::from(constant(i)), Condition::empty()));
     let head = Head::Disjunction(Disjunction::new(elements)).when(Atom::constant(name("q")));
-    let mut statements = vec![WithProvenance::constructed(Statement::Rule(head))];
+    let mut rules = vec![head];
     for i in 0..n {
-        statements.push(WithProvenance::constructed(Statement::Rule(Rule::new(
-            constant(i),
-            constant((i + 1) % n),
-        ))));
+        rules.push(Rule::new(constant(i), constant((i + 1) % n)));
     }
-    Program::of(statements)
+    Program::of(rules)
 }
 
 /// The classification (`Classes::of`) over a large disjunctive head sharing a positive

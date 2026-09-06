@@ -42,7 +42,7 @@ fn name(text: &str) -> Name {
 
 /// A one-statement program, for a directly-built value the laws pin.
 fn program_of(statement: Statement) -> Program {
-    Program::of([WithProvenance::constructed(statement)])
+    Program::of([statement])
 }
 
 // ---- the laws ----
@@ -89,7 +89,7 @@ fn documented_rendering_round_trips_a_constructed_documentation() {
     // rendered with its docs and re-raised, carries the same documentation on the same
     // statement — the doc survives the round-trip, which the canonical `render`, dropping
     // provenance, could not witness.
-    let documented = Program::of([WithProvenance::new(
+    let documented = Program::of_nodes([WithProvenance::new(
         Statement::Rule(Rule::fact(Atom::constant(name("reachable")))),
         Provenance::from(Origin::Constructed).with_doc("the reachable base case"),
     )]);

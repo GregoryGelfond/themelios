@@ -11,9 +11,11 @@ use themelios_analysis::prelude::*;
 fn the_prelude_names_analysis_and_program_vocabulary_in_one_import() {
     // Built entirely from names the analysis prelude brought in through the
     // program-prelude glob — no `themelios_program` import appears in this file.
-    let program: Program = Program::of([WithProvenance::constructed(Statement::Rule(Rule::fact(
-        Atom::constant(Name::new("p").expect("a valid identifier")),
-    )))]);
+    let program: Program = Program::of([Rule::fact(Atom::constant(
+        Name::new("p").expect("a valid identifier"),
+    ))]);
+    let admitted: &WithProvenance<Statement> = program.statements().next().expect("one statement");
+    assert!(matches!(admitted.get(), Statement::Rule(_)));
 
     // The single analysis door and each facet reading, named bare.
     let analysis: Analysis = Analysis::of(&program);

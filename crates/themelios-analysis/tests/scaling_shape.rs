@@ -77,11 +77,11 @@ fn name(text: &str) -> Name {
 }
 
 /// The rule `p<head> :- p<body>.` — one dependency edge.
-fn edge(head: usize, body: usize) -> WithProvenance<Statement> {
-    WithProvenance::constructed(Statement::Rule(Rule::new(
+fn edge(head: usize, body: usize) -> Rule {
+    Rule::new(
         Atom::constant(name(&format!("p{head}"))),
         Atom::constant(name(&format!("p{body}"))),
-    )))
+    )
 }
 
 /// A chain `p0 :- p1. … p_{n-1} :- p_n.` — `n` edges, `n + 1` predicates, an acyclic
@@ -133,9 +133,7 @@ fn equality_chain(n: usize) -> Program {
             ))),
         }));
     }
-    Program::of([WithProvenance::constructed(Statement::Rule(Rule::new(
-        head, body,
-    )))])
+    Program::of([Rule::new(head, body)])
 }
 
 /// One rule with an `n`-way disjunctive head over `n` self-loops:
@@ -158,11 +156,7 @@ fn wide_head_over_self_loops(n: usize) -> Program {
             Atom::constant(name(&format!("p{i}"))),
         ))
     });
-    Program::of(
-        std::iter::once(wide)
-            .chain(loops)
-            .map(WithProvenance::constructed),
-    )
+    Program::of(std::iter::once(wide).chain(loops))
 }
 
 /// A cycle of `n` predicates each carrying a variable — `p0(X) :- p1(X). … p_{n-1}(X) :- p0(X).`
@@ -178,10 +172,10 @@ fn giant_recursive_component(n: usize) -> Program {
         VarName::new("X").expect("a valid variable"),
     ));
     Program::of((0..n).map(|i| {
-        WithProvenance::constructed(Statement::Rule(Rule::new(
+        Rule::new(
             Atom::new(name(&format!("p{i}")), [var.clone()]),
             Atom::new(name(&format!("p{}", (i + 1) % n)), [var.clone()]),
-        )))
+        )
     }))
 }
 
@@ -217,9 +211,7 @@ fn deepening_chain(n: usize) -> Program {
             ))),
         }));
     }
-    Program::of([WithProvenance::constructed(Statement::Rule(Rule::new(
-        head, body,
-    )))])
+    Program::of([Rule::new(head, body)])
 }
 
 /// One rule `result :- f(X1, …, Xn) = #sum { 1 : q1;  …;  1 : qn }.` — a compound aggregate guard
@@ -248,10 +240,7 @@ fn aggregate_guard_fan_out(n: usize) -> Program {
             None,
         )),
     };
-    Program::of([WithProvenance::constructed(Statement::Rule(Rule::new(
-        Atom::constant(name("result")),
-        vec![aggregate],
-    )))])
+    Program::of([Rule::new(Atom::constant(name("result")), vec![aggregate])])
 }
 
 /// One rule `h :- b(X1), …, b(Xn), #count { 1 : c1;  …;  1 : cn }.` — `n` global binders and an
@@ -276,10 +265,7 @@ fn many_local_scopes(n: usize) -> Program {
             None,
         )),
     });
-    Program::of([WithProvenance::constructed(Statement::Rule(Rule::new(
-        Atom::constant(name("h")),
-        body,
-    )))])
+    Program::of([Rule::new(Atom::constant(name("h")), body)])
 }
 
 /// One rule `result :- p0(Y), …, p_{n-1}(Y), Z1 = f(Y), Z2 = f(Z1), …, Zn = f(Z_{n-1}).` — `n`
@@ -312,10 +298,7 @@ fn many_carriers_over_a_shared_chain(n: usize) -> Program {
             ))),
         }));
     }
-    Program::of([WithProvenance::constructed(Statement::Rule(Rule::new(
-        Atom::constant(name("result")),
-        body,
-    )))])
+    Program::of([Rule::new(Atom::constant(name("result")), body)])
 }
 
 /// One rule `q(X0, …, X_{n-1}) :- q(W, …, W), X0 = f(X1), …, X_{n-1} = f(Xn).` — a recursive `q/n`
@@ -346,9 +329,7 @@ fn dead_chain_wide_head(n: usize) -> Program {
             ))),
         }));
     }
-    Program::of([WithProvenance::constructed(Statement::Rule(Rule::new(
-        head, body,
-    )))])
+    Program::of([Rule::new(head, body)])
 }
 
 #[test]

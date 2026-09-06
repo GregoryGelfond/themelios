@@ -42,7 +42,7 @@ fn boolean(inner: LiteralInner, negation: DefaultNegation) -> Head {
 }
 
 fn program_of(rule: Rule) -> Program {
-    Program::of([WithProvenance::constructed(Statement::Rule(rule))])
+    Program::of([rule])
 }
 
 #[test]
@@ -83,14 +83,14 @@ fn a_negated_boolean_head_is_kept_as_its_literal() {
 fn equality_is_strictly_finer_than_ordinary_equivalence() {
     // `{ p :- q.  q :- p. }` and the empty program share the single answer set ∅ — they
     // are ordinarily, indeed strongly, equivalent — yet their canonical forms differ.
-    let p_from_q = WithProvenance::constructed(Statement::Rule(Rule::new(
+    let p_from_q = Rule::new(
         positive(atom("p")),
         Body::new([BodyElement::Literal(positive(atom("q")))]),
-    )));
-    let q_from_p = WithProvenance::constructed(Statement::Rule(Rule::new(
+    );
+    let q_from_p = Rule::new(
         positive(atom("q")),
         Body::new([BodyElement::Literal(positive(atom("p")))]),
-    )));
+    );
     let cyclic = Program::of([p_from_q, q_from_p]);
     let empty = Program::default();
     assert_ne!(cyclic, empty);
@@ -149,6 +149,6 @@ fn canonicalization_is_idempotent() {
         .expect("one statement")
         .get()
         .clone();
-    let twice = Program::of([WithProvenance::constructed(canonical)]);
+    let twice = Program::of([canonical]);
     assert_eq!(once, twice);
 }

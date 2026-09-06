@@ -4,8 +4,7 @@
 //! **forced** occurs check sound by construction, and `rename_apart` as the caller's
 //! standardize-apart step (§9.2, §11.1).
 
-use themelios_program::program::{Atom, Program, Rule, Statement};
-use themelios_program::provenance::WithProvenance;
+use themelios_program::program::{Atom, Program, Rule};
 use themelios_program::symbol::{Name, Sign, Symbol, VarName};
 use themelios_program::term::{Term, Variable};
 use themelios_program::unify::{Fresh, Substitution, mgu, rename_apart};
@@ -62,11 +61,7 @@ fn unifier(a: &Atom, b: &Atom) -> Substitution {
 /// A source of fresh names seeded over a program carrying the given atoms as facts, so
 /// `rename_apart` — which draws from it (§9.2) — mints variables free of theirs.
 fn fresh_over(atoms: impl IntoIterator<Item = Atom>) -> Fresh {
-    let program = Program::of(
-        atoms
-            .into_iter()
-            .map(|a| WithProvenance::constructed(Statement::Rule(Rule::fact(a)))),
-    );
+    let program = Program::of(atoms.into_iter().map(Rule::fact));
     Fresh::of(&program)
 }
 

@@ -55,12 +55,8 @@ fn comparison_literal(first: Term, relation: Relation, second: Term) -> Literal 
     }
 }
 
-fn wp(statement: Statement) -> WithProvenance<Statement> {
-    WithProvenance::constructed(statement)
-}
-
 fn scan_of(statements: impl IntoIterator<Item = Statement>) -> Constructs {
-    Constructs::of(&Program::of(statements.into_iter().map(wp)))
+    Constructs::of(&Program::of(statements))
 }
 
 #[test]
@@ -310,7 +306,7 @@ fn a_construct_that_does_not_occur_is_not_flagged() {
 fn all_reports_exactly_the_used_constructs() {
     let table = one_of_each();
     let all: BTreeSet<Construct> = table.iter().map(|(construct, _)| *construct).collect();
-    let scan = Constructs::of(&Program::of(table.iter().map(|(_, s)| wp(s.clone()))));
+    let scan = Constructs::of(&Program::of(table.iter().map(|(_, s)| s.clone())));
 
     let reported: BTreeSet<Construct> = scan.all().map(|(construct, _)| construct).collect();
     assert_eq!(reported, all, "all() reports exactly the used constructs");
@@ -320,7 +316,7 @@ fn all_reports_exactly_the_used_constructs() {
 fn first_names_a_statement_that_uses_the_construct() {
     let table = one_of_each();
     let all: BTreeSet<Construct> = table.iter().map(|(construct, _)| *construct).collect();
-    let scan = Constructs::of(&Program::of(table.iter().map(|(_, s)| wp(s.clone()))));
+    let scan = Constructs::of(&Program::of(table.iter().map(|(_, s)| s.clone())));
 
     // Every first() names a statement that genuinely uses that construct — re-scanning
     // the witness alone re-flags it.
@@ -328,7 +324,7 @@ fn first_names_a_statement_that_uses_the_construct() {
         let witness = scan
             .first(*construct)
             .expect("a used construct has a first witness");
-        let rescanned = Constructs::of(&Program::of([witness]));
+        let rescanned = Constructs::of(&Program::of_nodes([witness]));
         assert!(
             rescanned.uses(*construct),
             "the witness recorded for {construct:?} uses it",
@@ -356,14 +352,14 @@ fn the_scan_is_provenance_blind() {
     let contents: Vec<Statement> = one_of_each().into_iter().map(|(_, s)| s).collect();
 
     let with_tag = |tag: &'static str| {
-        Program::of(contents.iter().cloned().map(move |statement| {
+        Program::of_nodes(contents.iter().cloned().map(move |statement| {
             WithProvenance::new(
                 statement,
                 Provenance::from(Origin::Transformed(TransformTag::new(tag))),
             )
         }))
     };
-    let constructed = Program::of(contents.iter().cloned().map(wp));
+    let constructed = Program::of(contents.iter().cloned());
     let tagged_x = with_tag("x");
     let tagged_y = with_tag("y");
 
@@ -416,7 +412,7 @@ fn the_scan_is_total_on_any_program() {
     );
 
     // Every construct at once.
-    let sink = Constructs::of(&Program::of(one_of_each().into_iter().map(|(_, s)| wp(s))));
+    let sink = Constructs::of(&Program::of(one_of_each().into_iter().map(|(_, s)| s)));
     assert_eq!(
         sink.all().count(),
         17,

@@ -109,7 +109,7 @@ fn program_equality_is_canonical_form_equality_up_to_provenance() {
         )),
     );
     // Same rule, different provenance: the two programs are equal.
-    assert_eq!(Program::of([here]), Program::of([there]));
+    assert_eq!(Program::of_nodes([here]), Program::of_nodes([there]));
 }
 
 #[test]
@@ -140,17 +140,14 @@ fn the_ingest_canonicalizes_the_terms_it_admits() {
     // The two rules differ before the door — the raw one is not canonical.
     assert_ne!(raw, collapsed);
     // After the door, the programs are equal.
-    let raw_program = Program::of([WithProvenance::constructed(Statement::Rule(raw))]);
-    let collapsed_program = Program::of([WithProvenance::constructed(Statement::Rule(collapsed))]);
+    let raw_program = Program::of([raw]);
+    let collapsed_program = Program::of([collapsed]);
     assert_eq!(raw_program, collapsed_program);
 }
 
 #[test]
 fn the_base_part_is_always_present_and_holds_the_admitted_statements() {
-    let program = Program::of([WithProvenance::constructed(Statement::Rule(Rule::new(
-        positive(atom("p", vec![])),
-        Body::empty(),
-    )))]);
+    let program = Program::of([Rule::new(positive(atom("p", vec![])), Body::empty())]);
     assert_eq!(program.base().statements().count(), 1);
     assert_eq!(program.statements().count(), 1);
 }
@@ -230,8 +227,28 @@ fn the_empty_program_has_a_present_empty_base_and_one_form() {
     // base() is total on the default program — no panic (§4.1).
     assert_eq!(empty.base().statements().count(), 0);
     assert!(empty.statements().next().is_none());
-    // default() and of([]) denote the one empty program.
-    assert_eq!(empty, Program::of([]));
+    // default() and of over no statements denote the one empty program.
+    assert_eq!(empty, Program::of(Vec::<Statement>::new()));
+}
+
+#[test]
+fn the_bare_door_is_the_provenance_door_over_a_constructed_wrap() {
+    // `of` over a bare statement is exactly `of_nodes` over that statement under a
+    // `Constructed` origin — one door behind two spellings, so the ingest's
+    // canonicalization and merge are the same on either.
+    let rule = || Rule::new(positive(atom("p", vec![])), Body::empty());
+    let bare = Program::of([Statement::Rule(rule())]);
+    let carried = Program::of_nodes([WithProvenance::constructed(Statement::Rule(rule()))]);
+    assert_eq!(bare, carried);
+    // Program equality erases provenance (§6.2); the admitted nodes agree on it as well.
+    let origins = |program: &Program| -> Vec<Origin> {
+        program
+            .statements()
+            .flat_map(|statement| statement.provenance().origins().cloned())
+            .collect()
+    };
+    assert_eq!(origins(&bare), origins(&carried));
+    assert_eq!(origins(&bare), vec![Origin::Constructed]);
 }
 
 #[test]

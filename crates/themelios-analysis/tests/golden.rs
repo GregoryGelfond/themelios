@@ -24,7 +24,6 @@ use themelios_analysis::classify::{HornKind, Normality, Stratification, Verdict}
 use themelios_analysis::depend::{Component, Signature};
 use themelios_base::source::{Source, SourceId};
 use themelios_program::program::{Program, Rule, Statement};
-use themelios_program::provenance::WithProvenance;
 use themelios_program::raise::raise;
 use themelios_program::render::render;
 use themelios_program::symbol::Sign;
@@ -87,7 +86,7 @@ fn variable(variable: &Variable) -> String {
 /// provenance-blind. The witness is placed alone in a program and rendered; a value
 /// the dialect cannot spell (§11 of the program design) is named rather than panicked.
 fn render_statement(statement: Statement) -> String {
-    let program = Program::of([WithProvenance::constructed(statement)]);
+    let program = Program::of([statement]);
     render(&program, Dialect::Clingo)
         .unwrap_or_else(|refusal| format!("<unspellable: {refusal}>"))
         .trim_end()

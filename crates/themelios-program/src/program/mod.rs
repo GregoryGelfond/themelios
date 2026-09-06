@@ -72,6 +72,112 @@ pub enum Statement {
     Query(Query),
 }
 
+// ---- The statement coercion class closes by a rule (§4.2, §7.1) ----
+//
+// For every statement family `X`: `From<X> for Statement`, its variant wrapped as built.
+// No pass runs here — canonicalization is the ingest door's (§6.3) — so each is O(1) and
+// total. These are the intended construction path for a downstream that must not name
+// the variants of a `#[non_exhaustive]` sum, and the class `Program::of` admits: a
+// `Statement` itself passes by the reflexive `From`, so mixed families meet there.
+
+impl From<Rule> for Statement {
+    /// A rule is a statement (§4.2).
+    fn from(rule: Rule) -> Statement {
+        Statement::Rule(rule)
+    }
+}
+
+impl From<WeakConstraint> for Statement {
+    /// A weak constraint is a statement (§4.2).
+    fn from(weak: WeakConstraint) -> Statement {
+        Statement::WeakConstraint(weak)
+    }
+}
+
+impl From<Optimize> for Statement {
+    /// An optimization statement is a statement (§4.2).
+    fn from(optimize: Optimize) -> Statement {
+        Statement::Optimize(optimize)
+    }
+}
+
+impl From<Show> for Statement {
+    /// A `#show` is a statement (§4.2).
+    fn from(show: Show) -> Statement {
+        Statement::Show(show)
+    }
+}
+
+impl From<Project> for Statement {
+    /// A `#project` is a statement (§4.2).
+    fn from(project: Project) -> Statement {
+        Statement::Project(project)
+    }
+}
+
+impl From<Defined> for Statement {
+    /// A `#defined` is a statement (§4.2).
+    fn from(defined: Defined) -> Statement {
+        Statement::Defined(defined)
+    }
+}
+
+impl From<Edge> for Statement {
+    /// An `#edge` is a statement (§4.2).
+    fn from(edge: Edge) -> Statement {
+        Statement::Edge(edge)
+    }
+}
+
+impl From<Heuristic> for Statement {
+    /// A `#heuristic` is a statement (§4.2).
+    fn from(heuristic: Heuristic) -> Statement {
+        Statement::Heuristic(heuristic)
+    }
+}
+
+impl From<External> for Statement {
+    /// An `#external` is a statement (§4.2).
+    fn from(external: External) -> Statement {
+        Statement::External(external)
+    }
+}
+
+impl From<Const> for Statement {
+    /// A `#const` is a statement (§4.2).
+    fn from(constant: Const) -> Statement {
+        Statement::Const(constant)
+    }
+}
+
+impl From<Include> for Statement {
+    /// An `#include` is a statement (§4.2), parsed and never resolved (§4.8).
+    fn from(include: Include) -> Statement {
+        Statement::Include(include)
+    }
+}
+
+impl From<Script> for Statement {
+    /// A `#script` is a statement (§4.2), carried opaque and never run (§4.8).
+    fn from(script: Script) -> Statement {
+        Statement::Script(script)
+    }
+}
+
+impl From<TheoryDefinition> for Statement {
+    /// A `#theory` definition is a statement (§4.2).
+    fn from(definition: TheoryDefinition) -> Statement {
+        Statement::TheoryDefinition(definition)
+    }
+}
+
+impl From<Query> for Statement {
+    /// An ASP-Core-2 query is a statement (§4.2, grammar §6.1).
+    fn from(query: Query) -> Statement {
+        Statement::Query(query)
+    }
+}
+
 /// An ASP-Core-2 query (grammar §6.1): the queried atom — the class of forms a program
 /// position holds, so it belongs to the statement enum (§4.2).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -138,7 +244,8 @@ impl Part {
 
 /// A part-structured set of statements, giving cheap part-wise access for multi-shot use
 /// (§4.1). `base` is the implicit default part, always present — seeded at construction
-/// (`Default` and every `of`), so `base` is total and the empty program has one form.
+/// (`Default`, `of`, and `of_nodes`), so `base` is total and the empty program has one
+/// form.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Program {
     parts: BTreeMap<PartKey, Part>,
@@ -162,12 +269,38 @@ impl Default for Program {
 }
 
 impl Program {
-    /// Build a program by admitting statements into the base part through the one ingest
-    /// door (§6.3): each is canonicalized and merged with any content-equal statement
-    /// already present. The design leaves the program's public constructor to the
-    /// construction surface (§7) and the raise (§8); this names the door they build on.
-    /// `Program::of([])` is the empty program, equal to `Program::default()`.
-    pub fn of(statements: impl IntoIterator<Item = WithProvenance<Statement>>) -> Program {
+    /// Build a program from bare statements (§7.1): each value becomes a [`Statement`]
+    /// through its `From` — a `Statement` itself by the reflexive one — is given a
+    /// `Constructed` origin (§6.2), and is admitted into the base part through
+    /// [`of_nodes`](Program::of_nodes), so the one ingest door (§6.3) canonicalizes it
+    /// and merges it with any content-equal statement already present. The collection
+    /// is homogeneous: two families meet at `Statement::from`. `of` over no statements
+    /// is the empty program, equal to `Program::default()`.
+    ///
+    /// ```
+    /// use themelios_program::prelude::*;
+    ///
+    /// let p = Rule::fact(Atom::constant(Name::new("p").expect("a valid identifier")));
+    /// let q = Rule::fact(Atom::constant(Name::new("q").expect("a valid identifier")));
+    /// let program = Program::of([p, q]);
+    /// assert_eq!(program.base().statements().count(), 2);
+    /// ```
+    pub fn of(statements: impl IntoIterator<Item = impl Into<Statement>>) -> Program {
+        Program::of_nodes(
+            statements
+                .into_iter()
+                .map(|statement| WithProvenance::constructed(statement.into())),
+        )
+    }
+
+    /// Build a program from statements that carry their provenance — the public door for
+    /// a caller holding a `Parsed` or `Transformed` origin (§6.2), which the bare
+    /// [`of`](Program::of) would replace with a fresh `Constructed` one. Each is admitted
+    /// into the base part through the one ingest door (§6.3): canonicalized, and merged
+    /// with any content-equal statement already present, the provenances unioned. The
+    /// design leaves the program's public constructor to the construction surface (§7)
+    /// and the raise (§8); this names the door they build on.
+    pub fn of_nodes(statements: impl IntoIterator<Item = WithProvenance<Statement>>) -> Program {
         let mut program = Program::default();
         let base = program
             .parts
@@ -218,7 +351,8 @@ impl Program {
     /// opening the part with its first statement when it is not yet present — the
     /// part-structured door the raise lifts a `#program` delimiter into (§4.1, §8).
     /// `base` is seeded at construction; every other part is opened by a statement
-    /// joining it. Crate-internal: the public doors are `of` (§7) and the raise (§8).
+    /// joining it. Crate-internal: the public doors are `of` and `of_nodes` (§7) and the
+    /// raise (§8).
     pub(crate) fn ingest_into(&mut self, key: PartKey, statement: WithProvenance<Statement>) {
         let part = self.parts.entry(key.clone()).or_insert_with(|| Part {
             key,

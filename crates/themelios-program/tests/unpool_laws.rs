@@ -34,11 +34,7 @@ fn num(n: i32) -> Term {
     Term::Symbolic(Symbol::Number(n))
 }
 fn program_of(rules: impl IntoIterator<Item = Rule>) -> Program {
-    Program::of(
-        rules
-            .into_iter()
-            .map(|r| WithProvenance::constructed(Statement::Rule(r))),
-    )
+    Program::of(rules)
 }
 /// `head :- body.` with a nullary head predicate.
 fn rule(head: &str, body: Vec<BodyElement>) -> Rule {
@@ -67,7 +63,7 @@ fn disjunctive_rule(elements: Vec<DisjunctionElement>) -> Rule {
     Rule::new(Head::Disjunction(Disjunction::new(elements)), Body::empty())
 }
 fn program_of_statements(statements: impl IntoIterator<Item = Statement>) -> Program {
-    Program::of(statements.into_iter().map(WithProvenance::constructed))
+    Program::of(statements)
 }
 /// A function application `f(args)`.
 fn func(f: &str, arguments: Vec<Term>) -> Term {
