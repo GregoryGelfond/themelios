@@ -541,6 +541,174 @@ fn the_operator_doors_yield_the_deep_canonical_form() {
     assert_eq!(x() + 1, sum.canonicalize());
 }
 
+// ---- The value constructors (§7.1): total, canonical by the one-level step (§5.1, §7.2) ----
+
+fn name(text: &str) -> Name {
+    Name::new(text).expect("a valid identifier")
+}
+
+fn var_name(text: &str) -> VarName {
+    VarName::new(text).expect("a valid variable name")
+}
+
+#[test]
+fn a_function_through_the_constructor_collapses_exactly_when_ground() {
+    // `Term::function` canonicalizes one level at the door (§5.1, §7.1): all-ground arguments
+    // collapse the application to its symbol, a term-position functor bearing no strong sign
+    // (§3.3); one variable argument keeps it a `Term::Function`.
+    assert_eq!(
+        Term::function(name("f"), [Term::from(1)]),
+        Term::Symbolic(Symbol::Function {
+            name: name("f"),
+            arguments: vec![Symbol::Number(1)],
+            sign: Sign::Positive,
+        })
+    );
+    assert_eq!(
+        Term::function(name("f"), [Term::variable(var_name("X"))]),
+        Term::Function {
+            name: name("f"),
+            arguments: vec![Term::Variable(Variable::Named(var_name("X")))],
+        }
+    );
+}
+
+#[test]
+fn a_constant_is_the_collapsed_empty_argument_function() {
+    // A constant is the empty-argument function (§3.1), and a nullary ground function collapses
+    // to its symbol (§5.1), so `Term::constant` is that symbol directly — never the raw
+    // `Term::Function` over no arguments, the non-canonical spelling — and is exactly
+    // `Term::function` over no arguments.
+    let constant = Term::constant(name("c"));
+    assert_eq!(
+        constant,
+        Term::Symbolic(Symbol::Function {
+            name: name("c"),
+            arguments: Vec::new(),
+            sign: Sign::Positive,
+        })
+    );
+    assert_eq!(constant, Term::function(name("c"), []));
+}
+
+#[test]
+fn the_variable_constructors_build_the_variable_leaves() {
+    // A leaf is canonical by construction (§5.1), so `variable` and `anonymous` build it directly.
+    assert_eq!(
+        Term::variable(var_name("X")),
+        Term::Variable(Variable::Named(var_name("X")))
+    );
+    assert_eq!(Term::anonymous(), Term::Variable(Variable::Anonymous));
+}
+
+#[test]
+fn a_tuple_through_the_constructor_collapses_exactly_when_ground() {
+    // As `function` (§5.1): all-ground elements collapse to the tuple symbol — the empty tuple
+    // included, ground over no elements — and one variable element keeps it a `Term::Tuple`.
+    assert_eq!(
+        Term::tuple([Term::from(1), Term::from(2)]),
+        Term::Symbolic(Symbol::Tuple(vec![Symbol::Number(1), Symbol::Number(2)]))
+    );
+    assert_eq!(Term::tuple([]), Term::Symbolic(Symbol::Tuple(Vec::new())));
+    assert_eq!(
+        Term::tuple([Term::variable(var_name("X"))]),
+        Term::Tuple(vec![Term::Variable(Variable::Named(var_name("X")))])
+    );
+}
+
+#[test]
+fn constructors_composed_bottom_up_yield_the_deep_canonical_form() {
+    // Each constructor assumes canonical children (§7.2), and a value built through the
+    // constructors has them at every step, so a nest composed bottom-up is the very value the
+    // deep pass yields over the same raw term: a ground nest collapses maximally to one symbol;
+    // a variable at the bottom keeps every application above it a `Term::Function`; a tuple over
+    // a collapsed function and a variable is the same twin.
+    let x = || Term::variable(var_name("X"));
+    let raw_nest = |bottom: Term| Term::Function {
+        name: name("f"),
+        arguments: vec![Term::Function {
+            name: name("g"),
+            arguments: vec![bottom],
+        }],
+    };
+    let built_nest =
+        |bottom: Term| Term::function(name("f"), [Term::function(name("g"), [bottom])]);
+    assert_eq!(
+        built_nest(Term::from(1)),
+        raw_nest(Term::from(1)).canonicalize()
+    );
+    assert!(matches!(built_nest(Term::from(1)), Term::Symbolic(_)));
+    assert_eq!(built_nest(x()), raw_nest(x()).canonicalize());
+    assert!(matches!(built_nest(x()), Term::Function { .. }));
+    let raw_tuple = Term::Tuple(vec![
+        Term::Function {
+            name: name("f"),
+            arguments: vec![Term::from(1)],
+        },
+        x(),
+    ]);
+    assert_eq!(
+        Term::tuple([Term::function(name("f"), [Term::from(1)]), x()]),
+        raw_tuple.canonicalize()
+    );
+}
+
+#[test]
+fn every_value_constructor_yields_a_canonical_value() {
+    // Canonical is a fixed point of the deep pass (§5.1): each constructor's value, the folding
+    // and the kept branch of each rule both, is unchanged by `canonicalize`.
+    let x = || Term::variable(var_name("X"));
+    let values = [
+        Term::function(name("f"), [Term::from(1)]),
+        Term::function(name("f"), [x()]),
+        Term::constant(name("c")),
+        x(),
+        Term::anonymous(),
+        Term::tuple([Term::from(1), Term::from(2)]),
+        Term::tuple([x()]),
+    ];
+    for value in values {
+        assert_eq!(
+            value.clone().canonicalize(),
+            value,
+            "{value:?} is a fixed point of the deep pass"
+        );
+    }
+}
+
+#[test]
+fn a_value_constructor_keeps_a_raw_child_for_the_deep_pass_to_repair() {
+    // The ruled semantic (§7.2): a constructor canonicalizes one level and does not descend, so a
+    // raw non-canonical child a caller hand-builds — a ground `g(1)` never collapsed — is kept as
+    // given under `Term::function`, whose argument list is then not all-`Symbolic`. The whole-value
+    // repair is the deep pass the atom, ingest, and statement doors run on entry (§5.1), which
+    // collapses the same value maximally.
+    let raw_child = || Term::Function {
+        name: name("g"),
+        arguments: vec![Term::from(1)],
+    };
+    let kept = Term::function(name("f"), [raw_child()]);
+    assert_eq!(
+        kept,
+        Term::Function {
+            name: name("f"),
+            arguments: vec![raw_child()],
+        }
+    );
+    assert_eq!(
+        kept.canonicalize(),
+        Term::Symbolic(Symbol::Function {
+            name: name("f"),
+            arguments: vec![Symbol::Function {
+                name: name("g"),
+                arguments: vec![Symbol::Number(1)],
+                sign: Sign::Positive,
+            }],
+            sign: Sign::Positive,
+        })
+    );
+}
+
 #[test]
 fn a_one_alternative_pool_becomes_its_term() {
     // (a) is a, but (a; b) and (a,) are not degenerate (grammar §5.1).

@@ -171,6 +171,55 @@ impl Term {
             .any(|term| matches!(term, Term::Variable(_)))
     }
 
+    /// A function application `f(t, …)` (§3.3, §7.1). Total (§7.2): the name is an already
+    /// validated identifier and the arguments are terms. Canonicalized one level at the door
+    /// (§5.1), assuming canonical arguments — as a term built through the constructors always
+    /// is: all-ground arguments collapse the application to its `Symbolic` symbol, a
+    /// term-position functor bearing no strong sign (§3.3, §4.6); a non-ground argument keeps it
+    /// a `Function`. It does not descend to repair a raw non-canonical argument: the deep pass
+    /// stays the atom, ingest, and statement doors' whole-value repair (§5.1, §7.2). O(arity),
+    /// never a re-walk of the arguments, so a nest of function terms built bottom-up is
+    /// O(depth) (§7.1).
+    pub fn function(name: Name, arguments: impl IntoIterator<Item = Term>) -> Term {
+        canonicalize_one_level(Term::Function {
+            name,
+            arguments: arguments.into_iter().collect(),
+        })
+    }
+
+    /// A constant `c` — the empty-argument function (§3.1), its own named constructor so a
+    /// simple thing stays simple (§7.1). Total (§7.2). Canonical by construction: a nullary
+    /// ground function collapses to its symbol (§5.1), so this is that `Symbolic` symbol
+    /// directly — exactly [`function`](Term::function) over no arguments, spared its step. O(1).
+    pub fn constant(name: Name) -> Term {
+        Term::Symbolic(Symbol::Function {
+            name,
+            arguments: Vec::new(),
+            sign: Sign::Positive,
+        })
+    }
+
+    /// A named variable `X` (§3.3, §7.1). Total (§7.2): the name is an already validated
+    /// variable name. A leaf, canonical by construction (§5.1). O(1).
+    pub fn variable(name: VarName) -> Term {
+        Term::Variable(Variable::Named(name))
+    }
+
+    /// A tuple `(t, …)` — the anonymous functor over its elements, the one-element `(t,)` and
+    /// the empty `()` included (§3.3, §7.1). Total (§7.2). Canonicalized one level at the door
+    /// (§5.1), assuming canonical elements, as [`function`](Term::function) does its arguments:
+    /// all-ground elements collapse it to its `Symbolic` tuple symbol; a non-ground element
+    /// keeps it a `Tuple`. O(elements).
+    pub fn tuple(elements: impl IntoIterator<Item = Term>) -> Term {
+        canonicalize_one_level(Term::Tuple(elements.into_iter().collect()))
+    }
+
+    /// The anonymous variable `_` (§3.3, §7.1). Total; a leaf, canonical by construction
+    /// (§5.1). O(1).
+    pub fn anonymous() -> Term {
+        Term::Variable(Variable::Anonymous)
+    }
+
     /// A pool of alternatives `(a; b; …)` (§5.1), refusing an empty one — a pool is a disjunction
     /// of one or more alternatives, and a zero-alternative pool is a malformed value, not a normal
     /// form (a validity invariant refused at the door, §7.2). One alternative collapses to its term

@@ -261,6 +261,50 @@ fn building_an_operator_chain_through_the_doors_is_linear_in_depth() {
     );
 }
 
+/// `f(f(… X …))` — `depth` applications built bottom-up through `Term::function`, each
+/// step canonicalizing the node it adds. Non-ground on purpose: a ground nest collapses to a
+/// `Symbolic` leaf at every step, which no pass descends (§3.6), so only the non-ground nest
+/// exposes a step that re-walks the nest-so-far.
+fn function_nest(depth: usize) -> Term {
+    let f = name("f");
+    let mut term = Term::variable(VarName::new("X").expect("a valid variable name"));
+    for _ in 0..depth {
+        term = Term::function(f.clone(), [term]);
+    }
+    term
+}
+
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
+#[test]
+fn building_a_function_nest_through_the_constructor_is_linear_in_depth() {
+    // `Term::function` canonicalizes one level, O(its arity), assuming canonical arguments
+    // (§5.1, §7.1, §7.2) — so nested function terms, the commonest constructed shape, built
+    // bottom-up are O(depth). A constructor that ran the deep pass over the nest-so-far at every
+    // step would be Θ(depth²): ~x256 over x16 depth, past the x64 ceiling. One build per
+    // measurement, as for the operator chain: allocation-bound at DEPTH, far above timer
+    // resolution, with the nest's linear drop inside the window.
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(function_nest(DEPTH));
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(function_nest(DEPTH * SIZE_RATIO));
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "the nest's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} depth; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
 /// A one-rule program `q :- p(f(f(… X …))).` carrying a deep term — the structure
 /// `render` writes, O(output) in the term's depth.
 fn deep_program(depth: usize) -> Program {

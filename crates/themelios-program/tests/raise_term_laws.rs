@@ -5,7 +5,7 @@
 
 use themelios_base::source::{Source, SourceId};
 use themelios_program::raise::{LowerError, LowerErrorKind, raise_term};
-use themelios_program::symbol::{Symbol, VarName};
+use themelios_program::symbol::{Name, Symbol, VarName};
 use themelios_program::term::{BinaryOp, EvalError, Term, UnaryOp, Variable};
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::lexer::Lexer;
@@ -108,6 +108,16 @@ fn a_ground_tuple_collapses_to_a_symbol() {
         raised("(1, 2)"),
         Term::Symbolic(Symbol::Tuple(vec![Symbol::Number(1), Symbol::Number(2)])),
     );
+}
+
+#[test]
+fn a_parsed_constant_is_the_constructed_constant() {
+    // The two doors, one value (§7): the constant `c` raised from text — canonical, as the raise's
+    // output is (§8, §5.1), so a further pass is the identity — is the constant `Term::constant`
+    // builds directly, a nullary function collapsed to its symbol.
+    let constant = Term::constant(Name::new("c").expect("identifier"));
+    assert_eq!(raised("c"), constant);
+    assert_eq!(raised("c").canonicalize(), constant);
 }
 
 // ---- Variables and the term formers (§3.3, grammar §5.1) ----
