@@ -1,17 +1,20 @@
 //! The declarative construction surface (docs/design/program.md §7): strong versus
 //! arithmetic negation, role-typed default negation, the rule-reads-as-the-rule
-//! constructors, arithmetic and intervals, the widening coercions, and the
-//! two-audiences-one-value seed — a program built through the surface is
-//! structurally equal to the same program assembled from the primitive constructors
-//! (the *first-solve* witness, §7.3, §16). The compile-fail half of the role-typing
-//! (that `not` in head position does not compile) is a `compile_fail` doc example on
-//! `construct::not`.
+//! constructors, arithmetic and intervals, the widening coercions and the closed
+//! body/head coercion class, and the two-audiences-one-value seed — a program built
+//! through the surface is structurally equal to the same program assembled from the
+//! primitive constructors (the *first-solve* witness, §7.3, §16). The compile-fail
+//! half of the role-typing (that `not` in head position does not compile) is a
+//! `compile_fail` doc example on `construct::not`, and on the aggregate coercion for
+//! a negated aggregate.
 
 use themelios_program::construct::{maximize, minimize, not, not_not};
 use themelios_program::program::{
-    Aggregate, Arguments, Atom, Body, BodyElement, Condition, DefaultNegation, Direction, Head,
-    IntoBody, IntoHead, Literal, LiteralInner, OptimizeElement, Program, Rule, SetAggregate,
-    SetElement, Statement, WeakConstraint, weight,
+    Aggregate, AggregateFunction, Arguments, Atom, Body, BodyElement, Choice, ChoiceElement,
+    Comparison, Condition, ConditionalLiteral, DefaultNegation, Direction, Disjunction,
+    DisjunctionElement, Guard, Head, HeadAggregate, HeadAggregateElement, IntoBody, IntoHead,
+    Literal, LiteralInner, OptimizeElement, Program, Relation, Rule, SetAggregate, SetElement,
+    Statement, TheoryAtom, TheoryElement, TheoryTerm, WeakConstraint, weight,
 };
 use themelios_program::provenance::WithProvenance;
 use themelios_program::symbol::{Name, Sign, Symbol, VarName};
@@ -288,6 +291,387 @@ fn a_single_element_and_a_one_element_sequence_reach_the_same_body() {
 
     assert_eq!(single, sequence);
     assert_eq!(single.elements().count(), 1);
+}
+
+// ---- The body/head coercion class closes by a rule (§7.1): every body-able value is
+// `Into<BodyElement>` and `IntoBody`, every head-able value is `IntoHead`, and default
+// negation stays `not`/`not_not`'s alone (its compile-fail half is a `compile_fail`
+// doc example on the aggregate coercion). Each coercion is a deep-repair door (§5.1),
+// save the comparison, canonical by construction. ----
+
+/// A raw ground function term a caller assembles by hand — never collapsed, so a value
+/// carrying it is non-canonical until a deep-repair door reaches it (§5.1).
+fn raw() -> Term {
+    Term::Function {
+        name: name("f"),
+        arguments: vec![num(1)],
+    }
+}
+
+/// The canonical form of [`raw`]: the ground function collapsed to its `Symbolic` leaf.
+fn repaired() -> Term {
+    Term::Symbolic(Symbol::Function {
+        name: name("f"),
+        arguments: vec![Symbol::Number(1)],
+        sign: Sign::Positive,
+    })
+}
+
+/// The positive literal `p(term)` assembled from the struct literals — through no door,
+/// so a raw argument stays raw.
+fn literal_over(term: Term) -> Literal {
+    Literal {
+        negation: DefaultNegation::None,
+        inner: LiteralInner::Atom(WithProvenance::constructed(Atom {
+            sign: Sign::Positive,
+            name: name("p"),
+            arguments: Arguments::Single(vec![term]),
+        })),
+    }
+}
+
+/// The set aggregate `term { p(1) }` — a `Guard` has no door of its own (§5.1), so its
+/// bound enters as given.
+fn set_aggregate_bounded_by(term: Term) -> Aggregate {
+    Aggregate::Set(SetAggregate::new(
+        Some(Guard {
+            relation: None,
+            term,
+        }),
+        [SetElement::Literal(literal_over(num(1)))],
+        None,
+    ))
+}
+
+/// The theory atom `&sum { 1 : p(term) }` — `TheoryAtom::new` collapses its ordinary
+/// arguments, but an element's condition enters as given.
+fn theory_atom_conditioned_on(term: Term) -> TheoryAtom {
+    TheoryAtom::new(
+        name("sum"),
+        [],
+        [TheoryElement::new(
+            [TheoryTerm::Symbolic(Symbol::Number(1))],
+            Some(Condition::new([literal_over(term)])),
+        )],
+        None,
+    )
+}
+
+/// The conditional literal `p(term) : p(1)`.
+fn conditional_over(term: Term) -> ConditionalLiteral {
+    ConditionalLiteral {
+        literal: literal_over(term),
+        condition: Condition::new([literal_over(num(1))]),
+    }
+}
+
+/// The disjunction `p(term) | p(2)`.
+fn disjunction_over(term: Term) -> Disjunction {
+    Disjunction::new([
+        DisjunctionElement::new(literal_over(term), Condition::empty()),
+        DisjunctionElement::new(literal_over(num(2)), Condition::empty()),
+    ])
+}
+
+/// The choice `term { p(1) }` — its left guard bounds at the given term.
+fn choice_bounded_by(term: Term) -> Choice {
+    Choice::new(
+        Some(Guard {
+            relation: None,
+            term,
+        }),
+        [ChoiceElement::new(literal_over(num(1)), Condition::empty())],
+        None,
+    )
+}
+
+/// The head aggregate `#count { 1 : p(1) } <= term` — its right guard bounds at the
+/// given term.
+fn head_aggregate_bounded_by(term: Term) -> HeadAggregate {
+    HeadAggregate::new(
+        None,
+        AggregateFunction::Count,
+        [HeadAggregateElement::new(
+            [num(1)],
+            literal_over(num(1)),
+            Condition::empty(),
+        )],
+        Some(Guard {
+            relation: Some(Relation::Le),
+            term,
+        }),
+    )
+}
+
+/// The one element of a one-element body.
+fn the_one_element(rule: &Rule) -> &BodyElement {
+    let mut elements = rule.body().get().elements();
+    let element = elements.next().expect("a one-element body");
+    assert!(elements.next().is_none(), "a one-element body");
+    element.get()
+}
+
+/// The rule as the ingest door admits it — deep-canonicalized (§5.1, §6.3): the public
+/// oracle for "already canonical".
+fn ingested(rule: &Rule) -> Rule {
+    let program = Program::of([WithProvenance::constructed(Statement::Rule(rule.clone()))]);
+    let mut statements = program.statements();
+    let statement = statements.next().expect("one statement");
+    assert!(statements.next().is_none(), "one statement");
+    match statement.get() {
+        Statement::Rule(rule) => rule.clone(),
+        other => panic!("a rule ingests as a rule, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_comparison_is_a_one_element_constraint_body() {
+    let comparison = Comparison::new(var("X"), Relation::Lt, 5);
+    let constraint = Rule::constraint(comparison.clone());
+    assert!(constraint.is_constraint());
+    match the_one_element(&constraint) {
+        BodyElement::Literal(Literal {
+            negation,
+            inner: LiteralInner::Comparison(inner),
+        }) => {
+            assert_eq!(*negation, DefaultNegation::None);
+            assert_eq!(inner.get(), &comparison);
+        }
+        other => panic!("a comparison is a positive comparison literal, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_aggregate_is_a_one_element_constraint_body() {
+    let aggregate = set_aggregate_bounded_by(num(1));
+    let constraint = Rule::constraint(aggregate.clone());
+    assert!(constraint.is_constraint());
+    match the_one_element(&constraint) {
+        BodyElement::Aggregate {
+            negation,
+            aggregate: coerced,
+        } => {
+            assert_eq!(*negation, DefaultNegation::None);
+            assert_eq!(coerced, &aggregate);
+        }
+        other => panic!("an aggregate is a positive aggregate element, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_theory_atom_is_a_one_element_constraint_body() {
+    let atom = theory_atom_conditioned_on(num(1));
+    let constraint = Rule::constraint(atom.clone());
+    assert!(constraint.is_constraint());
+    match the_one_element(&constraint) {
+        BodyElement::TheoryAtom {
+            negation,
+            atom: coerced,
+        } => {
+            assert_eq!(*negation, DefaultNegation::None);
+            assert_eq!(coerced, &atom);
+        }
+        other => panic!("a theory atom is a positive theory-atom element, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_conditional_is_a_one_element_constraint_body() {
+    let conditional = conditional_over(var("X"));
+    let constraint = Rule::constraint(conditional.clone());
+    assert!(constraint.is_constraint());
+    match the_one_element(&constraint) {
+        BodyElement::Conditional(coerced) => assert_eq!(coerced, &conditional),
+        other => panic!("a conditional literal is a conditional element, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_head_holds_when_a_comparison_does() {
+    let comparison = Comparison::new(var("X"), Relation::Gt, 0);
+    let rule = Atom::new(name("positive"), [var("X")])
+        .into_head()
+        .when(comparison.clone());
+    assert!(!rule.is_constraint());
+    match the_one_element(&rule) {
+        BodyElement::Literal(Literal {
+            negation: DefaultNegation::None,
+            inner: LiteralInner::Comparison(inner),
+        }) => assert_eq!(inner.get(), &comparison),
+        other => panic!("a comparison is a positive comparison literal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_disjunction_is_a_disjunctive_head() {
+    let disjunction = disjunction_over(num(1));
+    let rule = Rule::fact(disjunction.clone());
+    assert!(rule.body().get().is_empty());
+    match rule.head().get() {
+        Head::Disjunction(coerced) => assert_eq!(coerced, &disjunction),
+        other => panic!("a disjunction is a disjunctive head, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_choice_is_a_choice_head() {
+    let choice = choice_bounded_by(num(1));
+    let rule = Rule::fact(choice.clone());
+    assert!(rule.body().get().is_empty());
+    match rule.head().get() {
+        Head::Choice(coerced) => assert_eq!(coerced, &choice),
+        other => panic!("a choice is a choice head, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_head_aggregate_is_an_aggregate_head() {
+    let aggregate = head_aggregate_bounded_by(num(1));
+    let rule = Rule::fact(aggregate.clone());
+    assert!(rule.body().get().is_empty());
+    match rule.head().get() {
+        Head::Aggregate(coerced) => assert_eq!(coerced, &aggregate),
+        other => panic!("a head aggregate is an aggregate head, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_theory_atom_is_a_theory_atom_head() {
+    let atom = theory_atom_conditioned_on(num(1));
+    let rule = Rule::fact(atom.clone());
+    assert!(rule.body().get().is_empty());
+    match rule.head().get() {
+        Head::TheoryAtom(coerced) => assert_eq!(coerced, &atom),
+        other => panic!("a theory atom is an unsigned theory-atom head, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_comparison_coercion_wraps_the_chain_as_built() {
+    // `Comparison::new` is its own canonicalizing door (§5.1): the chain arrives with its
+    // terms collapsed, and the coercion wraps that very value in a positive literal.
+    let comparison = Comparison::new(raw(), Relation::Eq, 2);
+    assert_eq!(
+        comparison.first(),
+        &repaired(),
+        "the comparison door collapsed the term"
+    );
+    let literal = Literal::from(comparison.clone());
+    assert_eq!(literal.negation, DefaultNegation::None);
+    assert_eq!(
+        literal.inner,
+        LiteralInner::Comparison(WithProvenance::constructed(comparison))
+    );
+}
+
+#[test]
+fn an_aggregate_coercion_repairs_a_raw_bound() {
+    assert_ne!(
+        set_aggregate_bounded_by(raw()),
+        set_aggregate_bounded_by(repaired()),
+        "the input is non-canonical as built"
+    );
+    match BodyElement::from(set_aggregate_bounded_by(raw())) {
+        BodyElement::Aggregate { aggregate, .. } => {
+            assert_eq!(aggregate, set_aggregate_bounded_by(repaired()));
+        }
+        other => panic!("an aggregate coerces to an aggregate element, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_theory_atom_coercion_repairs_a_raw_condition() {
+    // The theory terms never collapse (§4.9); the ordinary literal under an element's
+    // condition does, and the coercion's deep pass reaches it.
+    assert_ne!(
+        theory_atom_conditioned_on(raw()),
+        theory_atom_conditioned_on(repaired()),
+        "the input is non-canonical as built"
+    );
+    match BodyElement::from(theory_atom_conditioned_on(raw())) {
+        BodyElement::TheoryAtom { atom, .. } => {
+            assert_eq!(atom, theory_atom_conditioned_on(repaired()));
+        }
+        other => panic!("a theory atom coerces to a theory-atom element, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_conditional_coercion_repairs_a_raw_argument() {
+    assert_ne!(
+        conditional_over(raw()),
+        conditional_over(repaired()),
+        "the input is non-canonical as built"
+    );
+    match BodyElement::from(conditional_over(raw())) {
+        BodyElement::Conditional(conditional) => {
+            assert_eq!(conditional, conditional_over(repaired()));
+        }
+        other => panic!("a conditional coerces to a conditional element, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_disjunction_coercion_repairs_a_raw_argument() {
+    assert_ne!(
+        disjunction_over(raw()),
+        disjunction_over(repaired()),
+        "the input is non-canonical as built"
+    );
+    match disjunction_over(raw()).into_head() {
+        Head::Disjunction(disjunction) => assert_eq!(disjunction, disjunction_over(repaired())),
+        other => panic!("a disjunction coerces to a disjunctive head, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_choice_coercion_repairs_a_raw_bound() {
+    assert_ne!(
+        choice_bounded_by(raw()),
+        choice_bounded_by(repaired()),
+        "the input is non-canonical as built"
+    );
+    match choice_bounded_by(raw()).into_head() {
+        Head::Choice(choice) => assert_eq!(choice, choice_bounded_by(repaired())),
+        other => panic!("a choice coerces to a choice head, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_head_aggregate_coercion_repairs_a_raw_bound() {
+    assert_ne!(
+        head_aggregate_bounded_by(raw()),
+        head_aggregate_bounded_by(repaired()),
+        "the input is non-canonical as built"
+    );
+    match head_aggregate_bounded_by(raw()).into_head() {
+        Head::Aggregate(aggregate) => assert_eq!(aggregate, head_aggregate_bounded_by(repaired())),
+        other => panic!("a head aggregate coerces to an aggregate head, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_coerced_rule_is_already_canonical() {
+    // The public oracle for the deep pass is the ingest door (§6.3): a rule the coercions
+    // built from raw inputs is admitted unchanged, so the coercions are the deep-repair
+    // doors (§5.1, §7.2) — and the comparison, canonical by construction, needs none.
+    let rules = [
+        Rule::constraint(Comparison::new(raw(), Relation::Eq, 2)),
+        Rule::constraint(set_aggregate_bounded_by(raw())),
+        Rule::constraint(theory_atom_conditioned_on(raw())),
+        Rule::constraint(conditional_over(raw())),
+        Rule::fact(disjunction_over(raw())),
+        Rule::fact(choice_bounded_by(raw())),
+        Rule::fact(head_aggregate_bounded_by(raw())),
+        Rule::fact(theory_atom_conditioned_on(raw())),
+    ];
+    for rule in &rules {
+        assert_eq!(
+            &ingested(rule),
+            rule,
+            "the ingest door admits the coerced rule unchanged"
+        );
+    }
 }
 
 // ---- Arithmetic and intervals compose as written (§7.1) ----

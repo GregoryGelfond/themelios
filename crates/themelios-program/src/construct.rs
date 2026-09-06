@@ -13,16 +13,18 @@
 //! `not` in head position does not compile (§4.5, §7.3). Arithmetic and intervals
 //! compose as written over anything term-shaped, the right-hand side coercing so a
 //! number needs no wrapping (§7.1). Canonicalization (§5.1) runs at every door here
-//! that takes a raw term — deeply at the doors that take an atom, an aggregate, or a
-//! theory atom; one level at the operator doors, which assume canonical operands, as a
-//! term built through these doors always is — so the ergonomic path never yields a
+//! that takes a raw term — deeply at the doors that take an atom, an aggregate, a
+//! theory atom, a conditional literal, or a head shape; one level at the operator
+//! doors, which assume canonical operands, as a term built through these doors always
+//! is — so the ergonomic path never yields a
 //! non-canonical value (§7.2); the one value that can carry a non-canonical term is a
 //! struct literal a caller fills directly, which the atom and ingest doors repair whole
 //! on entry (§5.1).
 
 use crate::program::{
-    Aggregate, Arguments, Atom, Body, BodyElement, DefaultNegation, Direction, Head, IntoBody,
-    IntoHead, Literal, LiteralInner, Optimize, OptimizeElement, Rule, TheoryAtom,
+    Aggregate, Arguments, Atom, Body, BodyElement, Choice, Comparison, ConditionalLiteral,
+    DefaultNegation, Direction, Disjunction, Head, HeadAggregate, IntoBody, IntoHead, Literal,
+    LiteralInner, Optimize, OptimizeElement, Rule, TheoryAtom,
 };
 use crate::provenance::WithProvenance;
 use crate::symbol::{Name, Sign, Symbol};
@@ -330,6 +332,154 @@ impl<T: Into<BodyElement>> IntoBody for Vec<T> {
 impl<T: Into<BodyElement>, const N: usize> IntoBody for [T; N] {
     fn into_body(self) -> Body {
         Body::new(self.into_iter().map(Into::into))
+    }
+}
+
+// ---- The body/head coercion class closes by a rule (§7.1) ----
+//
+// For every body-able type `X`: `From<X> for BodyElement` and `IntoBody for X`. For
+// every head-able type `X`: `IntoHead for X`. Default negation is `Negatable`'s alone
+// (`not`/`not_not`): a negated value is a `BodyElement` and never head-able, so no
+// `From` or `IntoHead` opens a second negation path. The body-able values are the
+// comparison, the aggregate, the theory atom, and the conditional literal; the
+// head-able, the disjunction, the choice, the head aggregate, and the theory atom —
+// the theory atom in both classes, the comparison body-only. Each coercion is a
+// deep-repair door (§5.1) canonicalizing the value it wraps, as `From<Atom>` and
+// `Negatable` do, save the comparison: canonical by construction, its terms collapsed
+// at the `Comparison` door, it wraps as is. Each `IntoBody` routes through its `From`,
+// so the pass runs once.
+
+impl From<Comparison> for Literal {
+    /// A comparison is a positive body literal (§4.6, §7.1): no default negation, the
+    /// chain wrapped as built — canonical by construction, its terms collapsed at the
+    /// [`Comparison`] door (§5.1), so no pass runs here. Body-only: a comparison has
+    /// no head coercion.
+    fn from(comparison: Comparison) -> Literal {
+        Literal {
+            negation: DefaultNegation::None,
+            inner: LiteralInner::Comparison(WithProvenance::constructed(comparison)),
+        }
+    }
+}
+
+impl From<Comparison> for BodyElement {
+    fn from(comparison: Comparison) -> BodyElement {
+        BodyElement::Literal(Literal::from(comparison))
+    }
+}
+
+impl From<Aggregate> for BodyElement {
+    /// An aggregate is a positive body element (§7.1): no default negation, the value
+    /// canonicalized deeply at the door (§5.1) — a guard's bound has no door of its
+    /// own. [`not`] negates it, and the negated value is a [`BodyElement`], which a
+    /// head never accepts (§4.5):
+    ///
+    /// ```
+    /// use themelios_program::construct::not;
+    /// use themelios_program::program::{Aggregate, Atom, Literal, Rule};
+    /// use themelios_program::program::{SetAggregate, SetElement};
+    /// use themelios_program::symbol::Name;
+    ///
+    /// let p = SetElement::Literal(Literal::from(Atom::constant(Name::new("p").unwrap())));
+    /// let aggregate = Aggregate::Set(SetAggregate::new(None, [p], None));
+    /// let _constraint = Rule::constraint(not(aggregate)); // :- not { p }.
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use themelios_program::construct::not;
+    /// use themelios_program::program::{Aggregate, Atom, Literal, Rule};
+    /// use themelios_program::program::{SetAggregate, SetElement};
+    /// use themelios_program::symbol::Name;
+    ///
+    /// let p = SetElement::Literal(Literal::from(Atom::constant(Name::new("p").unwrap())));
+    /// let aggregate = Aggregate::Set(SetAggregate::new(None, [p], None));
+    /// let _fact = Rule::fact(not(aggregate)); // a BodyElement is not IntoHead
+    /// ```
+    fn from(aggregate: Aggregate) -> BodyElement {
+        BodyElement::Aggregate {
+            negation: DefaultNegation::None,
+            aggregate: aggregate.canonicalize(),
+        }
+    }
+}
+
+impl From<TheoryAtom> for BodyElement {
+    /// A theory atom is a positive body element (§4.9, §7.1): no default negation, the
+    /// value canonicalized deeply at the door (§5.1) — the ordinary literals under an
+    /// element's condition collapse; the theory terms never do. [`not`] negates it.
+    fn from(atom: TheoryAtom) -> BodyElement {
+        BodyElement::TheoryAtom {
+            negation: DefaultNegation::None,
+            atom: atom.canonicalize(),
+        }
+    }
+}
+
+impl From<ConditionalLiteral> for BodyElement {
+    /// A conditional literal is a body element (§4.6, §7.1), the value canonicalized
+    /// deeply at the door (§5.1): its literal and every literal of its condition.
+    fn from(conditional: ConditionalLiteral) -> BodyElement {
+        BodyElement::Conditional(conditional.canonicalize())
+    }
+}
+
+// A body-able value is a one-element body through its `From` (§7.1), so the door's
+// pass runs once.
+
+impl IntoBody for Comparison {
+    fn into_body(self) -> Body {
+        Body::new([BodyElement::from(self)])
+    }
+}
+
+impl IntoBody for Aggregate {
+    fn into_body(self) -> Body {
+        Body::new([BodyElement::from(self)])
+    }
+}
+
+impl IntoBody for TheoryAtom {
+    fn into_body(self) -> Body {
+        Body::new([BodyElement::from(self)])
+    }
+}
+
+impl IntoBody for ConditionalLiteral {
+    fn into_body(self) -> Body {
+        Body::new([BodyElement::from(self)])
+    }
+}
+
+impl IntoHead for Disjunction {
+    /// A disjunction is a disjunctive head (§4.4, §7.1), the value canonicalized deeply
+    /// at the door (§5.1).
+    fn into_head(self) -> Head {
+        Head::Disjunction(self.canonicalize())
+    }
+}
+
+impl IntoHead for Choice {
+    /// A choice is a choice head (§4.4, §7.1), the value canonicalized deeply at the
+    /// door (§5.1) — its guards' bounds among the terms.
+    fn into_head(self) -> Head {
+        Head::Choice(self.canonicalize())
+    }
+}
+
+impl IntoHead for HeadAggregate {
+    /// A head aggregate is an aggregate head (§4.4, §7.1), the value canonicalized
+    /// deeply at the door (§5.1).
+    fn into_head(self) -> Head {
+        Head::Aggregate(self.canonicalize())
+    }
+}
+
+impl IntoHead for TheoryAtom {
+    /// A theory atom is an unsigned theory-atom head (§4.9, §7.1) — the one value both
+    /// body-able and head-able — the value canonicalized deeply at the door (§5.1).
+    /// Under [`not`] it is body-only.
+    fn into_head(self) -> Head {
+        Head::TheoryAtom(self.canonicalize())
     }
 }
 
