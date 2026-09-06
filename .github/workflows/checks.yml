@@ -33,7 +33,12 @@ jobs:
           rustup default "$RUST_TOOLCHAIN"
       - run: cargo fmt --all --check
       # --locked: the committed Cargo.lock is certified, never re-resolved.
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # --all-features: the out-of-band, feature-gated code — the clingo and swipl
+      # differentials — is linted too, so it is held to -D warnings exactly like the
+      # default build rather than escaping clippy because its feature is off. No code is
+      # compiled only *without* a feature, so this misses nothing; clippy compiles the
+      # differential harnesses without running them, so no external tool is needed here.
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       # Not memory-capped here. docs/specification.md §5.2/§10.2 commit a
       # memory-capped run "where the platform allows" against the work-list
       # memory bomb; at this tier that boundary is held by construction —
