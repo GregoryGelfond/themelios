@@ -266,11 +266,32 @@ fn unary(operator: UnaryOp, argument: Term) -> Term {
 
 impl From<i32> for Term {
     /// A number is a term (§3.3, §3.4): `i32`, the engine's own width, lifted to the
-    /// ground `Symbolic(Number)` leaf. Wider or narrower integers reach a term through
-    /// their `ToSymbol` (§3.4) and then `From<Symbol>`; this widens the one obvious
-    /// spelling, it does not add a second.
+    /// ground `Symbolic(Number)` leaf. A narrower integer reaches a term through its
+    /// `ToSymbol` (§3.4) and then `From<Symbol>`; a wider one has no silent door — the
+    /// caller narrows it checked and states the intent (§3.4). This widens the one
+    /// obvious spelling, it does not add a second.
     fn from(value: i32) -> Term {
         Term::Symbolic(Symbol::Number(value))
+    }
+}
+
+impl From<&str> for Term {
+    /// A string literal is a term (§3.3, §3.4): the text owned into the ground
+    /// `Symbolic(String)` leaf, and never a constant — a constant is a validated [`Name`]
+    /// through [`Term::constant`], and the type keeps `"a"` and `a` apart (§3.4, §7.1).
+    /// The twin of `From<&str>` for [`Symbol`]; this widens the one obvious spelling, it
+    /// does not add a second.
+    fn from(text: &str) -> Term {
+        Term::Symbolic(Symbol::String(text.to_owned()))
+    }
+}
+
+impl From<String> for Term {
+    /// An owned string is a term (§3.3, §3.4): the `&str` coercion's O(1) twin, the text
+    /// moved into the ground `Symbolic(String)` leaf without a copy — and, as there,
+    /// never a constant.
+    fn from(text: String) -> Term {
+        Term::Symbolic(Symbol::String(text))
     }
 }
 
@@ -343,17 +364,20 @@ impl<T: Into<BodyElement>, const N: usize> IntoBody for [T; N] {
 // `From` or `IntoHead` opens a second negation path. The body-able values are the
 // comparison, the aggregate, the theory atom, and the conditional literal; the
 // head-able, the disjunction, the choice, the head aggregate, and the theory atom —
-// the theory atom in both classes, the comparison body-only. Each coercion is a
-// deep-repair door (§5.1) canonicalizing the value it wraps, as `From<Atom>` and
-// `Negatable` do, save the comparison: canonical by construction, its terms collapsed
-// at the `Comparison` door, it wraps as is. Each `IntoBody` routes through its `From`,
-// so the pass runs once.
+// the theory atom in both classes, the comparison in the body-able alone (no
+// single-step head coercion: a comparison head is legal, `X < 3 :- p(X).`, and is
+// reached through the two-step `Literal` path). Each coercion is a deep-repair door
+// (§5.1) canonicalizing the value it wraps, as `From<Atom>` and `Negatable` do, save
+// the comparison: canonical by construction, its terms collapsed at the `Comparison`
+// door, it wraps as is. Each `IntoBody` routes through its `From`, so the pass runs
+// once.
 
 impl From<Comparison> for Literal {
     /// A comparison is a positive body literal (§4.6, §7.1): no default negation, the
     /// chain wrapped as built — canonical by construction, its terms collapsed at the
-    /// [`Comparison`] door (§5.1), so no pass runs here. Body-only: a comparison has
-    /// no head coercion.
+    /// [`Comparison`] door (§5.1), so no pass runs here. No single-step head coercion:
+    /// a comparison head is legal (`X < 3 :- p(X).`), and reaches a head only through
+    /// the two-step [`Literal`] path, `Literal::from(comparison).into_head()`.
     fn from(comparison: Comparison) -> Literal {
         Literal {
             negation: DefaultNegation::None,

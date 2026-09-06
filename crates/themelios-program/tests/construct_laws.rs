@@ -270,6 +270,48 @@ fn an_i32_argument_coerces_to_a_number_term() {
 }
 
 #[test]
+fn a_str_argument_coerces_to_a_string_term() {
+    // A `&str` denotes a string term — the `Symbolic(String)` leaf, exactly (§3.4).
+    let from_str = Atom::new(name("p"), [Term::from("a")]);
+    let from_symbol = Atom::new(name("p"), [Term::Symbolic(Symbol::String("a".to_owned()))]);
+    assert_eq!(from_str, from_symbol);
+    assert_eq!(
+        Term::from("a"),
+        Term::Symbolic(Symbol::String("a".to_owned()))
+    );
+}
+
+#[test]
+fn an_owned_string_coerces_to_the_same_string_term() {
+    // The owned and the borrowed spellings are two doors to one value (§7.1).
+    assert_eq!(Term::from(String::from("a")), Term::from("a"));
+    assert_eq!(
+        Term::from(String::from("a")),
+        Term::Symbolic(Symbol::String("a".to_owned()))
+    );
+}
+
+#[test]
+fn a_string_term_is_not_the_constant_of_its_text() {
+    // `"a"` and `a` are two values the type keeps apart (§3.4, §7.1): a constant is a
+    // validated `Name` through `Term::constant`; a Rust string denotes a string term and
+    // is never read as a name.
+    assert_ne!(Term::from("a"), Term::constant(name("a")));
+    assert_ne!(Term::from(String::from("a")), Term::constant(name("a")));
+}
+
+#[test]
+fn the_term_and_symbol_string_coercions_agree() {
+    // The two types' scalar coercions are twins (§7.1): the string a `Term` takes is the
+    // string a `Symbol` takes, lifted through `From<Symbol>`.
+    assert_eq!(
+        Term::from(String::from("a")),
+        Term::from(Symbol::from(String::from("a")))
+    );
+    assert_eq!(Term::from("a"), Term::from(Symbol::from("a")));
+}
+
+#[test]
 fn a_literal_and_an_atom_both_reach_a_one_literal_head() {
     let atom = Atom::new(name("p"), [var("X")]);
     let via_atom: Head = atom.clone().into_head();

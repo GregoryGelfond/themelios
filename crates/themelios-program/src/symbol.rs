@@ -260,8 +260,10 @@ impl Symbol {
 impl From<i32> for Symbol {
     /// A number is a symbol (§3.1, §3.4): `i32`, the engine's own width, lifted
     /// to the `Number` leaf — [`Symbol::number`], and the twin of `From<i32>` for
-    /// `Term`. Wider or narrower integers reach a symbol through their `ToSymbol`
-    /// (§3.4); this widens the one obvious spelling, it does not add a second.
+    /// `Term`. A narrower integer reaches a symbol through its `ToSymbol` (§3.4);
+    /// a wider one has no silent door — the caller narrows it checked and states
+    /// the intent (§3.4). This widens the one obvious spelling, it does not add a
+    /// second.
     fn from(value: i32) -> Symbol {
         Symbol::number(value)
     }
@@ -272,6 +274,16 @@ impl From<&str> for Symbol {
     /// `String` leaf — [`Symbol::string`]. This widens the one obvious spelling,
     /// it does not add a second.
     fn from(text: &str) -> Symbol {
+        Symbol::string(text)
+    }
+}
+
+impl From<String> for Symbol {
+    /// An owned string is a symbol (§3.1, §3.4): the `&str` coercion's O(1)
+    /// twin, the text moved into the `String` leaf without a copy —
+    /// [`Symbol::string`], and the twin of `From<String>` for `Term`, so the two
+    /// types take the same scalars.
+    fn from(text: String) -> Symbol {
         Symbol::string(text)
     }
 }
@@ -1015,9 +1027,24 @@ mod tests {
     }
 
     #[test]
+    fn an_owned_string_coerces_to_its_string() {
+        // The owned and the borrowed string coercions are two doors to one value (§7.1).
+        assert_eq!(
+            Symbol::from(String::from("a")),
+            Symbol::String("a".to_owned())
+        );
+        assert_eq!(Symbol::from(String::from("a")), Symbol::from("a"));
+        assert_eq!(Symbol::from(String::from("a")), Symbol::string("a"));
+    }
+
+    #[test]
     fn the_coercions_agree_with_to_symbol() {
         // The encode coercion and the denotation trait (§3.4) are two doors to one value.
         assert_eq!(Symbol::from(1), 1_i32.to_symbol());
         assert_eq!(Symbol::from("a"), "a".to_symbol());
+        assert_eq!(
+            Symbol::from(String::from("a")),
+            String::from("a").to_symbol()
+        );
     }
 }
