@@ -302,8 +302,8 @@ fn any_variable() -> impl Strategy<Value = Variable> {
 }
 
 /// A generator of shallow terms drawing every variant, boxed and sequence children
-/// both (§16). Pools carry at least one alternative (grammar §5.1).
-fn shallow_term() -> impl Strategy<Value = Term> {
+/// both (§16), its pools of `pool_alternatives` many.
+fn term_with_pools_of(pool_alternatives: std::ops::Range<usize>) -> impl Strategy<Value = Term> {
     let ident = "[a-z][a-z0-9]{0,2}".prop_filter("not the reserved word", |s| s != "not");
     let leaf = prop_oneof![
         any_variable().prop_map(Term::Variable),
@@ -318,7 +318,7 @@ fn shallow_term() -> impl Strategy<Value = Term> {
                 }
             }),
             prop::collection::vec(inner.clone(), 0..4).prop_map(Term::Tuple),
-            prop::collection::vec(inner.clone(), 1..4).prop_map(Term::Pool),
+            prop::collection::vec(inner.clone(), pool_alternatives.clone()).prop_map(Term::Pool),
             (any_unary_op(), inner.clone()).prop_map(|(operator, t)| Term::UnaryOperation {
                 operator,
                 argument: Box::new(t)
@@ -343,6 +343,18 @@ fn shallow_term() -> impl Strategy<Value = Term> {
             }),
         ]
     })
+}
+
+/// The well-formed shallow terms: pools carry at least one alternative (grammar §5.1).
+fn shallow_term() -> impl Strategy<Value = Term> {
+    term_with_pools_of(1..4)
+}
+
+/// The shallow terms admitting the malformed empty pool the constructor door refuses (§5.1,
+/// §7.2) — the raw `Pool` variant is open to it, so the pass that repairs a raw term must reach
+/// its fixed point over it too.
+fn shallow_term_or_empty_pool() -> impl Strategy<Value = Term> {
+    term_with_pools_of(0..4)
 }
 
 proptest! {
@@ -399,12 +411,14 @@ proptest! {
     }
 
     /// Canonicalization is idempotent and deterministic (§5.1): a second pass changes
-    /// nothing. (It intentionally *merges* distinct spellings — a ground constructor
-    /// term and its collapsed symbol, a one-alternative pool and its term — so it does
-    /// not preserve structural distinctness; only idempotence and equal-in/equal-out
-    /// are laws over terms.)
+    /// nothing — over the malformed empty pool too, whose splicing can expose a form
+    /// the fold's rules had already passed; the rows a draw cannot be relied on to hit
+    /// are seeded in `a_nested_empty_pool_canonicalizes_in_one_pass`. (It intentionally
+    /// *merges* distinct spellings — a ground constructor term and its collapsed symbol,
+    /// a one-alternative pool and its term — so it does not preserve structural
+    /// distinctness; only idempotence and equal-in/equal-out are laws over terms.)
     #[test]
-    fn canonicalization_is_idempotent(t in shallow_term()) {
+    fn canonicalization_is_idempotent(t in shallow_term_or_empty_pool()) {
         let once = t.clone().canonicalize();
         prop_assert_eq!(once.clone().canonicalize(), once.clone());
         prop_assert_eq!(t.clone().canonicalize(), t.canonicalize());
@@ -557,6 +571,61 @@ fn a_nested_pool_is_flattened_through_a_compound_node() {
         outer.canonicalize(),
         Term::Pool(vec![f(flat()), n(4), n(5)])
     );
+}
+
+#[test]
+fn a_nested_empty_pool_canonicalizes_in_one_pass() {
+    // The raw `Pool` variant is open to the malformed empty pool the constructor door refuses
+    // (§5.1, §7.2). Splicing one out of a pool contributes no alternative, which can leave behind
+    // a one-alternative pool, a constructor whose arguments are now all ground, or a negation
+    // whose operand is now a number — each a form the fold's rules had already passed, since the
+    // flatten runs after the fold. The deep pass is idempotent over every term (§5.1), so each
+    // reaches its fixed point in one pass; the generated law holds this over its draws, and these
+    // are the rows no draw can be relied on to hit.
+    let x = || Term::Variable(Variable::Named(VarName::new("X").expect("variable")));
+    let empty = || Term::Pool(vec![]);
+    let f = |functor: &str, argument: Term| Term::Function {
+        name: Name::new(functor).expect("identifier"),
+        arguments: vec![argument],
+    };
+    let ground = |functor: &str, argument: Symbol| Symbol::Function {
+        name: Name::new(functor).expect("identifier"),
+        arguments: vec![argument],
+        sign: Sign::Positive,
+    };
+    let rows = [
+        // A singleton exposed: the one alternative left is the term.
+        (Term::Pool(vec![empty(), x()]), x()),
+        // A ground constructor exposed: the alternative left makes `f` all-ground.
+        (
+            f("f", Term::Pool(vec![empty(), Term::from(1)])),
+            Term::Symbolic(ground("f", Symbol::Number(1))),
+        ),
+        // Exposed two levels up: each node assembled sees its children already repaired.
+        (
+            f("f", f("g", Term::Pool(vec![empty(), Term::from(1)]))),
+            Term::Symbolic(ground("f", ground("g", Symbol::Number(1)))),
+        ),
+        // A foldable negation exposed: unary minus of the number left is its negation.
+        (
+            Term::UnaryOperation {
+                operator: UnaryOp::Negate,
+                argument: Box::new(Term::Pool(vec![empty(), Term::from(5)])),
+            },
+            Term::from(-5),
+        ),
+        // Every alternative spliced out: the empty pool is kept, malformed, and stable.
+        (Term::Pool(vec![empty(), empty()]), empty()),
+    ];
+    for (term, fixed_point) in rows {
+        let once = term.clone().canonicalize();
+        assert_eq!(once, fixed_point, "one pass over {term:?}");
+        assert_eq!(
+            once.clone().canonicalize(),
+            once,
+            "a second pass over {term:?}"
+        );
+    }
 }
 
 #[test]

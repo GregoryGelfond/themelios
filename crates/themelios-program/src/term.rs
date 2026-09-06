@@ -373,8 +373,10 @@ impl Term {
     /// `Number(5)`, the authority's own reading; `-(1 + 2)` is not a number and stays
     /// a `BinaryOperation`. A pool holding a pool is flattened afterward in one
     /// top-down pass (`flatten_pools`), also O(nodes) and only when the fold met one,
-    /// so the whole canonicalization is O(nodes) whatever the nesting. A pass, not a
-    /// constructor guarantee: a caller can build a non-canonical term directly, and
+    /// so the whole canonicalization is O(nodes) whatever the nesting; that pass
+    /// re-canonicalizes each node it assembles one level, so the idempotence holds over
+    /// every term the raw variants admit, the malformed empty pool included. A pass, not
+    /// a constructor guarantee: a caller can build a non-canonical term directly, and
     /// every door that admits a term into a program runs this.
     #[must_use]
     pub fn canonicalize(self) -> Term {
@@ -439,7 +441,14 @@ impl Term {
 /// splices a nested pool inline rather than flag it for a deferred pass: canonical children
 /// are already flat, so one level of splicing is the whole flattening, O(alternatives).
 pub(crate) fn canonicalize_one_level(term: Term) -> Term {
-    match term.into_parts() {
+    canonicalize_parts_one_level(term.into_parts())
+}
+
+/// The one-level rule over a node already decomposed — [`canonicalize_one_level`] for a
+/// caller holding the parts, spared the rebuild-and-decompose round trip: the doors reach it
+/// through the term form, and `flatten_pools` applies it to each node it assembles.
+fn canonicalize_parts_one_level(parts: TermParts<Term>) -> Term {
+    match parts {
         // Ground collapse (§5.1): all-`Symbolic` children fold to a ground symbol; a
         // term-position functor bears no strong sign (§3.3, §4.6), so `Positive`.
         TermParts::Function { name, arguments } => match into_symbols(arguments) {
@@ -653,6 +662,17 @@ fn assemble_parts<T>(shell: Shell, mut children: Vec<T>) -> TermParts<T> {
 /// reuse trick was O(depth²) right-nested). Iterative (§13): the work list and the spine descent hold
 /// depth on the heap, never the call stack. `canonicalize` runs this only when its fold met a pool
 /// holding a pool, so a flat pool — the common case — never reaches here.
+///
+/// Each node assembled is re-canonicalized one level (`canonicalize_parts_one_level`), so the deep
+/// pass is idempotent over every term the raw variants admit. On a well-formed term the rule is the
+/// identity here — the fold has made every node canonical, and a spliced spine keeps its two or
+/// more alternatives — so no well-formed value changes. It does work only for the malformed empty
+/// pool the raw `Pool` variant admits though the door refuses it (§5.1): spliced, it contributes
+/// no alternative, which can leave a one-alternative pool, a constructor whose arguments are now
+/// all ground, or a negation whose operand is now a number — forms the fold's rules had already
+/// passed, the flatten running after the fold. The children of each assembled node finish before it
+/// (the `done` stack), the one-level rule's precondition, so one level per node reaches the fixed
+/// point within this pass, at O(the node's arity): the pass stays O(nodes).
 fn flatten_pools(term: Term) -> Term {
     enum Frame {
         Enter(Term),
@@ -684,7 +704,8 @@ fn flatten_pools(term: Term) -> Term {
             },
             Frame::Assemble(shell, arity) => {
                 let children = done.split_off(done.len() - arity);
-                done.push(Term::from(assemble_parts(shell, children)));
+                let assembled = assemble_parts(shell, children);
+                done.push(canonicalize_parts_one_level(assembled));
             }
         }
     }
