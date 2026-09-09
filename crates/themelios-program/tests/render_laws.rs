@@ -45,6 +45,30 @@ fn program_of(statement: Statement) -> Program {
     Program::of([statement])
 }
 
+/// A one-fact program whose sole statement carries `doc` as its constructed documentation —
+/// the fixture the documented-rendering fixpoint pins.
+fn documented_fact(doc: &str) -> Program {
+    Program::of_nodes([WithProvenance::new(
+        Statement::Rule(Rule::fact(Atom::constant(name("p")))),
+        Provenance::from(Origin::Constructed).with_doc(doc),
+    )])
+}
+
+/// Each statement's documentation, one inner vector per statement in `Ord` order.
+fn docs_of(program: &Program) -> Vec<Vec<String>> {
+    program
+        .statements()
+        .map(|statement| {
+            statement
+                .provenance()
+                .annotations()
+                .doc()
+                .map(str::to_owned)
+                .collect()
+        })
+        .collect()
+}
+
 // ---- the laws ----
 
 #[test]
@@ -59,10 +83,10 @@ fn rendering_is_canonical_the_same_program_renders_the_same_text() {
 
 #[test]
 fn render_documented_round_trips_the_doc_comments_verbatim() {
-    // Two leading doc lines above a fact: the documented rendering emits each `%!` line
-    // verbatim above the statement it documents, and — emitting exactly the form the raise
-    // reads (the marker then the untrimmed content) — a single documented statement is a
-    // textual fixpoint.
+    // Two leading doc lines above a fact: the documented rendering emits each doc line as
+    // `%! ` + the content above the statement it documents, and the raise strips one leading
+    // space back off on read — so a conventionally-spaced source (one space after each `%!`)
+    // is a textual fixpoint.
     let source = "%! a fact\n%! spanning two lines\np(a).\n";
     assert_eq!(
         render_documented(&raised(source), Dialect::Clingo).expect("renders"),
@@ -112,6 +136,68 @@ fn documented_rendering_round_trips_a_constructed_documentation() {
         })
         .collect();
     assert_eq!(docs, ["the reachable base case"]);
+}
+
+#[test]
+fn documentation_round_trips_as_a_spaced_fixpoint() {
+    // The documented render spaces the `%!` marker — `%! ` then the content, not a cramped
+    // `%!content` — and the raise strips exactly one leading space back off (program.md §10,
+    // §8), so a documented value is a fixpoint: raise(render_documented(P)) carries the same
+    // documentation as P, and a second render→raise pass is byte-identical. The discriminating
+    // case is a doc whose content itself begins with a space: the render writes two spaces and
+    // the raise strips one, so the content's own space survives — which breaks if the raise
+    // `trim_start`s rather than stripping one, or if the render omits the marker space.
+    for doc in [
+        "a plain doc",
+        " a doc that begins with a space",
+        "line one\nline two",
+    ] {
+        let program = documented_fact(doc);
+        let first = render_documented(&program, Dialect::Clingo).expect("renders");
+        // The marker is spaced: each doc line is `%! ` + the content, above the statement.
+        let mut block = String::new();
+        for line in doc.split('\n') {
+            block.push_str("%! ");
+            block.push_str(line);
+            block.push('\n');
+        }
+        assert!(
+            first.starts_with(&block),
+            "the `%!` marker is spaced, then the content: got {first:?}, want a {block:?} prefix",
+        );
+        // raise(render_documented(P)) carries the same documentation on the statement — the
+        // content's own leading space, where it has one, preserved.
+        let reraised = raised(&first);
+        assert_eq!(
+            docs_of(&reraised),
+            vec![vec![doc.to_owned()]],
+            "the documentation round-trips unchanged",
+        );
+        // A second render→raise pass is byte-identical: the marker space does not accrue.
+        let second = render_documented(&reraised, Dialect::Clingo).expect("renders");
+        assert_eq!(second, first, "the documented render is a fixpoint");
+    }
+}
+
+#[test]
+fn a_doc_with_no_leading_space_keeps_its_content_verbatim() {
+    // The raise strips exactly one leading space off each doc line's content — the inverse of
+    // the documented render's `%! ` marker space (program.md §10, §8), which the fixpoint above
+    // witnesses. The complementary case is a doc written cramped against the marker (`%!x`,
+    // valid concrete syntax): its content has no leading space to strip, so the strip returns it
+    // verbatim. A cramped `%!x` yields `"x"` — not `""` (which a blanking `unwrap_or_default()`
+    // would give this arm) and not `" x"`.
+    assert_eq!(
+        docs_of(&raised("%!x\np(a).\n")),
+        vec![vec!["x".to_owned()]],
+        "a cramped `%!x` doc keeps its content verbatim",
+    );
+    // A bare `%!` is the same arm with nothing to keep: an empty but present documentation.
+    assert_eq!(
+        docs_of(&raised("%!\np(a).\n")),
+        vec![vec![String::new()]],
+        "a bare `%!` doc is present but empty",
+    );
 }
 
 #[test]

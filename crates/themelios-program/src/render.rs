@@ -162,15 +162,17 @@ fn render_part_statements(
     Ok(())
 }
 
-/// A statement's documentation as leading `%!` doc-comment lines (grammar §5.11), verbatim
-/// and in `Ord` order — the inverse of the raise's doc read, so a documented program
-/// round-trips. Each doc string is emitted one line per `\n`, since the raise joins a
-/// statement's leading doc lines with `\n`; nothing is written after the `%!`, so the
-/// round-trip is a fixpoint (a marker space would accrue on each pass).
+/// A statement's documentation as leading `%!` doc-comment lines (grammar §5.11), in `Ord`
+/// order — the inverse of the raise's doc read, so a documented program round-trips (§10).
+/// Each doc string is emitted one line per `\n`, since the raise joins a statement's leading
+/// doc lines with `\n`. The marker is followed by one space, then the content; the raise
+/// strips exactly one leading space back off on read (§8), so the space is a rendering
+/// convention that does not accrue across passes, and a content that itself begins with a
+/// space is preserved (its own space survives the strip).
 fn render_docs(out: &mut String, statement: &WithProvenance<Statement>) {
     for doc in statement.provenance().annotations().doc() {
         for line in doc.split('\n') {
-            out.push_str("%!");
+            out.push_str("%! ");
             out.push_str(line);
             out.push('\n');
         }

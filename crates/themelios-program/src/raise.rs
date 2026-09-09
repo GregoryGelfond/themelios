@@ -883,11 +883,18 @@ fn statement_provenance(statement: &ast::Statement, parse: &dyn Reads) -> Proven
 }
 
 /// The content of a statement's leading doc comments, one string per line, in order
-/// (grammar §5.11); read through each node's `HasDocs`.
+/// (grammar §5.11); read through each node's `HasDocs`. One leading ASCII space — the `%! `
+/// marker's conventional space the documented render writes (§10) — is stripped from each
+/// line, the inverse of that render, so a documented value round-trips as a fixpoint (§8).
+/// Exactly one space is stripped, not `trim_start`: a second leading space is content the
+/// documentation (§6) keeps.
 fn doc_lines(statement: &ast::Statement) -> Vec<String> {
     fn lines_of(node: &impl HasDocs) -> Vec<String> {
         node.doc_lines()
-            .map(|line| line.content().to_owned())
+            .map(|line| {
+                let content = line.content();
+                content.strip_prefix(' ').unwrap_or(content).to_owned()
+            })
             .collect()
     }
     match statement {
