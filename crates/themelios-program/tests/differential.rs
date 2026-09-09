@@ -4,8 +4,10 @@
 //! estate's own parser sharing a misreading satisfy the reparse law while both wrong,
 //! and the authority does not share it — together with `evaluate` against the
 //! authority's ground arithmetic, `Symbol` order against its printing order, canonical
-//! equality against its parse-then-unparse, and the `i32` number width at the
-//! boundaries. Five independent-oracle checks, each with its named boundaries.
+//! equality against its parse-then-unparse, the `i32` number width at the boundaries,
+//! and the answer sets two renderings ground to, confirming the leading block's lift of
+//! the globally-gathered directives (§10) grounder-neutral. Six independent-oracle
+//! checks, each with its named boundaries.
 //!
 //! Feature-gated and out of band: run through pixi, `pixi run differential-program`.
 //! What it proves: agreement with the authority on the generated cases and the

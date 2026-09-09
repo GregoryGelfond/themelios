@@ -1214,6 +1214,7 @@ pub struct WithProvenance<T> { /* value: T, provenance: Provenance */ }
 impl<T> WithProvenance<T> {
     pub fn new(value: T, provenance: Provenance) -> WithProvenance<T>;
     pub fn constructed(value: T) -> WithProvenance<T>;                 // Origin::Constructed
+    pub fn constructed_with_doc(value: T, doc: impl Into<String>) -> WithProvenance<T>;
     pub fn get(&self) -> &T;
     pub fn provenance(&self) -> &Provenance;
     pub fn into_value(self) -> T;                                      // the owned complement to `get`
@@ -1221,6 +1222,14 @@ impl<T> WithProvenance<T> {
 }
 // PartialEq/Eq/PartialOrd/Ord/Hash for WithProvenance<T> delegate to `value`.
 ```
+
+**A documented node in one call.** `constructed_with_doc(value, doc)` is
+`constructed` plus a documentation block: the origin is `Constructed` (§7)
+and `doc` enters as a *single* element of the doc annotation set. A multi-line
+block passed as one newline-joined string stays one element with the author's
+line order intact inside it, and it unions and dedupes by content on merge
+(§6.3), so a consumer building a documented node need not thread a `Provenance`
+by hand.
 
 Per the §4 convention, a block's name (`Rule`, `Atom`, …) names the *content*
 type, and the node a program holds is `WithProvenance<Rule>`,
@@ -2165,9 +2174,13 @@ with what it proves and what it cannot (spec §10.2).
   fixpoint law needs, §10); `evaluate` agrees with the authority's ground-term
   arithmetic, and the authority's overflow behavior is recorded beside the
   refuse-on-overflow decision (§3.5); `Symbol`'s order agrees with the authority's
-  printing order (§3.1); and canonical-syntactic equality agrees with the
+  printing order (§3.1); canonical-syntactic equality agrees with the
   authority's parse-then-unparse on the theory-free, optimization-free fragment
-  (§5.2's arbiter).
+  (§5.2's arbiter); and the answer sets two renderings ground to agree where the
+  leading block lifts a globally-gathered directive (`#const`, `#theory`) but
+  differ where an `#include` is respliced across a `#program` boundary —
+  confirming the lift grounder-neutral and `#include`'s positional exclusion
+  sound (§10).
 - **The depth proof** (subprocess, spec §10.1): on a stated stack, a term nested far
   beyond any real program is constructed, canonicalized, compared, hashed,
   rendered, substituted into, evaluated, and dropped, and every walk survives — the
@@ -2317,8 +2330,9 @@ evolution with its argument, not a drift.
   operation, a domain object (a verdict included) is concrete, shared structure is a
   trait. `themelios-analysis` folds its bespoke `Finiteness` into the one concrete
   `Verdict` accordingly (analysis §5/§6, §12). And §6.2 now names the full
-  `WithProvenance` surface (`new`/`constructed`/`into_value`/`map`) the tier builds,
-  rather than leaving `map`/`into_value` to a plan-level note.
+  `WithProvenance` surface
+  (`new`/`constructed`/`constructed_with_doc`/`into_value`/`map`) the tier
+  builds, rather than leaving `map`/`into_value` to a plan-level note.
 - **The leading block for position-sensitive directives (§10).** Within each part,
   `#const` and `#theory` render in a fixed leading block before the part's other
   statements, which stay in `Ord` order — a canonical-form refinement. Their `Ord`

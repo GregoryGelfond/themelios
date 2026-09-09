@@ -18,7 +18,8 @@ tree-sitter-cli = ">=0.26.12"
 # The differential: membership, statement kinds, canonical spellings.
 differential = "cargo test -p themelios-syntax --features differential --locked --test differential -- --nocapture --test-threads=1 differential"
 # The program tier's differential: the rendered text, ground arithmetic, symbol order,
-# canonical equality, and the i32 width, each against the authority.
+# canonical equality, the i32 width, and the leading block's grounder-neutrality, each
+# against the authority.
 differential-program = "cargo test -p themelios-program --features differential --locked --test differential -- --nocapture --test-threads=1"
 # The leading-block grounder-neutrality confirmation (docs/design/program.md §10): the accepted
 # leading set (#const, #theory) grounds identically leading or authored; #include is
