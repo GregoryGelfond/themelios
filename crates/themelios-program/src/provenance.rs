@@ -34,6 +34,16 @@ impl<T> WithProvenance<T> {
         WithProvenance::new(value, Provenance::from(Origin::Constructed))
     }
 
+    /// A constructed node with a documentation block attached in one call: its origin is
+    /// `Constructed` (§6.2, §7) and `doc` is inserted as a single element of the doc
+    /// annotation set (§6.2). A multi-line block passed as one newline-joined string is
+    /// thus one element with the author's line order intact inside it, and it unions and
+    /// dedupes by content on merge (§6.3). This is `constructed` plus `Provenance::with_doc`,
+    /// so a consumer building a documented node need not thread a `Provenance` by hand.
+    pub fn constructed_with_doc(value: T, doc: impl Into<String>) -> WithProvenance<T> {
+        WithProvenance::new(value, Provenance::from(Origin::Constructed).with_doc(doc))
+    }
+
     /// The content (§6.2).
     pub fn get(&self) -> &T {
         &self.value
@@ -212,5 +222,76 @@ impl Annotations {
         self.reference.extend(other.reference);
         self.trace.extend(other.trace);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Origin, WithProvenance};
+
+    // ---- `constructed_with_doc`: origin and doc block in one call (§6.2, §6.3) ----
+
+    #[test]
+    fn constructed_with_doc_records_the_constructed_origin() {
+        // The origin half of the one-call ctor (§6.2, §7): a lone `Constructed` fact, as
+        // `constructed` gives — present alongside the doc, not in place of it.
+        let node = WithProvenance::constructed_with_doc(1, "d");
+        let origins: Vec<&Origin> = node.provenance().origins().collect();
+        assert_eq!(origins, [&Origin::Constructed]);
+    }
+
+    #[test]
+    fn constructed_with_doc_stores_the_doc_string() {
+        // The doc half, present alongside the origin — both, not one or the other (§6.2).
+        let node = WithProvenance::constructed_with_doc(1, "d");
+        let docs: Vec<&str> = node.provenance().annotations().doc().collect();
+        assert_eq!(docs, ["d"]);
+    }
+
+    #[test]
+    fn constructed_with_doc_keeps_a_multiline_doc_as_one_ordered_element() {
+        // A multi-line block is one newline-joined element (§6.2): the set holds one
+        // string, not two lines, with the author's line order intact inside it.
+        let node = WithProvenance::constructed_with_doc(1, "line one\nline two");
+        let docs: Vec<&str> = node.provenance().annotations().doc().collect();
+        assert_eq!(docs, ["line one\nline two"]);
+    }
+
+    #[test]
+    fn equal_nodes_with_equal_docs_are_one_content() {
+        // The erasure (§6.2): content-equal carriers are equal, so a set holds one.
+        let a = WithProvenance::constructed_with_doc(1, "d");
+        let b = WithProvenance::constructed_with_doc(1, "d");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn merging_the_same_doc_dedupes_to_one_element() {
+        // The union-merge dedupes by content (§6.3): two `"d"`s collapse to a single one.
+        let a = WithProvenance::constructed_with_doc(1, "d");
+        let b = WithProvenance::constructed_with_doc(1, "d");
+        let merged = a.provenance().clone().merge(b.provenance().clone());
+        let docs: Vec<&str> = merged.annotations().doc().collect();
+        assert_eq!(docs, ["d"]);
+    }
+
+    #[test]
+    fn merging_provenances_is_commutative() {
+        // Merge is commutative (§6.3): the order of the two provenances does not matter.
+        let a = WithProvenance::constructed_with_doc(1, "one");
+        let b = WithProvenance::constructed_with_doc(1, "two");
+        let ab = a.provenance().clone().merge(b.provenance().clone());
+        let ba = b.provenance().clone().merge(a.provenance().clone());
+        assert_eq!(ab, ba);
+    }
+
+    #[test]
+    fn merging_different_docs_keeps_both() {
+        // The union loses nothing (§6.3): distinct docs on equal content both survive.
+        let a = WithProvenance::constructed_with_doc(1, "one");
+        let b = WithProvenance::constructed_with_doc(1, "two");
+        let merged = a.provenance().clone().merge(b.provenance().clone());
+        let docs: Vec<&str> = merged.annotations().doc().collect();
+        assert_eq!(docs, ["one", "two"]);
     }
 }
