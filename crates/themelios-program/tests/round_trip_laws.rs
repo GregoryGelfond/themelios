@@ -232,6 +232,27 @@ fn a_part_structured_program_round_trips_with_its_program_headers() {
     round_trips("#program acid.\nr.\n", Dialect::Clingo);
 }
 
+#[test]
+fn a_leading_const_round_trips_and_leads_the_render() {
+    // A `#const` renders in the leading block, before the rules (docs/design/program.md §10) —
+    // though its `Ord` position sorts a directive below them. A program is a set, so render then
+    // reparse then raise recovers it up to provenance whatever the canonical order places first.
+    let program = raised("p :- q.\n#const k = 3.\nq.\n", Dialect::Clingo);
+    let rendered = render(&program, Dialect::Clingo).expect("the program renders");
+    assert!(
+        rendered.starts_with("#const k = 3."),
+        "the const leads the render: {rendered:?}",
+    );
+    let source = Source::new(SourceId::new(0), rendered.clone()).expect("the rendering admits");
+    let reparsed = raise(&parse(&source, Dialect::Clingo));
+    assert!(
+        reparsed.diagnostics().is_empty(),
+        "the leading-const rendering reparses cleanly: {:?}",
+        reparsed.diagnostics(),
+    );
+    assert_eq!(&program, reparsed.program(), "round-trip up to provenance");
+}
+
 // ---- the ASP-Core-2 dialect: the query, and the string rule that spells everything ----
 
 #[test]

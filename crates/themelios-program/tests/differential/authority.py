@@ -1,10 +1,10 @@
 """The authority's readings for the program and analysis differentials
 (docs/design/program.md §16; docs/design/analysis.md §10; docs/grammar.md §3):
-the pinned clingo 5.8.2, driven in one of five modes chosen by the first
+the pinned clingo 5.8.2, driven in one of six modes chosen by the first
 argument, one JSON object leaving on stdout. Both tiers' tests/differential.rs
-spawn this one driver — the program tier for `parse`, `eval`, and `order`, the
-analysis tier for `safety` and `ground`. Test-only: run under the pixi
-environment; never shipped, never imported by anything.
+spawn this one driver — the program tier for `parse`, `eval`, `order`, and
+`models`, the analysis tier for `safety` and `ground`. Test-only: run under the
+pixi environment; never shipped, never imported by anything.
 
 - `parse`: the program arrives on stdin; the reply is the clingo version, whether
   the parser accepted it, and the statements it built — each as its AST type and
@@ -24,6 +24,14 @@ environment; never shipped, never imported by anything.
   stdin; the reply gives them sorted by the authority's total term order, and — in
   the input's order — each spelling as the authority prints it, so the caller can
   confirm every spelling it sent is already the authority's own.
+- `models`: the program arrives on stdin; the authority grounds its base part and
+  enumerates every answer set, the reply giving each as its sorted shown symbols
+  with the collection itself sorted, plus any grounding refusal — the program
+  tier's render-order neutrality check (docs/design/program.md §10, §16). Two
+  renderings of the same statements are grounder-equivalent exactly when their
+  `models` are equal, so lifting a directive to a leading block is confirmed
+  neutral (or not) by comparing the two placements' answer sets. An `#include` is
+  resolved from the working directory, as in `parse`.
 - `safety`: the program arrives on stdin; the authority grounds it and the reply
   says whether it is safe — the authority reports an unsafe variable on the
   diagnostic logger and stops grounding, so `safe` is the absence of that report.
@@ -106,6 +114,44 @@ def read_order() -> dict:
         "version": VERSION,
         "sorted": [str(symbol) for _, symbol in ordered],
         "printed": [str(symbol) for _, symbol in parsed],
+    }
+
+
+def read_models() -> dict:
+    """The authority's answer sets for the program on stdin (docs/design/program.md
+    §10, §16): the render-order neutrality check. Grounds the base part and enumerates
+    every answer set, each returned as its sorted shown symbols, the collection itself
+    sorted — so two renderings of the same statements are grounder-equivalent exactly
+    when their `models` are equal. `error` carries a grounding refusal (an unsafe or
+    otherwise rejected program), so a placement that makes a program ill-formed is told
+    apart from one that merely changes the models. An `#include` resolves from the
+    working directory the caller sets, and a `#program` directive the include splices
+    switches the part subsequent statements join — so grounding the base part alone
+    witnesses an include's position-sensitivity."""
+    program = sys.stdin.read()
+    messages: list[str] = []
+    control = clingo.Control(
+        arguments=["--models=0", "--warn=none"],
+        logger=lambda code, message: messages.append(message),
+    )
+    error = None
+    models: list[list[str]] = []
+    try:
+        control.add("base", [], program)
+        control.ground([("base", [])])
+        control.solve(
+            on_model=lambda model: models.append(
+                sorted(str(symbol) for symbol in model.symbols(shown=True))
+            )
+        )
+    except RuntimeError as runtime_error:
+        error = str(runtime_error)
+    models.sort()
+    return {
+        "version": VERSION,
+        "models": models,
+        "error": error,
+        "messages": messages,
     }
 
 
@@ -208,6 +254,7 @@ MODES = {
     "parse": read_parse,
     "eval": read_eval,
     "order": read_order,
+    "models": read_models,
     "safety": read_safety,
     "ground": read_ground,
 }

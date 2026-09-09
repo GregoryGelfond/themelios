@@ -1668,6 +1668,27 @@ The set-shaped children render in `Ord` order (§4), so the output is
 deterministic. A single applied-form printer serves a function term and an atom,
 so the two cannot drift.
 
+**The leading block.** Within each part, the position-sensitive directives the
+grounder gathers *globally* — `#const` and `#theory` — render in a fixed leading
+block, before the part's other statements; the rest follow in `Ord` order. This
+is a canonical-form refinement (§18): a directive's `Ord` position sorts it
+*below* the rules that use it (the statement order §4 gives), which inverts the
+definitions-first convention a reader and the grounder both expect, so the render
+lifts these two to the front. The block's intra-order is fixed and deterministic
+— `#const` before `#theory`, each in `Ord` order among its own kind — so the same
+statements always render the same text, and the round-trip law below still holds
+(a program is a set, so its equality is order-independent). The lift is
+**grounder-neutral**, confirmed against the pinned authority (§16): `#const` and
+`#theory` are gathered before instantiation, so a rule may reference a constant
+defined after it and a theory atom may precede its definition, each grounding to
+the same answer sets as the definition-first order. `#include` is deliberately
+*not* in the block: the grounder splices the included file at the directive's
+textual position, so its placement is grounder-*sensitive* — an `#include` moved
+across a `#program` boundary changes what is grounded — and it renders in ordinary
+`Ord` order with the rest. The membership differential reads statements into an
+order-insensitive set and so cannot witness this reordering; the leading set is
+settled empirically, by an answer-set comparison against the authority (§16).
+
 **Spelling a lone value.** A consumer holding a single value rather than a whole
 program spells it through this same printer. `Symbol::spell(&self, Dialect) ->
 Result<String, Unspellable>` and `Term::spell(&self, Dialect) -> Result<String,
@@ -2298,3 +2319,16 @@ evolution with its argument, not a drift.
   `Verdict` accordingly (analysis §5/§6, §12). And §6.2 now names the full
   `WithProvenance` surface (`new`/`constructed`/`into_value`/`map`) the tier builds,
   rather than leaving `map`/`into_value` to a plan-level note.
+- **The leading block for position-sensitive directives (§10).** Within each part,
+  `#const` and `#theory` render in a fixed leading block before the part's other
+  statements, which stay in `Ord` order — a canonical-form refinement. Their `Ord`
+  position sorts a directive *below* the rules that use it, inverting the
+  definitions-first convention a reader and the grounder both expect; the two are
+  gathered globally by the grounder, so lifting them to the front is
+  grounder-neutral. `#include` is excluded — its grounding is *positional* (the
+  grounder splices the file at the directive's textual position, and moving it
+  across a `#program` boundary changes what is grounded), so it renders in `Ord`
+  order with the rest. The accepted set is settled empirically, by an answer-set
+  comparison against the pinned authority (§16): the order-insensitive membership
+  differential reads statements into a set and so cannot witness the reordering,
+  so the neutrality is confirmed by the stronger grounding check instead.

@@ -1,7 +1,7 @@
+#const imin = 4.
 1 { p((1 .. 4)) } 1.
 #show show/0.
 #show p(X) : p(X).
-#const imin = 4.
 #include <incmode>.
 #program step(k).
 q((k + 1)) | k < 3.

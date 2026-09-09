@@ -20,6 +20,10 @@ differential = "cargo test -p themelios-syntax --features differential --locked 
 # The program tier's differential: the rendered text, ground arithmetic, symbol order,
 # canonical equality, and the i32 width, each against the authority.
 differential-program = "cargo test -p themelios-program --features differential --locked --test differential -- --nocapture --test-threads=1"
+# The leading-block grounder-neutrality confirmation (docs/design/program.md §10): the accepted
+# leading set (#const, #theory) grounds identically leading or authored; #include is
+# position-sensitive and excluded. A named subset of differential-program.
+differential-program-directives = "cargo test -p themelios-program --features differential --locked --test differential -- --nocapture --test-threads=1 grounder"
 # The analysis tier's differential: the safety divergence against the authority's grounder.
 differential-analysis = "cargo test -p themelios-analysis --features differential --locked --test differential -- --nocapture --test-threads=1"
 # The authority's nesting ceiling per family, for the depth constant's

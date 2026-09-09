@@ -934,6 +934,137 @@ fn the_number_width_is_the_authoritys_at_the_i32_boundaries() {
     assert_eq!(number(4), 0, "the authority wraps `2^32`");
 }
 
+// ---- check 6: the leading block grounds as the authored order does (§10, §16) ----
+
+/// The authority's answer sets for a program grounded from `cwd`: every answer set as its
+/// sorted shown symbols, the collection sorted, plus any grounding refusal — the reading the
+/// leading-block neutrality check compares (docs/design/program.md §10).
+struct Models {
+    models: Vec<Vec<String>>,
+    error: Option<String>,
+}
+
+fn authority_models(program: &str, cwd: &Path) -> Models {
+    let reading = authority("models", program, cwd);
+    let models = reading["models"]
+        .as_array()
+        .expect("models is an array")
+        .iter()
+        .map(|model| {
+            model
+                .as_array()
+                .expect("a model is an array of symbols")
+                .iter()
+                .map(|symbol| symbol.as_str().expect("a symbol string").to_owned())
+                .collect()
+        })
+        .collect();
+    let error = reading["error"].as_str().map(str::to_owned);
+    Models { models, error }
+}
+
+/// Grounder-equivalence: two renderings of the same statements ground to the same answer sets,
+/// neither refused — the neutrality criterion the leading block must satisfy (§10). Confirms
+/// that lifting a directive to the front of its part changes no grounding.
+fn assert_grounder_equivalent(kind: &str, authored: &str, leading: &str, cwd: &Path) {
+    let authored = authority_models(authored, cwd);
+    let leading = authority_models(leading, cwd);
+    assert!(
+        authored.error.is_none(),
+        "the authored `{kind}` program grounds cleanly: {:?}",
+        authored.error,
+    );
+    assert!(
+        leading.error.is_none(),
+        "the leading `{kind}` program grounds cleanly: {:?}",
+        leading.error,
+    );
+    assert_eq!(
+        authored.models, leading.models,
+        "`{kind}`: the leading placement grounds to different answer sets than the authored one",
+    );
+}
+
+/// The leading block lifts a position-sensitive directive to the front of its part (§10). The
+/// membership checks above read statements into an order-insensitive set (§5.2), so they cannot
+/// witness whether that lift changes clingo's grounding; this settles it against the authority's
+/// answer sets. `#const` and `#theory` are gathered globally by the grounder before
+/// instantiation — a rule may reference a constant defined after it, and a theory atom may
+/// precede its definition, each grounding identically to the definition-first order — so both
+/// lead. (A theory program does not round-trip through this tier, §5, so this text-level check
+/// against the authority is `#theory`'s confirmation.)
+#[test]
+fn the_leading_block_is_grounder_neutral_for_const_and_theory() {
+    // #const: a rule's forward reference to a constant defined after it grounds to the same
+    // value as the definition-first order.
+    assert_grounder_equivalent(
+        "#const",
+        "p(n).\n#const n = 3.\n",
+        "#const n = 3.\np(n).\n",
+        &corpus_dir(),
+    );
+    // #theory: a theory atom before its definition grounds to the same answer sets as the
+    // definition-first order.
+    let theory = "#theory t { t { }; &a/0 : t, any }.";
+    assert_grounder_equivalent(
+        "#theory",
+        &format!("{{ p; q }}.\n&a{{ }}.\n{theory}\n"),
+        &format!("{theory}\n{{ p; q }}.\n&a{{ }}.\n"),
+        &corpus_dir(),
+    );
+}
+
+/// `#include` is deliberately *not* in the leading set. Unlike the globally-gathered `#const`
+/// and `#theory`, an `#include` is a positional splice: the grounder inlines the file at the
+/// directive's textual position, and moving it across a `#program` boundary changes which part
+/// the included content joins — so its answer sets change with its position. Its grounding is
+/// therefore position-*dependent*, so it renders in ordinary `Ord` order with the rest, never
+/// promoted to the definitions-first block (§10). Within a single part the per-part reorder
+/// happens to be neutral (the control below) — includes are scoped splices and ASP rules are
+/// order-insensitive — but that neutrality is incidental, not the global-gathering guarantee
+/// `#const`/`#theory` carry, so the conservative choice keeps `#include` in `Ord` order.
+#[test]
+fn include_is_grounder_position_sensitive_so_it_is_excluded_from_the_leading_block() {
+    let dir = include_fixture_dir();
+    // Position-sensitive: the same `#include` before vs after a `#program` boundary grounds the
+    // base part to different answer sets — the fact `q` joins base in one order and `step` in
+    // the other.
+    let before = authority_models("#include \"pure.lp\".\n#program step.\nz.\n", &dir);
+    let after = authority_models("#program step.\n#include \"pure.lp\".\nz.\n", &dir);
+    assert!(
+        before.error.is_none() && after.error.is_none(),
+        "both include programs ground cleanly ({:?}, {:?})",
+        before.error,
+        after.error,
+    );
+    assert_ne!(
+        before.models, after.models,
+        "`#include` is position-sensitive: its splice position changes the base answer sets, so \
+         it is excluded from the leading block",
+    );
+    // Control: within a single part the per-part reorder itself is neutral — but `#include` is
+    // excluded on the positional grounding above, not on this incidental within-part equivalence.
+    let control_authored = authority_models("a.\n#include \"pure.lp\".\nb.\n", &dir);
+    let control_leading = authority_models("#include \"pure.lp\".\na.\nb.\n", &dir);
+    assert_eq!(
+        control_authored.models, control_leading.models,
+        "the within-part include reorder is neutral (the control)",
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A fresh directory holding the include fixture the neutrality check resolves from the working
+/// directory — `pure.lp`, a single fact whose part membership the splice position decides.
+fn include_fixture_dir() -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "themelios-program-include-neutrality-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).expect("the include fixture directory is created");
+    fs::write(dir.join("pure.lp"), "q.\n").expect("the include fixture writes");
+    dir
+}
+
 // ---- the harness's own spelling logic, held without the authority ----
 
 /// `spell_symbol` prints each variant as the authority does (§3.1) — the fixed points the

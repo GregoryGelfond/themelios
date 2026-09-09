@@ -4,8 +4,10 @@
 //! the simple one — binary operators and intervals fully parenthesized, so the tree's
 //! grouping is carried in the text with no precedence to re-derive on the way back; a
 //! nullary function bare; a one-element tuple keeping the comma that distinguishes it from
-//! a grouped term; the set-shaped children in `Ord` order (§4). A single applied-form
-//! printer serves a function term and an atom, so the two cannot drift. One value refuses:
+//! a grouped term; the set-shaped children in `Ord` order (§4); and, within a part, the
+//! globally-gathered directives `#const` and `#theory` in a fixed leading block before the
+//! rest (§10). A single applied-form printer serves a function term and an atom, so the two
+//! cannot drift. One value refuses:
 //! a string whose value the chosen dialect cannot spell (grammar §4.4/§6.2/§9).
 //!
 //! The walk down the structural spine — program to statement to head and body to literal
@@ -144,15 +146,22 @@ fn render_part_header(out: &mut String, part: &Part) {
     out.push_str(".\n");
 }
 
-/// A part's statements, in `Ord` order (§4), one per line — each preceded by its
-/// documentation when `docs` is set.
+/// A part's statements (docs/design/program.md §10): the leading block first — the
+/// position-sensitive directives that lead (see [`leads`]), in `Ord` order among themselves
+/// (so `#const` before `#theory`) — then the rest in `Ord` order (§4), one per line, each
+/// preceded by its documentation when `docs` is set. `part.statements()` yields `Ord` order,
+/// so filtering it into (the leading kinds) then (the rest) is a stable partition: it is
+/// deterministic and keeps each block's mutual `Ord` order.
 fn render_part_statements(
     out: &mut String,
     part: &Part,
     dialect: Dialect,
     docs: bool,
 ) -> Result<(), Unspellable> {
-    for statement in part.statements() {
+    let statements: Vec<&WithProvenance<Statement>> = part.statements().collect();
+    let leading = statements.iter().copied().filter(|s| leads(s.get()));
+    let rest = statements.iter().copied().filter(|s| !leads(s.get()));
+    for statement in leading.chain(rest) {
         if docs {
             render_docs(out, statement);
         }
@@ -160,6 +169,22 @@ fn render_part_statements(
         out.push('\n');
     }
     Ok(())
+}
+
+/// Whether a statement leads its part's canonical render (docs/design/program.md §10): a
+/// position-sensitive directive whose leading placement grounds identically to its authored
+/// placement, so the lift preserves meaning. `#const` and `#theory` are gathered globally by
+/// the grounder before instantiation — their placement does not change what is grounded — so
+/// they lead, which also restores the definitions-first convention their `Ord` position would
+/// lose (a directive sorts *below* the rules that use it, §4). `#include` is deliberately not
+/// here: the grounder splices the included file at the directive's position, so its placement
+/// is *not* grounder-neutral; it renders in ordinary `Ord` order with the rest. The set is the
+/// one the whole-program grounder-neutrality confirmation settled (§10).
+fn leads(statement: &Statement) -> bool {
+    matches!(
+        statement,
+        Statement::Const(_) | Statement::TheoryDefinition(_)
+    )
 }
 
 /// A statement's documentation as leading `%!` doc-comment lines (grammar §5.11), in `Ord`
@@ -1582,6 +1607,96 @@ mod tests {
                 .spell(Dialect::Clingo)
                 .expect("spells"),
             "\"abc\"",
+        );
+    }
+
+    // ---- the leading block for position-sensitive directives (§10) ----
+
+    /// A `#const` renders in the leading block, before the part's other statements, though its
+    /// `Ord` position (§4) sorts a directive *below* the rules that use it. `#const` gathers
+    /// globally in the grounder regardless of textual position, so the lift is grounder-neutral
+    /// (docs/design/program.md §10) — the whole-program authority holds that neutrality.
+    #[test]
+    fn a_const_renders_in_the_leading_block_before_the_rule() {
+        let constant = Const::new(name("k"), Term::from(3), None);
+        let fact = Rule::fact(Atom::constant(name("p")));
+        let program = Program::of([Statement::Const(constant), Statement::Rule(fact)]);
+        assert_eq!(
+            render(&program, Dialect::Clingo).expect("the program renders"),
+            "#const k = 3.\np.\n",
+        );
+    }
+
+    /// A `#theory` definition leads too (docs/design/program.md §10). A theory-bearing program
+    /// does not round-trip cleanly (the theory carve-out, §5), so the leading placement is read
+    /// off the rendered text directly: the render begins with the `#theory` block, the rule
+    /// following it.
+    #[test]
+    fn a_theory_definition_renders_in_the_leading_block_before_the_rule() {
+        use std::collections::BTreeSet;
+        let theory = TheoryDefinition {
+            name: name("t"),
+            terms: BTreeSet::new(),
+            atoms: BTreeSet::new(),
+        };
+        let fact = Rule::fact(Atom::constant(name("p")));
+        let program = Program::of([Statement::TheoryDefinition(theory), Statement::Rule(fact)]);
+        let rendered = render(&program, Dialect::Clingo).expect("the program renders");
+        assert!(
+            rendered.starts_with("#theory t "),
+            "the theory definition leads: {rendered:?}",
+        );
+        assert!(
+            rendered.trim_end().ends_with("p."),
+            "the rule follows the leading block: {rendered:?}",
+        );
+    }
+
+    /// The leading block's fixed intra-order (docs/design/program.md §10): `#const` before
+    /// `#theory` — the order the statement set yields among the leading kinds (a `Const` sorts
+    /// before a `TheoryDefinition`, §4) — and the whole block before the ordinary statements.
+    #[test]
+    fn the_leading_block_orders_const_before_theory_before_the_rest() {
+        use std::collections::BTreeSet;
+        let constant = Const::new(name("k"), Term::from(3), None);
+        let theory = TheoryDefinition {
+            name: name("t"),
+            terms: BTreeSet::new(),
+            atoms: BTreeSet::new(),
+        };
+        let fact = Rule::fact(Atom::constant(name("p")));
+        // Built in an order that is neither the leading order nor `Ord` order.
+        let program = Program::of([
+            Statement::Rule(fact),
+            Statement::TheoryDefinition(theory),
+            Statement::Const(constant),
+        ]);
+        let rendered = render(&program, Dialect::Clingo).expect("the program renders");
+        let const_at = rendered.find("#const").expect("the const renders");
+        let theory_at = rendered.find("#theory").expect("the theory renders");
+        let rule_at = rendered.find("p.").expect("the rule renders");
+        assert!(const_at < theory_at, "#const leads #theory: {rendered:?}");
+        assert!(
+            theory_at < rule_at,
+            "the leading block precedes the rest: {rendered:?}",
+        );
+    }
+
+    /// The render is a pure function of the program value, and a program is a set, so the same
+    /// statements render identically whatever order they were added — the leading block does not
+    /// depend on insertion order (docs/design/program.md §10).
+    #[test]
+    fn the_leading_block_is_independent_of_insertion_order() {
+        let constant = Const::new(name("k"), Term::from(3), None);
+        let fact = Rule::fact(Atom::constant(name("p")));
+        let one = Program::of([
+            Statement::Const(constant.clone()),
+            Statement::Rule(fact.clone()),
+        ]);
+        let two = Program::of([Statement::Rule(fact), Statement::Const(constant)]);
+        assert_eq!(
+            render(&one, Dialect::Clingo).expect("renders"),
+            render(&two, Dialect::Clingo).expect("renders"),
         );
     }
 }
