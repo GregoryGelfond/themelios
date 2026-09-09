@@ -390,12 +390,18 @@ and the macro dialect's splices (grammar §9) — is the conversion between Rust
 values and `Symbol`s. It is defined once, here, so those three never diverge.
 
 ```rust
-/// A Rust value that denotes a ground symbol. Not `From`/`Into`: those name
-/// only "can convert," while this names a KR relationship — *this value denotes
-/// this ground term* — and, being this crate's own trait, a downstream library
-/// may implement it for its own types (the orphan rule would block a bare
-/// `From<Symbol>`), which is what lets a standard library of `@`-functions
-/// (a mathematics, string, or date/time library) bridge its types.
+/// A Rust value that denotes a ground symbol. The conversion surface is a pair of
+/// bespoke traits — `ToSymbol` and `FromSymbol` (below) — rather than
+/// `From`/`Into`/`TryFrom`, because the trait shape is what the job needs: the
+/// conversion is a denotation read by reference (`&self` here, `&Symbol` on the
+/// way back), where `From`/`Into` consume by value; that by-ref shape is what
+/// admits `impl ToSymbol for str`, since the unsized `str` cannot be the by-value
+/// `T` of `From<T>`; `FromSymbol` refuses with one fixed `FromSymbolError`, where
+/// each `TryFrom` impl would declare its own associated `Error`; a trait this
+/// crate owns leaves room for blanket impls that `std`'s `From`/`Into` blankets
+/// would collide with; and a later interner or context can be threaded through
+/// its methods. The relation it names is a KR one — *this value denotes this
+/// ground term*.
 pub trait ToSymbol { fn to_symbol(&self) -> Symbol; }
 
 /// The inverse: extract a Rust value from a ground symbol, refusing with the
