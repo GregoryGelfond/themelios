@@ -20,11 +20,14 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use themelios_base::diagnostic::{Diagnostic, DiagnosticId, Label, Severity, ToDiagnostic};
+use themelios_base::source::{Source, TooLarge};
 use themelios_base::span::Location;
 use themelios_syntax::ast::{
     self, Associativity, AstToken, Constant, HasDocs, HasGuards, Negation, Radix,
 };
-use themelios_syntax::parse::Parse;
+use themelios_syntax::diagnostic::SyntaxError;
+use themelios_syntax::dialect::Dialect;
+use themelios_syntax::parse::{Parse, parse, parse_str};
 use themelios_syntax::tree::{Asp, AstNode, SyntaxKind, SyntaxNode, TextRange};
 
 use crate::program::{
@@ -762,6 +765,89 @@ impl Raised {
     /// The owned program, dropping the diagnostics (§8).
     pub fn into_program(self) -> Program {
         self.program
+    }
+}
+
+/// A [`Program`] raised straight from source text (§5.1): the syntax [`Parse`] and the
+/// [`Raised`] it lowered to, held together, so a consumer reaches a program in one call
+/// without threading [`parse`] into [`raise`] by hand. [`raise_source`] and [`raise_str`]
+/// mint one.
+///
+/// It **retains the whole syntax parse** — the rowan tree — beside the program, for the
+/// value's whole life, so it holds the tree's memory that long. A consumer that needs only
+/// the program should take [`into_program`](RaisedSource::into_program), which drops the
+/// tree, or thread `raise(&parse(…))` itself; hold a `RaisedSource` only while the
+/// source-level diagnostics beside the program still matter.
+#[derive(Clone, Debug)]
+pub struct RaisedSource {
+    parse: Parse<ast::Program>,
+    raised: Raised,
+}
+
+/// Raise a program straight from an admitted [`Source`] (§5.1): [`parse`] under `dialect`,
+/// then [`raise`], bundled into a [`RaisedSource`]. Total — a `Source` was admitted within
+/// the coordinate limit, so nothing here refuses (§13). O(text).
+#[must_use]
+pub fn raise_source(source: &Source, dialect: Dialect) -> RaisedSource {
+    let parse = parse(source, dialect);
+    let raised = raise(&parse);
+    RaisedSource { parse, raised }
+}
+
+/// Raise a program straight from text (§5.1): [`parse_str`] under `dialect`, then [`raise`],
+/// bundled — the id-less one-shot door for a consumer with no [`Source`] to stamp. Refuses
+/// [`TooLarge`] exactly as [`parse_str`] does — text past the coordinate limit, admission's
+/// one condition (syntax §12.4, no truncation) — and is total otherwise; O(text).
+pub fn raise_str(text: &str, dialect: Dialect) -> Result<RaisedSource, TooLarge> {
+    let parse = parse_str(text, dialect)?;
+    let raised = raise(&parse);
+    Ok(RaisedSource { parse, raised })
+}
+
+impl RaisedSource {
+    /// The raised program (§5.1) — the [`raise`]'s [`program`](Raised::program).
+    pub fn program(&self) -> &Program {
+        self.raised.program()
+    }
+
+    /// The owned program, dropping the retained syntax tree and the diagnostics (§5.1) —
+    /// the [`raise`]'s [`into_program`](Raised::into_program).
+    pub fn into_program(self) -> Program {
+        self.raised.into_program()
+    }
+
+    /// The parse's syntax diagnostics, in source order (§5.1) — [`Parse::diagnostics`].
+    pub fn syntax_diagnostics(&self) -> &[SyntaxError] {
+        self.parse.diagnostics()
+    }
+
+    /// The raise's lowering diagnostics, in source order (§5.1) — [`Raised::diagnostics`].
+    pub fn lowering_diagnostics(&self) -> &[LowerError] {
+        self.raised.diagnostics()
+    }
+
+    /// Both sides merged into base's common [`Diagnostic`] (§5.1, base §6.5), in pipeline
+    /// order — every syntax diagnostic, then every lowering one — so a consumer renders the
+    /// whole source-to-program report through one model. O(diagnostics).
+    pub fn diagnostics(&self) -> Vec<Diagnostic> {
+        self.syntax_diagnostics()
+            .iter()
+            .map(ToDiagnostic::to_diagnostic)
+            .chain(
+                self.lowering_diagnostics()
+                    .iter()
+                    .map(ToDiagnostic::to_diagnostic),
+            )
+            .collect()
+    }
+
+    /// Whether either side carries an `Error`-severity diagnostic (§5.1) — the
+    /// language-membership signal a consumer gates on. The syntax side reads through the
+    /// parse's own severity-correct [`has_errors`](Parse::has_errors), since a syntax
+    /// diagnostic may be a mere warning (a misplaced doc comment, say); every lowering
+    /// diagnostic is `Error`-severity (§8), so a non-empty lowering batch is itself an error.
+    pub fn has_errors(&self) -> bool {
+        self.parse.has_errors() || !self.lowering_diagnostics().is_empty()
     }
 }
 
@@ -2205,4 +2291,97 @@ fn is_constant_term(term: &Term) -> bool {
             Term::Variable(_) | Term::Pool(_) | Term::Interval { .. }
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use themelios_base::source::SourceId;
+
+    /// Admit a fixture through the file door — a real `Source`, so `raise_source`, which
+    /// wants one, is exercised as a consumer reaches it.
+    fn admitted(text: &str) -> Source {
+        Source::new(SourceId::new(0), text.to_owned()).expect("the fixture admits")
+    }
+
+    #[test]
+    fn raise_source_bundles_the_raise_of_a_clean_source_unchanged() {
+        let source = admitted("p(1). q(X) :- p(X).");
+        let raised = raise_source(&source, Dialect::Clingo);
+        assert!(!raised.has_errors());
+        // Bundling parse-then-raise changes nothing: the program is the one the two steps
+        // produce threaded by hand.
+        assert_eq!(
+            raised.program(),
+            raise(&parse(&source, Dialect::Clingo)).program()
+        );
+    }
+
+    #[test]
+    fn raise_source_surfaces_a_syntax_error_through_the_syntax_diagnostics() {
+        // `$$$` is lexical garbage the parser carries in error nodes with a diagnostic.
+        let raised = raise_source(&admitted("$$$ p."), Dialect::Clingo);
+        assert!(raised.has_errors());
+        assert!(!raised.syntax_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn raise_source_surfaces_a_lowering_error_through_the_lowering_diagnostics() {
+        // Syntactically a fact; the numeral is past the engine's range, so only the raise
+        // objects (§3.1) — the parse is clean, the lowering is not.
+        let raised = raise_source(&admitted("p(99999999999999999999)."), Dialect::Clingo);
+        assert!(raised.has_errors());
+        assert!(raised.syntax_diagnostics().is_empty());
+        assert!(!raised.lowering_diagnostics().is_empty());
+    }
+
+    #[test]
+    fn raise_source_merges_both_sides_in_pipeline_order() {
+        // One statement that parses clean but holds an out-of-range numeral, one the parser
+        // recovers with a diagnostic: the merged report carries both sides.
+        let raised = raise_source(
+            &admitted("p(99999999999999999999). $$$ q."),
+            Dialect::Clingo,
+        );
+        assert!(!raised.syntax_diagnostics().is_empty());
+        assert!(!raised.lowering_diagnostics().is_empty());
+        // The merge is every syntax diagnostic, then every lowering one, each in base's
+        // common form — so the count is the sum and the order is the pipeline's stages.
+        let syntax = raised
+            .syntax_diagnostics()
+            .iter()
+            .map(ToDiagnostic::to_diagnostic);
+        let lowering = raised
+            .lowering_diagnostics()
+            .iter()
+            .map(ToDiagnostic::to_diagnostic);
+        let expected: Vec<Diagnostic> = syntax.chain(lowering).collect();
+        assert_eq!(raised.diagnostics(), expected);
+    }
+
+    #[test]
+    fn into_program_yields_the_raised_program() {
+        let source = admitted("p(1).");
+        let raised = raise_source(&source, Dialect::Clingo);
+        // Taking the program by value (dropping the retained tree) yields the same program
+        // the borrowing accessor returns.
+        let borrowed = raised.program().clone();
+        assert_eq!(raised.into_program(), borrowed);
+    }
+
+    #[test]
+    fn raise_str_raises_id_less_source_text() {
+        // The id-less door: no `Source` to stamp, the fact still raises into the program.
+        let raised = raise_str("p(1).", Dialect::Clingo).expect("the text admits");
+        assert!(!raised.has_errors());
+        assert_eq!(raised.program().statements().count(), 1);
+    }
+
+    #[test]
+    fn raise_str_admits_ordinary_text() {
+        // The `TooLarge` arm needs a >4 GiB `&str` to reach, so only the admitting arm is
+        // testable; the `?` keeps the door total on this path.
+        let raised = raise_str("a. b :- a.", Dialect::Clingo).expect("the text admits");
+        assert!(!raised.has_errors());
+    }
 }
