@@ -23,7 +23,7 @@ pub use crate::provenance::{Annotations, Origin, Provenance, TransformTag, WithP
 pub use crate::raise::{LowerError, LowerErrorKind, Raised};
 pub use crate::render::Unspellable;
 pub use crate::symbol::{
-    FromSymbol, FromSymbolError, Name, NotAVariable, NotAnIdentifier, NotAnInteger, Sign,
+    FromSymbol, FromSymbolError, Name, NotAVariable, NotAnIdentifier, NotAnInteger, Segment, Sign,
     Signature, Symbol, ToSymbol, VarName,
 };
 pub use crate::term::{EmptyPool, EvalError, Term, Variable};

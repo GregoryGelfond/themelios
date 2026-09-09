@@ -837,14 +837,59 @@ pub trait FromSymbol: Sized {
     fn from_symbol(symbol: &Symbol) -> Result<Self, FromSymbolError>;
 }
 
-/// The symbol a `FromSymbol` conversion did not match, and the class it expected
-/// (§3.4). The offending symbol is carried by value (spec §1.5).
+/// One step of a decode locus (§3.4): a position of an enclosing symbol a
+/// `FromSymbol` conversion had descended into when it refused. Positional today —
+/// `Argument(i)` is the `i`-th argument of a function or tuple. `#[non_exhaustive]`
+/// leaves room for the deferred field/kind taxonomy without breaking a downstream
+/// `match`. Derives `Serialize`/`Deserialize` under the `serde` feature, so the
+/// locus crosses a service boundary as structured data.
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Segment {
+    /// The `i`-th positional argument of the enclosing symbol.
+    Argument(usize),
+}
+
+/// The symbol a `FromSymbol` conversion did not match, the class it expected, and the
+/// locus of the offending subsymbol (§3.4). The offending symbol is carried by value
+/// (spec §1.5). `#[non_exhaustive]`: the shape grows — a richer locus, an added field —
+/// without breaking a downstream, which reads its fields and builds it through the
+/// factories below, never a struct literal.
+#[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FromSymbolError {
     /// The class the conversion expected, in words.
     pub expected: &'static str,
     /// The symbol that did not match.
     pub found: Symbol,
+    /// The locus: the positional path from the root symbol to the offending
+    /// subsymbol, outer→inner. Empty when the root itself did not match.
+    pub path: Vec<Segment>,
+}
+
+impl FromSymbolError {
+    /// A root mismatch: the `expected` class was not the `found` symbol, with an empty
+    /// locus path (§3.4). The factory `#[non_exhaustive]` routes construction through,
+    /// so the shape can grow without touching a call site. O(1).
+    pub fn mismatch(expected: &'static str, found: Symbol) -> FromSymbolError {
+        FromSymbolError {
+            expected,
+            found,
+            path: Vec::new(),
+        }
+    }
+
+    /// Situate this refusal within the `index`-th argument of an enclosing symbol,
+    /// prepending `Argument(index)` so the locus reads outer→inner to the offending
+    /// subsymbol (§3.4): a compound decoder that recurses into an argument and catches a
+    /// child refusal calls this to record the descent. `O(path length)` — a decode nests
+    /// only as deep as the term it reads, and the shipped decoders are flat.
+    #[must_use]
+    pub fn within_argument(mut self, index: usize) -> FromSymbolError {
+        self.path.insert(0, Segment::Argument(index));
+        self
+    }
 }
 
 /// Read an `i32` from a `Symbol::Number` and narrow it to `T`, refusing the wrong
@@ -854,14 +899,10 @@ fn from_number<T: TryFrom<i32>>(
     expected: &'static str,
 ) -> Result<T, FromSymbolError> {
     match symbol {
-        Symbol::Number(n) => T::try_from(*n).map_err(|_| FromSymbolError {
-            expected,
-            found: symbol.clone(),
-        }),
-        _ => Err(FromSymbolError {
-            expected,
-            found: symbol.clone(),
-        }),
+        Symbol::Number(n) => {
+            T::try_from(*n).map_err(|_| FromSymbolError::mismatch(expected, symbol.clone()))
+        }
+        _ => Err(FromSymbolError::mismatch(expected, symbol.clone())),
     }
 }
 
@@ -894,10 +935,23 @@ impl FromSymbol for String {
     fn from_symbol(symbol: &Symbol) -> Result<String, FromSymbolError> {
         match symbol {
             Symbol::String(text) => Ok(text.clone()),
-            _ => Err(FromSymbolError {
-                expected: "a string",
-                found: symbol.clone(),
-            }),
+            _ => Err(FromSymbolError::mismatch("a string", symbol.clone())),
+        }
+    }
+}
+impl FromSymbol for Name {
+    fn from_symbol(symbol: &Symbol) -> Result<Name, FromSymbolError> {
+        // The inverse of `Symbol::constant` (§3.4): a positive nullary function is a
+        // constant, and its name is the decode. Anything else refuses — a function with
+        // arguments is not a bare constant, and a negated nullary would drop its strong
+        // sign, the "repair" spec §5.2 forbids.
+        match symbol {
+            Symbol::Function {
+                name,
+                arguments,
+                sign: Sign::Positive,
+            } if arguments.is_empty() => Ok(name.clone()),
+            _ => Err(FromSymbolError::mismatch("a constant", symbol.clone())),
         }
     }
 }
@@ -983,7 +1037,7 @@ impl std::error::Error for FromSymbolError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{Name, Sign, Signature, Symbol, ToSymbol};
+    use super::{FromSymbol, FromSymbolError, Name, Segment, Sign, Signature, Symbol, ToSymbol};
 
     fn name(text: &str) -> Name {
         Name::new(text).expect("a valid identifier")
@@ -1094,5 +1148,110 @@ mod tests {
                 arity: 2,
             }
         );
+    }
+
+    // ---- The conversion refusal and its locus (§3.4): the evolvable error ----
+
+    /// A test-only recursive decoder standing in for a future compound `FromSymbol`
+    /// (the shipped decoders are flat): every leaf must be a number, and the first
+    /// leaf that is not refuses through the root factory, each enclosing argument
+    /// prepending its position, so the locus reads outer→inner to the offending
+    /// subsymbol (§3.4). Exercises `mismatch` and `within_argument` together.
+    fn require_all_numbers(symbol: &Symbol) -> Result<(), FromSymbolError> {
+        match symbol {
+            Symbol::Number(_) => Ok(()),
+            Symbol::Function { arguments, .. } => {
+                for (i, argument) in arguments.iter().enumerate() {
+                    require_all_numbers(argument).map_err(|error| error.within_argument(i))?;
+                }
+                Ok(())
+            }
+            _ => Err(FromSymbolError::mismatch("a number", symbol.clone())),
+        }
+    }
+
+    #[test]
+    fn a_root_mismatch_carries_an_empty_locus_path() {
+        // A refusal at the root: the whole symbol did not match, so the locus is empty (§3.4).
+        let found = Symbol::string("x");
+        let error = FromSymbolError::mismatch("an integer", found.clone());
+        assert_eq!(error.expected, "an integer");
+        assert_eq!(error.found, found);
+        assert!(error.path.is_empty());
+    }
+
+    #[test]
+    fn a_flat_decoder_refuses_at_the_root() {
+        // The shipped scalar decoders never recurse, so their refusal is a root one (§3.4).
+        let text = Symbol::string("x");
+        let error = i32::from_symbol(&text).expect_err("a string is not a number");
+        assert_eq!(error.found, text);
+        assert!(error.path.is_empty());
+    }
+
+    #[test]
+    fn a_nested_decode_prepends_each_argument_position_outer_to_inner() {
+        // f(0, g(1, 2, "boom")): the refusal is the string at g's argument 2, reached through
+        // f's argument 1 — so the locus reads [Argument(1), Argument(2)], outer→inner (§3.4).
+        let boom = Symbol::string("boom");
+        let inner = Symbol::function(
+            name("g"),
+            [Symbol::number(1), Symbol::number(2), boom.clone()],
+            Sign::Positive,
+        );
+        let outer = Symbol::function(name("f"), [Symbol::number(0), inner], Sign::Positive);
+        let error = require_all_numbers(&outer).expect_err("the string leaf refuses");
+        assert_eq!(error.found, boom);
+        assert_eq!(error.expected, "a number");
+        assert_eq!(error.path, vec![Segment::Argument(1), Segment::Argument(2)]);
+    }
+
+    #[test]
+    fn a_constant_decodes_to_its_name() {
+        // `FromSymbol for Name` inverts `Symbol::constant` (§3.4): the positive nullary
+        // function decodes back to the name it was built from.
+        let constant = Symbol::constant(name("c"));
+        assert_eq!(Name::from_symbol(&constant), Ok(name("c")));
+    }
+
+    #[test]
+    fn a_non_constant_refuses_the_name_decode_carrying_the_symbol() {
+        // A number is not a constant — refuse at the root, carrying the offending symbol (§3.4).
+        let number = Symbol::number(7);
+        let error = Name::from_symbol(&number).expect_err("a number is not a constant");
+        assert_eq!(error.found, number);
+        assert!(error.path.is_empty());
+
+        // A function with arguments is not a bare constant.
+        let applied = Symbol::function(name("f"), [Symbol::number(1)], Sign::Positive);
+        assert!(Name::from_symbol(&applied).is_err());
+
+        // A negated nullary would drop its strong sign — refuse over repair (§3.4, spec §5.2).
+        let negated = Symbol::function(name("c"), [], Sign::Negative);
+        assert!(Name::from_symbol(&negated).is_err());
+    }
+
+    #[test]
+    fn the_refusal_displays_its_expectation_and_the_found_symbol() {
+        // `#[non_exhaustive]` leaves the in-crate `Display`/`Error` impls and construction
+        // through the factory working (§3.4): the message states the class and the symbol.
+        let error = FromSymbolError::mismatch("an integer", Symbol::string("x"));
+        let shown = error.to_string();
+        assert!(
+            shown.contains("an integer"),
+            "names the expected class: {shown}"
+        );
+        assert!(shown.contains('x'), "shows the found symbol: {shown}");
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_locus_path_survives_a_serde_json_round_trip() {
+        // The locus is structured data a downstream can carry across a service boundary (§3.4):
+        // the path and its segments serialize and deserialize back to the same value.
+        let path = vec![Segment::Argument(1), Segment::Argument(2)];
+        let json = serde_json::to_string(&path).expect("the path serializes");
+        let restored: Vec<Segment> = serde_json::from_str(&json).expect("the path deserializes");
+        assert_eq!(restored, path);
     }
 }

@@ -33,8 +33,8 @@ use themelios_program::provenance::{
 use themelios_program::raise::{LowerError, LowerErrorKind, Raised};
 use themelios_program::render::Unspellable;
 use themelios_program::symbol::{
-    FromSymbolError, Name, NotAVariable, NotAnIdentifier, NotAnInteger, Sign, Signature, Symbol,
-    SymbolParts, VarName,
+    FromSymbolError, Name, NotAVariable, NotAnIdentifier, NotAnInteger, Segment, Sign, Signature,
+    Symbol, SymbolParts, VarName,
 };
 use themelios_program::term::{BinaryOp, EvalError, Term, TermParts, UnaryOp, Variable};
 use themelios_program::unify::{Binding, Fresh, NotAPattern, Substitution};
@@ -57,6 +57,7 @@ fn every_public_value_type_is_owned_plain_data() {
     assert_owned_plain_data::<NotAVariable>();
     assert_owned_plain_data::<NotAnInteger>();
     assert_owned_plain_data::<FromSymbolError>();
+    assert_owned_plain_data::<Segment>();
 
     // The term algebra (§3.3, §3.5, §3.6).
     assert_owned_plain_data::<Term>();

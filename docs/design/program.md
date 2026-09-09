@@ -409,8 +409,28 @@ pub trait ToSymbol { fn to_symbol(&self) -> Symbol; }
 pub trait FromSymbol: Sized {
     fn from_symbol(symbol: &Symbol) -> Result<Self, FromSymbolError>;
 }
+
+/// The symbol a conversion did not match, the class it expected, and the locus of
+/// the offending subsymbol. `#[non_exhaustive]`, so the shape can grow — a richer
+/// locus, an added field — without breaking a downstream: it reads the fields and
+/// builds the error through the factories, never a struct literal.
+#[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct FromSymbolError { pub expected: &'static str, pub found: Symbol }
+pub struct FromSymbolError {
+    pub expected: &'static str,
+    pub found: Symbol,
+    pub path: Vec<Segment>, // root → offending subsymbol, outer→inner; empty at the root
+}
+impl FromSymbolError {
+    pub fn mismatch(expected: &'static str, found: Symbol) -> FromSymbolError; // an empty path
+    pub fn within_argument(self, index: usize) -> FromSymbolError; // prepend Argument(index)
+}
+
+/// One positional step of the locus; `#[non_exhaustive]` leaves room for a later
+/// field/kind taxonomy, and it is `Serialize`/`Deserialize` under the `serde` feature.
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Segment { Argument(usize) }
 
 // Lossless inward conversions only. The wider integer types get no impl, so a
 // value that would truncate does not silently convert — the caller reaches for
@@ -419,6 +439,12 @@ impl ToSymbol for i8  { /* Number */ } impl ToSymbol for i16 { /* Number */ }
 impl ToSymbol for i32 { /* Number */ } impl ToSymbol for u8  { /* Number */ }
 impl ToSymbol for u16 { /* Number */ }
 impl ToSymbol for str { /* String */ } impl ToSymbol for String { /* String */ }
+
+// The inward impls: the same numeric and string classes, and `Name` — the inverse
+// of `Symbol::constant`, a positive nullary function read back to its name.
+impl FromSymbol for i8  {} impl FromSymbol for i16 {} impl FromSymbol for i32 {}
+impl FromSymbol for u8  {} impl FromSymbol for u16 {} impl FromSymbol for String {}
+impl FromSymbol for Name {}
 ```
 
 There is deliberately **no** `ToSymbol for f64` and **no** `ToSymbol for bool`: a
@@ -430,6 +456,23 @@ denotation — `Symbol::String` — so nothing is guessed (a caller who wants a
 *constant* reaches for a `Name`), and admitting them restores the symmetry with
 `FromSymbol for String` and keeps the conversion pillar a complete,
 special-case-free target for the extraction expansions built on it (spec §9.6).
+
+`FromSymbol for Name` closes the loop the constant story opens: a positive nullary
+function *is* a constant, so it reads back to its `Name`; anything else refuses, and
+a negated nullary refuses too rather than silently drop its strong sign (the
+"repair" spec §5.2 forbids). So a caller encodes a constant by `Name` through
+`Symbol::constant` and reads it back as one.
+
+The refusal itself is **evolvable and carries a locus**. `FromSymbolError` and its
+`Segment` are `#[non_exhaustive]`, so the shape grows — a richer locus, the deferred
+field/kind taxonomy — without breaking a downstream, which reads the fields and
+builds the error through two factories: `mismatch`, a root refusal with an empty
+`path`, and `within_argument`, which prepends an `Argument(i)` step. The `path` so
+reads outer→inner from the root symbol to the offending subsymbol — a compound
+decoder that recurses into an argument records the descent as it unwinds. The path
+and its segments are `Serialize`/`Deserialize` under the optional `serde` feature,
+off by default and outside the shipped closure (§1), so a decode failure crosses a
+service boundary as structured data.
 
 **No blanket `f64` conversion; explicit, fallible rounding instead.** ASP is
 integer-valued: there is no float symbol, and a silent `f64 → Symbol` would
