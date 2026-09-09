@@ -216,10 +216,10 @@ impl Symbol {
     }
 }
 
-// ---- value spelling: the value's own concrete syntax, through render's one printer (§8) ----
+// ---- value spelling: the value's own concrete syntax, through render's one printer (§10) ----
 
 impl Symbol {
-    /// Spell this symbol to concrete syntax under a dialect (§8): the value's own text, the
+    /// Spell this symbol to concrete syntax under a dialect (§10): the value's own text, the
     /// way [`render`](crate::render::render) writes it inside a program, through that one
     /// printer (§10) — no second speller, so a lone value and a rendered program cannot
     /// drift. Total but for the one [`Unspellable`] refusal: a string value the dialect

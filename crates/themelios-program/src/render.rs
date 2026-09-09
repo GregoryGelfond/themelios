@@ -101,9 +101,9 @@ impl fmt::Display for Unspellable {
 
 impl std::error::Error for Unspellable {}
 
-// ---- lone-value spelling: render's one printer, on a single value (§8) ----
+// ---- lone-value spelling: render's one printer, on a single value (§10) ----
 
-/// Spell a lone term to concrete syntax under a dialect (§8): [`render`]'s own term printer
+/// Spell a lone term to concrete syntax under a dialect (§10): [`render`]'s own term printer
 /// ([`render_term`]) on a single value, so a term spells exactly as it renders inside a
 /// program — one authority, no second printer (§10). Total but for the one [`Unspellable`]
 /// refusal. `O(output)`.
@@ -113,7 +113,7 @@ pub(crate) fn spell_term(term: &Term, dialect: Dialect) -> Result<String, Unspel
     Ok(out)
 }
 
-/// Spell a lone ground symbol to concrete syntax under a dialect (§8): [`render`]'s own
+/// Spell a lone ground symbol to concrete syntax under a dialect (§10): [`render`]'s own
 /// symbol printer ([`render_symbol`]) on a single value — the printer a `Symbolic` term
 /// shares (§3.1), so a symbol spells identically as a lone value, inside a term, and inside
 /// a program (§10). Total but for the one [`Unspellable`] refusal. `O(output)`.

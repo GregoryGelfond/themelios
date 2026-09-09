@@ -1488,6 +1488,24 @@ raised statement (§6), so documentation rides the rule it documents. Every rais
 node carries `Origin::Parsed(location)` (§6), so a program-level report points
 back at source.
 
+**One call from source.** Two doors bundle the parse with the raise, so a
+consumer reaches a program in one call without threading `parse` into `raise` by
+hand. `raise_source(&Source, Dialect) -> RaisedSource` parses an admitted
+`Source` under the dialect and lowers it, and is total — a `Source` was admitted
+within the coordinate limit, so nothing here refuses (§13). `raise_str(&str,
+Dialect) -> Result<RaisedSource, TooLarge>` is the id-less one-shot over
+`parse_str`, and refuses `TooLarge` exactly as `parse_str` does: oversize text is
+admission's one condition (syntax §12.4), so a bare return would panic where the
+no-panic totality (§13) surfaces the refusal instead — the `Source` door, handed
+an already-admitted value, stays bare. A `RaisedSource` owns the syntax `Parse`
+and the `Raised` together, offering `program`/`into_program` for the program,
+`syntax_diagnostics` and `lowering_diagnostics` for each side, `diagnostics` for
+the two merged into base's common `Diagnostic` (base §6.5), syntax then lowering,
+and `has_errors` for the membership gate. It **retains the whole rowan tree**
+beside the program for the value's life, holding that memory the whole time; a
+consumer that needs only the program takes `into_program()`, which drops the
+tree.
+
 **Computational cost.** The raise is `O(tree)` in time and in the size of the
 program it produces — a single iterative walk of the tree (§13), the parse's tree
 being finite in its input, so no memoization is owed here (the shared-structure
@@ -1649,6 +1667,18 @@ its parentheses and the grammar's trailing comma where it distinguishes (`(a,)`)
 The set-shaped children render in `Ord` order (§4), so the output is
 deterministic. A single applied-form printer serves a function term and an atom,
 so the two cannot drift.
+
+**Spelling a lone value.** A consumer holding a single value rather than a whole
+program spells it through this same printer. `Symbol::spell(&self, Dialect) ->
+Result<String, Unspellable>` and `Term::spell(&self, Dialect) -> Result<String,
+Unspellable>` write one value to concrete syntax exactly as `render` writes it
+inside a program — the value's own text, produced by the one printer walked on a
+single value — so a lone value and the same value in a rendered program cannot
+drift. One authority and no second: no `Display` on `Symbol` or `Term` (§14), no
+`spell_lossy`, no second speller to fall out of step — the criterion of one
+obvious way (§2), held as a property. Each is total but for the one `Unspellable`
+refusal `render` itself carries, a string value with no spelling under the chosen
+dialect; a `Symbolic` term spells identically to the `Symbol` it holds.
 
 **The documented variant.** `render_documented` prepends each statement's
 provenance doc comments (§6.2) as `%!` lines, for a consumer emitting documented

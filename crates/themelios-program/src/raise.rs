@@ -768,7 +768,7 @@ impl Raised {
     }
 }
 
-/// A [`Program`] raised straight from source text (§5.1): the syntax [`Parse`] and the
+/// A [`Program`] raised straight from source text (§8): the syntax [`Parse`] and the
 /// [`Raised`] it lowered to, held together, so a consumer reaches a program in one call
 /// without threading [`parse`] into [`raise`] by hand. [`raise_source`] and [`raise_str`]
 /// mint one.
@@ -784,7 +784,7 @@ pub struct RaisedSource {
     raised: Raised,
 }
 
-/// Raise a program straight from an admitted [`Source`] (§5.1): [`parse`] under `dialect`,
+/// Raise a program straight from an admitted [`Source`] (§8): [`parse`] under `dialect`,
 /// then [`raise`], bundled into a [`RaisedSource`]. Total — a `Source` was admitted within
 /// the coordinate limit, so nothing here refuses (§13). O(text).
 #[must_use]
@@ -794,7 +794,7 @@ pub fn raise_source(source: &Source, dialect: Dialect) -> RaisedSource {
     RaisedSource { parse, raised }
 }
 
-/// Raise a program straight from text (§5.1): [`parse_str`] under `dialect`, then [`raise`],
+/// Raise a program straight from text (§8): [`parse_str`] under `dialect`, then [`raise`],
 /// bundled — the id-less one-shot door for a consumer with no [`Source`] to stamp. Refuses
 /// [`TooLarge`] exactly as [`parse_str`] does — text past the coordinate limit, admission's
 /// one condition (syntax §12.4, no truncation) — and is total otherwise; O(text).
@@ -805,28 +805,28 @@ pub fn raise_str(text: &str, dialect: Dialect) -> Result<RaisedSource, TooLarge>
 }
 
 impl RaisedSource {
-    /// The raised program (§5.1) — the [`raise`]'s [`program`](Raised::program).
+    /// The raised program (§8) — the [`raise`]'s [`program`](Raised::program).
     pub fn program(&self) -> &Program {
         self.raised.program()
     }
 
-    /// The owned program, dropping the retained syntax tree and the diagnostics (§5.1) —
+    /// The owned program, dropping the retained syntax tree and the diagnostics (§8) —
     /// the [`raise`]'s [`into_program`](Raised::into_program).
     pub fn into_program(self) -> Program {
         self.raised.into_program()
     }
 
-    /// The parse's syntax diagnostics, in source order (§5.1) — [`Parse::diagnostics`].
+    /// The parse's syntax diagnostics, in source order (§8) — [`Parse::diagnostics`].
     pub fn syntax_diagnostics(&self) -> &[SyntaxError] {
         self.parse.diagnostics()
     }
 
-    /// The raise's lowering diagnostics, in source order (§5.1) — [`Raised::diagnostics`].
+    /// The raise's lowering diagnostics, in source order (§8) — [`Raised::diagnostics`].
     pub fn lowering_diagnostics(&self) -> &[LowerError] {
         self.raised.diagnostics()
     }
 
-    /// Both sides merged into base's common [`Diagnostic`] (§5.1, base §6.5), in pipeline
+    /// Both sides merged into base's common [`Diagnostic`] (§8, base §6.5), in pipeline
     /// order — every syntax diagnostic, then every lowering one — so a consumer renders the
     /// whole source-to-program report through one model. O(diagnostics).
     pub fn diagnostics(&self) -> Vec<Diagnostic> {
@@ -841,7 +841,7 @@ impl RaisedSource {
             .collect()
     }
 
-    /// Whether either side carries an `Error`-severity diagnostic (§5.1) — the
+    /// Whether either side carries an `Error`-severity diagnostic (§8) — the
     /// language-membership signal a consumer gates on. The syntax side reads through the
     /// parse's own severity-correct [`has_errors`](Parse::has_errors), since a syntax
     /// diagnostic may be a mere warning (a misplaced doc comment, say); every lowering
