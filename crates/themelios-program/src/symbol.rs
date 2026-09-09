@@ -16,6 +16,8 @@ use themelios_syntax::lexer::Lexer;
 use themelios_syntax::token::{LexMode, TokenSource};
 use themelios_syntax::tree::SyntaxKind;
 
+use crate::render::Unspellable;
+
 /// Strong (explicit) negation — the `-` of `-p` (§3.1; the precise register:
 /// strong, not classical-logic, negation). Distinct in the type from default
 /// negation (a body-literal sign, §4) and from the bitwise `~` (a term
@@ -211,6 +213,20 @@ impl Symbol {
             }),
             _ => None,
         }
+    }
+}
+
+// ---- value spelling: the value's own concrete syntax, through render's one printer (§8) ----
+
+impl Symbol {
+    /// Spell this symbol to concrete syntax under a dialect (§8): the value's own text, the
+    /// way [`render`](crate::render::render) writes it inside a program, through that one
+    /// printer (§10) — no second speller, so a lone value and a rendered program cannot
+    /// drift. Total but for the one [`Unspellable`] refusal: a string value the dialect
+    /// cannot spell (grammar §4.4/§6.2/§9). A `Symbolic` [`Term`](crate::term::Term) spells
+    /// identically to the symbol it holds. `O(output)`.
+    pub fn spell(&self, dialect: Dialect) -> Result<String, Unspellable> {
+        crate::render::spell_symbol(self, dialect)
     }
 }
 

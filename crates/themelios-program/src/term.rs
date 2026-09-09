@@ -11,6 +11,9 @@
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 
+use themelios_syntax::dialect::Dialect;
+
+use crate::render::Unspellable;
 use crate::symbol::{Name, Sign, Symbol, VarName};
 
 /// The non-ground term algebra (§3.3). A term carries **no** strong sign — the `-`
@@ -234,6 +237,20 @@ impl Term {
     /// (§7.1).
     pub fn pool(alternatives: impl IntoIterator<Item = Term>) -> Result<Term, EmptyPool> {
         Ok(canonicalize_one_level(Term::Pool(non_empty(alternatives)?)))
+    }
+}
+
+// ---- value spelling: the value's own concrete syntax, through render's one printer (§8) ----
+
+impl Term {
+    /// Spell this term to concrete syntax under a dialect (§8): the value's own text, the
+    /// way [`render`](crate::render::render) writes it inside a program, through that one
+    /// printer (§10) — no second speller, so a lone value and a rendered program cannot
+    /// drift. Total but for the one [`Unspellable`] refusal: a string value the dialect
+    /// cannot spell (grammar §4.4/§6.2/§9). A `Symbolic` term spells identically to the
+    /// [`Symbol`] it holds. `O(output)`.
+    pub fn spell(&self, dialect: Dialect) -> Result<String, Unspellable> {
+        crate::render::spell_term(self, dialect)
     }
 }
 

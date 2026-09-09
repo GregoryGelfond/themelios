@@ -101,6 +101,28 @@ impl fmt::Display for Unspellable {
 
 impl std::error::Error for Unspellable {}
 
+// ---- lone-value spelling: render's one printer, on a single value (§8) ----
+
+/// Spell a lone term to concrete syntax under a dialect (§8): [`render`]'s own term printer
+/// ([`render_term`]) on a single value, so a term spells exactly as it renders inside a
+/// program — one authority, no second printer (§10). Total but for the one [`Unspellable`]
+/// refusal. `O(output)`.
+pub(crate) fn spell_term(term: &Term, dialect: Dialect) -> Result<String, Unspellable> {
+    let mut out = String::new();
+    render_term(&mut out, term, dialect)?;
+    Ok(out)
+}
+
+/// Spell a lone ground symbol to concrete syntax under a dialect (§8): [`render`]'s own
+/// symbol printer ([`render_symbol`]) on a single value — the printer a `Symbolic` term
+/// shares (§3.1), so a symbol spells identically as a lone value, inside a term, and inside
+/// a program (§10). Total but for the one [`Unspellable`] refusal. `O(output)`.
+pub(crate) fn spell_symbol(symbol: &Symbol, dialect: Dialect) -> Result<String, Unspellable> {
+    let mut out = String::new();
+    render_symbol(&mut out, symbol, dialect)?;
+    Ok(out)
+}
+
 // ---- the program: parts and their statements ----
 
 /// A part's `#program name(formals).` header (grammar §5.9) — the delimiter that opens a
@@ -1451,4 +1473,113 @@ fn render_set_body<T>(
         out.push(' ');
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::symbol::VarName;
+
+    fn name(text: &str) -> Name {
+        Name::new(text).expect("a valid identifier")
+    }
+
+    fn var(text: &str) -> VarName {
+        VarName::new(text).expect("a valid variable name")
+    }
+
+    /// The clingo rendering of a one-fact program `p(arg).` — the whole-program authority a
+    /// lone value's spelling is read back against.
+    fn fact_of(arg: Term) -> String {
+        let fact = Rule::fact(Atom::new(name("p"), [arg]));
+        render(&Program::of([Statement::Rule(fact)]), Dialect::Clingo).expect("the fact renders")
+    }
+
+    #[test]
+    fn a_symbol_spells_the_way_render_writes_it_inside_a_program() {
+        // A representative leaf, number, and function symbol: each spells, as a lone value,
+        // exactly the text `render` writes for it as the sole argument of a fact — one
+        // printer serves both, so a divergent second speller would fail here.
+        for symbol in [
+            Symbol::string("hello"),
+            Symbol::number(42),
+            Symbol::function(
+                name("f"),
+                [Symbol::number(1), Symbol::number(2)],
+                Sign::Positive,
+            ),
+        ] {
+            let spelled = symbol.spell(Dialect::Clingo).expect("the symbol spells");
+            assert_eq!(
+                fact_of(Term::Symbolic(symbol.clone())),
+                format!("p({spelled}).\n")
+            );
+        }
+    }
+
+    #[test]
+    fn a_term_spells_the_way_render_writes_it_inside_a_program() {
+        // A non-ground function term (kept a `Function` by its variable) and a bare variable:
+        // each spells, as a lone value, exactly the text `render` writes for it inside a fact.
+        for term in [
+            Term::function(
+                name("g"),
+                [Term::variable(var("X")), Term::Symbolic(Symbol::number(2))],
+            ),
+            Term::variable(var("X")),
+        ] {
+            let spelled = term.spell(Dialect::Clingo).expect("the term spells");
+            assert_eq!(fact_of(term.clone()), format!("p({spelled}).\n"));
+        }
+    }
+
+    #[test]
+    fn a_symbolic_term_spells_identically_to_its_symbol() {
+        let symbol = Symbol::function(
+            name("f"),
+            [Symbol::number(1), Symbol::number(2)],
+            Sign::Positive,
+        );
+        assert_eq!(
+            Term::Symbolic(symbol.clone())
+                .spell(Dialect::Clingo)
+                .expect("the term spells"),
+            symbol.spell(Dialect::Clingo).expect("the symbol spells"),
+        );
+    }
+
+    #[test]
+    fn a_string_the_clingo_dialect_cannot_spell_refuses_carrying_the_value_and_dialect() {
+        // A tab has no clingo string spelling (grammar §4.4/§9): the lone value refuses,
+        // carrying itself and the dialect, nothing mangled — the symbol and its `Symbolic`
+        // term alike.
+        let refusal = Unspellable {
+            value: "\t".to_owned(),
+            dialect: Dialect::Clingo,
+        };
+        assert_eq!(
+            Symbol::string("\t").spell(Dialect::Clingo),
+            Err(refusal.clone()),
+        );
+        assert_eq!(
+            Term::Symbolic(Symbol::string("\t")).spell(Dialect::Clingo),
+            Err(refusal),
+        );
+    }
+
+    #[test]
+    fn an_ordinary_string_value_spells_quoted() {
+        assert_eq!(
+            Symbol::string("abc")
+                .spell(Dialect::Clingo)
+                .expect("spells"),
+            "\"abc\"",
+        );
+        assert_eq!(
+            Term::Symbolic(Symbol::string("abc"))
+                .spell(Dialect::Clingo)
+                .expect("spells"),
+            "\"abc\"",
+        );
+    }
 }
