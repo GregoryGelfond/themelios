@@ -30,6 +30,33 @@ fn the_prelude_names_the_working_vocabulary_and_its_traits() {
 }
 
 #[test]
+fn the_prelude_names_the_doors_their_refusals_and_the_base_seam() {
+    // The render doors are flat here — the tier's output door — so a client renders
+    // with no module path.
+    let program = Program::of([Rule::fact(Atom::constant(
+        Name::new("q").expect("a valid identifier"),
+    ))]);
+    let _: Result<String, Unspellable> = render(&program, Dialect::Clingo);
+    let _: Result<String, Unspellable> = render_documented(&program, Dialect::Clingo);
+
+    // The door refusals land in scope without a module path: the pool door, the
+    // string-source door, and the symbol-conversion door.
+    let _: Option<EmptyPool> = None;
+    let _: Option<TooLarge> = None;
+    let _: Option<FromSymbolError> = None;
+
+    // The base source seam is flat, and reachable through the `base` module too —
+    // the two paths name one type.
+    let _: Option<Source> = None;
+    let _: Option<SourceId> = None;
+    let _: Option<base::source::Source> = None;
+
+    // The raise door's source-level result is nameable here, beside `Raised`.
+    let _: Option<RaisedSource> = None;
+    let _: Option<Raised> = None;
+}
+
+#[test]
 fn the_crate_root_names_the_headline_types_and_the_foreign_leaves() {
     // First-guess paths resolve at the crate root (C-REEXPORT), so a client need
     // not walk the module tree or add a base/syntax dependency to name a type this
@@ -41,4 +68,28 @@ fn the_crate_root_names_the_headline_types_and_the_foreign_leaves() {
     let _: Option<themelios_program::WithProvenance<themelios_program::Statement>> = None;
     let _: Option<themelios_program::Location> = None; // themelios_base, re-exported here
     let _: themelios_program::Dialect = themelios_program::Dialect::Clingo; // themelios_syntax
+}
+
+/// The render doors, the new IR types and door refusals, and the base source seam are named
+/// at the crate root too — locked independently of the prelude, since `lib.rs` and
+/// `prelude.rs` re-export separately (a drop from either site must fail here).
+#[test]
+fn the_crate_root_names_the_doors_their_refusals_and_the_base_seam() {
+    let _: fn(
+        &themelios_program::Program,
+        themelios_program::Dialect,
+    ) -> Result<String, themelios_program::Unspellable> = themelios_program::render;
+    let _: fn(
+        &themelios_program::Program,
+        themelios_program::Dialect,
+    ) -> Result<String, themelios_program::Unspellable> = themelios_program::render_documented;
+    let _: Option<themelios_program::BodyElement> = None;
+    let _: Option<themelios_program::Comparison> = None;
+    let _: Option<themelios_program::Relation> = None;
+    let _: Option<themelios_program::FromSymbolError> = None;
+    let _: Option<themelios_program::EmptyPool> = None;
+    let _: Option<themelios_program::Source> = None;
+    let _: Option<themelios_program::SourceId> = None;
+    let _: Option<themelios_program::TooLarge> = None;
+    let _: Option<themelios_program::base::source::Source> = None; // the `base` module door
 }

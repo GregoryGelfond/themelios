@@ -44,16 +44,22 @@ pub mod render;
 pub mod prelude;
 
 // Crate-root re-exports of the most-used surface (Rust API guideline C-REEXPORT):
-// the types a client names constantly, the conversion and construction traits,
-// and the two foreign types this crate hands across its own boundary — so
-// `themelios_program::Program` (and `Dialect`, `Location`) resolve without
-// walking the module tree or taking a dependency only to name a returned type.
-// The full working vocabulary, for a one-line glob import, is `prelude`.
+// the types a client names constantly, the conversion and construction traits, the
+// render doors and the door refusals, and the foreign leaves this crate hands
+// across its own boundary — the base source seam (`base`, `Source`, `SourceId`,
+// `TooLarge`, `Location`) and the syntax tier's `Dialect` — so
+// `themelios_program::Program` (and `render`, `Source`, `Dialect`) resolve without
+// walking the module tree or taking a dependency only to name a returned type. The
+// full working vocabulary, for a one-line glob import, is `prelude`.
 pub use crate::program::{
-    Atom, Body, HasGuards, Head, IntoBody, IntoHead, Literal, Program, Rule, Statement,
+    Atom, Body, BodyElement, Comparison, HasGuards, Head, IntoBody, IntoHead, Literal, Program,
+    Relation, Rule, Statement,
 };
 pub use crate::provenance::{Origin, Provenance, WithProvenance};
-pub use crate::symbol::{FromSymbol, Name, Sign, Signature, Symbol, ToSymbol};
-pub use crate::term::{Term, Variable};
+pub use crate::render::{Unspellable, render, render_documented};
+pub use crate::symbol::{FromSymbol, FromSymbolError, Name, Sign, Signature, Symbol, ToSymbol};
+pub use crate::term::{EmptyPool, Term, Variable};
+pub use themelios_base as base;
+pub use themelios_base::source::{Source, SourceId, TooLarge};
 pub use themelios_base::span::Location;
 pub use themelios_syntax::dialect::Dialect;
