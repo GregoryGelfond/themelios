@@ -162,7 +162,7 @@ A **`WorldView`** is a program's *world view* in the epistemic-specifications se
 program (this tier's scope) that is the program's **unique** world view, which is exactly its set of
 answer sets.
 
-The invariant is a **type state**, and it is the F8 correctness point: **a `WorldView` value is
+The invariant is a **type state**, and it is the correctness keystone here: **a `WorldView` value is
 non-empty by construction.** It is obtained only from a `Consistent` outcome, so a `WorldView` you
 *hold* has at least one member; the empty world view of an *inconsistent* program is **not a
 representable `WorldView`** — inconsistency is carried by `Determination::Inconsistent` (`solve.md`
@@ -317,7 +317,7 @@ matchable case; a non-Herbrand pattern is **refused, not guessed** — an interv
 atoms, and whether that reads as "all" or "any" depends on a position a bare pattern cannot carry, so
 the door will not invent a quantifier the caller never wrote.
 
-The mgu's three-outcome result is a **matching** result, and the F7 correction is to keep it distinct
+The mgu's three-outcome result is a **matching** result, and the correction here is to keep it distinct
 from the epistemic `Answer`:
 
 ```rust
