@@ -819,6 +819,11 @@ lexer and no limit. `parse_str` is `parse` over a `Source` the door admits
 from the text itself — the one entry that admits its own text, hence the one
 that can refuse it (`TooLarge`, §13), where every other entry takes an
 already-admitted `Source` or a token source that declares its own text (§4.3).
+Because that admitted `Source` has no host-assigned identity, `parse_str` mints
+one fixed, documented `SourceId` for it — the constant `STRING_INPUT_SOURCE_ID`
+(`SourceId::new(u32::MAX)`) — so the `Location`s the parse stamps carry a known id
+a caller can recognise (a file `Source` names its own; ra's `Parse` carries no id,
+ours does, base §3.1).
 **Every entry point yields a root of
 one fixed kind**, which is what makes `Parse::tree()` total (§5.5): the
 program entry's root is `PROGRAM`; the statement entry's root is
