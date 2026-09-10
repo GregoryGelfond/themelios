@@ -846,8 +846,8 @@ fn collect_optimize_element(element: &OptimizeElement, names: &mut Names) {
 
 // ---- The most general unifier and the pattern language (§11) ----
 
-/// Why an atom is not a pattern (§11.2), carrying the offending argument term. One reason
-/// today, and non-exhaustive, so a later reason is a new variant, not a migration.
+/// Why an atom is not a pattern (§11.2), carrying the offending argument term where there
+/// is one. Non-exhaustive, so a later reason is a new variant, not a migration.
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum NotAPattern {
