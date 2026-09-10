@@ -38,8 +38,10 @@ It is a **procedural-macro crate**, and thus a *client* of two lower tiers
   for this consumer** (syntax §4.3, §15): the macro is a `TokenSource`, one of
   the two sources "one parser reads," so law 1 is "discharged by construction."
 - of **`themelios-program`** — the smart constructors (program §7.1) a macro
-  expands to, and the raise (program §8) whose diagnostics it borrows at compile
-  time and whose splice refusal (`UnexpandedSplice`) is its safety net.
+  expands to, and the raise (program §8), which the macro runs *at compile time*,
+  over a splice-free view of the fragment, to borrow the tier's lowering
+  diagnostics (§5.3). The raise is not in the runtime path — the expansion is
+  constructor calls — so it is neither a runtime step nor a runtime safety net.
 
 The crate adds **no representation of its own**: no ASP grammar, no `Program`
 variant, no fragment reader. Its two owned artifacts are both spellings, not
@@ -146,8 +148,8 @@ constructors and parse through the syntax tier's fragment entries: `atom!`,
 `fact!`, `rule!`, `constraint!`, `minimize!`, `maximize!`, `show!`, `external!`
 — the last the `#external` **directive** macro (a statement in the program,
 program §4.8), distinct from the `#[external]` attribute below — and the
-program-level block `program!`. Their targets all exist at this tier's base (§8
-names each), so each reduces to a trivial expansion.
+program-level block `program!` (which excludes `#script`, §8). Their targets all
+exist at this tier's base (§8 names each), so each reduces to a trivial expansion.
 
 **Theory atoms are in; theory-term splices are deferred by scope.** A theory
 atom that arrives *without a splice* — `&sum { 1, 2 } <= n` — is ordinary syntax
@@ -155,14 +157,16 @@ to the parser and codegens through the theory-atom constructors like any other
 node (the theory-atom argument-list pool remains the raise's stated §17
 exception, unchanged by this tier). A **splice into a theory-term position** —
 `&sum { $x } <= $bound`, which grammar §9 places in the v1 floor — the syntax
-tier *does* carry structurally (`ast::TheoryTerm::Splice`, syntax roster), and
-codegen *could* land a ground splice as `TheoryTerm::Symbolic(x.to_symbol())`
-(program §4.9). It is deferred as a **deliberate scope line**, not a limitation:
-this tranche's splice surface is the ordinary-term position (matching the
-theory-atom "no splice" line above), and the theory-term splice is held for a
-focused increment alongside the theory-term surface the solve/query stage
-exercises (program §17). Until then a `$` in a theory-term position is a
-macro-site error with a clear message (§9), not a silent miss.
+tier *does* carry structurally (`ast::TheoryTerm::Splice`, syntax roster), so
+**parsing** it is not the obstacle; the obstacle is **lowering** it, and its
+codegen target does not yet exist: the program tier carries theory terms as "a
+distinct peer algebra" opaquely and **defers the concrete theory-term surface to
+the solve/query stage** (program §4.9, §17). By §3's razor — *its target does not
+exist yet, so defer it* — the theory-term splice is deferred until that surface
+lands (a focused increment alongside the theory-term work the solve/query stage
+brings), and until then a `$` in a theory-term position is a macro-site error
+with a clear message (§9), not a silent miss. This deferral departs grammar §9's
+"v1 floor" line; see §13.
 
 **Deferred to the solve stage** (they front a surface that does not exist until
 solve, and sit behind the pre-solve discussion):
@@ -208,33 +212,39 @@ except the constructor calls it emits:
    provenance).
 2. **Parse through the fragment entry** for the category
    (`parse_statement` / `parse_term` / `parse_program`, syntax §6.1), driven over
-   that `TokenSource`. The result is the syntax tier's **typed AST**, carrying
+   that `TokenSource` at `NestingLimit::DEFAULT` (128, syntax §6.1; a macro body
+   is human-bounded). The result is the syntax tier's **typed AST**, carrying
    splices structurally as `ast::Term::Splice` / `ast::TheoryTerm::Splice` nodes
    (syntax roster). `check_token_source_laws` (syntax §4.3) validates the source
    — the honest, tier-provided replacement for any bespoke reconstruction check.
-3. **Diagnose at the rust-analyzer bar** (law 1). The engine surfaces the parse's
-   syntax diagnostics and, by raising the tree for its lowering diagnostics
-   (program §8), the lowering diagnostics too — **filtering the expected
-   `UnexpandedSplice`** (a splice is not an error here; the macro owns it, program
-   §8). A splice's node is inert to the raise's other checks (it lowers to an
-   anonymous placeholder, program §8, which is a well-formed term), so the filter
-   is exact. Every surviving diagnostic — and any admission refusal, an
-   over-`MAX_LEN` assembled text (syntax §12.4) — is re-emitted as a compile error
-   at the **Rust span** the offending token came from (§9). An input that would
-   diagnose fails *at compile time*.
-4. **Codegen from the typed AST.** The engine walks the AST and emits the §7.1
-   constructor calls that build the value: `Term::function` / `Atom::new` /
-   `Rule::new` / the directive constructors, one arm per AST node family. At each
-   `Splice` node it emits the spliced Rust expression crossed to a ground term
-   (§7). The expansion is these public constructor calls and nothing else —
-   law 2.
+3. **Diagnose at the rust-analyzer bar** (law 1). Syntax diagnostics come from
+   the parse of step 2. Lowering diagnostics come from raising a **splice-free
+   view** of the same fragment — each splice replaced by an inert **ground
+   placeholder** (a constant, valid wherever a term may stand), so the raise runs
+   its ordinary, documented behavior (program §8) with **no reliance on how it
+   treats a splice**, and trips no positional lowering check the way an anonymous
+   variable would (a splice in a `#const` value, say). That view yields exactly
+   the fragment's *structural* lowering diagnostics — a splice's runtime value
+   cannot bear on a compile-time diagnostic, so the placeholder loses nothing.
+   Every diagnostic is re-emitted as a compile error at the **Rust span** the
+   offending token came from (§9), the placeholder's span mapping back to its
+   splice. A source text past base's coordinate limit (base §3) is itself a
+   compile error. An input that would diagnose fails *at compile time*.
+4. **Codegen from the typed AST.** The engine walks the splice-bearing AST of
+   step 2 and emits the §7.1 constructor calls that build the value:
+   `Term::function` / `Atom::new` / `Rule::new` / the directive constructors, one
+   arm per AST node family. At each `Splice` node it emits the spliced Rust
+   expression crossed to a ground term (§7). The expansion is these public
+   constructor calls and nothing else — law 2.
 
 **No lowering at runtime, and no runtime parse.** The expansion is a tree of
-constructor calls; at runtime it builds the value directly, splices resolved.
-The raise is used only at compile time (for diagnostics) and stands at runtime as
-the safety net its `UnexpandedSplice` names: a splice can never reach a built
-`Program`, because the macro expands it, and if a future path ever let one
-through, the raise refuses it.
+constructor calls; at runtime it builds the value directly, splices resolved. The
+raise runs only at compile time (for lowering diagnostics, step 3); it is not in
+the runtime path, and so not a runtime safety net. That a splice never reaches a
+built `Program` is guaranteed by construction instead — the codegen emits a
+constructor argument for every `Splice` node it walks (step 4) — and the equality
+witness (§11), which compares each macro's value to the spelled-out constructors,
+is what would catch a `Splice` the codegen ever failed to expand.
 
 **Two spellings of one lowering, held equal.** The codegen (AST → constructor
 calls) parallels the raise (AST → `Program`); they are two spellings of the same
@@ -251,10 +261,11 @@ The macro projects no `proc_macro` span into a themelios `Location` (they are
 different coordinate systems); a consumer that needs a value located in real
 source parses a real file through the raise.
 
-**The honest cost.** The compile-time parse-and-raise is `O(fragment)` and runs
-once per invocation site, at compile time; the runtime cost is the constructor
-calls alone, the same a hand-written program pays. There is no runtime parse to
-memoize and no double lowering at runtime — the codegen replaces both.
+**The honest cost.** The compile-time work — parsing the fragment, and raising a
+splice-free view of it for lowering diagnostics (step 3) — is `O(fragment)`, at
+compile time; the runtime cost is the constructor calls alone, the same a
+hand-written program pays. There is no runtime parse and no runtime lowering —
+the codegen replaces both.
 
 ## 6. The macro-dialect realization
 
@@ -333,8 +344,13 @@ grammar §4.4 cannot spell (carried as a splice of the value, §6), and a Rust
 numeral may be `0o17` (the value crosses, the spelling does not). **Primed
 names** (`a'`) are inexpressible in macros — Rust identifiers carry no primes —
 and remain expressible through the spelled-out constructors, the direction spec
-§8 law 2 guarantees; the converse is not promised (grammar §9). A theory-term
-splice is deferred by scope (§4).
+§8 law 2 guarantees; the converse is not promised (grammar §9). **A `#script`
+body** is inexpressible in a macro and refused, not mangled: its `ScriptBody` is
+verbatim, whitespace-significant text (grammar §4.8), and a macro body arrives
+already lexed by Rust with its spacing normalized and comments gone (grammar §9),
+so a faithful body cannot be recovered from the tokens' spellings — most sharply
+a Python `#script`, where indentation is semantics; `program!` therefore refuses
+`#script` at the macro site (§8). A theory-term splice is deferred by scope (§4).
 
 ## 8. The vocabulary
 
@@ -368,7 +384,10 @@ constructor named.
 - **`program!{ s₁. s₂. … }` → `Program`.** A block of statements-with-splices,
   parsed through `parse_program` and codegen'd as one program (assembled through
   `Program::of`, program §7.1) — the natural inline-ASP surface for the ASP
-  author (program §7.3), the program-level of spec §8's levels.
+  author (program §7.3), the program-level of spec §8's levels. It **refuses
+  `#script`** at the macro site (§7): a verbatim script body cannot be recovered
+  from Rust tokens, so refusal beats a mangled body; a script belongs in a file
+  raised through program §8.
 
 **Composition and return types.** A statement macro returns its *specific* family
 type (`Rule`, `Show`, `External`, `Optimize`), not an erased `Statement`, because
@@ -381,19 +400,20 @@ structurally-equal `Program` (§11).
 
 Law 1 requires a macro-site syntax error to read as the file parser's does. The
 engine delivers this through the **span map** (§6): the compile-time parse and
-raise (§5.3) produce diagnostics located in the assembled text; each is
-translated through the span map to the `proc_macro` span of the Rust token that
-produced it, and emitted as a compile error there. Because the `TokenSource`
-owns its boundaries (§6), a token's text is exactly a Rust token's spelling, so a
-diagnostic never lands on synthetic separator text — there is none.
+the splice-free-view raise (§5.3) produce diagnostics located in the assembled
+text; each is translated through the span map to the `proc_macro` span of the
+Rust token that produced it, and emitted as a compile error there. Because the
+`TokenSource` owns its boundaries (§6), a token's text is exactly a Rust token's
+spelling, so a diagnostic never lands on synthetic separator text — there is
+none.
 
 The diagnostics carried are the syntax tier's `SyntaxError` and the program
 tier's `LowerError`, both lowering to base's normal form (base §6.5; program §8)
 — one model, so a macro-site diagnostic reads exactly as the file parser's, at
 the rust-analyzer bar (spec §2 item 9). Dialect errors of the mapping itself
-(§6 — a float literal, a detached `#`, `r#not`, a `$` in a theory-term position,
-§4) are the engine's own diagnostics, located at the offending Rust token's span
-and worded in the same register.
+(§6 — a float literal, a detached `#`, `r#not`), a `$` in a theory-term position
+(§4), and a `#script` in `program!` (§7) are the engine's own diagnostics,
+located at the offending Rust token's span and worded in the same register.
 
 **Hygiene.** The expansion references program-tier items by absolute path
 (`::themelios_program::…`), so it compiles regardless of the caller's imports. A
@@ -444,8 +464,9 @@ what it proves and what it cannot (spec §10.2).
   builds is **structurally equal** (up to, and here including, provenance —
   program §5.2, §6) to the value built through the spelled-out constructors it
   names in §8. This is the proof the codegen is a faithful spelling of the
-  constructors. A macro that *cannot* be made to satisfy it is the §3 razor
-  firing — a signal the surface beneath has a gap — reported (stop), never
+  constructors, and the check that would catch a `Splice` node the codegen ever
+  failed to expand (§5). A macro that *cannot* be made to satisfy it is the §3
+  razor firing — a signal the surface beneath has a gap — reported (stop), never
   papered over.
 - **The token-source laws** (`check_token_source_laws`, syntax §4.3): a standing
   check that the macro `TokenSource` tiles and slices lawfully, over generated
@@ -468,9 +489,10 @@ what it proves and what it cannot (spec §10.2).
   diagnostics rendered through base's human view at the rust-analyzer bar (the
   diagnostics-quality discipline, spec §2 item 9).
 - **Compile-fail tests** (`trybuild`, §10): a macro-site syntax error, a dialect
-  error (§6), a non-`ToSymbol` splice (§7), and a theory-term splice (§4) each
-  produce the expected compile error at the expected span — the direct test of
-  law 1 and of the deferrals' clean refusal.
+  error (§6), a non-`ToSymbol` splice (§7), a theory-term splice (§4), and a
+  `#script` in `program!` (§7) each produce the expected compile error at the
+  expected span — the direct test of law 1 and of the deferrals' and refusals'
+  clean boundary.
 - **Standing checks:** the workspace coverage floor as a tripwire, at the
   estate's per-file bar; documentation examples that run; `forbid(unsafe_code)`
   and the structural trust checks; unused-code and unused-result denied (spec
@@ -481,10 +503,10 @@ what it proves and what it cannot (spec §10.2).
 Named reserved seams — deferred with their reasons and arriving consumers, never
 gaps (the deferrals of §4, gathered):
 
-- **Theory-term splices** (§4): feasible under this tranche's codegen (a ground
-  splice as `TheoryTerm::Symbolic`, program §4.9) but held by scope; reopen as a
-  focused increment with the theory-term surface the solve/query stage exercises
-  (program §17).
+- **Theory-term splices** (§4): the codegen target (a concrete theory-term
+  surface) does not yet exist — the program tier carries theory terms opaquely
+  and defers that surface to the solve/query stage (program §4.9, §17) — so the
+  theory-term splice reopens as a focused increment when it lands.
 - **Further splice sites** — names, tuples, statements (grammar §9): future
   vocabulary, each admitted on argument as the tiers accrete; the v1 floor is the
   term (and, deferred by scope, the theory term).
@@ -498,8 +520,9 @@ Non-goals, absolutely: a second parser or grammar of ASP (spec §2 item 3, §5.2
 — the one grammar is the syntax tier's, reached at compile time through its
 token-source door; assembling ASP as a runtime string to re-parse (never
 render-then-parse — the macro tiles tokens through a `TokenSource`, at the token
-level, and codegens the value); styled formatting (the formatter satellite); and
-any representation of a program (the program is the program tier's, always). The
+level, and codegens the value); a verbatim `#script` body through a macro (§7,
+refused not mangled); styled formatting (the formatter satellite); and any
+representation of a program (the program is the program tier's, always). The
 codegen (§5.4) is emphatically **not** a non-goal: it is spec §8 law 2's "expands
 to the public constructors, a spelling," and program §16's witness is what keeps
 it a spelling and not a second representation.
@@ -521,11 +544,17 @@ deliberate evolution with its argument, not a drift.
   the solve stage, because its surface (a named assumption configuration) is a
   solve-session concept (spec §9.4) and spec §3.2 maps it to a solve witness
   (*blame*). Recorded so the two tier documents do not silently disagree.
-- **Theory atoms in, theory-term splices deferred by scope** (§4). Grammar §9
-  places the theory-term splice in the v1 floor; this design delivers theory
-  *atoms* (which parse and codegen like any node) and defers the theory-term
-  *splice* — feasible under codegen (`TheoryTerm::Symbolic`) but held as a scope
-  line for a focused increment, its reopening named.
+- **Theory atoms in, theory-term splices deferred** (§4). Grammar §9 places the
+  theory-term splice "in the v1 floor"; this design delivers theory *atoms*
+  (which parse and codegen like any node) and **defers the theory-term splice**
+  because its codegen target — a concrete theory-term surface — does not yet
+  exist in the program tier (program §4.9, §17). This **departs grammar §9's "v1
+  floor" line**: grammar §9 (a governing document) still asserts the theory-term
+  splice is expressible in v1, so that line — and any spec §8 dependence on it —
+  owes a corresponding note recording that the theory-term splice lands in a
+  post-tranche increment. That correction is the grammar's / specification's, not
+  this design's to make; it is flagged here for the principal so the two records
+  do not silently diverge.
 - **The proc-macro toolchain, read as `proc-macro2` + `quote`, `syn` declined**
   (§10). Spec §12.5 says "the proc-macro toolchain only"; this design reads that
   as the minimal set the job needs and argues `syn` out, the bespoke token
