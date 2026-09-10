@@ -133,7 +133,8 @@ fn the_glob_names_the_token_trait() {
 #[test]
 fn the_crate_root_names_the_token_trait() {
     // `themelios_syntax::AstToken` resolves beside `themelios_syntax::AstNode`
-    // — the path form, with no import of the trait in sight.
+    // — the path form names the crate-root re-export directly, even though the
+    // file's prelude glob (above) also brings the trait into scope.
     let parsed = parse(&admitted("p. % c\n", 0), Dialect::Clingo);
     let (comment, _) = attachments(&parsed.syntax()).next().expect("a comment");
     assert_eq!(themelios_syntax::AstToken::text(&comment), "% c");

@@ -18,8 +18,14 @@
 //! reached by their module path, not here: the general parse doors,
 //! `NestingLimit`, `EntryPoint`, `with_required_stack`, and the identity the
 //! string door mints, `STRING_INPUT_SOURCE_ID` (`parse`); the token sources
-//! and the lexer (`token`, `lexer`); and, in `tree`, rowan's `Direction` —
-//! the program tier has a `Direction` of its own — and the coordinate seam,
+//! and the lexer (`token`, `lexer`); the by-node bulk readers and the
+//! source-slice door — `tree::roles_of` beside the flat `role`,
+//! `tree::source_text`, the bracket-pair table `tree::closer_of`, the
+//! significant-child and trivia walk in `attach` (`significant_children`,
+//! `is_skipped`), and the per-token content projections
+//! `equiv::content`/`equiv::compared` — each read through its module beside
+//! the flat door it serves; and, in `tree`, rowan's `Direction` — the
+//! program tier has a `Direction` of its own — and the coordinate seam,
 //! whose `size_of` would shadow the standard prelude's. So this prelude
 //! stays safe to glob.
 //!
@@ -37,7 +43,7 @@
 //!
 //! After the glob, `Program` names nothing; `ast::Program` names the root:
 //!
-//! ```compile_fail,E0412
+//! ```compile_fail
 //! use themelios_syntax::prelude::*;
 //!
 //! fn takes(_program: Program) {}

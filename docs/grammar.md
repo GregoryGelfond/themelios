@@ -687,7 +687,11 @@ grammar's own comments (`nongroundgrammar.yy:609–610`): an
 does not parse. The collision §5.1 points here is the cause: after
 the empty condition, a `|` could equally open an absolute-value term
 inside a condition literal, and the authority's grammar declines to
-decide between the readings — write `;` there. `not p.` and
+decide between the readings — write `;` there. The syntax tier's
+bracket-pair table (`tree::closer_of`) records the same collision by
+*excluding* `PIPE`: `|…|` is one `PIPE` kind on both sides and a `PIPE`
+also separates disjunctions, so whether a `|` opens, closes, or separates
+is contextual, never a fact of the kind alone. `not p.` and
 `#false.` are grammatical heads (a head is a literal, sign included);
 head aggregates and theory atoms stand in head position unsigned.
 
