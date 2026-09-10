@@ -159,10 +159,10 @@ unchanged by this tier). A splice in a theory-term position, which grammar §9
 places in the v1 floor, is carried structurally by the syntax tier
 (`ast::TheoryTerm::Splice`, syntax roster) and lands through the theory-term
 algebra's ground-symbol leaf: the spliced value crosses the conversion pillar to
-a `Symbol` (§7) and the codegen emits `TheoryTerm::Symbolic(…)` — the leaf-lift
-program §4.9 names between the ordinary and theory term algebras. Both positions
-of grammar §9's splice floor — the term and the theory term — are therefore
-delivered here.
+a `Symbol` (§7) and the codegen emits `TheoryTerm::Symbolic(…)` — the
+ground-symbol leaf-lift constructor program §4.9 names between the ordinary and
+theory term algebras. Both positions of grammar §9's splice floor — the term
+and the theory term — are therefore delivered here.
 
 **Deferred to the solve stage** (they front a surface that does not exist until
 solve, and sit behind the pre-solve discussion):
@@ -178,13 +178,16 @@ solve, and sit behind the pre-solve discussion):
   (distinct from the `external!` directive macro above), which expands to the
   extension-surface registration the solve tier defines.
 
-**Deferred pending the extraction seam.** The `#[derive(Extract)]` and
-`#[derive(Facts)]` attributes expand over the conversion pillar (program §3.4)
-and the point accessors (program §3.7), reading a `Symbol` rather than parsing
-text. That surface is the **structured-decode seam**, which the program tier
-left provisional (program §3.4, §17) pending the by-value `FromSymbol` door its
-extraction consumer needs. These attributes land when that seam settles — a
-reasoned deferral against a named-provisional surface, not a gap.
+**Deferred pending the extraction seam.** Two attributes that cross the
+conversion pillar (program §3.4) rather than parse text, inverses of each other:
+`#[derive(Extract)]` — read-time, an answer set (or a projection) → a Rust
+value, over the point accessors (program §7.4, §3.7) — and `#[derive(Facts)]` —
+its construction-time inverse, a Rust value → a set of ground atoms, the bulk
+analog of `ToSymbol` (solve §7.3). Both rest on the **structured-decode seam**
+the program tier left provisional (program §3.4, §17) pending the by-value
+`FromSymbol` door the extraction consumer needs, and both land with the solve
+tier that defines their surfaces (solve §7.3, §9) — a reasoned deferral against
+a named-provisional surface, not a gap.
 
 ## 5. The expansion architecture
 
@@ -213,7 +216,10 @@ except the constructor calls it emits:
    `{Program, Statement, Term, TermValue}` (syntax §6.1) — so a *sub-statement*
    category, the atom of `atom!`, is reached not by a bespoke entry but by
    assembling a statement and extracting from its tree (§8); the statement macros
-   likewise assemble the terminating `.` their fragment needs. The result is the
+   likewise assemble the terminating `.` their fragment needs, and the four
+   directive macros (`show!`, `minimize!`, `maximize!`, `external!`) assemble
+   their leading `#`-keyword from the macro's own identity (`show!(p/1)` tiles
+   `#show p/1.`), a caller writing the payload alone. The result is the
    syntax tier's **typed AST**, carrying splices structurally as
    `ast::Term::Splice` / `ast::TheoryTerm::Splice` nodes (syntax roster).
    `check_token_source_laws` (syntax §4.3) validates the source — the honest,
@@ -388,7 +394,8 @@ the dialect (§6) with splices (§7) through the syntax tier's fragment entry
 — the richer, membership-authority dialect (grammar §3); a consumer wanting
 ASP-Core-2 semantics reaches for the raise doors directly. Signatures name the
 *value each builds*; the by-hand equivalent it equals is the program §7.1
-constructor named.
+constructor named. A directive macro supplies its leading `#`-keyword from its
+own name (§5) — the caller writes the payload alone.
 
 - **`atom!(-? name(args…))` → `Atom`.** There is no atom entry in the parser's
   closed `EntryPoint` set (§5.2), and the `Term` entry would read `-p` as
@@ -543,7 +550,8 @@ gaps (the deferrals of §4, gathered):
   (splicing a constant, §7) is the near candidate.
 - **The extraction and registration attributes** — `#[derive(Extract)]`,
   `#[derive(Facts)]`, `#[external]` (§4): land with the structured-decode seam
-  (program §3.4, §17) and the `@`-function surface (spec §9.6).
+  (program §3.4, §17) and the extraction / `@`-function surfaces the solve tier
+  defines (solve §7.3, §9; spec §9.6).
 - **The solve-adjacent macros** — `scenario!`, `query!` (§4): land with the
   solve session and query surfaces they front.
 
