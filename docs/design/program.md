@@ -1101,6 +1101,42 @@ definition regroups it is admission, above (grammar §5.8). One consequence for
 second of the two equality carve-outs (§5) — their equality is *canonical
 up-to-grounding*.
 
+Its algebra is the peer of §3.3's `Term`, sharing only the two leaves:
+
+```rust
+/// The theory-term algebra (grammar §5.8): a distinct peer of `Term` (§3.3),
+/// meeting it only at the shared leaves — a variable and a ground symbol.
+/// Recursion is via `Vec`; every walk over it is iterative (§13).
+// No #[derive]: Clone/Eq/Ord/Hash/Debug/Drop hand-written and iterative (§13).
+pub enum TheoryTerm {
+    /// A ground symbol leaf. A ground `Symbol` lifts into the theory algebra as
+    /// this variant — the shared ground leaf named above, the one point §3's
+    /// algebra and this peer meet on the ground side.
+    Symbolic(Symbol),
+    /// A variable leaf.
+    Variable(Variable),
+    /// A function application, `f(t, …)`.
+    Function { name: Name, arguments: Vec<TheoryTerm> },
+    /// The bracketed forms — a tuple `(t, …)`, a list `[t, …]`, a set `{t, …}`.
+    Tuple(Vec<TheoryTerm>),
+    List(Vec<TheoryTerm>),
+    Set(Vec<TheoryTerm>),
+    /// The flat operator sequence: `operators[i]` is the run before
+    /// `operands[i]` (`operators[0]` the leading run), regrouped only by a
+    /// `#theory` definition — the precedence-free structure the grammar admits.
+    Operation { operators: Vec<Vec<TheoryOperator>>, operands: Vec<TheoryTerm> },
+}
+
+/// A theory operator symbol (grammar §5.8's `THEORY-OP` or `not`), uninterpreted
+/// by this tier — a `#theory` definition gives it precedence, above.
+pub struct TheoryOperator(/* String */);
+```
+
+The `Symbolic` leaf is the ground-symbol lift the paragraph above names — the one
+point the two algebras meet on the ground side — and the constructor a build-door
+theory term reaches for a ground-symbol leaf (§7). Its one-level `parts`
+decomposition and iterative `fold` follow §3.6, applied to the theory peer.
+
 **Computational cost.** Construction of a statement is `O(its size)`; part-wise
 access is `O(log parts)` for a named part and `O(1)` amortized for `base`; the
 set inserts that build a body or a disjunction are `O(log n)` each; clone is
