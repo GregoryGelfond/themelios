@@ -40,10 +40,11 @@ fn the_prelude_names_the_doors_their_refusals_and_the_base_seam() {
     let _: Result<String, Unspellable> = render_documented(&program, Dialect::Clingo);
 
     // The door refusals land in scope without a module path: the pool door, the
-    // string-source door, and the symbol-conversion door.
+    // string-source door, the symbol-conversion door, and the pattern door of `mgu`.
     let _: Option<EmptyPool> = None;
     let _: Option<TooLarge> = None;
     let _: Option<FromSymbolError> = None;
+    let _: Option<NotAPattern> = None;
 
     // The base source seam is flat, and reachable through the `base` module too —
     // the two paths name one type.

@@ -3,11 +3,20 @@
 //! `themelios_program::prelude::*` and `themelios_syntax::prelude::*` compiles: the
 //! program tier flat-globs the IR and the infrastructure vocabulary, while the
 //! syntax tier keeps its typed AST behind `ast::`. The two tiers share the very
-//! spellings `Program`, `Rule`, `Statement`, `Atom`, `Direction`, … — one set the
-//! logician's owned IR, the other the parse tree's typed views — so were either
-//! prelude to flat-glob a name the other flat-globs, this file would fail to build
-//! with `E0659`. That it compiles is the standing proof the two flat sets are
-//! disjoint and the shared re-exports (`Dialect`, `base`) are one item each.
+//! spellings `Program`, `Rule`, `Statement`, `Atom`, … — one set the logician's
+//! owned IR, the other the parse tree's typed views.
+//!
+//! `E0659` (an ambiguous glob) is reported where an ambiguous name is *used*, not
+//! where it is glob-imported: two globs bringing one spelling for two items compile
+//! until that spelling is referenced bare. So this file locks the property one name
+//! at a time — for each shared spelling it names bare below, that the file compiles
+//! is proof the spelling resolves unambiguously (the program IR flat here; the same
+//! spelling on the syntax side reached through `ast::`). It names the whole set of
+//! spellings the two tiers share (`Program`, `Statement`, `Rule`, `Atom`, `Head`,
+//! `Body`, `Literal`, `Comparison`, `BodyElement`, `Direction`, `Relation`,
+//! `Aggregate`, `Term`, `Signature`, `Query`, `Variable`), so a future edit that
+//! flat-globbed any of them into either prelude would fail this build. The shared
+//! re-exports (`Dialect`, `base`) are one item each.
 
 use themelios_program::prelude::*;
 use themelios_syntax::prelude::*;
@@ -37,6 +46,17 @@ fn both_preludes_coexist_with_the_syntax_ast_reached_namespaced() {
     // IR's are different types of the same name; the syntax prelude keeps rowan's
     // behind `tree::`, so this bare name is unambiguously the program IR's.
     let _: Option<Direction> = None;
+
+    // The rest of the spellings the two tiers share: each is flat here (the program
+    // IR) and behind `ast::` on the syntax side, so each resolves bare
+    // to the program tier with no `E0659` — and would stop resolving were a future
+    // edit to flat-glob any of them into the syntax prelude.
+    let _: Option<Relation> = None;
+    let _: Option<Aggregate> = None;
+    let _: Option<Term> = None;
+    let _: Option<Signature> = None;
+    let _: Option<Query> = None;
+    let _: Option<Variable> = None;
 
     // The SAME spellings on the syntax side are reached through `ast::`, never bare.
     let _: Option<ast::Program> = None;

@@ -1991,16 +1991,21 @@ An argument built from a non-Herbrand term-former is **not** a pattern and
 refuses:
 
 ```rust
-/// Why an atom is not a pattern, carrying the offending argument term. One reason
-/// today, and non-exhaustive, so a later reason is a variant, not a migration.
+/// Why an atom is not a pattern, carrying the offending argument term where there
+/// is one. Non-exhaustive, so a later reason is a new variant, not a migration.
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum NotAPattern {
-    /// An argument is an arithmetic term (would need inverting — this tier does
-    /// not evaluate in a pattern), or an interval or pool (each *names a set*,
-    /// whose all-versus-any reading a term-against-symbol match cannot decide),
-    /// or an `@`-call.
+    /// An argument does not denote a ground pattern term: a ground arithmetic term
+    /// that does not denote, an arithmetic term with a variable (this tier does not
+    /// evaluate in a pattern), an interval or a pool *as a term argument* (each
+    /// *names a set*, whose all-versus-any reading a term-against-symbol match
+    /// cannot decide), or an `@`-call.
     NonDenoting { term: Term },
+    /// The atom itself is an argument-list pool (`p(a; b)`, §4.6): it names a *set*
+    /// of atoms, not one, so a term-against-symbol match cannot decide it — unpool
+    /// (§9) first.
+    Pooled,
 }
 ```
 

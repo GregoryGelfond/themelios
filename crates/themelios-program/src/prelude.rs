@@ -18,7 +18,8 @@
 //! with no ambiguity. Flat here are the doors and the infrastructure vocabulary:
 //! the program IR (`Program`, `Rule`, `Statement`, `Atom`, `Direction`, …),
 //! provenance, the symbol and term algebra, the render doors, the door refusals
-//! (`EmptyPool`, `TooLarge`, `Unspellable`, `FromSymbolError`, …), and the base
+//! (`EmptyPool`, `TooLarge`, `Unspellable`, `FromSymbolError`, `NotAPattern`, …),
+//! and the base
 //! source seam (`Source`, `SourceId`, `TooLarge`, and `base` as a module). NOT flat
 //! — and this is what keeps the two preludes disjoint — are the syntax tier's
 //! AST-family names and the helpers that would clash with a flat name here: the
@@ -51,6 +52,7 @@ pub use crate::symbol::{
     Signature, Symbol, ToSymbol, VarName,
 };
 pub use crate::term::{EmptyPool, EvalError, Term, Variable};
+pub use crate::unify::NotAPattern;
 pub use themelios_base::source::{Source, SourceId, TooLarge};
 pub use themelios_base::span::Location;
 pub use themelios_syntax::dialect::Dialect;
