@@ -151,22 +151,18 @@ program §4.8), distinct from the `#[external]` attribute below — and the
 program-level block `program!` (which excludes `#script`, §8). Their targets all
 exist at this tier's base (§8 names each), so each reduces to a trivial expansion.
 
-**Theory atoms are in; theory-term splices are deferred by scope.** A theory
-atom that arrives *without a splice* — `&sum { 1, 2 } <= n` — is ordinary syntax
-to the parser and codegens through the theory-atom constructors like any other
-node (the theory-atom argument-list pool remains the raise's stated §17
-exception, unchanged by this tier). A **splice into a theory-term position** —
-`&sum { $x } <= $bound`, which grammar §9 places in the v1 floor — the syntax
-tier *does* carry structurally (`ast::TheoryTerm::Splice`, syntax roster), so
-**parsing** it is not the obstacle; the obstacle is **lowering** it, and its
-codegen target does not yet exist: the program tier carries theory terms as "a
-distinct peer algebra" opaquely and **defers the concrete theory-term surface to
-the solve/query stage** (program §4.9, §17). By §3's razor — *its target does not
-exist yet, so defer it* — the theory-term splice is deferred until that surface
-lands (a focused increment alongside the theory-term work the solve/query stage
-brings), and until then a `$` in a theory-term position is a macro-site error
-with a clear message (§9), not a silent miss. This deferral departs grammar §9's
-"v1 floor" line; see §13.
+**Theory atoms and theory-term splices are both in.** A theory atom — with or
+without splices, `&sum { 1, 2 } <= n` or `&sum { $x } <= $bound` — is ordinary
+syntax to the parser and codegens through the theory-term constructors like any
+other node (its argument-list pool remains the raise's stated §17 exception,
+unchanged by this tier). A splice in a theory-term position, which grammar §9
+places in the v1 floor, is carried structurally by the syntax tier
+(`ast::TheoryTerm::Splice`, syntax roster) and lands through the theory-term
+algebra's ground-symbol leaf: the spliced value crosses the conversion pillar to
+a `Symbol` (§7) and the codegen emits `TheoryTerm::Symbolic(…)` — the leaf-lift
+program §4.9 names between the ordinary and theory term algebras. Both positions
+of grammar §9's splice floor — the term and the theory term — are therefore
+delivered here.
 
 **Deferred to the solve stage** (they front a surface that does not exist until
 solve, and sit behind the pre-solve discussion):
@@ -210,13 +206,18 @@ except the constructor calls it emits:
    be self-checked** (syntax §4.2). Where a `$` marks a splice it emits the
    syntax tier's `SPLICE` token; the source declares its own `id()` (§9,
    provenance).
-2. **Parse through the fragment entry** for the category
-   (`parse_statement` / `parse_term` / `parse_program`, syntax §6.1), driven over
-   that `TokenSource` at `NestingLimit::DEFAULT` (128, syntax §6.1; a macro body
-   is human-bounded). The result is the syntax tier's **typed AST**, carrying
-   splices structurally as `ast::Term::Splice` / `ast::TheoryTerm::Splice` nodes
-   (syntax roster). `check_token_source_laws` (syntax §4.3) validates the source
-   — the honest, tier-provided replacement for any bespoke reconstruction check.
+2. **Parse through the fragment entry** for the category (`parse_statement` /
+   `parse_term` / `parse_program`, syntax §6.1), driven over that `TokenSource`
+   at `NestingLimit::DEFAULT` (128, syntax §6.6, referenced from §6.1; a macro
+   body is human-bounded). The `EntryPoint` set is closed —
+   `{Program, Statement, Term, TermValue}` (syntax §6.1) — so a *sub-statement*
+   category, the atom of `atom!`, is reached not by a bespoke entry but by
+   assembling a statement and extracting from its tree (§8); the statement macros
+   likewise assemble the terminating `.` their fragment needs. The result is the
+   syntax tier's **typed AST**, carrying splices structurally as
+   `ast::Term::Splice` / `ast::TheoryTerm::Splice` nodes (syntax roster).
+   `check_token_source_laws` (syntax §4.3) validates the source — the honest,
+   tier-provided replacement for any bespoke reconstruction check.
 3. **Diagnose at the rust-analyzer bar** (law 1). Syntax diagnostics come from
    the parse of step 2. Lowering diagnostics come from raising a **splice-free
    view** of the same fragment — each splice replaced by an inert **ground
@@ -233,9 +234,26 @@ except the constructor calls it emits:
 4. **Codegen from the typed AST.** The engine walks the splice-bearing AST of
    step 2 and emits the §7.1 constructor calls that build the value:
    `Term::function` / `Atom::new` / `Rule::new` / the directive constructors, one
-   arm per AST node family. At each `Splice` node it emits the spliced Rust
-   expression crossed to a ground term (§7). The expansion is these public
-   constructor calls and nothing else — law 2.
+   arm per AST node family, and `TheoryTerm::Symbolic(…)` at a theory-term splice
+   (§7). At each `Splice` node it emits the spliced Rust expression crossed to a
+   ground term (§7). The expansion is these public constructor calls and nothing
+   else — law 2.
+
+**Totality — no panic on any input.** The codegen emits the §7.1 constructors,
+some fallible on raw data: `Name::new` refuses a non-identifier, `Term::pool` an
+empty pool (program §7.2). For the macro's *literal* content the failing case
+cannot arise — a name reaching the codegen was classified `IDENTIFIER` /
+`VARIABLE` by the §6 mapping (an identifier no class matches whole is a §6
+dialect error, refused at compile time), the very invariant the raise §8 itself
+rests on ("a bad name never reaches here — the lexer guaranteed the token's
+class"), and a parsed pool is non-empty by the grammar. So the codegen discharges
+each such `Result` with a documented `.expect()` naming the invariant, in the
+base §9 / spec §10.4 discipline the parser and the coordinate seam (syntax §5.3)
+already follow: a total operation whose body discharges a compile-time-established
+invariant. The expect is unreachable on any input that compiles — an
+ill-classified token or an empty pool is a compile error (§9), never a runtime
+panic — so §2's "no panic on any input" holds. (A splice's *own* fallibility is
+the caller's, handled inside `$( … )`, §7.)
 
 **No lowering at runtime, and no runtime parse.** The expansion is a tree of
 constructor calls; at runtime it builds the value directly, splices resolved. The
@@ -247,12 +265,14 @@ witness (§11), which compares each macro's value to the spelled-out constructor
 is what would catch a `Splice` the codegen ever failed to expand.
 
 **Two spellings of one lowering, held equal.** The codegen (AST → constructor
-calls) parallels the raise (AST → `Program`); they are two spellings of the same
-lowering, and program §16's equality witness (§11) is the proof they never
-diverge — the discipline program §7.4 sets for "a macro adds no representation,
-only a spelling." This is not the "one authority" of a single runtime lowering;
-it is a spelling whose faithfulness is *tested*, which is what §7.4 asks and §16
-delivers.
+calls) and the raise (AST → `Program`) are two spellings of the same lowering.
+What holds them equal is **not** the §16 witness comparing them to each other —
+the witness compares a value *built through the macros* against a value *built
+through the spelled-out constructors* (codegen ≡ hand-construction), which is the
+property the tier needs and proves (§11). What keeps the *diagnosed* fragment
+(step 3's splice-free-view raise) and the *built* value (step 4's codegen) in
+step is their **shared parse** (step 2): both are functions of the one typed AST,
+so the fragment that raises clean is the fragment the codegen builds.
 
 **Provenance.** Because the expansion calls the constructors, every node a macro
 builds carries `Origin::Constructed` (program §6) — identical to a value built by
@@ -313,44 +333,52 @@ token, the `proc_macro` span it came from, so a diagnostic located in the text
 ## 7. Splices and the conversion pillar
 
 A splice is grammar §9's interpolation: `$name` splices the value of a Rust
-binding, `$( … )` splices any Rust expression. It stands where a **term** may
-stand (the theory-term position is deferred by scope, §4). The `TokenSource`
-emits a `SPLICE` token for it (§6), and the parser carries it as an
-`ast::Term::Splice` node — no placeholder variable, no re-lexing.
+binding, `$( … )` splices any Rust expression. It stands where a **term or a
+theory term** may stand — both positions of grammar §9's v1 floor (§4). The
+`TokenSource` emits a `SPLICE` token for it (§6), and the parser carries it as an
+`ast::Term::Splice` or `ast::TheoryTerm::Splice` node — no placeholder variable,
+no re-lexing.
 
 **The conversion crossing.** A spliced value is a Rust value that *denotes a
 ground symbol*: it crosses the conversion pillar's `ToSymbol` (program §3.4),
 the one surface the ground-time `@`-functions, read-time extraction, and these
 splices all share, so the three never diverge. At each `Splice` node the codegen
-(§5.4) emits the value crossed to a ground term — `ToSymbol::to_symbol` then
-`From<Symbol> for Term` (program §3.4, the lossless-inward door) — as the
-constructor argument in that position. The splice is thus never a second door
-into construction: it is a value handed to the same conversion pillar every
+(§5.4) emits the value crossed to a ground symbol — `ToSymbol::to_symbol` — then
+landed in that position: `From<Symbol> for Term` in a term position (program
+§3.4, the lossless-inward door), `TheoryTerm::Symbolic` in a theory-term position
+(the ground-symbol leaf-lift, program §4.9). The splice is thus never a second
+door into construction: it is a value handed to the same conversion pillar every
 other extension point uses, landing in the same public constructor a spelled-out
 term would.
 
-**Refusal is at the door, at compile time.** A spliced value whose type is not
-`ToSymbol` is a *compile error* — the trait bound the emitted conversion carries
-is exactly "refuses at the constructor doors the expansion calls" (grammar §9;
-spec §8 law 2). There is no runtime splice refusal: the admitted ground types
-(`i8`…`i32`, `u8`, `u16`, `str`, `String`, and `Name` through `Symbol::constant`)
-convert infallibly (program §3.4), and a fallible landing — an `f64` through a
-rounding adapter (program §3.4) — is written *by the caller inside the splice*
-(`$( round(x)? )`), where its `Result` is the caller's, not the macro's to hide.
+**The splice-able types.** `ToSymbol` admits the lossless-inward Rust scalars —
+`i8`, `i16`, `i32`, `u8`, `u16`, `str`, `String` (program §3.4) — so those are
+what a bare `$x` may splice; a non-`ToSymbol` type is a *compile error*, the
+trait bound the emitted conversion carries being exactly "refuses at the
+constructor doors the expansion calls" (grammar §9; spec §8 law 2). A fallible
+landing — an `f64` through a rounding adapter (program §3.4) — is written *by the
+caller inside the splice* (`$( round(x)? )`), where its `Result` is the caller's,
+not the macro's to hide. An already-built themelios value (a `Symbol`, a `Name`,
+a `Term`) is **not** splice-able through this floor — the conversion pillar has no
+`ToSymbol` for them — and is expressed through the spelled-out constructors
+instead, the direction spec §8 law 2 guarantees (grammar §9's "the converse is
+not promised"). Splicing a *constant* by `Name` would want a `ToSymbol for Name`
+(a `Name` denotes a constant symbol); that impl is a candidate program-tier
+addition for a later increment, noted so its absence here is deliberate, not
+overlooked.
 
 **The asymmetries, stated.** By-value literals mean macro bodies admit spellings
 files do not and the converse: a Rust string's escapes produce string values
 grammar §4.4 cannot spell (carried as a splice of the value, §6), and a Rust
 numeral may be `0o17` (the value crosses, the spelling does not). **Primed
 names** (`a'`) are inexpressible in macros — Rust identifiers carry no primes —
-and remain expressible through the spelled-out constructors, the direction spec
-§8 law 2 guarantees; the converse is not promised (grammar §9). **A `#script`
+and remain expressible through the spelled-out constructors. **A `#script`
 body** is inexpressible in a macro and refused, not mangled: its `ScriptBody` is
 verbatim, whitespace-significant text (grammar §4.8), and a macro body arrives
 already lexed by Rust with its spacing normalized and comments gone (grammar §9),
 so a faithful body cannot be recovered from the tokens' spellings — most sharply
 a Python `#script`, where indentation is semantics; `program!` therefore refuses
-`#script` at the macro site (§8). A theory-term splice is deferred by scope (§4).
+`#script` at the macro site (§8).
 
 ## 8. The vocabulary
 
@@ -362,11 +390,15 @@ ASP-Core-2 semantics reaches for the raise doors directly. Signatures name the
 *value each builds*; the by-hand equivalent it equals is the program §7.1
 constructor named.
 
-- **`atom!(-? name(args…))` → `Atom`.** Parsed in **atom (head) position**, so a
-  leading `-` is *strong* negation (`Sign::Negative`), the positional reading the
-  tree resolves (program §3.3, §8) and `impl Neg for Atom` (program §7.1)
-  mirrors — not arithmetic negation of a term. A fragment that is not a single
-  atom is a macro-site error. Equals `Atom::new` / `Atom::constant`.
+- **`atom!(-? name(args…))` → `Atom`.** There is no atom entry in the parser's
+  closed `EntryPoint` set (§5.2), and the `Term` entry would read `-p` as
+  *arithmetic* negation (`UnaryOp`), not the strong negation an atom wants. So
+  `atom!` reaches atom (head) position by **assembling a fact**: it appends the
+  terminating `.`, parses through `parse_statement` — where the tree resolves
+  `-p` as strong negation positionally (program §3.3, §8) — requires a
+  single-atom head, and codegens that `Atom` (a head that is a disjunction,
+  choice, or aggregate is a macro-site error). Equals `Atom::new` /
+  `Atom::constant`.
 - **`fact!(head)` → `Rule`.** A fact — a head with the empty body. Equals
   `Rule::fact`.
 - **`rule!(head :- body)` → `Rule`.** A rule read as the rule. Equals
@@ -411,9 +443,10 @@ The diagnostics carried are the syntax tier's `SyntaxError` and the program
 tier's `LowerError`, both lowering to base's normal form (base §6.5; program §8)
 — one model, so a macro-site diagnostic reads exactly as the file parser's, at
 the rust-analyzer bar (spec §2 item 9). Dialect errors of the mapping itself
-(§6 — a float literal, a detached `#`, `r#not`), a `$` in a theory-term position
-(§4), and a `#script` in `program!` (§7) are the engine's own diagnostics,
-located at the offending Rust token's span and worded in the same register.
+(§6 — a float literal, a detached `#`, `r#not`), a non-`ToSymbol` splice (§7), a
+non-single-atom `atom!` head (§8), and a `#script` in `program!` (§7) are the
+engine's own diagnostics, located at the offending Rust token's span and worded
+in the same register.
 
 **Hygiene.** The expansion references program-tier items by absolute path
 (`::themelios_program::…`), so it compiles regardless of the caller's imports. A
@@ -483,16 +516,17 @@ what it proves and what it cannot (spec §10.2).
 - **Property laws (proptest)** over the crate's owned logic: the dialect mapping
   (§6) — every named Rust token maps to its roster token, every unnamed token is
   a dialect error; and a **splice round-trip** — a program written with splices
-  of generated ground values equals the same program written with those values
-  spelled in place (the equality witness, generated).
+  of generated ground values (in term *and* theory-term positions) equals the
+  same program written with those values spelled in place (the equality witness,
+  generated).
 - **Golden snapshots**, reviewed: representative expansions, and the macro-site
   diagnostics rendered through base's human view at the rust-analyzer bar (the
   diagnostics-quality discipline, spec §2 item 9).
 - **Compile-fail tests** (`trybuild`, §10): a macro-site syntax error, a dialect
-  error (§6), a non-`ToSymbol` splice (§7), a theory-term splice (§4), and a
-  `#script` in `program!` (§7) each produce the expected compile error at the
-  expected span — the direct test of law 1 and of the deferrals' and refusals'
-  clean boundary.
+  error (§6), a non-`ToSymbol` splice (§7), a non-single-atom `atom!` head (§8),
+  and a `#script` in `program!` (§7) each produce the expected compile error at
+  the expected span — the direct test of law 1 and of the refusals' clean
+  boundary.
 - **Standing checks:** the workspace coverage floor as a tripwire, at the
   estate's per-file bar; documentation examples that run; `forbid(unsafe_code)`
   and the structural trust checks; unused-code and unused-result denied (spec
@@ -503,13 +537,10 @@ what it proves and what it cannot (spec §10.2).
 Named reserved seams — deferred with their reasons and arriving consumers, never
 gaps (the deferrals of §4, gathered):
 
-- **Theory-term splices** (§4): the codegen target (a concrete theory-term
-  surface) does not yet exist — the program tier carries theory terms opaquely
-  and defers that surface to the solve/query stage (program §4.9, §17) — so the
-  theory-term splice reopens as a focused increment when it lands.
 - **Further splice sites** — names, tuples, statements (grammar §9): future
   vocabulary, each admitted on argument as the tiers accrete; the v1 floor is the
-  term (and, deferred by scope, the theory term).
+  term and the theory term (both delivered here, §4, §7). A `ToSymbol for Name`
+  (splicing a constant, §7) is the near candidate.
 - **The extraction and registration attributes** — `#[derive(Extract)]`,
   `#[derive(Facts)]`, `#[external]` (§4): land with the structured-decode seam
   (program §3.4, §17) and the `@`-function surface (spec §9.6).
@@ -544,17 +575,6 @@ deliberate evolution with its argument, not a drift.
   the solve stage, because its surface (a named assumption configuration) is a
   solve-session concept (spec §9.4) and spec §3.2 maps it to a solve witness
   (*blame*). Recorded so the two tier documents do not silently disagree.
-- **Theory atoms in, theory-term splices deferred** (§4). Grammar §9 places the
-  theory-term splice "in the v1 floor"; this design delivers theory *atoms*
-  (which parse and codegen like any node) and **defers the theory-term splice**
-  because its codegen target — a concrete theory-term surface — does not yet
-  exist in the program tier (program §4.9, §17). This **departs grammar §9's "v1
-  floor" line**: grammar §9 (a governing document) still asserts the theory-term
-  splice is expressible in v1, so that line — and any spec §8 dependence on it —
-  owes a corresponding note recording that the theory-term splice lands in a
-  post-tranche increment. That correction is the grammar's / specification's, not
-  this design's to make; it is flagged here for the principal so the two records
-  do not silently diverge.
 - **The proc-macro toolchain, read as `proc-macro2` + `quote`, `syn` declined**
   (§10). Spec §12.5 says "the proc-macro toolchain only"; this design reads that
   as the minimal set the job needs and argues `syn` out, the bespoke token
