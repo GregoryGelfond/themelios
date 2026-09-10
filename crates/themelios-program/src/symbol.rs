@@ -285,10 +285,10 @@ impl Symbol {
 impl From<i32> for Symbol {
     /// A number is a symbol (§3.1, §3.4): `i32`, the engine's own width, lifted
     /// to the `Number` leaf — [`Symbol::number`], and the twin of `From<i32>` for
-    /// `Term`. A narrower integer reaches a symbol through its `ToSymbol` (§3.4);
-    /// a wider one has no silent door — the caller narrows it checked and states
-    /// the intent (§3.4). This widens the one obvious spelling, it does not add a
-    /// second.
+    /// `Term`. The other integers reach a symbol through their `ToSymbol` (§3.4),
+    /// the door lossless-inward: the engine width and narrower; a wider one has no
+    /// silent door — the caller narrows it checked and states the intent (§3.4).
+    /// This widens the one obvious spelling, it does not add a second.
     fn from(value: i32) -> Symbol {
         Symbol::number(value)
     }

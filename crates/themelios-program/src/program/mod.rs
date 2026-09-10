@@ -76,7 +76,7 @@ pub enum Statement {
 //
 // For every statement family `X`: `From<X> for Statement`, its variant wrapped as built.
 // No pass runs here — canonicalization is the ingest door's (§6.3) — so each is O(1) and
-// total. These are the intended construction path for a downstream that must not name
+// total. These are the intended construction path for a downstream that need not name
 // the variants of a `#[non_exhaustive]` sum, and the class `Program::of` admits: a
 // `Statement` itself passes by the reflexive `From`, so mixed families meet there.
 

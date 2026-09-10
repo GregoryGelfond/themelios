@@ -16,10 +16,11 @@
 //! that takes a raw term — deeply at the doors that take an atom, an aggregate, a
 //! theory atom, a conditional literal, or a head shape; one level at the operator
 //! doors, which assume canonical operands, as a term built through these doors always
-//! is — so the ergonomic path never yields a
-//! non-canonical value (§7.2); the one value that can carry a non-canonical term is a
-//! struct literal a caller fills directly, which the atom and ingest doors repair whole
-//! on entry (§5.1).
+//! is — so the ergonomic path never yields a non-canonical value (§7.2). A
+//! non-canonical term survives only where that assume-canonical premise is bypassed:
+//! a struct literal a caller fills directly, or a one-level door fed a raw
+//! non-canonical operand — and either is repaired whole the moment it next crosses a
+//! deep-repair door (an atom, an ingest, or a statement door, §5.1, §7.2).
 
 use crate::program::{
     Aggregate, Arguments, Atom, Body, BodyElement, Choice, Comparison, ConditionalLiteral,
@@ -166,7 +167,10 @@ impl Head {
 }
 
 impl Rule {
-    /// A fact — a single-literal head over an empty body (§4.3, §7.1), `p(1).`. Total.
+    /// A rule with this head over an empty body (§4.3, §7.1): a *fact* `p(1).` when the
+    /// head is a single literal — the [`is_fact`](Rule::is_fact) shape — and equally a
+    /// bodiless disjunction, choice, aggregate, or theory head (`a; b.`), which any
+    /// [`IntoHead`] value reaches. Total.
     pub fn fact(head: impl IntoHead) -> Rule {
         Rule::new(head, Body::empty())
     }
@@ -266,10 +270,11 @@ fn unary(operator: UnaryOp, argument: Term) -> Term {
 
 impl From<i32> for Term {
     /// A number is a term (§3.3, §3.4): `i32`, the engine's own width, lifted to the
-    /// ground `Symbolic(Number)` leaf. A narrower integer reaches a term through its
-    /// `ToSymbol` (§3.4) and then `From<Symbol>`; a wider one has no silent door — the
-    /// caller narrows it checked and states the intent (§3.4). This widens the one
-    /// obvious spelling, it does not add a second.
+    /// ground `Symbolic(Number)` leaf. The other integers reach a term through their
+    /// `ToSymbol` (§3.4) and then `From<Symbol>`, the door lossless-inward: the engine
+    /// width and narrower; a wider one has no silent door — the caller narrows it
+    /// checked and states the intent (§3.4). This widens the one obvious spelling, it
+    /// does not add a second.
     fn from(value: i32) -> Term {
         Term::Symbolic(Symbol::Number(value))
     }

@@ -68,6 +68,25 @@ visitor and rewriter machinery, §9); `render` (canonical concrete syntax, §10)
 `unify` (patterns, the most general unifier, substitution, §11); `analyze` (the
 structural accessors the analysis client reads, §12).
 
+**The working vocabulary.** The crate root re-exports the surface a client names
+constantly — the IR types (`Program`, `Rule`, `Atom`, `Term`, `Symbol`, …), the
+conversion and construction traits, the render doors and their refusals
+(`Unspellable`, `EmptyPool`, `FromSymbolError`), and the base source seam it hands
+across its own boundary (`base` as a module, `Source`, `SourceId`, `TooLarge`,
+`Location`) — so `themelios_program::Program` resolves without walking the module
+tree or taking a dependency only to name a returned type. The `prelude` is the
+superset for a one-line glob, and one rule governs both: the doors and the
+infrastructure vocabulary are flat, while an advanced surface — unification, the
+transformation visitors, the `SymbolParts`/`TermParts` fold enums, the free
+functions reached through their modules — is named by its module path. That rule is
+also what lets the prelude be globbed *beside* the syntax tier's with no ambiguity:
+the flat set is disjoint from `themelios_syntax::ast`, whose typed AST shares this
+IR's very spellings and stays behind `ast::` (`ast::Program`, `ast::Rule`), its
+`ast::HasDocs`/`ast::HasGuards` module-qualified so `HasGuards` does not collide with
+this tier's own, and rowan's `Direction` behind `tree::` because this IR has a
+`Direction` of its own. The standing compile-lock on that no-collision property is
+`tests/cross_prelude.rs`.
+
 **Crate facts, carried as constraints.** `#![forbid(unsafe_code)]`, with the
 workspace trust checks asserting an FFI-free dependency closure and no build
 script (spec §12.2, §12.3). Its one lower-tier dependency is
@@ -1149,6 +1168,18 @@ distinction the author wrote and none is forced by set semantics: the direction
 of a two-sided aggregate bound, the direction of a comparison, and the spelling
 of a part's formal parameters. Equality reports them as written.
 
+**One level, and the whole pass.** The pass has a one-level restriction of itself
+that the construction doors lean on (§7.2): the same per-node rule applied once, to a
+node whose children are already canonical. A value built bottom-up through the doors
+is canonical at every step, so a chain of `depth` constructors costs `O(depth)`, not
+the `Θ(depth²)` a deep pass at each door would; the deep pass is reserved for the
+boundary that admits a raw child (§7.2). The full pass is **idempotent** — a second
+run finds every node at its normal form — and idempotent *even over a malformed
+value*, a hand-built pool nesting an empty pool among them: it rebuilds bottom-up and
+re-canonicalizes each assembled node one level as it goes (`flatten_pools`), so the
+empty pool it cannot collapse (a validity invariant the constructor refuses, not a
+normal form, above) is nonetheless left at a fixed point rather than rewritten again.
+
 ### 5.2 Canonical-syntactic equality, named
 
 The `Eq` a `Program` carries is **canonical-syntactic equality**: two programs
@@ -1388,6 +1419,50 @@ of §2):
   `constraint(b)` and a scenario over the same `b` read as the different things
   they are (their model sets are disjoint), not as one shape reused.
 
+**The surface in full.** The representative constructs above are one regular family,
+every member canonicalizing per §7.2's boundary:
+
+- **Value constructors.** A term through its named constructor — `Term::function`,
+  `Term::constant`, `Term::variable`, `Term::tuple`, `Term::anonymous`, and
+  `Term::pool` (the empty pool refused, §7.2) — and a ground symbol through its own —
+  `Symbol::constant`, `Symbol::function`, `Symbol::tuple`, `Symbol::number`,
+  `Symbol::string`. The nullary and empty cases are named (`Term::constant`,
+  `Symbol::constant`), so no typed-empty sentinel appears and a simple thing stays
+  simple.
+- **Scalar coercions.** `From<i32>`, `From<&str>`, and `From<String>` on both `Term`
+  and `Symbol`, so the same literal spells a term in a term position and a symbol in
+  a symbol position with no wrapping; the numeric door is **lossless-inward** (§3.4),
+  a wider integer having no silent conversion.
+- **The body/head coercion class.** A closed set of coercions (the *coercion, not
+  variants* property above): for every body-able value — the atom, the comparison,
+  the aggregate, the theory atom, the conditional literal, and the literal itself — a
+  `From<_> for BodyElement` and an `IntoBody` (and, where a `Literal` is the natural
+  target, a `From<_> for Literal`); for every head-able value — the atom, the
+  disjunction, the choice, the head aggregate, and the theory atom — an `IntoHead`.
+  Default negation opens no second path: `not`/`not_not` are `Negatable`'s alone
+  (§4.5), and a negated value is a `BodyElement` no head accepts — so the class is
+  closed by a rule, not a menu. Besides the atom, the theory atom is the one value in
+  both classes; the
+  comparison is body-able alone, a comparison head reached through the two-step
+  `Literal` path.
+- **The statement class, and the two program doors.** Every statement family (§4.2)
+  has a `From<_> for Statement`, so a downstream *need not* name the variants of the
+  `#[non_exhaustive]` enum, and a `Statement` itself passes by the reflexive `From`,
+  so mixed families meet at `Statement::from`. A `Program` is built through **two
+  doors**: `Program::of`, over bare statements, stamping each a `Constructed` origin
+  (§6.2); and `Program::of_nodes`, over statements carrying their own `Parsed` or
+  `Transformed` provenance (§6.2), the door the raise (§8) and a transformation (§9)
+  build on. Both admit each statement through the one ingest door (§6.3), which
+  canonicalizes and merges. The empty program is `Program::empty` (or
+  `Program::default()`), named so the generic `of` need not infer an element type
+  from a bare `[]`.
+- **Directive and optimization constructors.** Each directive family carries its
+  `new` — `Const::new` (its value canonicalized, a deep-repair door, §7.2),
+  `Defined::new` and `Signature::new` (flat values whose constructor is the struct
+  literal), and the rest (§4.8) — and `minimize`/`maximize` (§4.7) read as the
+  directives they are, each element a `weight(w).at_priority(p)`. So every family a
+  program holds has one named way in.
+
 ### 7.2 Refusal only where failure is real
 
 Totality with typed refusals (spec §5.2, §7.3), placed by the criterion of §2 —
@@ -1412,9 +1487,27 @@ genuinely possible:
 
 Lexical name classes are enforced at exactly these raw-data doors, once, by the
 syntax tier's classifier (§3.2) — the one well-formedness authority for names,
-shared so no second definition exists. Canonicalization (§5.1) runs eagerly at every
-constructor that takes a raw term, and the boolean-head fold at the ingest door
-(§5.1, §6.3), so the ergonomic path never yields a non-canonical value.
+shared so no second definition exists. Canonicalization (§5.1) runs at every
+constructor that admits a raw term, in one of two strengths. The **one-level doors** —
+the operator doors (`+`, `-`, `..`, `abs`, …) and the value constructors
+(`Term::function`, `Term::tuple`, `Term::pool`, …) — assume canonical children and
+apply the per-node rule once, `O(depth)` over a value built bottom-up, because a term
+built through these doors is canonical at every step. The **deep-repair boundary** —
+`Atom::new` and `Atom::pooled`, `From<Atom>` and `Negatable`, `Const::new`, and the
+ingest and statement doors (§6.3), the boolean-head fold among the passes it runs
+(§5.1) — takes a raw, possibly hand-filled child and repairs the whole value on
+entry. So the ergonomic path never yields a non-canonical value, and the one value
+that escapes — a struct literal a caller fills directly, or a one-level door fed a
+raw non-canonical operand — is repaired whole the moment it next crosses a
+deep-repair door.
+
+**The residue, named.** Two outcomes meet a non-canonical or malformed value at a
+door, different in kind. A **repaired** value is valid but non-canonical — a ground
+`f(1)` spelled uncollapsed, a nested pool — and the deep pass fixes it silently
+(§5.1). A **refused** value is malformed — the empty pool the grammar spells nowhere,
+carried as `EmptyPool` (§5.1) — and no pass can repair it, so the cardinality
+constructor returns `Err`. Repair is canonicalization's and refusal the
+constructor's; the two never trade places.
 
 ### 7.3 The two audiences, and exceeding the comparators
 
@@ -2264,7 +2357,23 @@ never gaps:
   *materialises* a large unifier — `substitute` resolving a triangular substitution
   is `O(output)`, and a pathological unifier makes that output exponentially larger
   than its input (§9.2, §11.1), which shared structure bounds. v1 is owned by value,
-  so v1 pays the output cost; the interner is the measured-need answer to both.
+  so v1 pays the output cost; the interner is the measured-need answer to both. The
+  seam is already shaped for it and costs nothing until it lands: the conversion
+  traits read and write through methods a later interner or context threads through
+  (§3.4), `Symbol`'s order is **lexicographic** over structure (§3.1) and never an
+  interned identity — so interning cannot change what `Ord` decides — and the
+  arena-free constructors (`Symbol::constant`, `Symbol::function`, …) are the stable
+  door an interned variant sits behind with the surface unchanged.
+- **The structured-decode surface** (§3.4): `FromSymbol`'s structured and compound
+  decoders, the `#[derive(Extract)]` that expands over them (§7.4), and a by-value
+  decode door beside today's by-reference `from_symbol` arrive with the extraction
+  consumer that reads answer sets back as typed Rust values (spec §9.6) — a named
+  deferral in this register, not a gap: the conversion pillar (§3.4) is the complete
+  target they build on, its `#[non_exhaustive]` `FromSymbolError` and `Segment`
+  already carrying the compound locus a nested decoder records. (`Segment` derives
+  `Copy`; the additive-behind-`#[non_exhaustive]` guarantee holds on the one
+  condition that a later variant stays `Copy`, a non-`Copy` one dropping the derived
+  `Copy` a downstream may rely on.)
 - **The theory-atom argument-list pool** (§8, §9): an *ordinary* atom's argument-list pool
   `p(a; b)` raises faithfully to `Arguments::Pooled` and `unpool` (§9) eliminates it before analysis
   and solve; a *theory* atom's `&t(a; b)` is truncated at raise with a `PooledArgumentList`
@@ -2395,3 +2504,14 @@ evolution with its argument, not a drift.
   comparison against the pinned authority (§16): the order-insensitive membership
   differential reads statements into a set and so cannot witness the reordering,
   so the neutrality is confirmed by the stronger grounding check instead.
+- **The programmatic construction surface, recorded (§1, §5.1, §7.1, §7.2, §17).**
+  The regularity the built surface carries is written into the design rather than
+  left to the code: §7.1 states the surface in full — the value constructors, the
+  scalar coercions, the closed body/head and statement coercion classes, the two
+  `Program` doors, and the directive constructors; §5.1 and §7.2 name the two
+  strengths of the canonicalization pass (the one-level door and the deep-repair
+  boundary) and the residue each meets (a value **repaired** versus one **refused**);
+  §1 records the crate-root and prelude working vocabulary and the cross-prelude
+  no-collision property; and §17 sharpens the interner seam and names the
+  structured-decode seam. Each is a reconciliation to the shipped surface, no change
+  of design.
