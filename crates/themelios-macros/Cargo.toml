@@ -19,7 +19,9 @@ proc-macro = true
 [dependencies]
 themelios-syntax = { path = "../themelios-syntax" }
 themelios-program = { path = "../themelios-program" }
-proc-macro2 = "1"
+# span-locations gives a token's byte range, which the dialect reads to
+# decide the `#`-keyword span adjacency (grammar §9; docs/design/macros.md §6).
+proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 
 # The stage-4 instruments (docs/design/macros.md §11), outside the shipped
