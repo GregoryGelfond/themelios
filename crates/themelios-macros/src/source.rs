@@ -1,14 +1,22 @@
 //! The macro-dialect token source (grammar §9; docs/design/macros.md §6):
 //! the engine that walks a Rust token stream, maps each token onto the
 //! syntax roster, and assembles a themelios text of which it is the
-//! authoritative tiler — answering [`token_at`](TokenSource::token_at)
-//! from its own structured tiles, so no re-lex arises and abutting tokens
-//! never fuse. Alongside the text it keeps a span map (each tile's
-//! originating `proc_macro` span) and the captured splices.
+//! authoritative tiler. In normal mode it answers
+//! [`token_at`](TokenSource::token_at) from its own structured tiles, so
+//! no re-lex arises and abutting tokens never fuse; in the parser's theory
+//! mode, where an operator run opens, it instead re-forms that maximal run
+//! as one `THEORY_OP` from the assembled bytes, as the file lexer forms it
+//! from adjacent bytes (grammar §4.7) — the one place a token's extent
+//! turns on the mode it is asked under. Alongside the text it keeps a span
+//! map (each tile's originating `proc_macro` span) and the captured
+//! splices.
 //!
 //! The four token-source laws (tiling, slice, determinism, refusal —
 //! syntax §4.3) are what this source owes; because it answers from tiles,
-//! they hold by construction over the whole assembled text.
+//! they hold by construction over the whole assembled text. The standing
+//! checker walks normal mode; the theory-mode re-forming is held to the
+//! file lexer by this crate's own differential, and script-body mode never
+//! arises (no construction assembles a `#script` token).
 // The mapping engine's public surface is reached by the macro entry
 // points a later increment wires; until those exist, this module's own
 // tests are its only callers, so the not-yet-wired surface would read as
@@ -156,13 +164,16 @@ impl TokenSource for MacroSource {
         &self.text
     }
 
-    /// The tile covering `at`. The mode goes unread: the source is the
-    /// authoritative tiler and answers from its own boundaries
-    /// (docs/design/macros.md §6), so a token's kind does not depend on
-    /// the mode it is asked under. Refuses exactly where base refuses —
-    /// past the end (`OutOfBounds`) or inside a character
+    /// The token beginning at `at` under `mode`. In normal mode it is the
+    /// tile covering `at`, answered from the source's own boundaries
+    /// (docs/design/macros.md §6) so no re-lex arises. In the parser's
+    /// theory mode, where the offset opens an operator run, it is instead
+    /// the maximal `THEORY_OP` run the file lexer would form there (grammar
+    /// §4.7) — coalescing what normal mode splits; every other token is
+    /// mode-invariant, answered from the tile. Refuses exactly where base
+    /// refuses — past the end (`OutOfBounds`) or inside a character
     /// (`NotCharBoundary`) — and never panics.
-    fn token_at(&self, at: ByteOffset, _mode: LexMode) -> Result<Token<'_>, PositionRefusal> {
+    fn token_at(&self, at: ByteOffset, mode: LexMode) -> Result<Token<'_>, PositionRefusal> {
         let offset = at.get();
         let end_of_text = length_of(&self.text);
         if offset > end_of_text {
@@ -176,6 +187,16 @@ impl TokenSource for MacroSource {
             return Err(PositionRefusal::NotCharBoundary(NotCharBoundary {
                 offset: at,
             }));
+        }
+        // Theory mode is the one mode a token's extent turns on: an
+        // operator run there is one `THEORY_OP` spanning what normal mode
+        // tiled as several (grammar §4.7). The offset is a validated char
+        // boundary, so the run is re-formed from the assembled bytes just
+        // as the file lexer forms it; every other token stays its tile.
+        if mode == LexMode::Theory
+            && let Some(token) = theory_operator_at(&self.text, offset_usize)
+        {
+            return Ok(token);
         }
         // The tiles cover `[0, len]` gap-free with an `EOF` tile at `len`,
         // so the last tile whose start is at or before `offset` is the one
@@ -488,6 +509,63 @@ fn single_operator((character, span): (char, Span)) -> Result<SyntaxKind, MapErr
     })
 }
 
+/// The theory-mode token beginning at char boundary `offset` of `text`
+/// when an operator run opens there (grammar §4.7): the maximal run of the
+/// theory-operator alphabet as one `THEORY_OP`, save the lone structural
+/// forms the file lexer holds apart — `.`, `;`, `:`, and the neck `:-`.
+/// `None` when the byte there is not the operator alphabet, so the caller
+/// answers that (mode-invariant) token from its tile. Mirrors the file
+/// lexer's theory punctuation so the two tile a theory region alike
+/// (docs/design/macros.md §6). Total: `offset` is a validated char
+/// boundary within `text`, so the slice never panics.
+fn theory_operator_at(text: &str, offset: usize) -> Option<Token<'_>> {
+    let rest = &text[offset..];
+    let len = rest
+        .bytes()
+        .take_while(|&byte| is_theory_operator_char(byte))
+        .count();
+    if len == 0 {
+        return None;
+    }
+    let run = &rest[..len];
+    let kind = match run {
+        "." => SyntaxKind::DOT,
+        ";" => SyntaxKind::SEMICOLON,
+        ":" => SyntaxKind::COLON,
+        ":-" => SyntaxKind::NECK,
+        _ => SyntaxKind::THEORY_OP,
+    };
+    Some(Token { kind, text: run })
+}
+
+/// Grammar §4.7's theory-operator alphabet, mirrored from the file lexer:
+/// a theory-operator run forms from exactly these characters, as the file
+/// lexer forms it from adjacent bytes (docs/design/macros.md §6). The
+/// structural punctuation — the comma and the brackets — is not among
+/// them, so it stays a single token under theory mode as under normal.
+fn is_theory_operator_char(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'/' | b'!'
+            | b'<'
+            | b'='
+            | b'>'
+            | b'+'
+            | b'-'
+            | b'*'
+            | b'\\'
+            | b'?'
+            | b'&'
+            | b'@'
+            | b'|'
+            | b':'
+            | b';'
+            | b'~'
+            | b'^'
+            | b'.'
+    )
+}
+
 /// The name class of a Rust identifier (grammar §9): `not` the keyword,
 /// `_` alone the anonymous variable, an ASCII lowercase-initial name an
 /// `IDENTIFIER`, an ASCII uppercase-initial name a `VARIABLE`; a raw
@@ -674,6 +752,9 @@ mod tests {
     use std::str::FromStr;
 
     use proc_macro2::TokenStream;
+    use proptest::prelude::*;
+    use themelios_syntax::base::source::Source;
+    use themelios_syntax::lexer::Lexer;
     use themelios_syntax::token::{LexMode, TokenSource, check_token_source_laws};
     use themelios_syntax::tree::SyntaxKind::{self, *};
 
@@ -931,9 +1012,11 @@ mod tests {
         assert_eq!(end.kind, EOF);
     }
 
-    #[test]
-    fn the_assembled_source_obeys_the_token_source_laws() {
-        for program in [
+    /// The law corpus: a fixed set spanning the roster's shapes, and a few
+    /// built by construction rather than parsed from text (a transparent
+    /// none-delimited group among them).
+    fn law_corpus() -> Vec<TokenStream> {
+        let fixed = [
             "p(1, a)",
             "-p",
             "X != Y",
@@ -941,13 +1024,245 @@ mod tests {
             "p($x)",
             "#show",
             "a :- b, not c",
-        ] {
-            let source = build(program);
+            "&dom { 0..B } = v",
+            r#"p("hi", 1_000)"#,
+            "$(a + b)",
+            "|;?@",
+            "&a { x <==> y }",
+            "f(g(h(1)))",
+        ];
+        let mut corpus: Vec<TokenStream> = fixed
+            .iter()
+            .map(|text| TokenStream::from_str(text).expect("lexes"))
+            .collect();
+        // A none-delimited group is transparent: its stream tiles with no
+        // bracket tokens of its own, a shape `from_str` cannot spell.
+        let mut none_group = TokenStream::new();
+        none_group.extend(std::iter::once(TokenTree::Group(Group::new(
+            Delimiter::None,
+            TokenStream::from_str("q(Z, W)").unwrap(),
+        ))));
+        corpus.push(none_group);
+        corpus
+    }
+
+    #[test]
+    fn the_source_obeys_the_token_source_laws() {
+        for input in law_corpus() {
+            let source = MacroSource::build(input, None).expect("maps under the dialect");
             assert_eq!(
                 check_token_source_laws(&source),
-                Vec::new(),
-                "{program} tiles lawfully"
+                vec![],
+                "`{}` tiles lawfully under normal mode",
+                source.text()
             );
+        }
+    }
+
+    /// The `(kind, text)` of every token from offset zero under `Theory`
+    /// mode, to the `EOF` (excluded) — the walk both the macro source and
+    /// the file lexer are put through in the differential below.
+    fn walk_theory(source: &impl TokenSource) -> Vec<(SyntaxKind, String)> {
+        let mut at = 0u32;
+        let mut out = Vec::new();
+        loop {
+            let token = source
+                .token_at(ByteOffset::new(at), LexMode::Theory)
+                .expect("a position");
+            if token.kind == EOF {
+                return out;
+            }
+            out.push((token.kind, token.text.to_owned()));
+            at += length_of(token.text);
+        }
+    }
+
+    /// The differential oracle: the macro source tiles `input`'s assembled
+    /// text under theory mode exactly as the file lexer does over the same
+    /// text (grammar §4.7; docs/design/macros.md §6). `check_token_source_laws`
+    /// walks only normal mode, so this is theory mode's standing proof.
+    fn theory_matches_the_file_lexer(input: &str) {
+        let source = build(input);
+        let text = source.text().to_owned();
+        let file = Source::new(STRING_INPUT_SOURCE_ID, text.clone()).expect("admits");
+        let lexer = Lexer::new(&file, Dialect::Clingo);
+        assert_eq!(
+            walk_theory(&source),
+            walk_theory(&lexer),
+            "the macro source tiles `{text}` under theory mode as the file lexer does"
+        );
+    }
+
+    #[test]
+    fn the_theory_operator_runs_match_the_file_lexer() {
+        // The theory atoms whose elements and guard the parser reads under
+        // theory mode: the guard operators (`>=`, `<=`), a unary operator
+        // (`-`), a coalesced multi-operator run (`<==>`), and the lone
+        // structural forms the file lexer holds apart (`:`, `;`, `.`, `:-`).
+        for input in [
+            "&sum { X } >= 1",
+            "&sum{X} <= 3",
+            "&diff{a - b}",
+            "&a { x <==> y }",
+            "&a { x : p }",
+            "&a { x ; y }",
+            "&a { p } .",
+            "&a { x :- y }",
+        ] {
+            theory_matches_the_file_lexer(input);
+        }
+    }
+
+    #[test]
+    fn theory_mode_coalesces_what_normal_mode_splits() {
+        // `<==>` tiles as three operators under normal mode but as one
+        // `THEORY_OP` under theory mode — the run differs in kind and in
+        // extent, the whole point the mode argument now carries.
+        let source = build("&a { x <==> y }");
+        assert!(
+            kinds(&source).contains(&LE),
+            "normal mode splits `<==>` into LE, EQ, GT"
+        );
+        assert_eq!(
+            walk_theory(&source),
+            [
+                (THEORY_OP, "&"),
+                (IDENT, "a"),
+                (L_BRACE, "{"),
+                (IDENT, "x"),
+                (THEORY_OP, "<==>"),
+                (IDENT, "y"),
+                (R_BRACE, "}"),
+            ]
+            .map(|(kind, text)| (kind, text.to_owned()))
+        );
+    }
+
+    #[test]
+    fn no_construction_enters_script_body_mode() {
+        // The third mode, script-body (grammar §4.8), is entered only after
+        // a `#script` token, which no construction the dialect admits
+        // assembles — so the mode never arises, and its absence needs no
+        // walk to check, only that the keyword is never spelled.
+        for input in law_corpus() {
+            let source = MacroSource::build(input, None).expect("maps");
+            assert!(
+                !source.text().contains("#script"),
+                "`{}` assembles no script keyword",
+                source.text()
+            );
+        }
+    }
+
+    /// One generated macro token, always one the dialect maps, so `build`
+    /// never refuses a stream the strategy draws.
+    #[derive(Clone, Debug)]
+    enum Gen {
+        /// A name: a lowercase identifier, an uppercase variable, or `not`.
+        Name(&'static str),
+        /// An unsuffixed integer literal, mapped by value.
+        Number(u64),
+        /// A string literal whose value grammar §4.4 spells verbatim.
+        Text(String),
+        /// A single operator character the roster names on its own.
+        Operator(char),
+        /// A `$name` splice over its marker and operand.
+        Splice(&'static str),
+        /// A delimited (or transparent) group around a sub-stream.
+        Group(Delimiter, Vec<Gen>),
+    }
+
+    /// The names, operators, and string characters the strategy draws from
+    /// — each chosen so every draw maps under the dialect.
+    const NAMES: [&str; 8] = ["a", "b", "x", "p", "foo", "X", "Y", "not"];
+    // proc-macro2 admits no `\` punctuation, so a backslash never reaches
+    // the dialect from a real token stream — the roster's other single
+    // operators are what a generated stream can carry.
+    const OPERATORS: [char; 17] = [
+        '.', ',', ';', ':', '|', '+', '-', '*', '/', '^', '&', '~', '?', '@', '=', '<', '>',
+    ];
+    const TEXT_CHARS: [char; 8] = ['a', 'z', '0', '9', ' ', '+', '=', '('];
+
+    impl Gen {
+        /// Renders this generated token onto `out` as its Rust trees — a
+        /// splice as its marker and operand, a group around its rendered
+        /// stream.
+        fn render(&self, out: &mut TokenStream) {
+            match self {
+                Gen::Name(name) => {
+                    out.extend([TokenTree::Ident(Ident::new(name, Span::call_site()))]);
+                }
+                Gen::Number(value) => {
+                    out.extend([TokenTree::Literal(Literal::u64_unsuffixed(*value))]);
+                }
+                Gen::Text(body) => {
+                    out.extend([TokenTree::Literal(Literal::string(body))]);
+                }
+                Gen::Operator(character) => {
+                    out.extend([TokenTree::Punct(Punct::new(*character, Spacing::Alone))]);
+                }
+                Gen::Splice(name) => out.extend([
+                    TokenTree::Punct(Punct::new('$', Spacing::Alone)),
+                    TokenTree::Ident(Ident::new(name, Span::call_site())),
+                ]),
+                Gen::Group(delimiter, items) => {
+                    let mut inner = TokenStream::new();
+                    for item in items {
+                        item.render(&mut inner);
+                    }
+                    out.extend([TokenTree::Group(Group::new(*delimiter, inner))]);
+                }
+            }
+        }
+    }
+
+    /// A strategy over well-formed macro token streams: names, numbers,
+    /// strings, operators, splices, and groups nesting them.
+    fn dialect_stream() -> impl Strategy<Value = TokenStream> {
+        let leaf = prop_oneof![
+            prop::sample::select(&NAMES[..]).prop_map(Gen::Name),
+            (0u64..1_000_000).prop_map(Gen::Number),
+            prop::collection::vec(prop::sample::select(&TEXT_CHARS[..]), 0..6)
+                .prop_map(|chars| Gen::Text(chars.into_iter().collect())),
+            prop::sample::select(&OPERATORS[..]).prop_map(Gen::Operator),
+            prop::sample::select(&NAMES[..]).prop_map(Gen::Splice),
+        ];
+        let node = leaf.prop_recursive(3, 24, 4, |inner| {
+            (
+                prop::sample::select(vec![
+                    Delimiter::Parenthesis,
+                    Delimiter::Bracket,
+                    Delimiter::Brace,
+                    Delimiter::None,
+                ]),
+                prop::collection::vec(inner, 0..4),
+            )
+                .prop_map(|(delimiter, items)| Gen::Group(delimiter, items))
+        });
+        prop::collection::vec(node, 0..8).prop_map(|items| {
+            let mut stream = TokenStream::new();
+            for item in &items {
+                item.render(&mut stream);
+            }
+            stream
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn built_streams_tile_lawfully_and_rebuild_the_same(program in dialect_stream()) {
+            let source = MacroSource::build(program.clone(), None)
+                .expect("a generated stream maps under the dialect");
+            prop_assert!(
+                check_token_source_laws(&source).is_empty(),
+                "a generated stream must tile lawfully: {}",
+                source.text()
+            );
+            // Determinism: the same stream assembles the same text and the
+            // same tiling on a second build.
+            let again = MacroSource::build(program, None).expect("maps");
+            prop_assert_eq!(source.text(), again.text());
+            prop_assert_eq!(tiles(&source), tiles(&again));
         }
     }
 
