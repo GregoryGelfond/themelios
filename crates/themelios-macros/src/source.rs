@@ -149,6 +149,67 @@ impl MacroSource {
             .find(|splice| splice.range.start == start && splice.range.end == end)
             .map(|splice| &splice.expr)
     }
+
+    /// A splice-free twin of this source, for the lowering diagnostics the
+    /// macro raises at compile time (docs/design/macros.md §5, step 3). Each
+    /// `SPLICE` tile is rewritten to a single inert **ground placeholder** —
+    /// the constant `0`, a term valid wherever a term may stand, tripping no
+    /// positional lowering check the way a raised splice's anonymous-variable
+    /// placeholder would (a splice in a `#const` value, say). The twin keeps
+    /// the span map: the placeholder tile carries its splice's own
+    /// originating span, so a lowering diagnostic located on it re-locates to
+    /// the splice's Rust token (§6). The captured splices are dropped — the
+    /// twin, by its purpose, has none.
+    ///
+    /// **The isomorphism invariant** (docs/design/macros.md §5, §11): the
+    /// twin's token stream is this source's, with each `SPLICE` tile replaced
+    /// by *exactly one* ground-placeholder tile — so the real (splice-bearing)
+    /// parse and the twin's splice-free re-parse are **isomorphic modulo
+    /// splice leaves**: node for node identical away from the splices, each
+    /// `SPLICE_TERM` standing where the twin holds the placeholder's
+    /// `CONSTANT_TERM`. This is the lemma that makes a lowering diagnostic
+    /// computed on the re-parsed twin a faithful diagnostic of the very
+    /// fragment the codegen builds from the splice-bearing parse; the
+    /// diagnostics module's isomorphism test pins it. A placeholder is
+    /// shorter than the `$…` it replaces, so the twin's byte offsets shift:
+    /// a diagnostic located in the twin re-locates through *its* span map,
+    /// not the real source's.
+    pub(crate) fn splice_free_view(&self) -> MacroSource {
+        // The ground placeholder: one `0` tile — a `NUMBER`, a constant term
+        // valid wherever a term stands (docs/design/macros.md §5, step 3).
+        const PLACEHOLDER: &str = "0";
+        let mut text = String::with_capacity(self.text.len());
+        let mut tiles = Vec::with_capacity(self.tiles.len());
+        for tile in &self.tiles {
+            let start = length_of(&text);
+            if tile.kind == SyntaxKind::SPLICE {
+                text.push_str(PLACEHOLDER);
+                tiles.push(Tile {
+                    start,
+                    len: length_of(PLACEHOLDER),
+                    kind: SyntaxKind::NUMBER,
+                });
+            } else {
+                let end = (tile.start + tile.len) as usize;
+                text.push_str(&self.text[tile.start as usize..end]);
+                tiles.push(Tile {
+                    start,
+                    len: tile.len,
+                    kind: tile.kind,
+                });
+            }
+        }
+        MacroSource {
+            text,
+            tiles,
+            // One span per tile, kept 1:1 as `build` records them (the tile
+            // count is unchanged — a splice maps to one placeholder tile), so
+            // each tile keeps its own span and the placeholder its splice's.
+            spans: self.spans.clone(),
+            splices: Vec::new(),
+            dialect: self.dialect,
+        }
+    }
 }
 
 impl TokenSource for MacroSource {
