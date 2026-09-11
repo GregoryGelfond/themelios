@@ -277,8 +277,20 @@ the witness compares a value *built through the macros* against a value *built
 through the spelled-out constructors* (codegen ≡ hand-construction), which is the
 property the tier needs and proves (§11). What keeps the *diagnosed* fragment
 (step 3's splice-free-view raise) and the *built* value (step 4's codegen) in
-step is their **shared parse** (step 2): both are functions of the one typed AST,
-so the fragment that raises clean is the fragment the codegen builds.
+step is **not** a shared parse — they do not share one. The raise takes a
+`Parse`, a `Parse` is obtainable only from a parse door (syntax §6.1), and the
+raise must be handed a *splice-free* tree (a raised splice becomes an
+anonymous-variable placeholder that trips spurious lowering checks — step 3); so
+the diagnostic path **re-parses** the splice-free view — a *second* parse,
+distinct from the splice-bearing parse of step 2 that the codegen walks. What
+holds the two in step is instead an **isomorphism invariant**: the splice-free
+view's token stream is the fragment's, with each `SPLICE` tile replaced by
+exactly one ground-placeholder tile (step 3), so the two parses are isomorphic
+modulo splice leaves — node for node identical away from the splices. The
+fragment that raises clean is therefore the fragment the codegen builds, and a
+diagnostic located on the view locates the real fragment. This is the lemma the
+two-parse scheme rests on; §11's isomorphism check pins it, so it is a tested
+property, not an implicit hope.
 
 **Provenance.** Because the expansion calls the constructors, every node a macro
 builds carries `Origin::Constructed` (program §6) — identical to a value built by
@@ -526,6 +538,13 @@ what it proves and what it cannot (spec §10.2).
   of generated ground values (in term *and* theory-term positions) equals the
   same program written with those values spelled in place (the equality witness,
   generated).
+- **The diagnostics isomorphism** (§5): over a corpus of splice-bearing
+  fragments, the splice-bearing parse tree and the splice-free view's parse tree
+  are identical after mapping each `SPLICE` / `SPLICE_TERM` node to its
+  ground-placeholder node — the lemma that makes a diagnostic computed on the
+  re-parsed view (§5, step 3) a faithful diagnostic of the fragment the codegen
+  builds, so a later change to the tiling cannot silently desynchronize the two
+  parses and point a macro-site error at the wrong span.
 - **Golden snapshots**, reviewed: representative expansions, and the macro-site
   diagnostics rendered through base's human view at the rust-analyzer bar (the
   diagnostics-quality discipline, spec §2 item 9).
