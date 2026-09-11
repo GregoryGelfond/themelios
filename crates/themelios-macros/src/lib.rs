@@ -3,3 +3,5 @@
 //! ASP at compile time and codegens `themelios_program` constructor calls
 //! (docs/design/macros.md).
 #![forbid(unsafe_code)]
+
+mod source;
