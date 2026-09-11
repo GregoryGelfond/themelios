@@ -1,0 +1,34 @@
+[package]
+name = "themelios-macros"
+version = "0.1.0"
+description = "Construction macros for themelios: nine surface macros that parse ASP at compile time through the syntax tier's token-source door and expand to the program tier's constructors, adding no representation of their own."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+proc-macro = true
+
+# The proc-macro toolchain only (docs/design/macros.md §10; docs/specification.md
+# §12.5): the syntax tier, to parse through the token-source door, and the program
+# tier, to raise for diagnostics and to expand to, plus proc-macro2 and quote — the
+# token types and the emission, both compile-time only. syn is declined: this crate
+# walks a bespoke token grammar, not Rust's. The proc-macro toolchain is in no
+# shipped closure; the expansion names only the program tier at runtime.
+# tests/trust.rs holds the direct-dependency posture over Cargo's resolved graph.
+[dependencies]
+themelios-syntax = { path = "../themelios-syntax" }
+themelios-program = { path = "../themelios-program" }
+proc-macro2 = "1"
+quote = "1"
+
+# The stage-4 instruments (docs/design/macros.md §11), outside the shipped
+# closure's claim: trybuild for the compile-fail tests, proptest for the property
+# laws, and serde_json solely so tests/trust.rs reads `cargo metadata`'s JSON.
+[dev-dependencies]
+trybuild = "1"
+proptest = "1"
+serde_json = "1"
+
+[lints]
+workspace = true
