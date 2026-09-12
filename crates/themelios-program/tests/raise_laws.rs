@@ -63,6 +63,20 @@ fn boolean_origin_counts(statement: &Statement) -> Vec<usize> {
         .collect()
 }
 
+/// The part key of each occurrence, name first then spelled formals — the active
+/// `#program` part riding each raised statement (§4.1, §8).
+fn part_names(occ: &Occurrences) -> Vec<Vec<String>> {
+    occ.occurrences()
+        .iter()
+        .map(|o| {
+            let key = o.part();
+            std::iter::once(key.name.as_str().to_owned())
+                .chain(key.formals.iter().map(|f| f.as_str().to_owned()))
+                .collect()
+        })
+        .collect()
+}
+
 /// Raise one statement fragment — the single-statement door (§8).
 fn raised_statement(text: &str) -> (Option<Statement>, Vec<themelios_program::raise::LowerError>) {
     let source = Source::new(SourceId::new(0), text.to_owned()).expect("admits");
@@ -729,6 +743,47 @@ fn an_occurrence_reports_its_part_and_hands_over_its_owned_forms() {
         second.into_statement().get(),
         &borrowed,
         "the owned statement matches the borrow"
+    );
+}
+
+// ---- The active part rides each occurrence; a malformed delimiter recovers (§4.1, §8) ----
+
+#[test]
+fn each_occurrence_carries_the_active_program_part() {
+    // `a.` precedes any `#program`, so it carries `base`; `p(t).` follows `#program step(t)`,
+    // so it carries `step(t)`; `q.` follows `#program other`, so it carries `other` — the
+    // active part rides each occurrence, never silently `base` (§4.1).
+    let occ = raised_occurrences("a.\n#program step(t).\np(t).\n#program other.\nq.");
+    assert_eq!(
+        part_names(&occ),
+        vec![
+            vec!["base".to_owned()],
+            vec!["step".to_owned(), "t".to_owned()],
+            vec!["other".to_owned()],
+        ],
+    );
+}
+
+#[test]
+fn a_malformed_program_delimiter_leaves_the_active_part_unchanged() {
+    // `#program .` has no name: it cannot open a part, so it is diagnosed and does not advance
+    // the active part. The facts on either side both carry the `step(t)` part it failed to
+    // replace, and its `IncompleteStatement` rides the batch (§4.1, §8).
+    let occ = raised_occurrences("#program step(t).\np(t).\n#program .\nq(t).");
+    assert_eq!(
+        part_names(&occ),
+        vec![
+            vec!["step".to_owned(), "t".to_owned()],
+            vec!["step".to_owned(), "t".to_owned()],
+        ],
+        "the malformed delimiter leaves the part at step(t)"
+    );
+    assert!(
+        occ.diagnostics()
+            .iter()
+            .any(|error| matches!(error.kind(), LowerErrorKind::IncompleteStatement)),
+        "the malformed delimiter is diagnosed as an incomplete statement: {:?}",
+        occ.diagnostics(),
     );
 }
 
