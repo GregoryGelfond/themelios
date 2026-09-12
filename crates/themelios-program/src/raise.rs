@@ -689,6 +689,49 @@ fn placeholder() -> Term {
 // complete is diagnosed and skipped, and its neighbors still raise (§8).
 // ============================================================================
 
+/// One source statement, lowered but **not yet collected** into the set (§8): the part it
+/// joins and its raw (pre-canonical) statement carrying the `Parsed` root origin. Private: the
+/// shared lowering step, threaded once over the parse.
+struct Lowered {
+    part: PartKey,
+    statement: WithProvenance<Statement>,
+}
+
+/// Walk the parse once, lowering each source statement over the parse as `Reads` (§8): thread
+/// the `#program` part key (a malformed delimiter is diagnosed and leaves the part unchanged,
+/// raise.rs's existing rule), lower each statement with `raise_one`, and pair a `Some` result
+/// with its `statement_provenance`. Returns the per-statement `Lowered` values (source order,
+/// `Some` results only) and the source-ordered batch of every lowering diagnostic — a skipped
+/// statement's and a malformed delimiter's included. `O(tree)`.
+fn lower_each(parse: &Parse<ast::Program>) -> (Vec<Lowered>, Vec<LowerError>) {
+    let mut lowered = Vec::new();
+    let mut batch = Vec::new();
+    let mut part = base_key();
+    for statement in parse.tree().statements() {
+        if let ast::Statement::ProgramPart(directive) = &statement {
+            match part_key(directive) {
+                Some(key) => part = key,
+                None => batch.push(located(
+                    parse,
+                    directive.syntax().text_range(),
+                    LowerErrorKind::IncompleteStatement,
+                )),
+            }
+            continue;
+        }
+        // Each statement's own errors join the shared batch as they are found, keeping it in
+        // source order.
+        if let Some(raised) = raise_one(&statement, parse, &mut batch) {
+            let provenance = statement_provenance(&statement, parse);
+            lowered.push(Lowered {
+                part: part.clone(),
+                statement: WithProvenance::new(raised, provenance),
+            });
+        }
+    }
+    (lowered, batch)
+}
+
 /// Lower a parsed program to a [`Program`], under the parse's own dialect (§8). Total:
 /// every parse yields a [`Raised`] — the program it assembled and the lowering
 /// diagnostics beside it, never a refusal or a panic (§15). A `#program name(formals)`
@@ -697,29 +740,14 @@ fn placeholder() -> Term {
 /// O(tree).
 #[must_use]
 pub fn raise(parse: &Parse<ast::Program>) -> Raised {
+    let (lowered, diagnostics) = lower_each(parse);
     let mut program = Program::default();
-    let mut errors = Vec::new();
-    let mut part = base_key();
-    for statement in parse.tree().statements() {
-        if let ast::Statement::ProgramPart(directive) = &statement {
-            match part_key(directive) {
-                Some(key) => part = key,
-                None => errors.push(located(
-                    parse,
-                    directive.syntax().text_range(),
-                    LowerErrorKind::IncompleteStatement,
-                )),
-            }
-            continue;
-        }
-        if let Some(raised) = raise_one(&statement, parse, &mut errors) {
-            let provenance = statement_provenance(&statement, parse);
-            program.ingest_into(part.clone(), WithProvenance::new(raised, provenance));
-        }
+    for statement in lowered {
+        program.ingest_into(statement.part, statement.statement);
     }
     Raised {
         program,
-        diagnostics: errors,
+        diagnostics,
     }
 }
 
