@@ -4,8 +4,11 @@
 //! **constructor-built** program — one that never came from text, so it can carry a negative
 //! `Number` — round-trips through render and the raise (§10), reaching the negative-numeral case
 //! a text-only corpus cannot. And `signature_range` picks out of an ordered answer set exactly the
-//! signature's block (§11.3). Generators draw the constructor fragment: variable, number
-//! (spanning the negatives only construction reaches), constant, function, tuple.
+//! signature's block (§11.3). And the occurrence stream obeys its laws (§8, §16): `raise` equals
+//! `raise_occurrences` then `into_raised`, every occurrence's content is a statement of the merged
+//! program, and the occurrences hold their source order. Generators draw the constructor fragment —
+//! variable, number (spanning the negatives only construction reaches), constant, function, tuple —
+//! and a small program text from a pool of content-equal, part-delimiter, and malformed lines.
 
 use std::collections::BTreeSet;
 
@@ -16,7 +19,7 @@ use themelios_syntax::dialect::Dialect;
 use themelios_syntax::parse::parse;
 
 use themelios_program::program::{Atom, Program, Rule};
-use themelios_program::raise::raise;
+use themelios_program::raise::{raise, raise_occurrences};
 use themelios_program::render::render;
 use themelios_program::symbol::{Name, Sign, Signature, Symbol, VarName};
 use themelios_program::term::{Term, Variable};
@@ -118,6 +121,22 @@ fn ground_symbol() -> impl Strategy<Value = Symbol> {
     })
 }
 
+/// A small program text drawn from a pool that includes content-equal statements, a part
+/// delimiter, and a malformed line — the shapes the occurrence stream must handle (§8).
+fn program_text() -> impl Strategy<Value = String> {
+    let line = prop_oneof![
+        Just("a."),
+        Just("b."),
+        Just("a."), // a content-equal duplicate that merges
+        Just("1{#true}1."),
+        Just("1{#true;#true}1."), // content-equal, unequal nested counts
+        Just("#program step(t)."),
+        Just("p(t)."),
+        Just("1 { ."), // a malformed line
+    ];
+    prop::collection::vec(line, 0..8).prop_map(|lines| lines.join("\n"))
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
@@ -174,5 +193,44 @@ proptest! {
             .cloned()
             .collect();
         prop_assert_eq!(via_range, via_scan);
+    }
+}
+
+proptest! {
+    /// `raise` is `raise_occurrences` then `into_raised`: the merged program and the diagnostics
+    /// are identical (§8, §16). `Raised` carries no `Eq`, so the two halves are compared apart.
+    #[test]
+    fn into_raised_is_raise(text in program_text()) {
+        let source = Source::new(SourceId::new(0), text.clone()).expect("admits");
+        let parse = parse(&source, Dialect::Clingo);
+        let direct = raise(&parse);
+        let via = raise_occurrences(&parse).into_raised();
+        prop_assert_eq!(via.program(), direct.program());
+        prop_assert_eq!(via.diagnostics(), direct.diagnostics());
+    }
+
+    /// Every occurrence's content is a statement of the merged program (§16): the collection
+    /// never invents content, it only merges.
+    #[test]
+    fn occurrence_content_is_in_the_merged_program(text in program_text()) {
+        let source = Source::new(SourceId::new(0), text.clone()).expect("admits");
+        let parse = parse(&source, Dialect::Clingo);
+        let merged = raise(&parse);
+        let merged_contents: BTreeSet<_> =
+            merged.program().statements().map(|s| s.get().clone()).collect();
+        for occ in raise_occurrences(&parse).occurrences() {
+            prop_assert!(merged_contents.contains(occ.statement().get()));
+        }
+    }
+
+    /// Occurrences ride in non-decreasing source order (§16).
+    #[test]
+    fn occurrences_are_in_source_order(text in program_text()) {
+        let source = Source::new(SourceId::new(0), text.clone()).expect("admits");
+        let occ = raise_occurrences(&parse(&source, Dialect::Clingo));
+        let spans: Vec<_> = occ.occurrences().iter().map(|o| o.location().span).collect();
+        let mut sorted = spans.clone();
+        sorted.sort();
+        prop_assert_eq!(spans, sorted);
     }
 }

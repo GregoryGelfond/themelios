@@ -810,3 +810,75 @@ fn into_raised_equals_raise_program_and_diagnostics() {
         );
     }
 }
+
+// ---- The occurrence corners: docs, UTF-8 spans, duplicate elements, separate sources (§8, §16) ----
+
+#[test]
+fn an_occurrence_reads_its_dialect_string_and_leading_doc() {
+    // A `%!` doc rides the occurrence it documents with exactly one leading ASCII space
+    // stripped (§8), and the string argument reads under the parse dialect.
+    let occ = raised_occurrences("%! docs here\np(\"s\").");
+    let one = &occ.occurrences()[0];
+    let docs: Vec<&str> = one.statement().provenance().annotations().doc().collect();
+    assert_eq!(
+        docs,
+        ["docs here"],
+        "the %! doc rides the occurrence, one space stripped"
+    );
+}
+
+#[test]
+fn an_occurrences_location_is_correct_after_leading_utf8_and_comments() {
+    // A multibyte comment and a multibyte (so, here, unparseable) rule precede `p.`; its
+    // occurrence still slices to its own source text, the span a byte offset past the prefix.
+    let text = "% über comment\nα :- β.\np.";
+    let occ = raised_occurrences(text);
+    let last = occ.occurrences().last().expect("an occurrence");
+    let source = Source::new(SourceId::new(0), text.to_owned()).expect("admits");
+    let sliced = source.slice(last.location().span).expect("in bounds");
+    assert_eq!(
+        sliced, "p.",
+        "the occurrence locates its own source text past the UTF-8 prefix"
+    );
+}
+
+#[test]
+fn duplicate_elements_within_one_rule_carry_one_element_with_the_occurrence_count() {
+    // The two content-equal `#true` elements collapse to one element on the occurrence's
+    // canonical statement, whose provenance unions both parsed origins — count two (§6.3, §8).
+    let occ = raised_occurrences("1{#true;#true}1.");
+    assert_eq!(
+        boolean_origin_counts(occ.occurrences()[0].statement().get()),
+        vec![2]
+    );
+}
+
+#[test]
+fn equal_rules_in_separate_sources_keep_separate_locations() {
+    // Content-equal rules raised from distinct sources keep their distinct locations — a merge
+    // would be a cross-source collision the occurrence stream never makes (§8).
+    let raise_in = |id: u32, text: &str| {
+        let source = Source::new(SourceId::new(id), text.to_owned()).expect("admits");
+        raise_occurrences(&parse(&source, Dialect::Clingo)).into_occurrences()
+    };
+    let a = raise_in(1, "1{#true;#true}1.");
+    let b = raise_in(2, "1{#true;#true}1.");
+    // Read each location before the consuming `into_iter` moves the Vec.
+    let a_loc = a[0].location();
+    let b_loc = b[0].location();
+    assert_ne!(
+        a_loc.source, b_loc.source,
+        "distinct SourceIds, distinct locations"
+    );
+    let a_stmt = a
+        .into_iter()
+        .next()
+        .expect("an occurrence")
+        .into_statement();
+    let b_stmt = b
+        .into_iter()
+        .next()
+        .expect("an occurrence")
+        .into_statement();
+    assert_eq!(a_stmt.get(), b_stmt.get(), "same content up to provenance");
+}
