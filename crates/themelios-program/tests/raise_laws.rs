@@ -814,9 +814,9 @@ fn into_raised_equals_raise_program_and_diagnostics() {
 // ---- The occurrence corners: docs, UTF-8 spans, duplicate elements, separate sources (§8, §16) ----
 
 #[test]
-fn an_occurrence_reads_its_dialect_string_and_leading_doc() {
-    // A `%!` doc rides the occurrence it documents with exactly one leading ASCII space
-    // stripped (§8), and the string argument reads under the parse dialect.
+fn an_occurrence_carries_its_leading_doc() {
+    // The statement's string argument is read under the parse dialect as setup; the `%!`
+    // doc rides the occurrence it documents with exactly one leading ASCII space stripped (§8).
     let occ = raised_occurrences("%! docs here\np(\"s\").");
     let one = &occ.occurrences()[0];
     let docs: Vec<&str> = one.statement().provenance().annotations().doc().collect();
