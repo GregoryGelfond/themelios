@@ -1575,7 +1575,9 @@ text-to-program path. It factors into a **lowering** — each source statement
 lowered to a canonical, provenance-carrying statement, in source order — and a
 **collection** of those into the part-structured set (§6.3); `raise` is their
 composition, and `raise_occurrences` exposes the lowering, for a consumer that must
-read a statement's nested provenance before the set-merge unions it away (§6.3).
+read a statement's nested provenance before the collection sheds it — on a content
+collision the merge keeps one statement's nested provenance and drops the other's
+(§6.3).
 
 ```rust
 /// Lower a parsed program to a `Program`, under the parse's own dialect. Total:
@@ -1590,7 +1592,8 @@ pub fn raise(parse: &Parse<ast::Program>) -> Raised;
 /// **collection** into the part-structured set that `raise` performs on top. One
 /// occurrence per raised source statement — content-equal statements are *not*
 /// merged, so a consumer reads each statement's nested provenance, the
-/// element-occurrence origins the set-merge unions away (§6.3). Total, `O(tree)`.
+/// element-occurrence origins the set-merge drops from all but one colliding
+/// statement (§6.3). Total, `O(tree)`.
 pub fn raise_occurrences(parse: &Parse<ast::Program>) -> Occurrences;
 
 /// Lower a single parsed statement or term fragment (syntax §6.1). These are the
@@ -1617,6 +1620,7 @@ impl Occurrences {
     pub fn occurrences(&self) -> &[StatementOccurrence];   // source order, one per raised statement
     pub fn diagnostics(&self) -> &[LowerError];            // the batch union, source order — as Raised's
     pub fn into_occurrences(self) -> Vec<StatementOccurrence>;
+    pub fn into_raised(self) -> Raised;   // collect through the one ingest door (§6.3): raise(p) == raise_occurrences(p).into_raised()
 }
 
 /// One raised statement occurrence, before the set (§6.3): the part it joins, the
@@ -1680,17 +1684,24 @@ back at source.
 the ingest merge unions the provenances of content-equal statements at the
 granularity of the ingested node and, by §6.3, does not recurse into their nested
 nodes — so a `Program` cannot tell two content-equal statements apart by their
-*nested* provenance. `1{#true}1.` and `1{#true;#true}1.` raise to one content whose
-choice element carries one merged origin set, the `[1]`-versus-`[2]`
-element-occurrence counts gone. `raise_occurrences` returns the lowering's output
-before that collection: each raised source statement, in source order, canonical
-(§5.1) and read under the same dialect and `%!` doc normalization as `raise`, the
-part it joins, and its nested provenance intact. It is the path §6.3 sends a
+*nested* provenance. `1{#true}1.` and `1{#true;#true}1.` raise to content-equal
+statements the set keeps as one — holding one statement's choice element, with its
+own one or two origins, and dropping the other's — so the `[1]`-versus-`[2]`
+element-occurrence counts are unrecoverable from the `Program`. `raise_occurrences`
+returns the lowering's output before that collection: each raised source statement,
+in source order, canonical (§5.1) and read under the same dialect and `%!` doc
+normalization as `raise`, the part it joins, and its nested provenance intact. It is
+the path §6.3 sends a
 consumer to when it needs a superseded duplicate's nested origins — the set stays a
 shallow `O(facts)` merge with no consumer forced to read those origins *from it*,
 because such a consumer reads them *here*. `Program` construction, equality, and
 merge are unchanged, and ordinary atomic choices and explicit aggregate tuples keep
-their identities; the consumer chooses which source-sensitive reading it needs.
+their identities; the consumer chooses which source-sensitive reading it needs. A
+consumer that wants the merged program too takes `Occurrences::into_raised`, which
+collects the occurrences through the same ingest door `raise` uses (§6.3): `raise`
+is exactly `raise_occurrences` then `into_raised`, so a consumer needing both grains
+pays one lowering, not two, while `raise` stays the direct door when only the merged
+program is wanted.
 
 **A stream, not a selected node.** Every occurrence is drawn from the parse's own
 tree, so its dialect and coordinates are the owning parse's *by construction*: no
@@ -1703,15 +1714,19 @@ the stream already gives; and teaching the set to union nested origins is the co
 model §6.3 declines. A consumer that wants a subset filters the stream; the
 traversal is the one `O(tree)` walk `raise` already makes, with no full-source copy
 and no per-statement whole-program scan, so a bounded consumer charges its work as
-`O(tree)`, not the `O(statements × source)` a re-parse-per-statement costs.
+`O(tree)`, not the `O(statements × source)` a re-parse-per-statement costs. The
+returned `Occurrences` materializes every raised statement, owned and un-merged —
+peak `O(tree)` in retained memory, with no content dedup, so on duplication-heavy
+input it holds more than the merged `Program` would; unlike `RaisedSource` it
+retains no rowan tree, only owned program values a consumer keeps or drops.
 
 **Diagnostics, both grains.** A statement's own lowering diagnostics ride on its
 `StatementOccurrence` — empty for a clean raise, a located `LowerError` beside a
 best-effort partial otherwise — and `Occurrences::diagnostics()` is their
 source-ordered **union**, joined by those of a statement the value could not
-complete (diagnosed and skipped, no occurrence) and a malformed `#program`
-delimiter (which advances the active part, never an occurrence): the same batch, in
-the same order, `raise` reports. A consumer gates one occurrence on its own slice
+complete (diagnosed and skipped, no occurrence) and of a malformed `#program`
+delimiter (diagnosed, the active part left unchanged, never an occurrence): the same
+batch, in the same order, `raise` reports. A consumer gates one occurrence on its own slice
 or the whole raise on the batch, correlating no spans. Recovery is `raise`'s: a
 malformed statement is skipped and its well-formed neighbors still occur.
 
@@ -2343,7 +2358,9 @@ the operation's error type (base §3.2).
 `raise` never refuses — every parse yields a `Raised` carrying the program and its
 lowering diagnostics (a diagnostic is a value on a total raise, not a refusal,
 syntax §12.4); `raise_occurrences` likewise yields an `Occurrences`, the lowering's
-per-statement output before the set (§8), `O(tree)` as `raise` is. Total, never
+per-statement output before the set (§8), and `Occurrences::into_raised` collects it
+back through the ingest door — so `raise` equals `raise_occurrences(_).into_raised()`
+— each `O(tree)` as `raise` is. Total, never
 refusing, never panicking: every constructor that
 composes valid values (§7.2); every accessor; `canonicalize`; every
 transformation (§9); `Program`/`Term`/`Symbol` equality, ordering, hashing, clone,
@@ -2398,7 +2415,12 @@ with what it proves and what it cannot (spec §10.2).
     occurrences); each occurrence's content is the canonical statement the merged
     `Program` holds, so two content-equal statements with unequal nested
     element-occurrence provenance are distinct occurrences a `Program` merges to
-    one; a statement's per-occurrence diagnostics are the batch's restriction to it.
+    one; each occurrence's `part` is the active `#program` part at its source
+    position — `base` before any `#program`, `step(t)` after `#program step(t)`, and
+    a malformed delimiter leaves the active part unchanged — never silently `base`;
+    a statement's per-occurrence diagnostics are the batch's restriction to it; and
+    `raise_occurrences(p).into_raised()` equals `raise(p)`, program and diagnostics
+    both.
 - **The differential** (feature-gated harness, out of band per milestone, the
   pinned binary the authority — grammar §3): the rendered text parsed by the
   authority agrees on membership and structure (the *independent* oracle the
