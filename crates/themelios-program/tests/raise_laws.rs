@@ -13,7 +13,9 @@ use themelios_program::program::{
     PartKey, Project, Show, Statement,
 };
 use themelios_program::provenance::Origin;
-use themelios_program::raise::{LowerErrorKind, Raised, raise, raise_statement};
+use themelios_program::raise::{
+    LowerErrorKind, Occurrences, Raised, raise, raise_occurrences, raise_statement,
+};
 use themelios_program::symbol::{Name, Sign};
 use themelios_program::term::Term;
 
@@ -27,6 +29,38 @@ use themelios_syntax::parse::{NestingLimit, parse, parse_statement};
 fn raised(text: &str) -> Raised {
     let source = Source::new(SourceId::new(0), text.to_owned()).expect("admits");
     raise(&parse(&source, Dialect::Clingo))
+}
+
+/// Raise the occurrence stream of a whole program under the clingo dialect (§8).
+fn raised_occurrences(text: &str) -> Occurrences {
+    let source = Source::new(SourceId::new(0), text.to_owned()).expect("admits");
+    raise_occurrences(&parse(&source, Dialect::Clingo))
+}
+
+/// The number of `Parsed` origins on a rule's choice-head boolean elements — the source
+/// occurrence count the merge would shed (§8, §6.3).
+fn boolean_origin_counts(statement: &Statement) -> Vec<usize> {
+    let Statement::Rule(rule) = statement else {
+        return Vec::new();
+    };
+    let Head::Choice(choice) = rule.head().get() else {
+        return Vec::new();
+    };
+    choice
+        .elements()
+        .filter(|e| {
+            matches!(
+                e.get().literal().inner,
+                LiteralInner::True | LiteralInner::False
+            )
+        })
+        .map(|e| {
+            e.provenance()
+                .origins()
+                .filter(|o| matches!(o, Origin::Parsed(_)))
+                .count()
+        })
+        .collect()
 }
 
 /// Raise one statement fragment — the single-statement door (§8).
@@ -547,4 +581,153 @@ fn raise_statement_lowers_one_statement_or_none() {
 
     let (none, _) = raised_statement("   ");
     assert!(none.is_none(), "no statement under recovery is None");
+}
+
+// ---- The occurrence stream: the lowering half before the set (§8) ----
+
+#[test]
+fn occurrences_are_one_per_source_statement_in_source_order() {
+    let occ = raised_occurrences("a. b. c.");
+    assert_eq!(
+        occ.occurrences().len(),
+        3,
+        "one occurrence per source statement"
+    );
+    let spans: Vec<_> = occ
+        .occurrences()
+        .iter()
+        .map(|o| o.location().span)
+        .collect();
+    let mut sorted = spans.clone();
+    sorted.sort();
+    assert_eq!(spans, sorted, "occurrences are in source order");
+}
+
+#[test]
+fn occurrences_preserve_per_rule_boolean_element_counts_the_merge_sheds() {
+    // 1{#true}1. counts one occurrence; 1{#true;#true}1. counts two (§8). The merged
+    // Program holds one content; the occurrence stream keeps both counts.
+    let text = "1{#true}1.\n1{#true;#true}1.";
+    let occ = raised_occurrences(text);
+    let counts: Vec<Vec<usize>> = occ
+        .occurrences()
+        .iter()
+        .map(|o| boolean_origin_counts(o.statement().get()))
+        .collect();
+    assert_eq!(
+        counts,
+        vec![vec![1], vec![2]],
+        "each source rule keeps its own count"
+    );
+
+    // The merged program collapses them to one content-equal statement.
+    let merged = raised(text);
+    assert_eq!(
+        merged.program().statements().count(),
+        1,
+        "the set merges the two content-equal rules to one"
+    );
+}
+
+#[test]
+fn reversing_the_source_reverses_the_occurrences() {
+    let forward = raised_occurrences("1{#true}1.\n1{#true;#true}1.");
+    let reverse = raised_occurrences("1{#true;#true}1.\n1{#true}1.");
+    let f: Vec<Vec<usize>> = forward
+        .occurrences()
+        .iter()
+        .map(|o| boolean_origin_counts(o.statement().get()))
+        .collect();
+    let r: Vec<Vec<usize>> = reverse
+        .occurrences()
+        .iter()
+        .map(|o| boolean_origin_counts(o.statement().get()))
+        .collect();
+    assert_eq!(f, vec![vec![1], vec![2]]);
+    assert_eq!(
+        r,
+        vec![vec![2], vec![1]],
+        "reversed source reverses occurrence order"
+    );
+}
+
+#[test]
+fn a_malformed_statement_is_skipped_and_its_neighbors_still_occur() {
+    // The middle directive cannot complete — its atom is absent under recovery; it is
+    // skipped and diagnosed in the batch, while its rule neighbors still occur.
+    let occ = raised_occurrences("a.\n#external .\nb.");
+    let names: Vec<_> = occ
+        .occurrences()
+        .iter()
+        .filter_map(|o| match o.statement().get() {
+            Statement::Rule(_) => Some(o.location().span),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        occ.occurrences().len(),
+        2,
+        "the malformed statement yields no occurrence"
+    );
+    assert!(
+        !occ.diagnostics().is_empty(),
+        "the malformed statement is diagnosed in the batch"
+    );
+    assert!(names.len() == 2, "both well-formed neighbors occur");
+}
+
+#[test]
+fn per_occurrence_diagnostics_are_a_nonempty_restriction_of_the_batch() {
+    // A theory-atom argument-list pool `&t(a; b)` raises its FIRST alternative and marks the
+    // rest with a `PooledArgumentList` diagnostic (§8, §17): a best-effort partial that raises
+    // to a Some occurrence carrying its OWN diagnostic — so the per-occurrence slice is
+    // non-empty and the ⊆ check below is not vacuous.
+    let occ = raised_occurrences("&t(a; b).");
+    assert!(
+        occ.occurrences()
+            .iter()
+            .any(|o| !o.diagnostics().is_empty()),
+        "at least one occurrence carries its own diagnostic (else the ⊆ check is vacuous)"
+    );
+    for o in occ.occurrences() {
+        for d in o.diagnostics() {
+            assert!(
+                occ.diagnostics().contains(d),
+                "per-occurrence diagnostics ride in the batch"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_occurrence_reports_its_part_and_hands_over_its_owned_forms() {
+    // `a.` precedes any `#program`, so it joins `base`; `b.` follows `#program step(t)`, so
+    // its `part()` reports `step(t)`, never silently `base` (§4.1). The owned forms —
+    // `into_occurrences`, then `into_statement` — carry the same content the borrows lend.
+    let step = PartKey {
+        name: Name::new("step").expect("a valid identifier"),
+        formals: vec![Name::new("t").expect("a valid identifier")],
+    };
+    let occ = raised_occurrences("a. #program step(t). b.");
+    assert_eq!(occ.occurrences().len(), 2, "both facts occur");
+    assert_ne!(
+        occ.occurrences()[0].part(),
+        &step,
+        "the pre-`#program` fact joins another part"
+    );
+    assert_eq!(
+        occ.occurrences()[1].part(),
+        &step,
+        "the post-`#program` fact reports its `step(t)` part"
+    );
+
+    let borrowed = occ.occurrences()[1].statement().get().clone();
+    let owned = occ.into_occurrences();
+    assert_eq!(owned.len(), 2, "the owned occurrences are the same two");
+    let second = owned.into_iter().nth(1).expect("the second occurrence");
+    assert_eq!(
+        second.into_statement().get(),
+        &borrowed,
+        "the owned statement matches the borrow"
+    );
 }

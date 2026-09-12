@@ -690,11 +690,13 @@ fn placeholder() -> Term {
 // ============================================================================
 
 /// One source statement, lowered but **not yet collected** into the set (§8): the part it
-/// joins and its raw (pre-canonical) statement carrying the `Parsed` root origin. Private: the
-/// shared lowering step, threaded once over the parse.
+/// joins, its raw (pre-canonical) statement carrying the `Parsed` root origin, and this
+/// statement's own lowering diagnostics. Private: produced by the shared lowering walk,
+/// threaded once over the parse.
 struct Lowered {
     part: PartKey,
     statement: WithProvenance<Statement>,
+    diagnostics: Vec<LowerError>,
 }
 
 /// Walk the parse once, lowering each source statement over the parse as `Reads` (§8): thread
@@ -719,14 +721,20 @@ fn lower_each(parse: &Parse<ast::Program>) -> (Vec<Lowered>, Vec<LowerError>) {
             }
             continue;
         }
-        // Each statement's own errors join the shared batch as they are found, keeping it in
-        // source order.
-        if let Some(raised) = raise_one(&statement, parse, &mut batch) {
+        // Each statement's own errors ride its `Lowered` and the shared batch alike: a raised
+        // statement's are cloned into the batch, a skipped statement's moved in, so the batch
+        // stays in source order and holds every lowering diagnostic.
+        let mut diagnostics = Vec::new();
+        if let Some(raised) = raise_one(&statement, parse, &mut diagnostics) {
             let provenance = statement_provenance(&statement, parse);
+            batch.extend(diagnostics.iter().cloned());
             lowered.push(Lowered {
                 part: part.clone(),
                 statement: WithProvenance::new(raised, provenance),
+                diagnostics,
             });
+        } else {
+            batch.extend(diagnostics);
         }
     }
     (lowered, batch)
@@ -793,6 +801,104 @@ impl Raised {
     /// The owned program, dropping the diagnostics (§8).
     pub fn into_program(self) -> Program {
         self.program
+    }
+}
+
+/// One raised statement occurrence, before the set (§8): the part it joins, the canonical
+/// statement with its provenance (nested origins intact — the element-occurrence origins the
+/// set-merge sheds on a content collision, §6.3), and this statement's own lowering
+/// diagnostics.
+#[derive(Clone, Debug)]
+pub struct StatementOccurrence {
+    part: PartKey,
+    statement: WithProvenance<Statement>,
+    diagnostics: Vec<LowerError>,
+}
+
+impl StatementOccurrence {
+    /// The `#program` part the statement joins (§4.1) — the active part at its source
+    /// position, never silently `base`.
+    pub fn part(&self) -> &PartKey {
+        &self.part
+    }
+
+    /// The canonical statement with its provenance (§5.1, §6.2) — as `raise_statement`'s is.
+    pub fn statement(&self) -> &WithProvenance<Statement> {
+        &self.statement
+    }
+
+    /// This statement's own lowering diagnostics — a subset of [`Occurrences::diagnostics`].
+    pub fn diagnostics(&self) -> &[LowerError] {
+        &self.diagnostics
+    }
+
+    /// The statement's root span (base §4.3): the location of its `Parsed` root origin (§6.2).
+    pub fn location(&self) -> Location {
+        self.statement
+            .provenance()
+            .origins()
+            .find_map(|origin| match origin {
+                Origin::Parsed(location) => Some(*location),
+                _ => None,
+            })
+            .expect("a raised occurrence carries a `Parsed` root origin")
+    }
+
+    /// The owned canonical statement with its provenance.
+    pub fn into_statement(self) -> WithProvenance<Statement> {
+        self.statement
+    }
+}
+
+/// The raise's lowering half (§8): each source statement, raised and canonical, in source
+/// order, before the collection into the part-structured set. Owned plain data.
+#[derive(Clone, Debug)]
+pub struct Occurrences {
+    occurrences: Vec<StatementOccurrence>,
+    diagnostics: Vec<LowerError>,
+}
+
+impl Occurrences {
+    /// The occurrences, in source order, one per raised source statement.
+    pub fn occurrences(&self) -> &[StatementOccurrence] {
+        &self.occurrences
+    }
+
+    /// The batch of lowering diagnostics, source order — the union of every occurrence's own
+    /// diagnostics with those of a skipped statement and a malformed `#program` delimiter: the
+    /// same batch, in the same order, `raise` reports (§8).
+    pub fn diagnostics(&self) -> &[LowerError] {
+        &self.diagnostics
+    }
+
+    /// The owned occurrences, dropping the batch.
+    pub fn into_occurrences(self) -> Vec<StatementOccurrence> {
+        self.occurrences
+    }
+}
+
+/// The raise's lowering half (§8): each source statement lowered to a canonical,
+/// provenance-carrying statement, in source order, before the collection into the
+/// part-structured set that `raise` performs on top — so a consumer reads a statement's nested
+/// (element-occurrence) provenance the set-merge sheds on a content collision (§6.3). Total,
+/// `O(tree)`; the returned `Occurrences` materializes every raised statement owned and
+/// un-merged (peak `O(tree)`, no content dedup), retaining no rowan tree.
+#[must_use]
+pub fn raise_occurrences(parse: &Parse<ast::Program>) -> Occurrences {
+    let (lowered, diagnostics) = lower_each(parse);
+    let occurrences = lowered
+        .into_iter()
+        .map(|lowered| StatementOccurrence {
+            part: lowered.part,
+            statement: lowered
+                .statement
+                .map(crate::program::canonicalize_statement),
+            diagnostics: lowered.diagnostics,
+        })
+        .collect();
+    Occurrences {
+        occurrences,
+        diagnostics,
     }
 }
 
