@@ -714,26 +714,12 @@ fn per_occurrence_diagnostics_are_a_nonempty_restriction_of_the_batch() {
 }
 
 #[test]
-fn an_occurrence_reports_its_part_and_hands_over_its_owned_forms() {
-    // `a.` precedes any `#program`, so it joins `base`; `b.` follows `#program step(t)`, so
-    // its `part()` reports `step(t)`, never silently `base` (§4.1). The owned forms —
-    // `into_occurrences`, then `into_statement` — carry the same content the borrows lend.
-    let step = PartKey {
-        name: Name::new("step").expect("a valid identifier"),
-        formals: vec![Name::new("t").expect("a valid identifier")],
-    };
+fn an_occurrence_hands_over_its_owned_forms() {
+    // The owned forms — `into_occurrences`, then `into_statement` — carry the same content the
+    // borrows lend. The active part each occurrence reports is asserted by
+    // `each_occurrence_carries_the_active_program_part`.
     let occ = raised_occurrences("a. #program step(t). b.");
     assert_eq!(occ.occurrences().len(), 2, "both facts occur");
-    assert_ne!(
-        occ.occurrences()[0].part(),
-        &step,
-        "the pre-`#program` fact joins another part"
-    );
-    assert_eq!(
-        occ.occurrences()[1].part(),
-        &step,
-        "the post-`#program` fact reports its `step(t)` part"
-    );
 
     let borrowed = occ.occurrences()[1].statement().get().clone();
     let owned = occ.into_occurrences();

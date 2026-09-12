@@ -18,6 +18,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::sync::Arc;
 
 use themelios_base::diagnostic::{Diagnostic, DiagnosticId, Label, Severity, ToDiagnostic};
 use themelios_base::source::{Source, TooLarge};
@@ -694,7 +695,7 @@ fn placeholder() -> Term {
 /// statement's own lowering diagnostics. Private: produced by the shared lowering walk,
 /// threaded once over the parse.
 struct Lowered {
-    part: PartKey,
+    part: Arc<PartKey>,
     statement: WithProvenance<Statement>,
     diagnostics: Vec<LowerError>,
 }
@@ -708,11 +709,11 @@ struct Lowered {
 fn lower_each(parse: &Parse<ast::Program>) -> (Vec<Lowered>, Vec<LowerError>) {
     let mut lowered = Vec::new();
     let mut batch = Vec::new();
-    let mut part = base_key();
+    let mut part = Arc::new(base_key());
     for statement in parse.tree().statements() {
         if let ast::Statement::ProgramPart(directive) = &statement {
             match part_key(directive) {
-                Some(key) => part = key,
+                Some(key) => part = Arc::new(key),
                 None => batch.push(located(
                     parse,
                     directive.syntax().text_range(),
@@ -729,7 +730,7 @@ fn lower_each(parse: &Parse<ast::Program>) -> (Vec<Lowered>, Vec<LowerError>) {
             let provenance = statement_provenance(&statement, parse);
             batch.extend(diagnostics.iter().cloned());
             lowered.push(Lowered {
-                part: part.clone(),
+                part: Arc::clone(&part),
                 statement: WithProvenance::new(raised, provenance),
                 diagnostics,
             });
@@ -751,7 +752,7 @@ pub fn raise(parse: &Parse<ast::Program>) -> Raised {
     let (lowered, diagnostics) = lower_each(parse);
     let mut program = Program::default();
     for statement in lowered {
-        program.ingest_into(statement.part, statement.statement);
+        program.ingest_into(PartKey::clone(&statement.part), statement.statement);
     }
     Raised {
         program,
@@ -810,7 +811,7 @@ impl Raised {
 /// diagnostics.
 #[derive(Clone, Debug)]
 pub struct StatementOccurrence {
-    part: PartKey,
+    part: Arc<PartKey>,
     statement: WithProvenance<Statement>,
     diagnostics: Vec<LowerError>,
 }
@@ -883,7 +884,7 @@ impl Occurrences {
     pub fn into_raised(self) -> Raised {
         let mut program = Program::default();
         for occurrence in self.occurrences {
-            program.ingest_into(occurrence.part, occurrence.statement);
+            program.ingest_into(PartKey::clone(&occurrence.part), occurrence.statement);
         }
         Raised {
             program,
@@ -2539,5 +2540,26 @@ mod tests {
         // testable; the `?` keeps the door total on this path.
         let raised = raise_str("a. b :- a.", Dialect::Clingo).expect("the text admits");
         assert!(!raised.has_errors());
+    }
+
+    #[test]
+    fn occurrences_under_one_part_share_one_part_key() {
+        // `#program p(a)` opens a part of one formal; the two statements that follow join it,
+        // and their occurrences reference-share one `Arc<PartKey>` — the key is minted once and
+        // reference-cloned, so the retained cost stays `O(tree)` rather than `O(statements ×
+        // formals)` (§8, §3.1). A regression to a per-occurrence `PartKey` copy would fail this
+        // pointer identity.
+        let source = admitted("#program p(a).\nq.\nr.");
+        let occ = raise_occurrences(&parse(&source, Dialect::Clingo));
+        let occurrences = occ.occurrences();
+        assert_eq!(
+            occurrences.len(),
+            2,
+            "the two statements under the part occur"
+        );
+        assert!(
+            Arc::ptr_eq(&occurrences[0].part, &occurrences[1].part),
+            "occurrences under one part share one part-key allocation"
+        );
     }
 }
