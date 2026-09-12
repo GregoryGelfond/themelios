@@ -291,7 +291,11 @@ no interning and no shared reference: a `Symbol` is plain owned data, `Send +
 Sync + 'static` (the interning question base §11 and syntax §17 forwarded here
 is answered *no interning in v1* — identity is structural equality of owned
 values; a per-arena interner is a reserved optimization, §17, admitted only if
-the scaling benches demand it, never a global table, which spec §1.2 forbids).
+the scaling benches demand it, never a global table, which spec §1.2 forbids). The
+one shared reference the tier admits is the occurrence stream's `Arc<PartKey>` (§8):
+occurrences are a sequence, not a set, so a shared part key is carried data no
+equality reads — the value-only identity model (§5) is untouched — and the share
+keeps the stream `O(tree)` against an adversarial `#program` formal count (§12.4, §15).
 
 ### 3.2 Names
 
@@ -1628,7 +1632,7 @@ impl Occurrences {
 /// statement's own lowering diagnostics.
 #[derive(Clone, Debug)]
 pub struct StatementOccurrence {
-    /* private: part: PartKey, statement: WithProvenance<Statement>, diagnostics: Vec<LowerError> */
+    /* private: part: Arc<PartKey> (shared per part, §3.1), statement: WithProvenance<Statement>, diagnostics: Vec<LowerError> */
 }
 impl StatementOccurrence {
     pub fn part(&self) -> &PartKey;
@@ -1718,7 +1722,14 @@ and no per-statement whole-program scan, so a bounded consumer charges its work 
 returned `Occurrences` materializes every raised statement, owned and un-merged —
 peak `O(tree)` in retained memory, with no content dedup, so on duplication-heavy
 input it holds more than the merged `Program` would; unlike `RaisedSource` it
-retains no rowan tree, only owned program values a consumer keeps or drops.
+retains no rowan tree, only owned program values a consumer keeps or drops. The
+occurrences joining one part **share** its key — `part` is an `Arc<PartKey>`, minted
+once when a `#program` delimiter opens the part and reference-cloned onto each
+occurrence — so a part of `m` formals across `n` statements costs `O(m + n)`, not
+`O(n·m)`: without the share, an adversarial `#program p(f₁…f_m)` ahead of many tiny
+statements would drive the retained cost quadratic in the source and break the
+`O(tree)` bound (§3.1's one deliberate exception to value-only identity, held for the
+resource budget §12.4/§15 commit).
 
 **Diagnostics, both grains.** A statement's own lowering diagnostics ride on its
 `StatementOccurrence` — empty for a clean raise, a located `LowerError` beside a
