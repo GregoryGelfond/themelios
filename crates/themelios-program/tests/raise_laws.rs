@@ -731,3 +731,27 @@ fn an_occurrence_reports_its_part_and_hands_over_its_owned_forms() {
         "the owned statement matches the borrow"
     );
 }
+
+#[test]
+fn into_raised_equals_raise_program_and_diagnostics() {
+    for text in [
+        "a. b. a.",                           // a duplicate that merges
+        "1{#true}1.\n1{#true;#true}1.",       // content-equal, unequal nested counts
+        "#program step(t).\np(t). q.\n1 { .", // parts + a malformed statement
+    ] {
+        let source = Source::new(SourceId::new(0), text.to_owned()).expect("admits");
+        let parse = parse(&source, Dialect::Clingo);
+        let direct = raise(&parse);
+        let via = raise_occurrences(&parse).into_raised();
+        assert_eq!(
+            via.program(),
+            direct.program(),
+            "same merged program: {text:?}"
+        );
+        assert_eq!(
+            via.diagnostics(),
+            direct.diagnostics(),
+            "same diagnostics: {text:?}"
+        );
+    }
+}

@@ -875,6 +875,21 @@ impl Occurrences {
     pub fn into_occurrences(self) -> Vec<StatementOccurrence> {
         self.occurrences
     }
+
+    /// Collect the occurrences into the part-structured set through the one ingest door (§6.3),
+    /// pairing the merged program with the batch — so `raise` is `raise_occurrences` then
+    /// `into_raised`: it yields the program and diagnostics `raise` builds directly. A consumer
+    /// needing both the merged program and the un-merged occurrences pays one lowering, not two.
+    pub fn into_raised(self) -> Raised {
+        let mut program = Program::default();
+        for occurrence in self.occurrences {
+            program.ingest_into(occurrence.part, occurrence.statement);
+        }
+        Raised {
+            program,
+            diagnostics: self.diagnostics,
+        }
+    }
 }
 
 /// The raise's lowering half (§8): each source statement lowered to a canonical,
