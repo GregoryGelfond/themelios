@@ -1620,7 +1620,7 @@ impl Occurrences {
     pub fn occurrences(&self) -> &[StatementOccurrence];   // source order, one per raised statement
     pub fn diagnostics(&self) -> &[LowerError];            // the batch union, source order — as Raised's
     pub fn into_occurrences(self) -> Vec<StatementOccurrence>;
-    pub fn into_raised(self) -> Raised;   // collect through the one ingest door (§6.3): raise(p) == raise_occurrences(p).into_raised()
+    pub fn into_raised(self) -> Raised;   // collect through the one ingest door (§6.3): the program and diagnostics raise(p) builds
 }
 
 /// One raised statement occurrence, before the set (§6.3): the part it joins, the
@@ -2626,3 +2626,13 @@ evolution with its argument, not a drift.
   no-collision property; and §17 sharpens the interner seam and names the
   structured-decode seam. Each is a reconciliation to the shipped surface, no change
   of design.
+- **The occurrence stream, recorded (§8, §6.3, §16).** `raise_occurrences`, with its
+  `Occurrences`/`StatementOccurrence`/`into_raised` surface, exposes the raise's
+  **lowering** half — each source statement raised and canonical, in source order,
+  before the **collection** into the part-structured set — so a consumer reads a
+  statement's nested (element-occurrence) provenance before the set-merge sheds it on
+  a content collision (§6.3). The specification's in-node provenance goal (spec §7.4)
+  supports this read but does not name it; it is a faithful elaboration of this tier's
+  own raise, not a divergence — the lowering already existed per source statement, and
+  `raise` is its composition with the collection (`into_raised`). The `Program` value,
+  its equality, and its merge are unchanged.
