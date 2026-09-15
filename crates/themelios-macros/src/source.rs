@@ -661,14 +661,15 @@ fn classify_ident(ident: &Ident) -> Result<(SyntaxKind, String), MapError> {
     Ok((kind, spelling))
 }
 
-/// The roster kind of a Rust literal (grammar §9): an integer literal a
-/// `NUMBER` by value, a string literal a `STRING` by value whenever grammar
-/// §4.4 can spell that value — for a raw string (`r"raw"` → `raw`) as much
-/// as a plain one. A float, char, byte, or byte-string literal and a
-/// suffixed numeral are dialect errors. The one string corner §4.4 cannot
-/// spell is what a later increment carries as a splice of the value
-/// (docs/design/macros.md §6); until then an escape-needing or raw string
-/// is refused rather than mapped.
+/// The roster kind of a Rust literal (grammar §9): an unsuffixed integer
+/// literal a `NUMBER` by value, and a simple non-raw string — one whose
+/// printable-ASCII value grammar §4.4 spells verbatim — a `STRING` by its
+/// spelling. A float, char, byte, or byte-string literal and a suffixed
+/// numeral are dialect errors, as is a raw or escape-needing string.
+/// Mapping a string by its *value* instead — a raw string (`r"raw"` → `raw`)
+/// or an escape unescaped, the spellings §4.4 cannot carry verbatim — is a
+/// reserved seam a later increment opens (docs/design/macros.md §7, §12);
+/// until then such a value is refused, never guessed.
 fn classify_literal(literal: &Literal) -> Result<(SyntaxKind, String), MapError> {
     let spelling = literal.to_string();
     let refuse = |message: String| MapError {
