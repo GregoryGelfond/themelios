@@ -416,9 +416,8 @@ fn is_theory_operator_char(byte: u8) -> bool {
     )
 }
 
-/// Grammar §4.7: the structural punctuation as everywhere; a length-one
-/// run that is `.`, `;`, or `:` structural; the exact run `:-` the neck;
-/// every other maximal run of the operator alphabet one `THEORY_OP`.
+/// Grammar §4.7's theory punctuation: the structural punctuation as
+/// everywhere, then the theory-operator run (`theory_operator_run`).
 fn punctuation_theory(bytes: &[u8]) -> Option<(SyntaxKind, usize)> {
     match bytes[0] {
         b',' => return Some((SyntaxKind::COMMA, 1)),
@@ -430,6 +429,17 @@ fn punctuation_theory(bytes: &[u8]) -> Option<(SyntaxKind, usize)> {
         b'}' => return Some((SyntaxKind::R_BRACE, 1)),
         _ => {}
     }
+    theory_operator_run(bytes)
+}
+
+/// Grammar §4.7's theory-operator-run formation: the maximal run of the
+/// operator alphabet at the front of `bytes`, classified — `.`, `;`, `:`
+/// each its structural form, `:-` the neck, every other run a `THEORY_OP`
+/// — with its byte length, or `None` when `bytes` does not begin on the
+/// operator alphabet. The one home of the formation: the file lexer's
+/// theory punctuation and `fusion::theory_operator` (docs/design/syntax.md
+/// §10.3) both call it.
+pub(crate) fn theory_operator_run(bytes: &[u8]) -> Option<(SyntaxKind, usize)> {
     let len = run(bytes, is_theory_operator_char);
     if len == 0 {
         return None;
@@ -904,6 +914,29 @@ mod tests {
         );
         assert_eq!(kinds(&theory("#sum+")), [ERROR, THEORY_OP]);
         assert_eq!(kinds(&theory("$")), [ERROR]);
+    }
+
+    #[test]
+    fn theory_operator_run_classifies_the_operator_alphabet() {
+        use super::theory_operator_run;
+        assert_eq!(theory_operator_run(b"."), Some((SyntaxKind::DOT, 1)));
+        assert_eq!(theory_operator_run(b";"), Some((SyntaxKind::SEMICOLON, 1)));
+        assert_eq!(theory_operator_run(b":"), Some((SyntaxKind::COLON, 1)));
+        assert_eq!(theory_operator_run(b":-"), Some((SyntaxKind::NECK, 2)));
+        // A lone `+` is a THEORY_OP, not a structural form (the "every other
+        // run" case: a length-one run that is not `.`/`;`/`:`).
+        assert_eq!(theory_operator_run(b"+"), Some((SyntaxKind::THEORY_OP, 1)));
+        // Maximal munch; stops at the first non-alphabet byte.
+        assert_eq!(
+            theory_operator_run(b"<=>"),
+            Some((SyntaxKind::THEORY_OP, 3))
+        );
+        assert_eq!(theory_operator_run(b":-x"), Some((SyntaxKind::NECK, 2)));
+        // Off the alphabet (and empty) is None; brackets/commas are not the
+        // operator alphabet — the former leaves them to punctuation_theory.
+        assert_eq!(theory_operator_run(b""), None);
+        assert_eq!(theory_operator_run(b"abc"), None);
+        assert_eq!(theory_operator_run(b","), None);
     }
 
     #[test]
