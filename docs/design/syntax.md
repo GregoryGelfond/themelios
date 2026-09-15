@@ -87,7 +87,8 @@ is a cursor, are views, not data (§5.1).
 (§4–§5: the kind roster, the language, the tree aliases, coordinate
 conversions), `token` (§4: `Token`, `LexMode`, `TokenSource`), `lexer`
 (§4), `parse` (§5.5–§6: `Parse`, the entry points, `EntryPoint`), `diagnostic`
-(§7), `ast` (§8), `attach` (§9), `fusion` (§10), `equiv` (§11).
+(§7), `ast` (§8), `attach` (§9), `fusion` (§10: agreement with the file lexer — the oracle, the mode of
+an adjacency, the theory-operator formation), `equiv` (§11).
 
 ## 2. What this design is for
 
@@ -271,9 +272,13 @@ lives in one place. The source's obligation is only to form tokens
 correctly under a stated mode. This is the arrangement that lets a macro
 token source (§4.3) form theory-operator runs from adjacent Rust
 punctuation the same way the file lexer forms them from adjacent bytes:
-the mode arrives from the one parser; each source applies its own
-formation rules under it (grammar §9: "theory-operator runs form the
-same way inside theory expressions").
+the mode arrives from the one parser, and under it each source forms its
+tokens. The theory-operator run is the one formation a source cannot vary
+without diverging from grammar §4.7's munch, so the tier owns it once and
+exposes it — `fusion::theory_operator` (§10.3) — and a consuming source
+forms runs by calling it, identical to the file lexer's by construction,
+not by a parallel implementation kept in step (grammar §9:
+"theory-operator runs form the same way inside theory expressions").
 
 **Bounded re-lexing at region ends, stated once.** At the end of a
 theory region the parser looks at a token under theory mode, decides
@@ -2067,12 +2072,19 @@ rejected the side table for the program tier on a different ground —
 tables cannot follow transformation — and the two arguments converge on
 one shape.
 
-## 10. The fusion oracle
+## 10. The fusion oracle and the shared lexical facts
 
 Spec §6.2: beside the lexer lives the fusion oracle, the lexical
 spacing theory answering "may this adjacency lose its whitespace". Here
 it is not a theory to maintain but a fact to compute: this tier owns the
 lexer, so the exact answer is one relex away.
+
+Beside the oracle, this module holds the lexical facts the oracle rests on
+and a second token source shares with the file lexer: the mode an adjacency
+stands in (`lex_mode_of`, §10.2), and the theory-operator-run formation
+(`theory_operator`, §10.3). The one concern is agreement with the file
+lexer — each a fact computed from the lexer this tier owns, not a second
+table kept in step.
 
 ```rust
 /// What must stand between two tokens for each to lex as itself.
@@ -2115,6 +2127,16 @@ pub fn separator(left: &SyntaxToken, right: &SyntaxToken, dialect: Dialect) -> S
 /// the first token after a theory atom (the guard-end peek); `Normal`
 /// elsewhere. Total.
 pub fn lex_mode_of(token: &SyntaxToken) -> LexMode;
+
+/// Grammar §4.7's theory-operator formation, the one lexical fact an
+/// alternate token source shares with the file lexer rather than
+/// reimplements: the maximal run of the operator alphabet at the front of
+/// `text` as one token — `.`, `;`, `:` each its structural form, `:-` the
+/// neck, every other run a `THEORY_OP` — or `None` when `text` does not
+/// begin on the operator alphabet, the position a source then answers from
+/// its own tile. Total; O(the run). The `Token`'s text is the run, so its
+/// length is the extent (§4.2).
+pub fn theory_operator(text: &str) -> Option<Token<'_>>;
 ```
 
 ### 10.1 Why relexing is the whole oracle
@@ -2216,6 +2238,34 @@ one relex of a two-token text. `separator` adds `lex_mode_of`, which is
 O(depth of the token) — bounded by §5.4's law 3 — and is O(1) in
 practice. A formatter querying every adjacent pair pays O(text) in
 total.
+
+### 10.3 The theory-operator formation, shared
+
+The oracle is not the only lexical fact an alternate token source reaches
+here for. To be a faithful second source (§4.2, §4.3), a source must form
+theory-operator runs exactly as the file lexer does — grammar §4.7's greedy
+munch over a fixed operator alphabet, `.`, `;`, `:` and the neck `:-` held
+apart as their structural forms and every other run one `THEORY_OP`. That
+munch is the one formation a source cannot restate in its own terms without
+risking divergence, and a fixed-corpus "the two form alike" check is a
+weaker thing to hold than one implementation is. So the tier owns the
+formation once and exposes it: `theory_operator` is the file lexer's own
+theory-operator-run formation (§4.2), and a consuming source forms its
+runs by calling it — identical by construction, with no second copy to
+keep in step.
+
+It answers over a text, not an adjacency. `theory_operator(text)` forms the
+run at the front of `text`, or `None` when `text` does not begin on the
+operator alphabet — the mode-invariant positions (a comma, a bracket, a
+name) a source has already tiled and answers for itself. Its result is a
+`Token` (§4.2), the tier's token: the slice is the run and its length the
+extent, so the primitive hands out no length a caller could disagree with.
+It is total and O(the run), and it neither reads nor needs a source's
+offsets — a consumer calls it with the text from a candidate position
+forward and maps the returned extent back through its own span map. The
+macro tier is its first consumer (grammar §9): its token source,
+forming ASP from Rust punctuation, reaches here for the run formation as it
+already reaches here for the fusion oracle.
 
 ## 11. Token-stream equivalence
 
@@ -2471,14 +2521,15 @@ table `closer_of` (§4.1); the coordinate conversions; every
 `ast` cast and accessor (`Option` is absence under recovery, never a
 refusal); `NumberLit::radix` and `digits`; `DocLine::content`,
 `Comment::content`; `attach::comments`, `attachments`, and the
-whitespace facts; `separator_between`, `separator`, `lex_mode_of`;
-`non_whitespace_tokens`, `token_stream`, `comment_sequence`,
+whitespace facts; `separator_between`, `separator`, `lex_mode_of`,
+`theory_operator`; `non_whitespace_tokens`, `token_stream`, `comment_sequence`,
 `canonical_spelling`; `SyntaxError`'s accessors and lowering.
 
 Costs, consolidated: lexing and parsing are O(text) in time and memory
 (§4.6, §6.8); tree navigation is O(1) per step and O(children) per
 accessor; attachment is O(neighborhood) per query and O(subtree) in
-bulk (§9.3); the oracle is O(the two tokens) (§10.2); the certificate is
+bulk (§9.3); the oracle is O(the two tokens) (§10.2); the theory-operator
+formation is O(the run it forms) (§10.3); the certificate is
 O(both sequences) (§11.3); every walk is iterative or grammar-bounded, and
 tree depth is bounded by `MAX_TREE_DEPTH` (§6.6). The scaling benches
 (§16) hold the shapes.
@@ -2625,8 +2676,10 @@ editor view, `is_incomplete`, `SyntaxNodePtr`, and base's line index;
 the solver frontend takes the typed AST, `has_errors`, and the
 diagnostics as its face; the REPL takes `parse` over a growing buffer,
 `is_incomplete`, and `parse_term_value`; the macro tier takes
-`TokenSource`, `check_token_source_laws`, `SPLICE`, and the fragment
-entries; the program tier takes the typed AST and `Parse::location`;
+`TokenSource`, `check_token_source_laws`, `SPLICE`, the fragment entries,
+and the shared lexical facts its token source consumes
+(`separator_between`, `theory_operator`); the program tier takes the typed
+AST and `Parse::location`;
 comments-as-data readers take attachment and the content accessors.
 Each of these hardens unexercised by a real consumer at stage 2's close
 save the formatter's; that residual is spec §11's, named.
@@ -3017,3 +3070,21 @@ document and the code together; the §6.1 and §7.1 amendments below likewise.
   surfaced at a syntax door). §16 adds the significant-child-walk shapes the
   scaling checks assert — linear in a node's children, and in a
   statement-free root `%!` run.
+
+- **§4.2, §10.3, §13** (2026-09-15): the theory-operator formation, given
+  one home and exposed. §4.2 had a second token source "apply its own
+  formation rules" for theory-operator runs, matching the file lexer's
+  grammar-§4.7 munch by a parallel implementation held in step by a
+  fixed-corpus check; the first consumer of that arrangement surfaced the
+  duplication — the operator alphabet and its four-form munch living in two
+  crates, the weaker guard of a "the two form alike" corpus standing in for
+  one home. The formation is now the tier's to own once: §10.3 adds
+  `fusion::theory_operator`, the file lexer's own theory-operator-run
+  formation (§4.4) exposed as a `Token`-returning primitive a consuming
+  source calls instead of restating, and §4.2 is restated to
+  consume-not-reimplement; §13 lists it total and O(the run). This changes
+  the document and the code together — the file lexer's theory-operator
+  formation and the primitive become one function, the file lexer forming
+  exactly as before — so a consuming source (the macro tier its first)
+  forms runs by construction identical to the lexer's, with no second copy
+  to drift.
