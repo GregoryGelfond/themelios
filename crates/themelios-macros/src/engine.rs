@@ -15,10 +15,9 @@
 //! come from (§5, step 3). One parse to a fragment — a sub-statement
 //! category, the atom a fact assembles around, is reached by parsing a
 //! statement and reading its tree (§8), never a bespoke door.
-// These doors and the category tag have no caller outside this module's own
-// tests until the entry points wire the engine, so the not-yet-reached
-// surface would read as dead. The allow is removed when the entry points
-// arrive.
+// These doors have no caller outside this module's own tests until the entry
+// points wire the engine, so the not-yet-reached surface would read as dead.
+// The allow is removed when the entry points arrive.
 #![allow(dead_code)]
 
 use themelios_syntax::ast;
@@ -27,20 +26,6 @@ use themelios_syntax::parse::{
 };
 
 use crate::source::MacroSource;
-
-/// The grammatical category a construction site parses through — the closed
-/// set of fragment doors the syntax tier realizes (syntax §6.1), the tag an
-/// entry point picks its door by.
-pub(crate) enum Category {
-    /// A whole program (grammar §5.11).
-    Program,
-    /// One program position — a statement with its annotation (syntax §6.1).
-    Statement,
-    /// Grammar §5.1's `term`.
-    Term,
-    /// Grammar §5.10's `value-term`, under its restriction.
-    TermValue,
-}
 
 /// Parses the assembled source as a whole program (syntax §6.1) at
 /// `NestingLimit::DEFAULT`.
