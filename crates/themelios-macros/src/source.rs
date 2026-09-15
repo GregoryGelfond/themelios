@@ -1367,4 +1367,148 @@ mod tests {
         let source = MacroSource::build(none_group, None).expect("maps");
         assert_eq!(kinds(&source), [IDENT, EOF]);
     }
+
+    /// One Rust token drawn for the §11 mapping property (grammar §9), tagged
+    /// with what the dialect owes it. The example tests above pin specific
+    /// tokens; this draws across the classes so the property — every named
+    /// token maps to its roster kind, every unnamed token is a dialect error
+    /// — is exercised in both directions, the refusal one in particular,
+    /// which no single example enumerates.
+    #[derive(Clone, Debug)]
+    enum Mapping {
+        /// A named token: its stream, and the one roster kind its tile carries.
+        Named(TokenStream, SyntaxKind),
+        /// An unnamed token the dialect must refuse as a `MapError`.
+        Unnamed(TokenStream),
+    }
+
+    /// A named name token — an identifier, a variable, `not`, or the
+    /// anonymous `_` — and the roster kind it maps to.
+    fn named_name() -> impl Strategy<Value = Mapping> {
+        prop::sample::select(vec![
+            ("foo", IDENT),
+            ("p", IDENT),
+            ("q", IDENT),
+            ("X", VARIABLE),
+            ("Y", VARIABLE),
+            ("Var", VARIABLE),
+            ("not", KW_NOT),
+            ("_", ANONYMOUS),
+        ])
+        .prop_map(|(word, kind)| Mapping::Named(TokenStream::from_str(word).expect("lexes"), kind))
+    }
+
+    /// A named unsuffixed integer literal — a `NUMBER` by value.
+    fn named_number() -> impl Strategy<Value = Mapping> {
+        any::<u64>().prop_map(|value| {
+            Mapping::Named(
+                TokenStream::from(TokenTree::Literal(Literal::u64_unsuffixed(value))),
+                NUMBER,
+            )
+        })
+    }
+
+    /// A named simple string — printable ASCII grammar §4.4 spells verbatim,
+    /// a `STRING` by its spelling.
+    fn named_string() -> impl Strategy<Value = Mapping> {
+        prop::collection::vec(prop::sample::select(&TEXT_CHARS[..]), 0..6).prop_map(|chars| {
+            let body: String = chars.into_iter().collect();
+            Mapping::Named(
+                TokenStream::from(TokenTree::Literal(Literal::string(&body))),
+                STRING,
+            )
+        })
+    }
+
+    /// A named single-character operator and the roster kind it maps to — the
+    /// one-character operators a lone punct can carry (`\` is no proc-macro2
+    /// punct, `!` is only ever part of `!=`, so neither appears).
+    fn named_operator() -> impl Strategy<Value = Mapping> {
+        prop::sample::select(vec![
+            ('.', DOT),
+            (',', COMMA),
+            (';', SEMICOLON),
+            (':', COLON),
+            ('|', PIPE),
+            ('+', PLUS),
+            ('-', MINUS),
+            ('*', STAR),
+            ('/', SLASH),
+            ('^', CARET),
+            ('&', AMPERSAND),
+            ('~', TILDE),
+            ('?', QUESTION),
+            ('@', AT),
+            ('=', EQ),
+            ('<', LT),
+            ('>', GT),
+        ])
+        .prop_map(|(character, kind)| {
+            Mapping::Named(
+                TokenStream::from(TokenTree::Punct(Punct::new(character, Spacing::Alone))),
+                kind,
+            )
+        })
+    }
+
+    /// An unnamed token — a class grammar §9 leaves out, which the dialect
+    /// refuses: a float, char, byte, or byte-string literal, a suffixed
+    /// numeral, a raw string, a detached `#`, a bare `$`, a no-class
+    /// identifier, or a lone `!` (and, built rather than parsed, a raw
+    /// identifier).
+    fn unnamed_token() -> impl Strategy<Value = Mapping> {
+        let by_spelling = prop::sample::select(vec![
+            "1.5", "2.0", "1e10", "3.14", // floats
+            "'a'", "'Z'", "'0'",    // chars
+            "b'a'",   // a byte
+            "b\"x\"", // a byte string
+            "1i32", "5u8", "10usize", // suffixed integers
+            "1.0f64", "2.5f32",   // suffixed floats
+            "r\"raw\"", // a raw string
+            "#",        // a detached hash
+            "$",        // a bare dollar
+            "__", "_1", "_p", "_X", // no-class identifiers
+            "!",  // a lone bang
+        ])
+        .prop_map(|spelling| Mapping::Unnamed(TokenStream::from_str(spelling).expect("lexes")));
+        let raw_ident = prop::sample::select(vec!["foo", "Type", "not"]).prop_map(|word| {
+            Mapping::Unnamed(TokenStream::from(TokenTree::Ident(Ident::new_raw(
+                word,
+                Span::call_site(),
+            ))))
+        });
+        prop_oneof![by_spelling, raw_ident]
+    }
+
+    /// The §11 mapping property drawn rather than enumerated (grammar §9): a
+    /// token from any class the dialect names, or any class it leaves out.
+    fn token_mapping() -> impl Strategy<Value = Mapping> {
+        prop_oneof![
+            named_name(),
+            named_number(),
+            named_string(),
+            named_operator(),
+            unnamed_token(),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn every_drawn_token_maps_to_its_kind_or_is_a_dialect_error(mapping in token_mapping()) {
+            match mapping {
+                Mapping::Named(stream, expected) => {
+                    let source = MacroSource::build(stream.clone(), None).unwrap_or_else(|error| {
+                        panic!("a named token maps, not `{stream}`: {}", error.message)
+                    });
+                    prop_assert_eq!(kinds(&source), vec![expected, EOF]);
+                }
+                Mapping::Unnamed(stream) => {
+                    prop_assert!(
+                        MacroSource::build(stream.clone(), None).is_err(),
+                        "an unnamed token is a dialect error: `{stream}`"
+                    );
+                }
+            }
+        }
+    }
 }
