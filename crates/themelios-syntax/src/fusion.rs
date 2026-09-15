@@ -4,8 +4,8 @@
 //! the exact answer is one relex away.
 
 use crate::dialect::Dialect;
-use crate::lexer::lex;
-use crate::token::LexMode;
+use crate::lexer::{lex, theory_operator_run};
+use crate::token::{LexMode, Token};
 use crate::tree::{NodeOrToken, SyntaxKind, SyntaxNode, SyntaxToken};
 
 /// What must stand between two tokens for each to lex as itself.
@@ -132,6 +132,22 @@ pub fn lex_mode_of(token: &SyntaxToken) -> LexMode {
         return LexMode::Theory;
     }
     LexMode::Normal
+}
+
+/// Grammar §4.7's theory-operator formation: the maximal operator-alphabet
+/// run at the front of `text` as one token — `.`, `;`, `:` each its
+/// structural form, `:-` the neck, every other run a `THEORY_OP` — or
+/// `None` when `text` does not begin on the operator alphabet, the
+/// mode-invariant position a source answers from its own tile. Total; the
+/// operator alphabet is all ASCII, so the run length is always a char
+/// boundary and the slice never panics. O(the run). The `Token`'s text is
+/// the run, so its length is the extent (docs/design/syntax.md §4.2,
+/// §10.3): the one home shared with the file lexer's theory punctuation.
+pub fn theory_operator(text: &str) -> Option<Token<'_>> {
+    theory_operator_run(text.as_bytes()).map(|(kind, len)| Token {
+        kind,
+        text: &text[..len],
+    })
 }
 
 /// Whether `token` stands right after a theory atom whose elements the
@@ -515,5 +531,107 @@ mod tests {
             Separator::Whitespace,
             "`.` cannot abut `&` at a guard-end"
         );
+    }
+
+    #[test]
+    fn theory_operator_forms_the_structural_and_neck_forms() {
+        assert_eq!(
+            theory_operator("."),
+            Some(Token {
+                kind: SyntaxKind::DOT,
+                text: "."
+            })
+        );
+        assert_eq!(
+            theory_operator(";"),
+            Some(Token {
+                kind: SyntaxKind::SEMICOLON,
+                text: ";"
+            })
+        );
+        assert_eq!(
+            theory_operator(":"),
+            Some(Token {
+                kind: SyntaxKind::COLON,
+                text: ":"
+            })
+        );
+        assert_eq!(
+            theory_operator(":-"),
+            Some(Token {
+                kind: SyntaxKind::NECK,
+                text: ":-"
+            })
+        );
+    }
+
+    #[test]
+    fn theory_operator_forms_a_single_character_operator_as_a_theory_op() {
+        // A lone `+`/`-` is a THEORY_OP, not a structural form.
+        assert_eq!(
+            theory_operator("+"),
+            Some(Token {
+                kind: SyntaxKind::THEORY_OP,
+                text: "+"
+            })
+        );
+        assert_eq!(
+            theory_operator("-"),
+            Some(Token {
+                kind: SyntaxKind::THEORY_OP,
+                text: "-"
+            })
+        );
+    }
+
+    #[test]
+    fn theory_operator_takes_the_maximal_run_and_returns_the_run_as_its_extent() {
+        assert_eq!(
+            theory_operator("<="),
+            Some(Token {
+                kind: SyntaxKind::THEORY_OP,
+                text: "<="
+            })
+        );
+        assert_eq!(
+            theory_operator("<=>"),
+            Some(Token {
+                kind: SyntaxKind::THEORY_OP,
+                text: "<=>"
+            })
+        );
+        // The run stops at the first non-alphabet byte; the Token's text is the run alone.
+        assert_eq!(
+            theory_operator(":-x"),
+            Some(Token {
+                kind: SyntaxKind::NECK,
+                text: ":-"
+            })
+        );
+        assert_eq!(
+            theory_operator("+y"),
+            Some(Token {
+                kind: SyntaxKind::THEORY_OP,
+                text: "+"
+            })
+        );
+    }
+
+    #[test]
+    fn theory_operator_is_none_off_the_operator_alphabet() {
+        assert_eq!(theory_operator(""), None);
+        assert_eq!(theory_operator("abc"), None);
+        assert_eq!(theory_operator(","), None); // structural punctuation: the source tiles it itself
+        assert_eq!(theory_operator("("), None);
+        assert_eq!(theory_operator("42"), None);
+    }
+
+    #[test]
+    fn theory_operator_is_total_on_non_ascii_input() {
+        // The safety clause: the operator alphabet is ASCII, so the run length
+        // is always a UTF-8 char boundary and the slice never splits a
+        // multi-byte character.
+        assert_eq!(theory_operator("é"), None); // a non-ASCII start is off the alphabet
+        assert_eq!(theory_operator("+é").unwrap().text, "+"); // the run ends before the multi-byte char; the slice is a char boundary
     }
 }

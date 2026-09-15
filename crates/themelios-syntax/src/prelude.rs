@@ -64,7 +64,9 @@ pub use crate::equiv::{
     Certificate, Mismatch, Side, canonical_spelling, comment_sequence, equivalent,
     non_whitespace_tokens, token_stream,
 };
-pub use crate::fusion::{LexContext, Separator, lex_mode_of, separator, separator_between};
+pub use crate::fusion::{
+    LexContext, Separator, lex_mode_of, separator, separator_between, theory_operator,
+};
 pub use crate::parse::{Parse, parse, parse_str};
 pub use crate::token::LexMode;
 pub use crate::tree::{
