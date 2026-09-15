@@ -327,8 +327,9 @@ and the target token (`SPLICE`). The engine implements the mapping and answers
 - Rust punctuation maps one-to-one onto the operator roster; a multi-character
   operator exists where its characters are adjacent and joined, and theory-
   operator runs form the same way inside theory expressions — the source forms
-  them under the parser's `Theory` mode, as the file lexer forms them from
-  adjacent bytes (syntax §4.2).
+  them under the parser's `Theory` mode by calling
+  `themelios_syntax::fusion::theory_operator` (syntax §10.3), the single home of
+  grammar §4.7's operator formation the file lexer forms through as well.
 - Comments do not exist in the dialect (Rust has removed them).
 - `$` emits a `SPLICE` token over its marker and operand (§7).
 - Every Rust token the mapping does not name is a dialect error at its span —

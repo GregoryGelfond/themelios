@@ -4,19 +4,21 @@
 //! authoritative tiler. In normal mode it answers
 //! [`token_at`](TokenSource::token_at) from its own structured tiles, so
 //! no re-lex arises and abutting tokens never fuse; in the parser's theory
-//! mode, where an operator run opens, it instead re-forms that maximal run
-//! as one `THEORY_OP` from the assembled bytes, as the file lexer forms it
-//! from adjacent bytes (grammar §4.7) — the one place a token's extent
-//! turns on the mode it is asked under. Alongside the text it keeps a span
+//! mode, where an operator run opens, it instead forms that maximal run as
+//! one `THEORY_OP` by calling the syntax tier's `theory_operator` (grammar
+//! §4.7; syntax §10.3), the single home of the operator formation the file
+//! lexer forms through as well — the one place a token's extent turns on the
+//! mode it is asked under. Alongside the text it keeps a span
 //! map (each tile's originating `proc_macro` span) and the captured
 //! splices.
 //!
 //! The four token-source laws (tiling, slice, determinism, refusal —
 //! syntax §4.3) are what this source owes; because it answers from tiles,
 //! they hold by construction over the whole assembled text. The standing
-//! checker walks normal mode; the theory-mode re-forming is held to the
-//! file lexer by this crate's own differential, and script-body mode never
-//! arises (no construction assembles a `#script` token).
+//! checker walks normal mode; the theory-mode forming calls the syntax
+//! tier's shared operator former, so it agrees with the file lexer by
+//! construction, and script-body mode never arises (no construction
+//! assembles a `#script` token).
 // The mapping engine's public surface is reached by the macro entry
 // points a later increment wires; until those exist, this module's own
 // tests are its only callers, so the not-yet-wired surface would read as
@@ -563,61 +565,19 @@ fn single_operator((character, span): (char, Span)) -> Result<SyntaxKind, MapErr
     })
 }
 
-/// The theory-mode token beginning at char boundary `offset` of `text`
-/// when an operator run opens there (grammar §4.7): the maximal run of the
-/// theory-operator alphabet as one `THEORY_OP`, save the lone structural
-/// forms the file lexer holds apart — `.`, `;`, `:`, and the neck `:-`.
-/// `None` when the byte there is not the operator alphabet, so the caller
-/// answers that (mode-invariant) token from its tile. Mirrors the file
-/// lexer's theory punctuation so the two tile a theory region alike
-/// (docs/design/macros.md §6). Total: `offset` is a validated char
-/// boundary within `text`, so the slice never panics.
+/// The theory-mode token beginning at char boundary `offset` of `text` when
+/// an operator run opens there (grammar §4.7): the maximal theory-operator
+/// run as one token, formed by calling the syntax tier's
+/// `themelios_syntax::fusion::theory_operator` (syntax §10.3) — the single
+/// home of grammar §4.7's operator formation, which the file lexer forms
+/// through as well. The primitive holds the structural forms apart (`.`,
+/// `;`, `:`, and the neck `:-`) and returns every other run as one
+/// `THEORY_OP`. `None` when the byte there is not the operator alphabet, so
+/// the caller answers that (mode-invariant) token from its tile
+/// (docs/design/macros.md §6). Total: the primitive is total, and `offset`
+/// is a validated char boundary within `text`.
 fn theory_operator_at(text: &str, offset: usize) -> Option<Token<'_>> {
-    let rest = &text[offset..];
-    let len = rest
-        .bytes()
-        .take_while(|&byte| is_theory_operator_char(byte))
-        .count();
-    if len == 0 {
-        return None;
-    }
-    let run = &rest[..len];
-    let kind = match run {
-        "." => SyntaxKind::DOT,
-        ";" => SyntaxKind::SEMICOLON,
-        ":" => SyntaxKind::COLON,
-        ":-" => SyntaxKind::NECK,
-        _ => SyntaxKind::THEORY_OP,
-    };
-    Some(Token { kind, text: run })
-}
-
-/// Grammar §4.7's theory-operator alphabet, mirrored from the file lexer:
-/// a theory-operator run forms from exactly these characters, as the file
-/// lexer forms it from adjacent bytes (docs/design/macros.md §6). The
-/// structural punctuation — the comma and the brackets — is not among
-/// them, so it stays a single token under theory mode as under normal.
-fn is_theory_operator_char(byte: u8) -> bool {
-    matches!(
-        byte,
-        b'/' | b'!'
-            | b'<'
-            | b'='
-            | b'>'
-            | b'+'
-            | b'-'
-            | b'*'
-            | b'\\'
-            | b'?'
-            | b'&'
-            | b'@'
-            | b'|'
-            | b':'
-            | b';'
-            | b'~'
-            | b'^'
-            | b'.'
-    )
+    themelios_syntax::fusion::theory_operator(&text[offset..])
 }
 
 /// The name class of a Rust identifier (grammar §9): `not` the keyword,
@@ -808,8 +768,6 @@ mod tests {
 
     use proc_macro2::TokenStream;
     use proptest::prelude::*;
-    use themelios_syntax::base::source::Source;
-    use themelios_syntax::lexer::Lexer;
     use themelios_syntax::token::{LexMode, TokenSource, check_token_source_laws};
     use themelios_syntax::tree::SyntaxKind::{self, *};
 
@@ -1115,8 +1073,8 @@ mod tests {
     }
 
     /// The `(kind, text)` of every token from offset zero under `Theory`
-    /// mode, to the `EOF` (excluded) — the walk both the macro source and
-    /// the file lexer are put through in the differential below.
+    /// mode, to the `EOF` (excluded) — the theory-mode walk the behavioural
+    /// theory tests below drive `token_at` through.
     fn walk_theory(source: &impl TokenSource) -> Vec<(SyntaxKind, String)> {
         let mut at = 0u32;
         let mut out = Vec::new();
@@ -1132,39 +1090,29 @@ mod tests {
         }
     }
 
-    /// The differential oracle: the macro source tiles `input`'s assembled
-    /// text under theory mode exactly as the file lexer does over the same
-    /// text (grammar §4.7; docs/design/macros.md §6). `check_token_source_laws`
-    /// walks only normal mode, so this is theory mode's standing proof.
-    fn theory_matches_the_file_lexer(input: &str) {
-        let source = build(input);
-        let text = source.text().to_owned();
-        let file = Source::new(STRING_INPUT_SOURCE_ID, text.clone()).expect("admits");
-        let lexer = Lexer::new(&file, Dialect::Clingo);
-        assert_eq!(
-            walk_theory(&source),
-            walk_theory(&lexer),
-            "the macro source tiles `{text}` under theory mode as the file lexer does"
-        );
-    }
-
     #[test]
-    fn the_theory_operator_runs_match_the_file_lexer() {
-        // The theory atoms whose elements and guard the parser reads under
-        // theory mode: the guard operators (`>=`, `<=`), a unary operator
-        // (`-`), a coalesced multi-operator run (`<==>`), and the lone
-        // structural forms the file lexer holds apart (`:`, `;`, `.`, `:-`).
-        for input in [
-            "&sum { X } >= 1",
-            "&sum{X} <= 3",
-            "&diff{a - b}",
-            "&a { x <==> y }",
-            "&a { x : p }",
-            "&a { x ; y }",
-            "&a { p } .",
-            "&a { x :- y }",
+    fn the_source_forms_theory_operator_runs_by_consuming_the_primitive() {
+        // Under theory mode the source forms an operator run by calling
+        // `themelios_syntax::fusion::theory_operator` (syntax §10.3), the
+        // single home of grammar §4.7's operator formation — so
+        // `theory_operator_at` answers exactly as the primitive: the
+        // structural forms and the neck keep their kinds, every other maximal
+        // run is one `THEORY_OP`, and a byte off the operator alphabet forms
+        // nothing (the source answers that token from its tile). Walking a
+        // coalesced run through `token_at` is the coalesce witness below.
+        for (text, expected) in [
+            (".", Some((DOT, "."))),
+            (";", Some((SEMICOLON, ";"))),
+            (":", Some((COLON, ":"))),
+            (":-", Some((NECK, ":-"))),
+            (">=", Some((THEORY_OP, ">="))),
+            ("<==>", Some((THEORY_OP, "<==>"))),
+            ("-", Some((THEORY_OP, "-"))),
+            ("x", None),
+            (",", None),
         ] {
-            theory_matches_the_file_lexer(input);
+            let formed = theory_operator_at(text, 0).map(|token| (token.kind, token.text));
+            assert_eq!(formed, expected, "`{text}` forms through the primitive");
         }
     }
 
