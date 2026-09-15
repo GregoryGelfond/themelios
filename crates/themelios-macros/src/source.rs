@@ -466,26 +466,19 @@ impl Assembler {
         }
     }
 
-    /// Emits a `SPLICE` tile of `text` and records its captured `expr`.
+    /// Emits a `SPLICE` tile of `text` and records its captured `expr` over
+    /// the tile `emit` just placed. The splice's range is read back from that
+    /// tile, so the tile and its recorded range are one decision — not a
+    /// separate prediction of where the tile would land, which could drift
+    /// from `emit`'s own separator choice and leave `splice_at` no exact
+    /// range to match.
     fn emit_splice(&mut self, text: &str, span: Span, expr: TokenStream) {
-        let start = self.next_tile_start(text, true);
         self.emit(SyntaxKind::SPLICE, text, span, true);
+        let tile = *self.tiles.last().expect("emit pushed the splice tile");
         self.splices.push(Splice {
-            range: start..start + length_of(text),
+            range: tile.start..tile.start + tile.len,
             expr,
         });
-    }
-
-    /// The byte offset the next `emit` of `text` will place its tile at —
-    /// after any separator it inserts — so a splice's captured range
-    /// matches the tile `emit` records.
-    fn next_tile_start(&self, text: &str, is_splice: bool) -> u32 {
-        let separator = self.previous.as_ref().is_some_and(|previous| {
-            previous.is_splice || is_splice || {
-                separator_between(&previous.text, text, CONTEXT) != Separator::Nothing
-            }
-        });
-        length_of(&self.text) + u32::from(separator)
     }
 
     /// A maximal run of punctuation glued by `Spacing::Joint` (grammar §9,
