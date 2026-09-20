@@ -218,11 +218,18 @@ enum Step {
 /// entered before its parent assembles, so a parent always assembles over already-raised
 /// children.
 fn assemble_tree(root: ast::Term, parse: &dyn Reads, errors: &mut Vec<LowerError>) -> Term {
+    if let Some(term) = raise_leaf(&root, parse, errors) {
+        return term;
+    }
     let mut work = vec![Step::Enter(root)];
     let mut done: Vec<Term> = Vec::new();
     while let Some(step) = work.pop() {
         match step {
             Step::Enter(node) => {
+                if let Some(term) = raise_leaf(&node, parse, errors) {
+                    done.push(term);
+                    continue;
+                }
                 let children = child_terms(&node);
                 work.push(Step::Assemble(node, children.len()));
                 // Reversed, so the children process left-to-right and their results
@@ -242,6 +249,32 @@ fn assemble_tree(root: ast::Term, parse: &dyn Reads, errors: &mut Vec<LowerError
         }
     }
     done.pop().unwrap_or_else(placeholder)
+}
+
+/// Leaves have no assembly frame. Read them through the same checked handlers,
+/// at their source-ordered entry point, whether they are roots or descendants.
+/// These three kinds are exactly the childless set `child_terms` returns and the
+/// arms `assemble` meets with `unreachable!`; the compiler checks each match is
+/// exhaustive, not that the three agree, so a new leaf-like variant must join all three.
+fn raise_leaf(node: &ast::Term, parse: &dyn Reads, errors: &mut Vec<LowerError>) -> Option<Term> {
+    match node {
+        ast::Term::Constant(constant) => Some(raise_constant(constant, parse, errors)),
+        ast::Term::Variable(variable) => Some(raise_variable(variable, parse, errors)),
+        ast::Term::Splice(_) => {
+            errors.push(located(
+                parse,
+                node.syntax().text_range(),
+                LowerErrorKind::UnexpandedSplice,
+            ));
+            Some(placeholder())
+        }
+        ast::Term::Binary(_)
+        | ast::Term::Unary(_)
+        | ast::Term::Pool(_)
+        | ast::Term::Function(_)
+        | ast::Term::External(_)
+        | ast::Term::Abs(_) => None,
+    }
 }
 
 /// A node's immediate child terms, in source order, flattening the pool and argument
@@ -299,15 +332,8 @@ fn assemble(
             errors,
         ),
         ast::Term::Abs(_) => raise_absolute(node, children, parse, errors),
-        ast::Term::Constant(constant) => raise_constant(constant, parse, errors),
-        ast::Term::Variable(variable) => raise_variable(variable, parse, errors),
-        ast::Term::Splice(_) => {
-            errors.push(located(
-                parse,
-                node.syntax().text_range(),
-                LowerErrorKind::UnexpandedSplice,
-            ));
-            placeholder()
+        ast::Term::Constant(_) | ast::Term::Variable(_) | ast::Term::Splice(_) => {
+            unreachable!("leaves are raised on entry, without an assembly frame")
         }
     }
 }
