@@ -17,6 +17,26 @@
 //! including provenance (`Origin::Constructed`), to the value the raise builds
 //! and to a hand-written constructor chain (the §16 witness, program §5.1/§7.1).
 //!
+//! The theory-term algebra is the peer walk (program §4.9): `codegen_theory_term`
+//! emits the `TheoryTerm` variant each `ast::TheoryTerm` node names — a symbolic
+//! leaf lifted through a built `Symbol`, a variable, the bracketed and applied
+//! forms, and (at the flat operator sequence, an `ast::TheoryOpTerm`) the
+//! `Operation` run — and `codegen_theory_atom` assembles the atom through
+//! `TheoryAtom::new` / `TheoryElement::new` / the `TheoryGuard` literal, its
+//! ordinary-argument list the raise's §17 exception (the first alternative only,
+//! reusing [`codegen_term`]). This mirrors the theory-term raise (program §8)
+//! arm for arm, so the built theory value is structurally equal to the raise's
+//! and to hand-construction the same way the ordinary walk is (§16).
+//!
+//! A splice crosses the conversion pillar (docs/design/macros.md §7): the spliced
+//! Rust value is taken to a ground `Symbol` through `ToSymbol::to_symbol`, then
+//! lands as the leaf its position admits — `From<Symbol> for Term` in term
+//! position, `TheoryTerm::Symbolic` in theory-term position. The macro emits the
+//! crossing and nothing more; a value whose type is not `ToSymbol` makes the
+//! emitted call a compile error at the constructor door (the trait bound is the
+//! check — no macro-side type test), and the captured operand's own spans ride
+//! through so that error points at the spliced expression.
+//!
 //! **Totality** (docs/design/macros.md §5). Two constructors here are fallible
 //! on raw data — `Name::new` refuses a non-identifier, `Term::pool` an empty
 //! pool — and each is discharged with a documented `.expect()` naming the
@@ -40,7 +60,7 @@ use proc_macro2::TokenStream;
 use quote::{quote, quote_spanned};
 use themelios_syntax::ast::{self, AstToken};
 use themelios_syntax::dialect::Dialect;
-use themelios_syntax::tree::{AstNode, SyntaxKind};
+use themelios_syntax::tree::{AstNode, SyntaxKind, TextRange};
 
 use crate::source::MacroSource;
 
@@ -322,15 +342,23 @@ fn codegen_absolute(abs: &ast::AbsTerm, src: &MacroSource) -> TokenStream {
     }
 }
 
-/// A splice in term position (docs/design/macros.md §7) — a reserved seam. The
-/// conversion crossing (`ToSymbol` then `From<Symbol> for Term`) lands with the
-/// increment that owns splice codegen; until then this seam emits a located
-/// compile error rather than build a value, keeping `codegen_term` total and its
-/// signature stable. The error is located through the source's span map at the
-/// splice's Rust token (§6), so it points where a splice would resolve.
+/// A splice in term position (docs/design/macros.md §7): the crossing that takes
+/// the spliced Rust value to a ground `Symbol` through `ToSymbol::to_symbol` and
+/// lifts it into a `Term` through `From<Symbol> for Term` — the one door a spliced
+/// value enters a term by. `#expr` is the operand the source captured for this
+/// splice's byte range (the marker and its operand, grammar §9); the emitted
+/// `&(#expr)` carries the operand's own Rust spans, so a value whose type is not
+/// `ToSymbol` is refused at this call with the error pointing at the spliced
+/// expression (the trait bound is the check). A splice with no captured operand
+/// — no `SPLICE` tile matches the node's range, unreachable for a parsed splice —
+/// is the recovery [`placeholder`], keeping the walk total.
 fn codegen_splice(splice: &ast::SpliceTerm, src: &MacroSource) -> TokenStream {
-    let span = src.span_of(splice.syntax().text_range());
-    quote_spanned!(span => compile_error!("a splice is not yet lowered to a term here"))
+    match src.splice_at(splice.syntax().text_range()) {
+        Some(expr) => quote!(::themelios_program::term::Term::from(
+            ::themelios_program::symbol::ToSymbol::to_symbol(&(#expr))
+        )),
+        None => placeholder(),
+    }
 }
 
 /// A `Term::pool` over `alternatives`, its emptiness discharged: a parsed pool
@@ -366,6 +394,304 @@ fn placeholder() -> TokenStream {
     quote!(::themelios_program::term::Term::anonymous())
 }
 
+// ---- theory terms and theory atoms (docs/design/macros.md §4; program §4.9) ----
+
+/// Emit the program-tier constructor calls that build the theory term `theory_term`
+/// (grammar §5.8), mirroring the theory-term raise (program §8) arm for arm: a
+/// bracketed or applied form recurses through its operand opterms, a symbolic leaf
+/// lifts a built [`Symbol`](codegen_theory_symbol) into `TheoryTerm::Symbolic`, a
+/// variable lands as `TheoryTerm::Variable`, and a splice crosses the conversion
+/// pillar to a symbolic leaf (§7). The `Operation` run is formed one level up, at
+/// the flat operator sequence ([`codegen_theory_opterm`]); a leaf missing under
+/// recovery is the [`theory_placeholder`].
+pub(crate) fn codegen_theory_term(theory_term: &ast::TheoryTerm, src: &MacroSource) -> TokenStream {
+    match theory_term {
+        ast::TheoryTerm::Set(set) => {
+            let items = theory_opterms(set.opterms(), src);
+            quote!(::themelios_program::program::TheoryTerm::Set(
+                ::std::vec![#(#items),*]
+            ))
+        }
+        ast::TheoryTerm::List(list) => {
+            let items = theory_opterms(list.opterms(), src);
+            quote!(::themelios_program::program::TheoryTerm::List(
+                ::std::vec![#(#items),*]
+            ))
+        }
+        ast::TheoryTerm::Tuple(tuple) => {
+            let items = theory_opterms(tuple.opterms(), src);
+            quote!(::themelios_program::program::TheoryTerm::Tuple(
+                ::std::vec![#(#items),*]
+            ))
+        }
+        ast::TheoryTerm::Function(function) => {
+            let Some(identifier) = function.name() else {
+                return theory_placeholder();
+            };
+            let name = codegen_name(identifier.text());
+            let arguments = theory_opterms(function.opterms(), src);
+            quote!(::themelios_program::program::TheoryTerm::Function {
+                name: #name,
+                arguments: ::std::vec![#(#arguments),*],
+            })
+        }
+        ast::TheoryTerm::Constant(constant) => {
+            let symbol = codegen_theory_symbol(constant);
+            quote!(::themelios_program::program::TheoryTerm::Symbolic(#symbol))
+        }
+        ast::TheoryTerm::Variable(variable) => codegen_theory_variable(variable),
+        ast::TheoryTerm::Splice(splice) => codegen_theory_splice(splice, src),
+    }
+}
+
+/// The constructor calls for a run of theory opterms — a bracketed form's members
+/// or an applied form's arguments — each through [`codegen_theory_opterm`].
+fn theory_opterms(
+    opterms: impl Iterator<Item = ast::TheoryOpTerm>,
+    src: &MacroSource,
+) -> Vec<TokenStream> {
+    opterms
+        .map(|opterm| codegen_theory_opterm(&opterm, src))
+        .collect()
+}
+
+/// A theory opterm to the constructor calls that build its `TheoryTerm` (the raise's
+/// `raise_theory_opterm`, program §8): the flat operator sequence is `operators[i]`,
+/// the run before `operands[i]`. An opterm of one operand under no operators is that
+/// operand; several operands, or any operator, is a `TheoryTerm::Operation` over the
+/// operands, each recursed. An opterm recovered with no operand is the
+/// [`theory_placeholder`].
+fn codegen_theory_opterm(opterm: &ast::TheoryOpTerm, src: &MacroSource) -> TokenStream {
+    let (operators, operands) = split_theory_opterm(opterm);
+    if operands.is_empty() {
+        return theory_placeholder();
+    }
+    if operands.len() == 1 && operators.iter().all(Vec::is_empty) {
+        let operand = operands.into_iter().next().expect("one operand");
+        return codegen_theory_term(&operand, src);
+    }
+    let operator_runs: Vec<TokenStream> = operators
+        .iter()
+        .map(|run| {
+            let operator_calls: Vec<TokenStream> = run
+                .iter()
+                .map(|symbol| quote!(::themelios_program::program::TheoryOperator::new(#symbol)))
+                .collect();
+            quote!(::std::vec![#(#operator_calls),*])
+        })
+        .collect();
+    let operand_terms: Vec<TokenStream> = operands
+        .iter()
+        .map(|operand| codegen_theory_term(operand, src))
+        .collect();
+    quote!(::themelios_program::program::TheoryTerm::Operation {
+        operators: ::std::vec![#(#operator_runs),*],
+        operands: ::std::vec![#(#operand_terms),*],
+    })
+}
+
+/// A theory opterm's operator runs and its operand nodes (the raise's `split_opterm`,
+/// program §8): `operators[i]` is the run of operator symbols before `operands[i]`, so
+/// a leading run precedes the first operand. A run after the last operand — reachable
+/// only under recovery — is dropped, as the raise drops it.
+fn split_theory_opterm(opterm: &ast::TheoryOpTerm) -> (Vec<Vec<String>>, Vec<ast::TheoryTerm>) {
+    let mut operators = Vec::new();
+    let mut operands = Vec::new();
+    let mut run = Vec::new();
+    for item in opterm.items() {
+        match item {
+            ast::TheoryOpTermItem::Op(token) => run.push(token.text().to_owned()),
+            ast::TheoryOpTermItem::Term(term) => {
+                operators.push(std::mem::take(&mut run));
+                operands.push(term);
+            }
+        }
+    }
+    (operators, operands)
+}
+
+/// A theory symbolic leaf to the `Symbol` it lifts (the raise's `raise_theory_constant`,
+/// program §8): a constant identifier to a nullary positive `Symbol::Function`, a
+/// numeral to `Symbol::Number`, a string to `Symbol::string`, and `#inf`/`#sup` to the
+/// order's bounds. A numeral past the engine's width, a string the value cannot spell,
+/// or a leaf missing under recovery is `Symbol::Infimum` — the raise's ground stand-in
+/// for a theory leaf beside its diagnostic (a `Symbol` has no anonymous-variable form).
+fn codegen_theory_symbol(constant: &ast::ConstantTerm) -> TokenStream {
+    match constant.constant() {
+        Some(ast::Constant::Symbol(identifier)) => {
+            let name = codegen_name(identifier.text());
+            quote!(::themelios_program::symbol::Symbol::Function {
+                name: #name,
+                arguments: ::std::vec![],
+                sign: ::themelios_program::symbol::Sign::Positive,
+            })
+        }
+        Some(ast::Constant::Number(number)) => match integer(&number) {
+            Some(value) => quote!(::themelios_program::symbol::Symbol::Number(#value)),
+            None => theory_symbol_infimum(),
+        },
+        Some(ast::Constant::String(string)) => match string.value(Dialect::Clingo) {
+            Ok(text) => quote!(::themelios_program::symbol::Symbol::string(#text)),
+            Err(_) => theory_symbol_infimum(),
+        },
+        Some(ast::Constant::Supremum(_)) => quote!(::themelios_program::symbol::Symbol::Supremum),
+        // `#inf` and a leaf no value can stand for share the ground bound.
+        Some(ast::Constant::Infimum(_)) | None => theory_symbol_infimum(),
+    }
+}
+
+/// The ground stand-in for a theory symbolic leaf the value cannot represent (the
+/// raise's, program §8): `Symbol::Infimum`. A `Symbol` has no anonymous-variable
+/// form, so — unlike the term [`placeholder`] — a theory leaf's recovery is a
+/// ground bound, and the wired pipeline reports the leaf through a compile-time
+/// diagnostic, so this is never the value a compiling program builds.
+fn theory_symbol_infimum() -> TokenStream {
+    quote!(::themelios_program::symbol::Symbol::Infimum)
+}
+
+/// A theory variable leaf (the raise's `raise_theory_variable`, program §8): the
+/// anonymous `_` to `TheoryTerm::Variable(Variable::Anonymous)`, a named variable to
+/// `Variable::Named`. Missing under recovery, the [`theory_placeholder`].
+fn codegen_theory_variable(variable: &ast::VariableTerm) -> TokenStream {
+    match variable.variable() {
+        Some(inner) if inner.is_anonymous() => {
+            quote!(::themelios_program::program::TheoryTerm::Variable(
+                ::themelios_program::term::Variable::Anonymous
+            ))
+        }
+        Some(inner) => {
+            let name = codegen_varname(inner.text());
+            quote!(::themelios_program::program::TheoryTerm::Variable(
+                ::themelios_program::term::Variable::Named(#name)
+            ))
+        }
+        None => theory_placeholder(),
+    }
+}
+
+/// A splice in theory-term position (docs/design/macros.md §7): the same crossing as a
+/// term-position splice ([`codegen_splice`]), landing at the theory algebra's
+/// ground-symbol leaf — `ToSymbol::to_symbol` then `TheoryTerm::Symbolic` (program
+/// §4.9's leaf-lift between the ordinary and theory algebras). `#expr` carries its own
+/// Rust spans, so a non-`ToSymbol` value is refused here pointing at the spliced
+/// expression; a splice with no captured operand is the [`theory_placeholder`].
+fn codegen_theory_splice(splice: &ast::SpliceTerm, src: &MacroSource) -> TokenStream {
+    match src.splice_at(splice.syntax().text_range()) {
+        Some(expr) => quote!(::themelios_program::program::TheoryTerm::Symbolic(
+            ::themelios_program::symbol::ToSymbol::to_symbol(&(#expr))
+        )),
+        None => theory_placeholder(),
+    }
+}
+
+/// Emit the program-tier constructor calls that build the theory atom `atom`
+/// (grammar §5.8), mirroring the theory-atom raise (program §8): the name, the
+/// ordinary-argument list (the raise's §17 exception — the first alternative only,
+/// through [`codegen_term`]; a pooled list is a lowering diagnostic, not distributed),
+/// the elements, and the optional guard, assembled through the public
+/// `TheoryAtom::new` door (program §7.1). A nameless atom — reachable only under
+/// recovery, the parser's `IDENT` never taken — is a located compile error rather
+/// than a fabricated name, coincident in the wired pipeline with the syntax
+/// diagnostic that already refuses it (§5.3), so it is never the value a compiling
+/// program builds.
+pub(crate) fn codegen_theory_atom(atom: &ast::TheoryAtom, src: &MacroSource) -> TokenStream {
+    let Some(identifier) = atom.name() else {
+        return located_compile_error(
+            src,
+            atom.syntax().text_range(),
+            "a theory atom needs a name",
+        );
+    };
+    let name = codegen_name(identifier.text());
+    let arguments: Vec<TokenStream> = atom
+        .arguments()
+        .and_then(|arguments| arguments.alternatives().next())
+        .into_iter()
+        .flat_map(|tuple| tuple.terms())
+        .map(|term| codegen_term(&term, src))
+        .collect();
+    let elements: Vec<TokenStream> = atom
+        .elements()
+        .into_iter()
+        .flat_map(|elements| elements.elements())
+        .map(|element| codegen_theory_element(&element, src))
+        .collect();
+    let guard = codegen_theory_guard(atom.guard(), src);
+    quote!(::themelios_program::program::TheoryAtom::new(
+        #name,
+        [#(#arguments),*],
+        [#(#elements),*],
+        #guard,
+    ))
+}
+
+/// A theory element to `TheoryElement::new` (the raise's `raise_theory_element`,
+/// program §8): its opterms as theory terms, under the optional condition the `:`
+/// introduces. The condition is a `Condition` of ordinary literals; its codegen is
+/// the ordinary body/condition codegen the statement macros bring (they reuse this
+/// atom door for a theory-atom head or body element), so a conditioned element emits
+/// a located compile error here until that codegen lands and wires it — total, and
+/// never a silently dropped condition. An unconditioned element (no `:`) is the
+/// common case and needs no such codegen.
+fn codegen_theory_element(element: &ast::TheoryElement, src: &MacroSource) -> TokenStream {
+    if element.colon_token().is_some() {
+        return located_compile_error(
+            src,
+            element.syntax().text_range(),
+            "a theory element's condition is not yet lowered here",
+        );
+    }
+    let terms = theory_opterms(element.opterms(), src);
+    quote!(::themelios_program::program::TheoryElement::new(
+        [#(#terms),*],
+        ::std::option::Option::None,
+    ))
+}
+
+/// A theory atom's optional guard to `Option<TheoryGuard>` (the raise's
+/// `raise_theory_guard`, program §8): a present guard's operator and its opterm as a
+/// `TheoryGuard`, `None` when the atom has no guard or the guard's operator is missing
+/// under recovery (as the raise's `?` drops it). A guard whose bound is missing takes
+/// the [`theory_placeholder`].
+fn codegen_theory_guard(guard: Option<ast::TheoryGuard>, src: &MacroSource) -> TokenStream {
+    let Some(guard) = guard else {
+        return quote!(::std::option::Option::None);
+    };
+    let Some(operator) = guard.operator_token() else {
+        return quote!(::std::option::Option::None);
+    };
+    let symbol = operator.text();
+    let term = guard.opterm().map_or_else(theory_placeholder, |opterm| {
+        codegen_theory_opterm(&opterm, src)
+    });
+    quote!(::std::option::Option::Some(::themelios_program::program::TheoryGuard {
+        operator: ::themelios_program::program::TheoryOperator::new(#symbol),
+        term: #term,
+    }))
+}
+
+/// The recovery stand-in for a theory term the value cannot represent (the raise's
+/// `theory_placeholder`, program §8): the anonymous variable lifted into the theory
+/// algebra. As with [`placeholder`], in the wired pipeline this coincides with a
+/// compile-time diagnostic, so it is never the value a compiling program builds.
+fn theory_placeholder() -> TokenStream {
+    quote!(::themelios_program::program::TheoryTerm::Variable(
+        ::themelios_program::term::Variable::Anonymous
+    ))
+}
+
+/// A `compile_error!` located at `range`'s Rust token through the source's span map
+/// (docs/design/macros.md §5.3, §6): the permitted direction across the seam — a Rust
+/// span carried to an error, never a `proc_macro` span projected into a themelios
+/// `Location`. Keeps a codegen door total where it meets a form no value can yet
+/// stand for (a nameless theory atom, a theory element's not-yet-lowered condition):
+/// the emitted error is discarded in the wired pipeline, where the same form already
+/// raises a compile-time diagnostic.
+fn located_compile_error(src: &MacroSource, range: TextRange, message: &str) -> TokenStream {
+    let span = src.span_of(range);
+    quote_spanned!(span => compile_error!(#message))
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -373,7 +699,7 @@ mod tests {
     use proc_macro2::TokenStream;
 
     use super::*;
-    use crate::engine::parse_term_fragment;
+    use crate::engine::{parse_statement_fragment, parse_term_fragment};
 
     /// The emitted constructor-call stream, as a string, for the term the
     /// macro source `input` assembles and parses to under the dialect. The
@@ -533,10 +859,23 @@ mod tests {
     }
 
     #[test]
-    fn a_splice_emits_the_task_seam_compile_error() {
-        // The seam until splice codegen lands: a located compile error, not a
-        // built value and not a panic (docs/design/macros.md §7).
-        assert!(codegen("$x").contains("compile_error !"));
+    fn a_term_splice_crosses_to_symbol_then_into_a_term() {
+        // A `$x` in term position crosses the conversion pillar: `ToSymbol` to a
+        // ground `Symbol`, then `From<Symbol> for Term` (docs/design/macros.md §7).
+        let ts = codegen("$x");
+        assert!(ts.contains("ToSymbol :: to_symbol"), "{ts}");
+        assert!(ts.contains("Term :: from"), "{ts}");
+        // The captured Rust operand is spliced into the crossing.
+        assert!(ts.contains("& (x)"), "{ts}");
+    }
+
+    #[test]
+    fn a_parenthesized_term_splice_recovers_its_expression() {
+        // The source captures `$( … )`'s inner tokens; the crossing splices them.
+        let ts = codegen("$(a + b)");
+        assert!(ts.contains("ToSymbol :: to_symbol"), "{ts}");
+        assert!(ts.contains("Term :: from"), "{ts}");
+        assert!(ts.contains("a + b"), "{ts}");
     }
 
     #[test]
@@ -544,5 +883,156 @@ mod tests {
         let ts = codegen("f(g(h(X)))");
         assert_eq!(ts.matches("Term :: function").count(), 3, "{ts}");
         assert!(ts.contains("Term :: variable"), "{ts}");
+    }
+
+    /// The `ast::TheoryAtom` the macro source `input` assembles and parses to, with
+    /// its source. `input` is a whole statement carrying the atom (a fact head or a
+    /// constraint body), the theory atom read from its tree (docs/design/macros.md
+    /// §8) — the door the statement macros reach a theory atom through.
+    fn theory_atom_of(input: &str) -> (ast::TheoryAtom, MacroSource) {
+        let src = MacroSource::build(TokenStream::from_str(input).expect("lexes"), None)
+            .expect("maps under the dialect");
+        let atom = parse_statement_fragment(&src)
+            .syntax()
+            .descendants()
+            .find_map(ast::TheoryAtom::cast)
+            .expect("a theory atom");
+        (atom, src)
+    }
+
+    /// The first `ast::TheoryTerm` (pre-order) in the statement `input` assembles
+    /// and parses to, with its source — `input` crafted so the node under test is
+    /// that first theory term.
+    fn first_theory_term(input: &str) -> (ast::TheoryTerm, MacroSource) {
+        let src = MacroSource::build(TokenStream::from_str(input).expect("lexes"), None)
+            .expect("maps under the dialect");
+        let term = parse_statement_fragment(&src)
+            .syntax()
+            .descendants()
+            .find_map(ast::TheoryTerm::cast)
+            .expect("a theory term");
+        (term, src)
+    }
+
+    /// The emitted constructor-call stream, as a string, for the first theory term
+    /// of `input`. As for [`codegen`], the goldens pin each arm by its emitted call;
+    /// the value witness accretes with the first macro (program §16).
+    fn theory_term_codegen(input: &str) -> String {
+        let (term, src) = first_theory_term(input);
+        codegen_theory_term(&term, &src).to_string()
+    }
+
+    #[test]
+    fn codegen_of_a_theory_atom_builds_through_the_theory_constructors() {
+        // A guarded theory atom with an `Operation` element (the numeral kept off
+        // the terminator, inside the braces; the guard bound a constant `n`, so no
+        // `<digit>.` fuses to a Rust float).
+        let (atom, src) = theory_atom_of(":- &sum { X + 1 } <= n.");
+        let ts = codegen_theory_atom(&atom, &src).to_string();
+        assert!(ts.contains("TheoryAtom :: new"), "{ts}");
+        assert!(ts.contains("TheoryElement :: new"), "{ts}");
+        assert!(ts.contains("TheoryGuard"), "{ts}");
+        assert!(ts.contains("TheoryTerm :: Operation"), "{ts}");
+        assert!(ts.contains("TheoryOperator :: new"), "{ts}");
+    }
+
+    #[test]
+    fn a_theory_atom_carries_its_ordinary_arguments_and_no_guard() {
+        // The ordinary-argument list codegens through `codegen_term` (the §17
+        // exception); a bare `&p { a }` has no guard, so the guard is `None`.
+        let (atom, src) = theory_atom_of("&p(1, k) { a }.");
+        let ts = codegen_theory_atom(&atom, &src).to_string();
+        assert!(ts.contains("TheoryAtom :: new"), "{ts}");
+        assert!(ts.contains("Name :: new (\"p\")"), "{ts}");
+        assert!(ts.contains("Term :: from (1i32)"), "{ts}");
+        assert!(ts.contains("Option :: None"), "{ts}");
+        assert!(!ts.contains("TheoryGuard"), "{ts}");
+    }
+
+    #[test]
+    fn a_bare_symbolic_theory_term_lifts_a_symbol() {
+        let ts = theory_term_codegen("&sum { a }.");
+        assert!(ts.contains("TheoryTerm :: Symbolic"), "{ts}");
+        assert!(ts.contains("Symbol :: Function"), "{ts}");
+        assert!(ts.contains("Name :: new (\"a\")"), "{ts}");
+        assert!(ts.contains("Sign :: Positive"), "{ts}");
+    }
+
+    #[test]
+    fn a_numeric_symbolic_theory_term_lifts_symbol_number() {
+        // The numeral sits inside the braces, off the statement terminator.
+        let ts = theory_term_codegen("&sum { 7 }.");
+        assert!(ts.contains("TheoryTerm :: Symbolic"), "{ts}");
+        assert!(ts.contains("Symbol :: Number (7i32)"), "{ts}");
+    }
+
+    #[test]
+    fn a_variable_theory_term_calls_variable_named() {
+        let ts = theory_term_codegen("&sum { X }.");
+        assert!(ts.contains("TheoryTerm :: Variable"), "{ts}");
+        assert!(ts.contains("Variable :: Named"), "{ts}");
+        assert!(ts.contains("VarName :: new (\"X\")"), "{ts}");
+    }
+
+    #[test]
+    fn a_function_theory_term_recurses_through_its_arguments() {
+        let ts = theory_term_codegen("&sum { f(a) }.");
+        assert!(ts.contains("TheoryTerm :: Function"), "{ts}");
+        assert!(ts.contains("Name :: new (\"f\")"), "{ts}");
+        // The argument recurses to a symbolic leaf.
+        assert!(ts.contains("TheoryTerm :: Symbolic"), "{ts}");
+    }
+
+    #[test]
+    fn a_tuple_theory_term_builds_the_tuple_variant() {
+        let ts = theory_term_codegen("&sum { (a, b) }.");
+        assert!(ts.contains("TheoryTerm :: Tuple"), "{ts}");
+    }
+
+    #[test]
+    fn a_set_theory_term_builds_the_set_variant() {
+        let ts = theory_term_codegen("&sum { {a, b} }.");
+        assert!(ts.contains("TheoryTerm :: Set"), "{ts}");
+    }
+
+    #[test]
+    fn a_list_theory_term_builds_the_list_variant() {
+        let ts = theory_term_codegen("&sum { [a, b] }.");
+        assert!(ts.contains("TheoryTerm :: List"), "{ts}");
+    }
+
+    #[test]
+    fn an_operation_run_records_the_operator_before_each_operand() {
+        // `X + 1`: a leading empty run before `X`, then the `+` run before `1`
+        // (`operators[i]` is the run before `operands[i]`, program §4.9). The run
+        // is formed at the opterm level, reached through the atom's element.
+        let (atom, src) = theory_atom_of("&sum { X + 1 }.");
+        let ts = codegen_theory_atom(&atom, &src).to_string();
+        assert!(ts.contains("TheoryTerm :: Operation"), "{ts}");
+        assert!(ts.contains("TheoryOperator :: new (\"+\")"), "{ts}");
+        assert!(ts.contains("TheoryTerm :: Variable"), "{ts}");
+        assert!(ts.contains("Symbol :: Number (1i32)"), "{ts}");
+    }
+
+    #[test]
+    fn a_theory_term_splice_crosses_to_symbol_into_a_symbolic_term() {
+        // A `$x` in theory-term position crosses `ToSymbol`, then lands as the
+        // theory algebra's ground-symbol leaf (docs/design/macros.md §7).
+        let (term, src) = first_theory_term("&sum { $x }.");
+        let ts = codegen_theory_term(&term, &src).to_string();
+        assert!(ts.contains("ToSymbol :: to_symbol"), "{ts}");
+        assert!(ts.contains("TheoryTerm :: Symbolic"), "{ts}");
+        assert!(ts.contains("& (x)"), "{ts}");
+    }
+
+    #[test]
+    fn a_conditioned_theory_element_defers_its_condition() {
+        // A theory element's condition is a `Condition` of ordinary literals; its
+        // codegen is the ordinary condition codegen the statement macros bring, so
+        // a conditioned element emits a located compile error here for now, never a
+        // silently dropped condition.
+        let (atom, src) = theory_atom_of("&sum { X : p(X) }.");
+        let ts = codegen_theory_atom(&atom, &src).to_string();
+        assert!(ts.contains("compile_error !"), "{ts}");
     }
 }
