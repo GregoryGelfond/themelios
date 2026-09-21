@@ -309,6 +309,23 @@ mod tests {
     }
 
     #[test]
+    fn run_of_a_program_lowering_error_is_a_block_expression() {
+        // The program door raises the whole block for its lowering diagnostics (`raise`, not
+        // the statement path's `raise_statement`); a numeral past the engine's width is one such
+        // diagnostic (program §8), wired through `emit_diagnostics` to a block-wrapped early
+        // return, so it stands in expression position (§9) — the program path's error branch,
+        // beside the clean and `#script`-refusal cases.
+        let expansion = run(
+            TokenStream::from_str("p(9999999999).").expect("lexes"),
+            Entry::Program,
+            None,
+        )
+        .to_string();
+        assert!(expansion.contains("compile_error"), "{expansion}");
+        assert!(expansion.starts_with('{'), "{expansion}");
+    }
+
+    #[test]
     fn a_program_refuses_a_script_body_before_assembly() {
         // A `#script` body cannot be recovered from Rust tokens (§7); the program entry
         // refuses it at the macro site with a located compile error, before the source is
