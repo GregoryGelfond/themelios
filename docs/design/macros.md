@@ -331,8 +331,9 @@ and the target token (`SPLICE`). The engine implements the mapping and answers
   **reserved seam** a later increment opens (§7, §12).
 - `#` forms a keyword exactly when *span-adjacent* to the keyword's word (and,
   for `#sum+`, the `+` beyond it), read from the `proc_macro` spans; a `#`
-  separated from its word is a dialect error. The word it abuts is classified
-  through `themelios_syntax::fusion::keyword` (syntax §10.4), the single home of
+  separated from its word is a dialect error. The `#`-word it forms — the `#`
+  and the word it abuts, its leading `#` included — is classified through
+  `themelios_syntax::fusion::keyword` (syntax §10.4), the single home of
   grammar §4.5's `#`-keyword roster the file lexer classifies through as well,
   so no keyword table lives in this crate; `#sum+` is formed beside the roster,
   as the file lexer forms it. This detached-`#` refusal is a

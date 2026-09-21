@@ -88,7 +88,8 @@ is a cursor, are views, not data (§5.1).
 conversions), `token` (§4: `Token`, `LexMode`, `TokenSource`), `lexer`
 (§4), `parse` (§5.5–§6: `Parse`, the entry points, `EntryPoint`), `diagnostic`
 (§7), `ast` (§8), `attach` (§9), `fusion` (§10: agreement with the file lexer — the oracle, the mode of
-an adjacency, the theory-operator formation), `equiv` (§11).
+an adjacency, the theory-operator formation, the `#`-keyword roster, and the
+punctuation formation), `equiv` (§11).
 
 ## 2. What this design is for
 
@@ -3168,7 +3169,7 @@ document and the code together; the §6.1 and §7.1 amendments below likewise.
   forms runs by construction identical to the lexer's, with no second copy
   to drift.
 
-- **§4.5, §4.6, §10.4, §10.5, §13** (2026-09-21): two more lexical facts
+- **§1, §10, §10.4, §10.5, §13** (2026-09-21): two more lexical facts
   given one home and exposed, on §10.3's precedent. A second token source
   matched the file lexer's grammar-§4.5 `#`-keyword roster with a hand-copied
   table and its grammar-§4.6 punctuation-and-operator munch with a
