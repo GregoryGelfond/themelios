@@ -8,9 +8,17 @@
 //!
 //! The witness **accretes per macro** (TDD): each macro's first test is its
 //! equality witness, comparing a value built through the macro against the same
-//! value built by hand — the term-shape witnesses (every arm the codegen emits)
-//! among them, the load-bearing proof that each `codegen_term` arm spells the
-//! *right* constructor and not merely a frozen emission (§11, §16).
+//! value built by hand. Among them the term-shape witnesses carry a value
+//! (`assert_eq!`) proof for eight of the nine `codegen_term` arms — `Constant`,
+//! `Variable`, `Function`, `External`, `Pool`, `Unary`, `Binary`, and `Abs` —
+//! the load-bearing proof that each spells the *right* constructor and not merely
+//! a frozen emission (§11, §16); the ninth arm, `Splice`, has its value
+//! round-trip in the §11 splice round-trip property law, not here. Finer emitted
+//! shapes rest on a change-detector golden in `codegen.rs` rather than a value
+//! witness here — among them the comparison chain, the boolean and conditional
+//! literals, the pooled atom, an `#external` carrying a value, a negated
+//! theory-atom body element, and several theory container and symbol-leaf arms —
+//! the golden and property instruments the design lists beside this one (§11).
 
 use themelios_macros::{atom, constraint, external, fact, maximize, minimize, program, rule, show};
 use themelios_program::construct;
@@ -203,8 +211,20 @@ fn empty_program_macro_equals_program_empty() {
     assert_eq!(by_macro, Program::empty());
 }
 
-// ---- the term-shape witnesses (§6): every `codegen_term` arm spells the right
-// constructor, not a frozen emission — the value proof beside the Task-6 goldens ----
+// ---- the term-shape witnesses (§6): the value proof that each non-splice `codegen_term`
+// arm spells the right constructor, not a frozen emission, beside the codegen goldens — the
+// `Splice` arm's value round-trip is the §11 property law ----
+
+#[test]
+fn a_function_term_equals_the_constructor() {
+    // A function used as a *term* (`p(f(1))`): the `codegen_term` `Function` arm, spelled
+    // through `Term::function` — the value proof beside its change-detector goldens, which
+    // assert only that the emission mentions `Term::function`, not that it builds this value.
+    assert_eq!(
+        fact!(p(f(1))),
+        fact_p(Term::function(name("f"), [Term::from(1i32)]))
+    );
+}
 
 #[test]
 fn an_interval_term_equals_the_constructor() {
@@ -297,7 +317,7 @@ fn a_string_term_equals_the_constructor() {
 #[test]
 fn the_empty_tuple_term_equals_the_constructor() {
     // The empty tuple `()`, compiling the empty-array element-type inference that the
-    // codegen's `[#(#terms),*]` rests on (a Task-6 concern, locked here).
+    // codegen's `[#(#terms),*]` rests on (a codegen-emission concern, locked here).
     assert_eq!(fact!(p(())), fact_p(Term::tuple([])));
 }
 
