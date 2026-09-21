@@ -1,7 +1,11 @@
-//! The fusion oracle (docs/design/syntax.md §10): what must stand
-//! between two tokens for each to lex as itself — not a theory to
-//! maintain but a fact to compute, since this crate owns the lexer and
-//! the exact answer is one relex away.
+//! The fusion oracle and the shared lexical facts (docs/design/syntax.md
+//! §10): the oracle — what must stand between two tokens for each to lex
+//! as itself, not a theory to maintain but a fact to compute, since this
+//! crate owns the lexer and the exact answer is one relex away — and,
+//! beside it, the lexical facts a second token source shares with the file
+//! lexer rather than restates: the mode an adjacency stands in, the
+//! theory-operator formation, the `#`-keyword roster, and the punctuation
+//! formation.
 
 use crate::dialect::Dialect;
 use crate::lexer::{keyword_kind, lex, punctuation_normal, theory_operator_run};
@@ -714,6 +718,13 @@ mod tests {
     fn punctuation_is_none_for_a_lone_bang() {
         // `!` is `NEQ`'s lead and nothing alone, as the file lexer forms it.
         assert_eq!(punctuation("!"), None);
+    }
+
+    #[test]
+    fn punctuation_is_none_for_the_empty_text() {
+        // The door is total: an empty text begins on no §4.6 punctuation
+        // (docs/design/syntax.md §13), never a panic.
+        assert_eq!(punctuation(""), None);
     }
 
     #[test]

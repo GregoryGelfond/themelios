@@ -365,8 +365,9 @@ fn name(rest: &str) -> Option<(SyntaxKind, usize)> {
 /// home of the formation: the file lexer's normal-mode punctuation and
 /// `fusion::punctuation` (docs/design/syntax.md §10.5) both form through it.
 pub(crate) fn punctuation_normal(bytes: &[u8]) -> Option<(SyntaxKind, usize)> {
+    let first = *bytes.first()?;
     let second = bytes.get(1).copied();
-    Some(match bytes[0] {
+    Some(match first {
         b'.' if second == Some(b'.') => (SyntaxKind::DOTDOT, 2),
         b'.' => (SyntaxKind::DOT, 1),
         b',' => (SyntaxKind::COMMA, 1),
