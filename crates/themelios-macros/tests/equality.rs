@@ -23,9 +23,10 @@
 use themelios_macros::{atom, constraint, external, fact, maximize, minimize, program, rule, show};
 use themelios_program::construct;
 use themelios_program::program::{
-    AggregateFunction, Atom, Body, BodyElement, Choice, ChoiceElement, Condition, Disjunction,
-    DisjunctionElement, External, Guard, HeadAggregate, HeadAggregateElement, IntoHead, Literal,
-    OptimizeElement, Program, Rule, Show, Statement, TheoryAtom, TheoryElement, TheoryGuard,
+    Aggregate, AggregateFunction, Atom, Body, BodyAggregateElement, BodyElement, Choice,
+    ChoiceElement, Condition, Disjunction, DisjunctionElement, External, FunctionAggregate, Guard,
+    HeadAggregate, HeadAggregateElement, IntoHead, Literal, OptimizeElement, Program, Relation,
+    Rule, SetAggregate, SetElement, Show, Statement, TheoryAtom, TheoryElement, TheoryGuard,
     TheoryOperator, TheoryTerm, weight,
 };
 use themelios_program::provenance::Origin;
@@ -268,6 +269,59 @@ fn head_aggregate_macro_equals_the_constructor() {
         )],
         None,
     ));
+    assert_eq!(by_macro, by_hand);
+}
+
+// ---- the body aggregates (§8): a body element the `ast::BodyElement::Aggregate` arm fans a
+// set to `SetAggregate` and a function to `FunctionAggregate`, under its own default negation ----
+
+#[test]
+fn body_function_aggregate_macro_equals_the_constructor() {
+    // `1 <= #sum { X : q(X) }` as a body element: a function aggregate with the left guard
+    // `1 <=` (its relation `Le` over the bound `1`), one testing element (the term tuple `X`
+    // under the condition `q(X)`, no derived literal), no right guard — positive, so it rides
+    // in through `From<Aggregate>`.
+    let by_macro = rule!(p :- 1 <= #sum { X : q(X) });
+    let by_hand = Atom::new(name("p"), [])
+        .into_head()
+        .when(Body::new([BodyElement::from(Aggregate::Function(
+            FunctionAggregate::new(
+                Some(Guard {
+                    relation: Some(Relation::Le),
+                    term: Term::from(1i32),
+                }),
+                AggregateFunction::Sum,
+                [BodyAggregateElement::new(
+                    [Term::variable(var("X"))],
+                    Condition::new([Literal::from(Atom::new(
+                        name("q"),
+                        [Term::variable(var("X"))],
+                    ))]),
+                )],
+                None,
+            ),
+        ))]));
+    assert_eq!(by_macro, by_hand);
+}
+
+#[test]
+fn negated_body_set_aggregate_macro_equals_the_constructor() {
+    // `not { a; b }` as a body element: a set (cardinality) aggregate over two bare set elements
+    // (a set element keeps a conditional literal whole, unlike a choice element), under
+    // whole-aggregate default negation — `not` wraps the `Aggregate` through the `Negatable` door.
+    let by_macro = rule!(p :- not { a; b });
+    let by_hand = Atom::new(name("p"), [])
+        .into_head()
+        .when(Body::new([construct::not(Aggregate::Set(
+            SetAggregate::new(
+                None,
+                [
+                    SetElement::Literal(Literal::from(Atom::new(name("a"), []))),
+                    SetElement::Literal(Literal::from(Atom::new(name("b"), []))),
+                ],
+                None,
+            ),
+        ))]));
     assert_eq!(by_macro, by_hand);
 }
 

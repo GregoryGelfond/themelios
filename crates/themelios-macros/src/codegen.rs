@@ -1090,10 +1090,12 @@ fn codegen_body(body: Option<&ast::Body>, src: &MacroSource) -> TokenStream {
     }
 }
 
-/// A body element (§4.5), emitting a [`BodyElement`] through the coercion surface: a
-/// literal or a conditional literal by its `From`, a theory atom under its own default
-/// negation (`not`/`not not`, program §7.1) or bare. A body aggregate is a located
-/// compile error — a body element the construction macros do not yet build (§8); total.
+/// A body element (§4.5), emitting a [`BodyElement`] through the coercion surface, one arm
+/// per `ast::BodyElement` family as the raise's `raise_body_element` is (program §8): a
+/// literal or a conditional literal by its `From`, and a theory atom or an aggregate under
+/// its own default negation (`not`/`not not`, or bare through `From`, program §7.1). An
+/// aggregate fans out through [`codegen_body_aggregate`]; the match is exhaustive, so a new
+/// body-element family is a compile error here, never a silent drop.
 fn codegen_body_element(element: &ast::BodyElement, src: &MacroSource) -> TokenStream {
     match element {
         ast::BodyElement::Literal(literal) => {
@@ -1117,11 +1119,136 @@ fn codegen_body_element(element: &ast::BodyElement, src: &MacroSource) -> TokenS
                 }
             }
         }
-        ast::BodyElement::Aggregate(aggregate) => located_compile_error(
+        ast::BodyElement::Aggregate(aggregate) => codegen_body_aggregate(aggregate, src),
+    }
+}
+
+/// A body aggregate (§4.7), emitting a [`BodyElement`] under its own default negation (the
+/// raise's `raise_body_element` aggregate arm, program §8): the `program::Aggregate` value
+/// ([`codegen_aggregate_value`]) wrapped through the construction surface — positive by
+/// `From<Aggregate>`, `not`/`not not` by `construct::not`/`not_not` (program §7.1) — the same
+/// door the theory-atom arm takes, needed because `program::BodyElement` is `#[non_exhaustive]`
+/// and its aggregate variant is built only through this surface.
+fn codegen_body_aggregate(aggregate: &ast::Aggregate, src: &MacroSource) -> TokenStream {
+    let value = codegen_aggregate_value(aggregate, src);
+    match aggregate_negation(aggregate) {
+        ast::Negation::None => quote!(::themelios_program::program::BodyElement::from(#value)),
+        ast::Negation::Default => quote!(::themelios_program::construct::not(#value)),
+        ast::Negation::DoubleDefault => quote!(::themelios_program::construct::not_not(#value)),
+    }
+}
+
+/// The `program::Aggregate` value an AST body aggregate builds (the raise's
+/// `raise_body_aggregate`): the `ast::Aggregate` variant fans out to the two program shapes —
+/// a set to [`SetAggregate`](codegen_set_aggregate), a function to
+/// [`FunctionAggregate`](codegen_function_aggregate).
+fn codegen_aggregate_value(aggregate: &ast::Aggregate, src: &MacroSource) -> TokenStream {
+    match aggregate {
+        ast::Aggregate::Function(function) => {
+            let function = codegen_function_aggregate(function, src);
+            quote!(::themelios_program::program::Aggregate::Function(#function))
+        }
+        ast::Aggregate::Set(set) => {
+            let set = codegen_set_aggregate(set, src);
+            quote!(::themelios_program::program::Aggregate::Set(#set))
+        }
+    }
+}
+
+/// The AST default negation a body aggregate carries (the raise's `aggregate_negation`): read
+/// from the node — a function's or a set's leading `not` tokens (grammar §5.6).
+fn aggregate_negation(aggregate: &ast::Aggregate) -> ast::Negation {
+    match aggregate {
+        ast::Aggregate::Function(function) => function.negation(),
+        ast::Aggregate::Set(set) => set.negation(),
+    }
+}
+
+/// A body function aggregate (§4.7) to `FunctionAggregate::new` (the raise's
+/// `raise_function_aggregate`): the function, its two optional guards ([`codegen_guard`]), and
+/// its body elements, which *test* ([`codegen_body_aggregate_element`]). A function keyword
+/// missing under recovery is a located compile error, mirroring the raise's `incomplete`.
+fn codegen_function_aggregate(function: &ast::FunctionAggregate, src: &MacroSource) -> TokenStream {
+    let Some(kind) = function.function() else {
+        return located_compile_error(
             src,
-            aggregate.syntax().text_range(),
-            "a body aggregate is not yet built by a construction macro",
+            function.syntax().text_range(),
+            "this aggregate is incomplete",
+        );
+    };
+    let function_kind = aggregate_function(kind);
+    let left = codegen_guard(function.left_guard(), src);
+    let right = codegen_guard(function.right_guard(), src);
+    let elements: Vec<TokenStream> = function
+        .elements()
+        .map(|element| codegen_body_aggregate_element(&element, src))
+        .collect();
+    quote!(::themelios_program::program::FunctionAggregate::new(
+        #left,
+        #function_kind,
+        [#(#elements),*],
+        #right,
+    ))
+}
+
+/// A body aggregate element to `BodyAggregateElement::new` (the raise's
+/// `raise_body_aggregate_element`): a term tuple under a condition — it *tests*, so it carries
+/// no derived literal. A head-shaped element in a body aggregate is a position no value can
+/// represent (§4.7): a located compile error, mirroring the raise's `incomplete`.
+fn codegen_body_aggregate_element(
+    element: &ast::AggregateElement,
+    src: &MacroSource,
+) -> TokenStream {
+    match element {
+        ast::AggregateElement::Body(body) => {
+            let terms: Vec<TokenStream> =
+                body.terms().map(|term| codegen_term(&term, src)).collect();
+            let condition = codegen_condition(body.condition().as_ref(), src);
+            quote!(::themelios_program::program::BodyAggregateElement::new(
+                [#(#terms),*],
+                #condition,
+            ))
+        }
+        ast::AggregateElement::Head(head) => located_compile_error(
+            src,
+            head.syntax().text_range(),
+            "a body aggregate element tests, it does not derive a literal",
         ),
+    }
+}
+
+/// A body set (cardinality) aggregate (§4.7) to `SetAggregate::new` (the raise's
+/// `raise_set_aggregate`): its two optional guards ([`codegen_guard`]) over its set elements
+/// ([`codegen_set_element`]).
+fn codegen_set_aggregate(set: &ast::SetAggregate, src: &MacroSource) -> TokenStream {
+    let left = codegen_guard(set.left_guard(), src);
+    let right = codegen_guard(set.right_guard(), src);
+    let elements: Vec<TokenStream> = set
+        .elements()
+        .map(|element| codegen_set_element(&element, src))
+        .collect();
+    quote!(::themelios_program::program::SetAggregate::new(
+        #left,
+        [#(#elements),*],
+        #right,
+    ))
+}
+
+/// A set aggregate element to a `SetElement` variant (the raise's `raise_set_element`): a bare
+/// literal to `SetElement::Literal`, a conditional literal to `SetElement::ConditionalLiteral`
+/// kept *whole* through [`codegen_conditional_literal`] — the one door a set element takes it,
+/// unlike a choice or disjunction element, which splits it (§4.7). `SetElement` is a public
+/// enum, so each is built as a variant literal.
+fn codegen_set_element(element: &ast::SetElement, src: &MacroSource) -> TokenStream {
+    match element {
+        ast::SetElement::Literal(literal) => {
+            let literal = codegen_literal(literal, src);
+            quote!(::themelios_program::program::SetElement::Literal(#literal))
+        }
+        ast::SetElement::ConditionalLiteral(conditional) => {
+            let conditional = codegen_conditional_literal(conditional, src);
+            quote!(::themelios_program::program::SetElement::ConditionalLiteral(#conditional))
+        }
     }
 }
 
@@ -1999,8 +2126,39 @@ mod tests {
     }
 
     #[test]
-    fn a_body_aggregate_is_a_located_error_for_now() {
-        assert!(codegen_stmt(":- 1 <= #count { X : p(X) }.").contains("compile_error"));
+    fn a_body_function_aggregate_builds_through_function_aggregate_new() {
+        // `1 <= #count { X : p(X) }` as a body element: a function aggregate with the left
+        // guard `1 <=` and one testing element (the term tuple `X` under the condition `p(X)`),
+        // positive so it rides in through `From<Aggregate>`.
+        let ts = codegen_stmt(":- 1 <= #count { X : p(X) }.");
+        assert!(!ts.contains("compile_error"), "{ts}");
+        assert!(ts.contains("FunctionAggregate :: new"), "{ts}");
+        assert!(ts.contains("BodyAggregateElement :: new"), "{ts}");
+        assert!(ts.contains("AggregateFunction :: Count"), "{ts}");
+        assert!(ts.contains("Relation :: Le"), "{ts}");
+        assert!(ts.contains("BodyElement :: from"), "{ts}");
+    }
+
+    #[test]
+    fn a_negated_body_set_aggregate_wraps_in_not() {
+        // `not { a; b }` as a body element: a set (cardinality) aggregate over two bare set
+        // elements, under whole-aggregate default negation through `construct::not`.
+        let ts = codegen_stmt(":- not { a; b }.");
+        assert!(!ts.contains("compile_error"), "{ts}");
+        assert!(ts.contains("SetAggregate :: new"), "{ts}");
+        assert!(ts.contains("SetElement :: Literal"), "{ts}");
+        assert!(ts.contains("construct :: not"), "{ts}");
+    }
+
+    #[test]
+    fn a_body_set_element_keeps_a_conditional_literal_whole() {
+        // A conditional literal in a body set aggregate stays a `ConditionalLiteral` (contrast a
+        // choice element, which splits it into literal and condition): `{ a : b }` builds a
+        // `SetElement::ConditionalLiteral` through `codegen_conditional_literal`.
+        let ts = codegen_stmt(":- { a : b }.");
+        assert!(!ts.contains("compile_error"), "{ts}");
+        assert!(ts.contains("SetElement :: ConditionalLiteral"), "{ts}");
+        assert!(ts.contains("ConditionalLiteral {"), "{ts}");
     }
 
     #[test]
