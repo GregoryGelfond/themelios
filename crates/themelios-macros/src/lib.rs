@@ -79,7 +79,9 @@ pub fn external(input: TokenStream) -> TokenStream {
 /// program §3.3) — head position is where a strong-negated atom is built, the term door
 /// reading `-` as arithmetic negation instead. A head that is not a single atom — a
 /// disjunction, a choice or aggregate, a theory atom, a comparison, or a constraint — is a
-/// compile error. Equals `Atom::new` (or its `Neg` for a strong-negated atom).
+/// compile error, as is a rule with a body (`atom!(p :- q)`): the head is an atom, but the
+/// `:- body` makes it a rule, never silently reduced to the head atom. Equals `Atom::new` (or
+/// its `Neg` for a strong-negated atom).
 #[proc_macro]
 pub fn atom(input: TokenStream) -> TokenStream {
     run(input.into(), Entry::Atom, None).into()

@@ -756,11 +756,13 @@ pub(crate) fn codegen_statement(statement: &ast::Statement, src: &MacroSource) -
 /// reached in head position, where `-p` is the atom's positional strong sign (program §3.3,
 /// §8). A fact's head is a literal wrapping the atom, which codegens through [`codegen_atom`]
 /// — the same door the statement head takes, so the built atom is structurally equal, up to
-/// and including provenance, to hand construction (§16). Every other head is a located
-/// compile error at the offending head, never a fabricated atom: a non-rule statement
-/// reached for with the wrong macro, a constraint's absent head (a falsum, §4.4), and — the
-/// head match exhaustive, so a new `ast::Head` variant is a compile error here — a
-/// disjunction, a choice or aggregate, or a theory atom.
+/// and including provenance, to hand construction (§16). Anything that is not a lone fact's
+/// atom is a located compile error at the offending construct, never a fabricated atom: a
+/// non-rule statement reached for with the wrong macro, a constraint's absent head (a falsum,
+/// §4.4), a head standing over a body (a rule, not an atom — dropping the `:- body` to build
+/// the head atom alone would fabricate an atom the caller did not write), and — the head match
+/// exhaustive, so a new `ast::Head` variant is a compile error here — a disjunction, a choice
+/// or aggregate, or a theory atom.
 pub(crate) fn codegen_head_atom(statement: &ast::Statement, src: &MacroSource) -> TokenStream {
     let ast::Statement::Rule(rule) = statement else {
         return located_compile_error(
@@ -777,6 +779,16 @@ pub(crate) fn codegen_head_atom(statement: &ast::Statement, src: &MacroSource) -
             "atom! expects a single atom, not a constraint",
         );
     };
+    if let Some(body) = rule.body() {
+        // A head over a body is a rule, not an atom (§8): the caller named an atom but wrote a
+        // rule. Refuse it at the body — never drop the `:- body` and build the head atom
+        // alone, which would fabricate an atom the caller did not write.
+        return located_compile_error(
+            src,
+            body.syntax().text_range(),
+            "atom! expects a single atom, not a rule with a body",
+        );
+    }
     match head {
         ast::Head::Literal(literal) => codegen_head_literal_atom(&literal, src),
         ast::Head::Disjunction(disjunction) => located_compile_error(
@@ -1841,6 +1853,17 @@ mod tests {
         // The head atom rides the same `codegen_atom` door as a statement head, so an
         // argument-list pool reaches `Atom::pooled` (program §8).
         assert!(codegen_head_atom_str("p(a; b).").contains("Atom :: pooled"));
+    }
+
+    #[test]
+    fn a_rule_with_a_body_is_a_located_error_never_the_head_atom() {
+        // `atom!(p :- q)` names an atom but writes a rule: the head `p` is a single atom, but
+        // the `:- q` makes it a rule (§8). It refuses with one located error and never drops
+        // the body to build the head atom alone — the value the caller did not write.
+        let ts = codegen_head_atom_str("p :- q.");
+        assert!(ts.contains("compile_error"), "{ts}");
+        assert!(ts.contains("not a rule with a body"), "{ts}");
+        assert!(!ts.contains("Atom :: new"), "{ts}");
     }
 
     #[test]
