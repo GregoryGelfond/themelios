@@ -1399,13 +1399,14 @@ mod tests {
 
     /// An unnamed token — a class grammar §9 leaves out, which the dialect
     /// refuses: a float, char, byte, or byte-string literal, a suffixed
-    /// numeral, a raw string, a detached `#`, a bare `$`, a no-class
-    /// identifier, or a lone `!` (and, built rather than parsed, a raw
+    /// numeral, a raw string, a lifetime, a detached `#`, a bare `$`, a
+    /// no-class identifier, or a lone `!` (and, built rather than parsed, a raw
     /// identifier).
     fn unnamed_token() -> impl Strategy<Value = Mapping> {
         let by_spelling = prop::sample::select(vec![
             "1.5", "2.0", "1e10", "3.14", // floats
-            "'a'", "'Z'", "'0'",    // chars
+            "'a'", "'Z'", "'0'", // chars
+            "'a", "'lt",    // lifetimes: a leading `'` is no operator, so the run refuses
             "b'a'",   // a byte
             "b\"x\"", // a byte string
             "1i32", "5u8", "10usize", // suffixed integers
