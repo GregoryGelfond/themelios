@@ -12,7 +12,7 @@
 //! among them, the load-bearing proof that each `codegen_term` arm spells the
 //! *right* constructor and not merely a frozen emission (§11, §16).
 
-use themelios_macros::{constraint, external, fact, maximize, minimize, rule, show};
+use themelios_macros::{atom, constraint, external, fact, maximize, minimize, rule, show};
 use themelios_program::construct;
 use themelios_program::program::{
     Atom, Body, BodyElement, Condition, External, IntoHead, Literal, OptimizeElement, Rule, Show,
@@ -64,6 +64,26 @@ fn rule_macro_equals_head_when_body() {
 fn constraint_macro_equals_the_constructor() {
     let by_macro = constraint!(:- p(X));
     let by_hand = Rule::constraint(Atom::new(name("p"), [Term::variable(var("X"))]));
+    assert_eq!(by_macro, by_hand);
+}
+
+// ---- the head-atom macro (§8): reaching an `Atom` by assembling a fact and extracting
+// its single head atom, strong negation read positionally ----
+
+#[test]
+fn atom_macro_equals_atom_new() {
+    let by_macro: Atom = atom!(p(1, a));
+    let by_hand = Atom::new(name("p"), [Term::from(1i32), Term::constant(name("a"))]);
+    // Structural equality; provenance is `Constructed` on both (erased from identity).
+    assert_eq!(by_macro, by_hand);
+}
+
+#[test]
+fn strong_negation_atom_macro_equals_the_negated_atom() {
+    // `-p` in head position is the atom's positional strong negation (§8): `Neg` on an `Atom`
+    // flips the sign to `Negative`, distinct from the arithmetic `-` of a term.
+    let by_macro = atom!(-p(1));
+    let by_hand = -Atom::new(name("p"), [Term::from(1i32)]);
     assert_eq!(by_macro, by_hand);
 }
 

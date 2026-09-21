@@ -21,53 +21,63 @@ use themelios_program::raise::raise_statement;
 use themelios_syntax::ast;
 use themelios_syntax::parse::{NestingLimit, Parse, parse_statement};
 
-use crate::codegen::codegen_statement;
+use crate::codegen::{codegen_head_atom, codegen_statement};
 use crate::diagnostics::emit_diagnostics;
 use crate::source::MacroSource;
 
-/// The grammatical category a construction site fixes (docs/design/macros.md §5): which
-/// fragment door [`run`] parses through, and which codegen it drives. The seven statement
-/// macros all fix [`Entry::Statement`]; the program-block door is a later increment's,
-/// added as a second entry when a macro reaches for it.
+/// The value a construction site fixes (docs/design/macros.md §5): what [`run`] codegens
+/// from the one statement a construction assembles and parses. The seven statement macros
+/// fix [`Entry::Statement`], the whole statement; `atom!` fixes [`Entry::Atom`], the single
+/// atom its head wraps (§8). Both reach their value through the one statement door — a
+/// construction assembles a statement, never a bespoke sub-statement fragment (§8).
 #[derive(Clone, Copy)]
 pub(crate) enum Entry {
     /// A single statement (grammar §5.11): the door the statement macros parse through,
     /// each assembling the terminating `.` its fragment needs (§5).
     Statement,
+    /// The single atom a fact's head wraps (§8): the `atom!` door. There is no atom
+    /// fragment, and the term door reads a leading `-` as arithmetic negation, so `atom!`
+    /// assembles a fact and codegens the atom its head wraps — where `-p` is the atom's
+    /// positional strong negation, not the term door's arithmetic negation.
+    Atom,
 }
 
 /// Run the compile-time pipeline for a construction macro (docs/design/macros.md §5): map
 /// the Rust token stream to a `MacroSource` under the dialect (§6), prepending the directive
-/// `keyword` when one is given and appending the fragment's terminating `.`; parse the
-/// fragment `entry` names; diagnose it at the rust-analyzer bar over a splice-free view (§5,
-/// step 3); and, when it is clean, codegen the §7.1 constructor calls that build the value
-/// (§5, step 4). A dialect error of the mapping, or a syntax or lowering diagnostic, is a
-/// compile error at the offending Rust token's span (§9); the pipeline never panics (§2).
+/// `keyword` when one is given and appending the fragment's terminating `.`; parse it as one
+/// statement; diagnose it at the rust-analyzer bar over a splice-free view (§5, step 3); and,
+/// when it is clean, codegen the §7.1 constructor calls that build the value `entry` names —
+/// the whole statement, or the single atom in its head (§5, step 4; §8). A dialect error of
+/// the mapping, or a syntax or lowering diagnostic, is a compile error at the offending Rust
+/// token's span (§9); the pipeline never panics (§2).
 pub(crate) fn run(input: TokenStream, entry: Entry, keyword: Option<&str>) -> TokenStream {
     let source = match MacroSource::build(with_terminator(input), keyword) {
         Ok(source) => source,
         Err(error) => return compile_error(error.span, &error.message),
     };
+    // Every construction assembles and parses one statement, diagnoses it at the
+    // rust-analyzer bar over a splice-free view (§5, step 3), and — clean — codegens the
+    // value its `entry` names (§5, step 4). The build, parse, and diagnostics are the same
+    // for a whole statement and for the atom its head wraps; only the final codegen differs.
+    let parse = parse_statement_fragment(&source);
+    let view = source.splice_free_view();
+    let lowering = raise_statement(&parse_statement_fragment(&view)).1;
+    if let Some(errors) = emit_diagnostics(&source, parse.diagnostics(), &view, &lowering) {
+        // The diagnostics are a sequence of `compile_error!(…);` statements; a construction
+        // macro stands in expression position (`let r = fact!(…)`), so they are wrapped in a
+        // block — one expression, no stray-`;` noise beside the real diagnostic (§9).
+        return quote!({ #errors });
+    }
+    let Some(statement) = parse.tree().statement() else {
+        // A clean parse of a construction carries its statement; a fragment holding none —
+        // an empty invocation — is a construction-site error, not a fabricated value (§9).
+        // Unreachable once the diagnostics above pass.
+        return compile_error(Span::call_site(), "this construction has no statement");
+    };
     match entry {
-        Entry::Statement => {
-            let parse = parse_statement_fragment(&source);
-            let view = source.splice_free_view();
-            let lowering = raise_statement(&parse_statement_fragment(&view)).1;
-            if let Some(errors) = emit_diagnostics(&source, parse.diagnostics(), &view, &lowering) {
-                // The diagnostics are a sequence of `compile_error!(…);` statements; a
-                // construction macro stands in expression position (`let r = fact!(…)`),
-                // so they are wrapped in a block — one expression, no stray-`;` noise
-                // beside the real diagnostic (§9).
-                return quote!({ #errors });
-            }
-            match parse.tree().statement() {
-                Some(statement) => codegen_statement(&statement, &source),
-                // A clean parse of a construction carries its statement; a fragment
-                // holding none — an empty invocation — is a construction-site error, not
-                // a fabricated value (§9). Unreachable once the diagnostics above pass.
-                None => compile_error(Span::call_site(), "this construction has no statement"),
-            }
-        }
+        Entry::Statement => codegen_statement(&statement, &source),
+        // `atom!` reaches head position: codegen the single atom the fact's head wraps (§8).
+        Entry::Atom => codegen_head_atom(&statement, &source),
     }
 }
 
