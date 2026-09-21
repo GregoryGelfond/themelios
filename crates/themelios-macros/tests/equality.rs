@@ -485,15 +485,18 @@ fn a_pooled_argument_list_atom_equals_the_constructor() {
 
 #[test]
 fn a_comparison_chain_body_equals_the_constructor() {
-    // `1 < X < 5` is one body literal carrying a guard sequence, not a conjunction (§4.6):
-    // `Comparison::new` for the first step, `.chain` for the second. Pinning the value proves the
-    // operand order *and* both step relations — a single-step comparison would leave a swapped
-    // operand or a wrong second relation uncaught. A comparison is a positive body literal,
-    // riding into the constraint through `IntoBody for Comparison` (program §7.1).
-    let by_macro = constraint!(:- 1 < X < 5);
+    // `1 < X <= 5` is one body literal carrying a guard sequence, not a conjunction (§4.6):
+    // `Comparison::new` for the first step, `.chain` for the second. The two steps use *distinct*
+    // relations (`<` then `<=`) so the value pins the second step's relation independently of the
+    // first: an identical-relation chain (`< < `) would let a mutant that reuses the first step's
+    // relation for the second slip through. Pinning the value proves the operand order *and* both
+    // step relations — a single-step comparison would leave a swapped operand or a wrong second
+    // relation uncaught. A comparison is a positive body literal, riding into the constraint
+    // through `IntoBody for Comparison` (program §7.1).
+    let by_macro = constraint!(:- 1 < X <= 5);
     let by_hand = Rule::constraint(
         Comparison::new(Term::from(1i32), Relation::Lt, Term::variable(var("X")))
-            .chain(Relation::Lt, Term::from(5i32)),
+            .chain(Relation::Le, Term::from(5i32)),
     );
     assert_eq!(by_macro, by_hand);
 }

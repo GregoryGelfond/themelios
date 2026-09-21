@@ -2374,6 +2374,10 @@ mod tests {
                 // `Some`) has an ident before its `::`; a method, field, or spliced operand ident
                 // has no `::` before it at all — neither is a root. The colon count is robust to
                 // `.to_string()` gluing, as the absolute check above is.
+                //
+                // The whitelist covers absolute-path roots only — `is_root` requires the two leading
+                // `::`s — so it rests on the codegen's invariant of emitting only absolute paths (the
+                // program-tier `::` assertion above; §12.5).
                 let after_path = index >= 2 && colon(&trees[index - 1]) && colon(&trees[index - 2]);
                 let is_root = after_path && (index < 3 || !is_ident(&trees[index - 3]));
                 assert!(
