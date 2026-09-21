@@ -1,0 +1,5 @@
+error: atom! expects a single atom, not a rule with a body
+ --> tests/ui/atom_not_a_rule.rs:9:42
+  |
+9 |     let _ = themelios_macros::atom!(p :- q);
+  |                                          ^
