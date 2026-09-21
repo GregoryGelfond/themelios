@@ -1,0 +1,5 @@
+error: this numeral is outside the representable range
+ --> tests/ui/numeral_overflows.rs:9:39
+  |
+9 |     let _ = themelios_macros::fact!(p(9999999999));
+  |                                       ^^^^^^^^^^

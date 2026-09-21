@@ -1,0 +1,13 @@
+error[E0277]: the trait bound `f64: ToSymbol` is not satisfied
+ --> tests/ui/splice_not_to_symbol.rs:8:13
+  |
+8 |     let _ = themelios_macros::fact!(p($x));
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `ToSymbol` is not implemented for `f64`
+  |
+  = help: the following other types implement trait `ToSymbol`:
+            i16
+            i32
+            i8
+            u16
+            u8
+  = note: this error originates in the macro `themelios_macros::fact` (in Nightly builds, run with -Z macro-backtrace for more info)

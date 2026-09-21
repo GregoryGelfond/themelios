@@ -19,12 +19,6 @@
 //! tier's shared operator former, so it agrees with the file lexer by
 //! construction, and script-body mode never arises (no construction
 //! assembles a `#script` token).
-// The mapping engine's public surface is reached by the macro entry
-// points a later increment wires; until those exist, this module's own
-// tests are its only callers, so the not-yet-wired surface would read as
-// dead. The allow is removed when the entry points arrive.
-#![allow(dead_code)]
-
 use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
 use themelios_syntax::base::line::{OffsetOutOfBounds, PositionRefusal};
 use themelios_syntax::base::source::{NotCharBoundary, SourceId};
