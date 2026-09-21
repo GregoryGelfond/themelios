@@ -323,7 +323,14 @@ and the target token (`SPLICE`). The engine implements the mapping and answers
   splice of that value (§7), not respelled.
 - `#` forms a keyword exactly when *span-adjacent* to the keyword's word (and,
   for `#sum+`, the `+` beyond it), read from the `proc_macro` spans; a `#`
-  separated from its word is a dialect error.
+  separated from its word is a dialect error. This detached-`#` refusal is a
+  **fallback-only guarantee**: the byte ranges the adjacency reads are exact
+  only under proc-macro2's fallback backend (this crate's tests), and under real
+  macro expansion a detached `# kw` is read benignly as `#kw` — the value the
+  author meant, the imprecision erring only toward recognising the keyword,
+  never toward a panic. The one dangerous keyword, `#script`, is refused
+  *adjacency-independently* (`engine::script_keyword_span`), so `program!`
+  catches it whether or not its `#` abuts the word.
 - Rust punctuation maps one-to-one onto the operator roster; a multi-character
   operator exists where its characters are adjacent and joined, and theory-
   operator runs form the same way inside theory expressions — the source forms

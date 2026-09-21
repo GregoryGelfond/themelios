@@ -740,9 +740,12 @@ fn keyword_kind(word: &str) -> Option<SyntaxKind> {
 }
 
 /// Whether `left` ends exactly where `right` begins — the span adjacency
-/// grammar §9 reads a `#`-keyword by. Byte ranges come from
-/// proc-macro2's `span-locations`; they are exact when a source text
-/// backs the tokens, as under a compile and this crate's tests.
+/// grammar §9 reads a `#`-keyword by. The byte ranges are `proc_macro2`'s
+/// `Span::byte_range`, exact only under its fallback backend — this crate's
+/// `TokenStream::from_str` tests — and inexact under real macro expansion,
+/// where a detached `# kw` reads as `#kw` (lib.rs, the `program` doc). So
+/// `adjacent` is a fallback-only exactness; the imprecision only ever errs
+/// toward recognising a keyword, never toward a panic.
 fn adjacent(left: Span, right: Span) -> bool {
     left.byte_range().end == right.byte_range().start
 }
