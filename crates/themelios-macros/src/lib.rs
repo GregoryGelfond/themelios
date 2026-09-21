@@ -72,3 +72,15 @@ pub fn show(input: TokenStream) -> TokenStream {
 pub fn external(input: TokenStream) -> TokenStream {
     run(input.into(), Entry::Statement, Some("external")).into()
 }
+
+/// `atom!(head)` → an [`Atom`](themelios_program::program::Atom) in head position
+/// (docs/design/macros.md §8), reached by assembling a fact and extracting its single head
+/// atom. A leading `-` is the atom's positional strong negation (`-p` → `Sign::Negative`,
+/// program §3.3) — head position is where a strong-negated atom is built, the term door
+/// reading `-` as arithmetic negation instead. A head that is not a single atom — a
+/// disjunction, a choice or aggregate, a theory atom, a comparison, or a constraint — is a
+/// compile error. Equals `Atom::new` (or its `Neg` for a strong-negated atom).
+#[proc_macro]
+pub fn atom(input: TokenStream) -> TokenStream {
+    run(input.into(), Entry::Atom, None).into()
+}

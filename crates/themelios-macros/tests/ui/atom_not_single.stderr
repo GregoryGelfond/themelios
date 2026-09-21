@@ -1,0 +1,5 @@
+error: atom! expects a single atom, not a disjunction
+ --> tests/ui/atom_not_single.rs:8:37
+  |
+8 |     let _ = themelios_macros::atom!(a ; b);
+  |                                     ^

@@ -721,6 +721,73 @@ pub(crate) fn codegen_statement(statement: &ast::Statement, src: &MacroSource) -
     }
 }
 
+/// Emit the program-tier §7.1 constructor calls that build the single head [`Atom`] an
+/// `atom!` reaches for (docs/design/macros.md §8) — the codegen half of the head-atom macro.
+/// `atom!` assembles a fact and this extracts its head atom: there is no atom fragment door,
+/// and the term door reads a leading `-` as arithmetic negation, so a strong-negated atom is
+/// reached in head position, where `-p` is the atom's positional strong sign (program §3.3,
+/// §8). A fact's head is a literal wrapping the atom, which codegens through [`codegen_atom`]
+/// — the same door the statement head takes, so the built atom is structurally equal, up to
+/// and including provenance, to hand construction (§16). Every other head is a located
+/// compile error at the offending head, never a fabricated atom: a non-rule statement
+/// reached for with the wrong macro, a constraint's absent head (a falsum, §4.4), and — the
+/// head match exhaustive, so a new `ast::Head` variant is a compile error here — a
+/// disjunction, a choice or aggregate, or a theory atom.
+pub(crate) fn codegen_head_atom(statement: &ast::Statement, src: &MacroSource) -> TokenStream {
+    let ast::Statement::Rule(rule) = statement else {
+        return located_compile_error(
+            src,
+            statement.syntax().text_range(),
+            "atom! expects a single atom, not this statement",
+        );
+    };
+    let Some(head) = rule.head() else {
+        // No head node is a constraint (`:- body.`, §4.4): a falsum head, not an atom.
+        return located_compile_error(
+            src,
+            rule.syntax().text_range(),
+            "atom! expects a single atom, not a constraint",
+        );
+    };
+    match head {
+        ast::Head::Literal(literal) => codegen_head_literal_atom(&literal, src),
+        ast::Head::Disjunction(disjunction) => located_compile_error(
+            src,
+            disjunction.syntax().text_range(),
+            "atom! expects a single atom, not a disjunction",
+        ),
+        ast::Head::Aggregate(aggregate) => located_compile_error(
+            src,
+            aggregate.syntax().text_range(),
+            "atom! expects a single atom, not a choice or aggregate",
+        ),
+        ast::Head::TheoryAtom(atom) => located_compile_error(
+            src,
+            atom.syntax().text_range(),
+            "atom! expects a single atom, not a theory atom",
+        ),
+    }
+}
+
+/// The single ordinary [`Atom`] a fact's head literal wraps (docs/design/macros.md §8), or a
+/// located compile error when the literal is not one. A bare atom under no default negation
+/// codegens through [`codegen_atom`], carrying its positional strong sign (§8); anything else
+/// is not a single ordinary atom — default negation is a *body* property (program §4.5), so a
+/// `not p` head is not an atom (its `not` has nowhere to go in an `Atom` value), and a
+/// comparison, a boolean (`#true`/`#false`), or — under recovery — a literal with no inner
+/// form is not an atom either. Each is a located compile error, coincident in the wired
+/// pipeline with the syntax diagnostic that flags it (§5.3), never a silently-stripped atom.
+fn codegen_head_literal_atom(literal: &ast::Literal, src: &MacroSource) -> TokenStream {
+    match (literal.negation(), literal.inner()) {
+        (ast::Negation::None, Some(ast::LiteralInner::Atom(atom))) => codegen_atom(&atom, src),
+        _ => located_compile_error(
+            src,
+            literal.syntax().text_range(),
+            "atom! expects a single atom, not a comparison, a boolean, or a negated literal",
+        ),
+    }
+}
+
 /// A rule (§4.3), mirroring the raise (program §8) but emitting the construction door
 /// each shape names: a head — its absence a constraint (`⊥ ← body`, §4.4) — and a body.
 /// A fact (a head, no body node) is `Rule::fact`, a constraint (no head node)
@@ -1672,5 +1739,70 @@ mod tests {
         // A well-formed directive no statement macro targets — reached for with the
         // wrong macro — is a construction-site error, not a fabricated value.
         assert!(codegen_stmt("#project p/1 .").contains("compile_error"));
+    }
+
+    // ---- head-atom codegen (§8): the `atom!` door, reaching an atom by extracting a fact's
+    // head; the value proof is the equality witness beside these goldens (tests/equality.rs) ----
+
+    /// The emitted constructor-call stream, as a string, for the single head atom the macro
+    /// source `input` (an assembled fact, its terminating `.` included) reaches through
+    /// [`codegen_head_atom`] — the `atom!` door. The change-detector twin of [`codegen_stmt`]
+    /// at head-atom grain; the value proof is the per-macro equality witness.
+    fn codegen_head_atom_str(input: &str) -> String {
+        let src = MacroSource::build(TokenStream::from_str(input).expect("lexes"), None)
+            .expect("maps under the dialect");
+        let statement = parse_statement_fragment(&src)
+            .tree()
+            .statement()
+            .expect("a statement");
+        codegen_head_atom(&statement, &src).to_string()
+    }
+
+    #[test]
+    fn a_head_atom_calls_atom_new() {
+        let ts = codegen_head_atom_str("p(1, a).");
+        assert!(ts.contains("Atom :: new"), "{ts}");
+        assert!(!ts.contains("compile_error"), "{ts}");
+    }
+
+    #[test]
+    fn a_strong_negated_head_atom_wraps_in_neg() {
+        // `-p` is the atom's positional strong sign (program §3.3), read by `codegen_atom`
+        // into the `Neg` operator — not the term door's arithmetic negation.
+        let ts = codegen_head_atom_str("-p(1).");
+        assert!(ts.contains("(- ::"), "{ts}");
+        assert!(ts.contains("Atom :: new"), "{ts}");
+    }
+
+    #[test]
+    fn a_pooled_argument_head_atom_calls_atom_pooled() {
+        // The head atom rides the same `codegen_atom` door as a statement head, so an
+        // argument-list pool reaches `Atom::pooled` (program §8).
+        assert!(codegen_head_atom_str("p(a; b).").contains("Atom :: pooled"));
+    }
+
+    #[test]
+    fn a_head_that_is_not_a_single_atom_is_a_located_error() {
+        // Every head shape that is not a single ordinary atom refuses with one located error
+        // (§8), never a fabricated or silently-stripped atom: a disjunction (both the `|` and
+        // `;` spellings), a choice head, a theory-atom head, a comparison, a boolean, a
+        // default-negated literal (its `not` has nowhere to go in an `Atom`), a constraint's
+        // absent head, and a non-rule statement reached for with the wrong macro.
+        for input in [
+            "a | b.",
+            "a ; b.",
+            "{ a }.",
+            "&sum { X } <= 3 .",
+            "1 < 2 .",
+            "#true.",
+            "not p.",
+            ":- p.",
+            "#show p/1 .",
+        ] {
+            assert!(
+                codegen_head_atom_str(input).contains("compile_error"),
+                "{input}"
+            );
+        }
     }
 }
