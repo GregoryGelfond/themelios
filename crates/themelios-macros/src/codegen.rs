@@ -687,6 +687,34 @@ fn located_compile_error(src: &MacroSource, range: TextRange, message: &str) -> 
 
 // ---- statements: rules, directives, and their heads and bodies (program §4) ----
 
+/// Emit the program-tier §7.1 constructor calls that build the whole program `program`
+/// (docs/design/macros.md §8) — the codegen half of the `program!` block macro. Each
+/// statement codegens through [`codegen_statement`] to its family value and is converted to
+/// a [`Statement`] by its `From` (program §4.2), so the assembled array is homogeneous — the
+/// spelling the generic `Program::of` door needs, its `impl Into<Statement>` element type
+/// otherwise unresolvable between a family and `Statement`. The program is then assembled
+/// through that public door (program §7.1), which gives each statement a `Constructed`
+/// origin and ingests it into the base part — the same value `Program::of` over the
+/// hand-spelled constructors builds, structurally equal up to and including provenance
+/// (§16). An empty block is `Program::empty()`, the named empty case `Program::of` cannot
+/// infer an element type for (program §7.1). A statement family no construction macro builds
+/// (an aggregate or choice head, a body aggregate, a `#program` delimiter, a directive with
+/// no macro) is [`codegen_statement`]'s located compile error, inherited here.
+pub(crate) fn codegen_program(program: &ast::Program, src: &MacroSource) -> TokenStream {
+    let statements: Vec<TokenStream> = program
+        .statements()
+        .map(|statement| {
+            let value = codegen_statement(&statement, src);
+            quote!(::themelios_program::program::Statement::from(#value))
+        })
+        .collect();
+    if statements.is_empty() {
+        quote!(::themelios_program::program::Program::empty())
+    } else {
+        quote!(::themelios_program::program::Program::of([#(#statements),*]))
+    }
+}
+
 /// Emit the program-tier §7.1 constructor calls that build the statement `statement`
 /// (docs/design/macros.md §5, step 4; §8) — the codegen half of the seven statement
 /// macros. Each family a construction macro builds codegens to its specific family
@@ -1196,7 +1224,7 @@ mod tests {
     use proc_macro2::TokenStream;
 
     use super::*;
-    use crate::engine::{parse_statement_fragment, parse_term_fragment};
+    use crate::engine::{parse_program_fragment, parse_statement_fragment, parse_term_fragment};
 
     /// The emitted constructor-call stream, as a string, for the term the
     /// macro source `input` assembles and parses to under the dialect. These
@@ -1222,6 +1250,17 @@ mod tests {
             .statement()
             .expect("a statement");
         codegen_statement(&statement, &src).to_string()
+    }
+
+    /// The emitted constructor-call stream, as a string, for the whole program the macro
+    /// source `input` (its statements' own `.`s included) assembles and parses to, through
+    /// [`codegen_program`]. The change-detector twin of [`codegen_stmt`] at program grain;
+    /// the value proof is the equality witness (tests/equality.rs).
+    fn codegen_program_str(input: &str) -> String {
+        let src = MacroSource::build(TokenStream::from_str(input).expect("lexes"), None)
+            .expect("maps under the dialect");
+        let program = parse_program_fragment(&src).tree();
+        codegen_program(&program, &src).to_string()
     }
 
     #[test]
@@ -1739,6 +1778,29 @@ mod tests {
         // A well-formed directive no statement macro targets — reached for with the
         // wrong macro — is a construction-site error, not a fabricated value.
         assert!(codegen_stmt("#project p/1 .").contains("compile_error"));
+    }
+
+    // ---- whole-program codegen (§8): the `program!` door, assembling each statement into
+    // `Program::of`; the value proof is the equality witness beside these (tests/equality.rs) ----
+
+    #[test]
+    fn a_program_assembles_each_statement_through_program_of() {
+        // Each statement codegens to its family value, converts to `Statement` by its
+        // `From` (the homogeneous spelling `Program::of` needs), and joins the array.
+        let ts = codegen_program_str("p(1). q(X) :- p(X).");
+        assert!(ts.contains("Program :: of"), "{ts}");
+        assert!(ts.contains("Statement :: from"), "{ts}");
+        assert!(ts.contains("Rule :: fact"), "{ts}");
+        assert!(ts.contains("Rule :: new"), "{ts}");
+    }
+
+    #[test]
+    fn an_empty_program_assembles_program_empty() {
+        // The named empty case, not `Program::of([])` — the generic door cannot infer an
+        // element type for a bare empty array (program §7.1).
+        let ts = codegen_program_str("");
+        assert!(ts.contains("Program :: empty"), "{ts}");
+        assert!(!ts.contains("Program :: of"), "{ts}");
     }
 
     // ---- head-atom codegen (§8): the `atom!` door, reaching an atom by extracting a fact's

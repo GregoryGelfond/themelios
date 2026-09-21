@@ -84,3 +84,27 @@ pub fn external(input: TokenStream) -> TokenStream {
 pub fn atom(input: TokenStream) -> TokenStream {
     run(input.into(), Entry::Atom, None).into()
 }
+
+/// `program!{ … }` → a [`Program`](themelios_program::program::Program): a whole-program
+/// block, each statement built through its family constructor and assembled into
+/// `Program::of` (docs/design/macros.md §8). The block carries its own statement terminators
+/// and writes its directive keywords literally (`#show`, `#minimize`, `#external`, …), unlike
+/// the single directive macros that supply their keyword from the macro name. An empty block
+/// is `Program::empty()`. Equals `Program::of` over the hand-spelled statements.
+///
+/// A `#script` body cannot be recovered from Rust tokens — it is opaque text a file lexer
+/// reads, not a token stream — so a `#script` in the block is a compile error directing the
+/// caller to raise a file instead (docs/design/macros.md §7). A statement family no
+/// construction macro yet builds — an aggregate or choice head, a body aggregate, a `#program`
+/// part delimiter, or a directive with no macro — is a located compile error, as it is for the
+/// single statement macros (§8).
+///
+/// A literal `#`-keyword's `#` is read as joined to its word by a byte-range adjacency check
+/// that is exact under this crate's tests but inexact under real macro expansion, so a detached
+/// `# show` is read as `#show` there (docs/design/macros.md §6). The imprecision only ever errs
+/// toward recognising a keyword, so a `#script` is refused whether its `#` abuts the word or
+/// not, and no valid block is rejected by it.
+#[proc_macro]
+pub fn program(input: TokenStream) -> TokenStream {
+    run(input.into(), Entry::Program, None).into()
+}

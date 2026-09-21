@@ -1,0 +1,5 @@
+error: a #script body cannot be recovered from Rust tokens; raise a file — macros §7
+ --> tests/ui/program_script.rs:8:42
+  |
+8 |     let _ = themelios_macros::program! { #script (python) 1 #end };
+  |                                          ^
