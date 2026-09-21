@@ -1,0 +1,5 @@
+error: expected `,`, `;`, or `)`, found a number
+ --> tests/ui/syntax_error.rs:8:41
+  |
+8 |     let _ = themelios_macros::fact!(p(1 1));
+  |                                         ^
