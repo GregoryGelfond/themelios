@@ -4,6 +4,7 @@
 //! (docs/design/macros.md).
 #![forbid(unsafe_code)]
 
+mod codegen;
 mod diagnostics;
 mod engine;
 mod source;
