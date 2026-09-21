@@ -4,7 +4,7 @@
 //! the exact answer is one relex away.
 
 use crate::dialect::Dialect;
-use crate::lexer::{lex, theory_operator_run};
+use crate::lexer::{keyword_kind, lex, punctuation_normal, theory_operator_run};
 use crate::token::{LexMode, Token};
 use crate::tree::{NodeOrToken, SyntaxKind, SyntaxNode, SyntaxToken};
 
@@ -145,6 +145,40 @@ pub fn lex_mode_of(token: &SyntaxToken) -> LexMode {
 /// §10.3): the one home shared with the file lexer's theory punctuation.
 pub fn theory_operator(text: &str) -> Option<Token<'_>> {
     theory_operator_run(text.as_bytes()).map(|(kind, len)| Token {
+        kind,
+        text: &text[..len],
+    })
+}
+
+/// Grammar §4.5's `#`-keyword roster, the one lexical fact a `#`-word
+/// source shares with the file lexer rather than restates: the kind the
+/// keyword `spelling` names — its leading `#` included, as the roster holds
+/// it (`"#const"`, `"#count"`, …) — or `None` for a `#`-word that is no
+/// keyword. Mode-free: it answers the whole roster, and a source in a
+/// restricted mode (theory mode, where only `#inf`/`#infimum`/`#sup`/
+/// `#supremum` are keywords) filters that answer, its policy over the one
+/// roster. `#sum+` is no entry — a munch each source forms beside the
+/// roster, `+` being no name character — and `#end` is no keyword but the
+/// script terminator (grammar §4.8). Total; O(1) over the bounded roster
+/// (docs/design/syntax.md §10.4): the one home shared with the file lexer's
+/// `#`-word lexing.
+pub fn keyword(spelling: &str) -> Option<SyntaxKind> {
+    keyword_kind(spelling)
+}
+
+/// Grammar §4.6's punctuation-and-operator formation, the one lexical fact
+/// a punctuation source shares with the file lexer rather than restates:
+/// the §4.6 token at the front of `text` — a two-character operator where
+/// its characters lead, else the one-character punctuation — as one `Token`,
+/// or `None` when `text` does not begin on §4.6 punctuation. It forms the
+/// whole roster, brackets among the punctuation; a bare `!` is `None`,
+/// `NEQ`'s lead and nothing alone. Total; the punctuation alphabet is all
+/// ASCII, so the munch length is always a char boundary and the slice never
+/// panics; O(1) over the fixed roster. The `Token`'s text is the munch, so
+/// its length is the extent (docs/design/syntax.md §4.2, §10.5): the one
+/// home shared with the file lexer's normal-mode punctuation.
+pub fn punctuation(text: &str) -> Option<Token<'_>> {
+    punctuation_normal(text.as_bytes()).map(|(kind, len)| Token {
         kind,
         text: &text[..len],
     })
@@ -633,5 +667,64 @@ mod tests {
         // multi-byte character.
         assert_eq!(theory_operator("é"), None); // a non-ASCII start is off the alphabet
         assert_eq!(theory_operator("+é").unwrap().text, "+"); // the run ends before the multi-byte char; the slice is a char boundary
+    }
+
+    #[test]
+    fn keyword_classifies_a_hash_prefixed_spelling_by_the_roster() {
+        assert_eq!(keyword("#const"), Some(SyntaxKind::KW_CONST));
+    }
+
+    #[test]
+    fn keyword_maps_both_spellings_of_one_kind_to_that_kind() {
+        // `#infimum` is the second spelling of the kind `#inf` names.
+        assert_eq!(keyword("#infimum"), Some(SyntaxKind::KW_INF));
+    }
+
+    #[test]
+    fn keyword_is_none_for_the_script_terminator() {
+        // `#end` is no keyword but the script terminator (grammar §4.8).
+        assert_eq!(keyword("#end"), None);
+    }
+
+    #[test]
+    fn keyword_is_none_for_a_word_lacking_its_leading_hash() {
+        // The roster is keyed by the `#`-prefixed spelling; a bare word misses.
+        assert_eq!(keyword("const"), None);
+    }
+
+    #[test]
+    fn punctuation_forms_a_two_character_operator_as_its_maximal_munch() {
+        assert_eq!(
+            punctuation(":-"),
+            Some(Token {
+                kind: SyntaxKind::NECK,
+                text: ":-"
+            })
+        );
+        assert_eq!(
+            punctuation("<="),
+            Some(Token {
+                kind: SyntaxKind::LE,
+                text: "<="
+            })
+        );
+    }
+
+    #[test]
+    fn punctuation_is_none_for_a_lone_bang() {
+        // `!` is `NEQ`'s lead and nothing alone, as the file lexer forms it.
+        assert_eq!(punctuation("!"), None);
+    }
+
+    #[test]
+    fn punctuation_forms_a_bracket_the_roster_holds() {
+        // Brackets are among the §4.6 punctuation the whole roster forms.
+        assert_eq!(
+            punctuation("("),
+            Some(Token {
+                kind: SyntaxKind::L_PAREN,
+                text: "("
+            })
+        );
     }
 }

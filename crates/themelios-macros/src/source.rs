@@ -98,13 +98,14 @@ impl MacroSource {
     pub fn build(input: TokenStream, entry_keyword: Option<&str>) -> Result<MacroSource, MapError> {
         let mut assembler = Assembler::default();
         if let Some(word) = entry_keyword {
-            let kind = keyword_kind(word).ok_or_else(|| MapError {
+            let spelling = format!("#{word}");
+            let kind = themelios_syntax::fusion::keyword(&spelling).ok_or_else(|| MapError {
                 span: Span::call_site(),
-                message: format!("`#{word}` is not a directive keyword"),
+                message: format!("`{spelling}` is not a directive keyword"),
             })?;
             // The directive keyword is the macro's own, not a Rust token,
             // so it maps to the call site (docs/design/macros.md §8).
-            assembler.emit(kind, &format!("#{word}"), Span::call_site(), false);
+            assembler.emit(kind, &spelling, Span::call_site(), false);
         }
         let trees: Vec<TokenTree> = input.into_iter().collect();
         assembler.walk(&trees)?;
@@ -396,8 +397,12 @@ impl Assembler {
     }
 
     /// A `#`-keyword: the `#` at `index` must be span-adjacent to a
-    /// following identifier (grammar §9), whose word names the keyword;
-    /// `#sum` span-adjacent to a `+` beyond it is `#sum+`. A detached `#`
+    /// following identifier (grammar §9), whose `#`-word — its leading `#`
+    /// included — is classified through the syntax tier's
+    /// `themelios_syntax::fusion::keyword` (syntax §10.4), the single home of
+    /// grammar §4.5's `#`-keyword roster the file lexer classifies through as
+    /// well, so no keyword table lives in this crate; `#sum` span-adjacent to
+    /// a `+` beyond it is `#sum+`, formed beside the roster. A detached `#`
     /// is a dialect error.
     fn map_hash(
         &mut self,
@@ -417,11 +422,12 @@ impl Assembler {
                 self.emit(SyntaxKind::KW_SUM_PLUS, "#sum+", hash.span(), false);
                 return Ok(index + 3);
             }
-            let kind = keyword_kind(&spelling).ok_or_else(|| MapError {
+            let hash_word = format!("#{spelling}");
+            let kind = themelios_syntax::fusion::keyword(&hash_word).ok_or_else(|| MapError {
                 span: word.span(),
-                message: format!("`#{spelling}` is not a keyword"),
+                message: format!("`{hash_word}` is not a keyword"),
             })?;
-            self.emit(kind, &format!("#{spelling}"), hash.span(), false);
+            self.emit(kind, &hash_word, hash.span(), false);
             return Ok(index + 2);
         }
         Err(MapError {
@@ -478,8 +484,13 @@ impl Assembler {
     }
 
     /// A maximal run of punctuation glued by `Spacing::Joint` (grammar §9,
-    /// syntax §4.2), munched into operator tiles by the roster's
-    /// longest-match, exactly as the file lexer reads adjacent bytes.
+    /// syntax §4.2), munched into operator tiles by calling the syntax tier's
+    /// `themelios_syntax::fusion::punctuation` (syntax §10.5), the single home
+    /// of grammar §4.6's punctuation-and-operator formation the file lexer
+    /// forms through as well. The run's characters are all ASCII operators —
+    /// one byte each — reassembled into text and munched front to back; a
+    /// character the formation does not take (a bare `!`) is a dialect error
+    /// at its span.
     fn map_operator_run(&mut self, trees: &[TokenTree], index: usize) -> Result<usize, MapError> {
         let mut run: Vec<(char, Span)> = Vec::new();
         let mut cursor = index;
@@ -493,70 +504,24 @@ impl Assembler {
                 break;
             }
         }
-        self.munch_operators(&run)?;
+        let run_text: String = run.iter().map(|(character, _)| character).collect();
+        let mut position = 0;
+        while position < run_text.len() {
+            let token =
+                themelios_syntax::fusion::punctuation(&run_text[position..]).ok_or_else(|| {
+                    MapError {
+                        span: run[position].1,
+                        message: format!(
+                            "`{}` is not an operator in the macro dialect",
+                            run[position].0
+                        ),
+                    }
+                })?;
+            self.emit(token.kind, token.text, run[position].1, false);
+            position += token.text.len();
+        }
         Ok(cursor + 1)
     }
-
-    /// Munches a punctuation run into operator tiles, longest match first
-    /// (grammar §4.6): a two-character operator where its characters lead,
-    /// else the one-character operator, else a dialect error at the
-    /// offending character.
-    fn munch_operators(&mut self, run: &[(char, Span)]) -> Result<(), MapError> {
-        let mut position = 0;
-        while position < run.len() {
-            let pair = run.get(position + 1).map(|next| (run[position].0, next.0));
-            let (kind, width) = match pair {
-                Some(('.', '.')) => (SyntaxKind::DOTDOT, 2),
-                Some(('*', '*')) => (SyntaxKind::STAR_STAR, 2),
-                Some((':', '-')) => (SyntaxKind::NECK, 2),
-                Some((':', '~')) => (SyntaxKind::WEAK_NECK, 2),
-                Some(('=', '=')) => (SyntaxKind::EQ, 2),
-                Some(('!', '=') | ('<', '>')) => (SyntaxKind::NEQ, 2),
-                Some(('<', '=')) => (SyntaxKind::LE, 2),
-                Some(('>', '=')) => (SyntaxKind::GE, 2),
-                _ => (single_operator(run[position])?, 1),
-            };
-            let text: String = run[position..position + width]
-                .iter()
-                .map(|(c, _)| c)
-                .collect();
-            self.emit(kind, &text, run[position].1, false);
-            position += width;
-        }
-        Ok(())
-    }
-}
-
-/// The one-character operator a punctuation character names (grammar §4.6),
-/// or a dialect error for a character the roster has only in a
-/// multi-character operator (`!`) or not at all.
-fn single_operator((character, span): (char, Span)) -> Result<SyntaxKind, MapError> {
-    Ok(match character {
-        '.' => SyntaxKind::DOT,
-        ',' => SyntaxKind::COMMA,
-        ';' => SyntaxKind::SEMICOLON,
-        ':' => SyntaxKind::COLON,
-        '|' => SyntaxKind::PIPE,
-        '+' => SyntaxKind::PLUS,
-        '-' => SyntaxKind::MINUS,
-        '*' => SyntaxKind::STAR,
-        '/' => SyntaxKind::SLASH,
-        '\\' => SyntaxKind::BACKSLASH,
-        '^' => SyntaxKind::CARET,
-        '&' => SyntaxKind::AMPERSAND,
-        '~' => SyntaxKind::TILDE,
-        '?' => SyntaxKind::QUESTION,
-        '@' => SyntaxKind::AT,
-        '=' => SyntaxKind::EQ,
-        '<' => SyntaxKind::LT,
-        '>' => SyntaxKind::GT,
-        other => {
-            return Err(MapError {
-                span,
-                message: format!("`{other}` is not an operator in the macro dialect"),
-            });
-        }
-    })
 }
 
 /// The theory-mode token beginning at char boundary `offset` of `text` when
@@ -706,37 +671,6 @@ fn integer_value(spelling: &str) -> Option<String> {
     u128::from_str_radix(digits, radix)
         .ok()
         .map(|value| value.to_string())
-}
-
-/// The keyword kind a `#`-word names (grammar §4.5), the leading `#`
-/// stripped; `None` for a word that is no keyword. Mirrors the file
-/// lexer's table, `#end` excepted — it is the script terminator alone, not
-/// a keyword a `#`-word forms (grammar §4.8).
-fn keyword_kind(word: &str) -> Option<SyntaxKind> {
-    Some(match word {
-        "const" => SyntaxKind::KW_CONST,
-        "count" => SyntaxKind::KW_COUNT,
-        "defined" => SyntaxKind::KW_DEFINED,
-        "edge" => SyntaxKind::KW_EDGE,
-        "external" => SyntaxKind::KW_EXTERNAL,
-        "false" => SyntaxKind::KW_FALSE,
-        "heuristic" => SyntaxKind::KW_HEURISTIC,
-        "include" => SyntaxKind::KW_INCLUDE,
-        "inf" | "infimum" => SyntaxKind::KW_INF,
-        "max" => SyntaxKind::KW_MAX,
-        "maximize" | "maximise" => SyntaxKind::KW_MAXIMIZE,
-        "min" => SyntaxKind::KW_MIN,
-        "minimize" | "minimise" => SyntaxKind::KW_MINIMIZE,
-        "program" => SyntaxKind::KW_PROGRAM,
-        "project" => SyntaxKind::KW_PROJECT,
-        "script" => SyntaxKind::KW_SCRIPT,
-        "show" => SyntaxKind::KW_SHOW,
-        "sum" => SyntaxKind::KW_SUM,
-        "sup" | "supremum" => SyntaxKind::KW_SUP,
-        "theory" => SyntaxKind::KW_THEORY,
-        "true" => SyntaxKind::KW_TRUE,
-        _ => return None,
-    })
 }
 
 /// Whether `left` ends exactly where `right` begins — the span adjacency

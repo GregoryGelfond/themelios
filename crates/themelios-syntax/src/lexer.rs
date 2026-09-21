@@ -216,14 +216,20 @@ const KEYWORDS: [(&str, SyntaxKind); 25] = [
     ("#true", SyntaxKind::KW_TRUE),
 ];
 
-/// The two `#`-terms theory mode admits (grammar §4.7): the infimum and
-/// supremum, both spellings each.
-const THEORY_KEYWORDS: [(&str, SyntaxKind); 4] = [
-    ("#inf", SyntaxKind::KW_INF),
-    ("#infimum", SyntaxKind::KW_INF),
-    ("#sup", SyntaxKind::KW_SUP),
-    ("#supremum", SyntaxKind::KW_SUP),
-];
+/// Grammar §4.5's `#`-keyword roster lookup: the kind the keyword
+/// `spelling` names — its leading `#` included, as `KEYWORDS` holds it
+/// (`"#const"`, `"#count"`, …) — or `None` for a `#`-word that is no
+/// keyword. The one home of the roster: `hash_word` and
+/// `fusion::keyword` (docs/design/syntax.md §10.4) both classify through
+/// it. `#sum+` is no entry — a munch `hash_word` forms beside the roster,
+/// `+` being no name character — and `#end` is no keyword but the script
+/// terminator (grammar §4.8).
+pub(crate) fn keyword_kind(spelling: &str) -> Option<SyntaxKind> {
+    KEYWORDS
+        .iter()
+        .find(|(entry, _)| *entry == spelling)
+        .map(|(_, kind)| *kind)
+}
 
 fn is_name_char(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
@@ -235,15 +241,19 @@ fn hash_word(rest: &str, mode: LexMode) -> (SyntaxKind, usize) {
     let bytes = rest.as_bytes();
     let word_len = 1 + run(&bytes[1..], is_name_char);
     let word = &rest[..word_len];
-    let table: &[(&str, SyntaxKind)] = match mode {
-        LexMode::Theory => &THEORY_KEYWORDS,
-        LexMode::Normal | LexMode::ScriptBody => &KEYWORDS,
-    };
     if mode == LexMode::Normal && word == "#sum" && bytes.get(word_len) == Some(&b'+') {
         return (SyntaxKind::KW_SUM_PLUS, word_len + 1);
     }
-    match table.iter().find(|(spelling, _)| *spelling == word) {
-        Some((_, kind)) => (*kind, word_len),
+    // Theory mode admits only the infimum and supremum of the one roster
+    // (grammar §4.7) — its policy over `keyword_kind`, filtered to those two
+    // kinds, not a second table (docs/design/syntax.md §10.4).
+    let kind = match mode {
+        LexMode::Theory => keyword_kind(word)
+            .filter(|kind| matches!(kind, SyntaxKind::KW_INF | SyntaxKind::KW_SUP)),
+        LexMode::Normal | LexMode::ScriptBody => keyword_kind(word),
+    };
+    match kind {
+        Some(kind) => (kind, word_len),
         None => (SyntaxKind::ERROR, word_len),
     }
 }
@@ -351,8 +361,10 @@ fn name(rest: &str) -> Option<(SyntaxKind, usize)> {
     Some((kind, len))
 }
 
-/// Grammar §4.6's punctuation and operators under maximal munch.
-fn punctuation_normal(bytes: &[u8]) -> Option<(SyntaxKind, usize)> {
+/// Grammar §4.6's punctuation and operators under maximal munch. The one
+/// home of the formation: the file lexer's normal-mode punctuation and
+/// `fusion::punctuation` (docs/design/syntax.md §10.5) both form through it.
+pub(crate) fn punctuation_normal(bytes: &[u8]) -> Option<(SyntaxKind, usize)> {
     let second = bytes.get(1).copied();
     Some(match bytes[0] {
         b'.' if second == Some(b'.') => (SyntaxKind::DOTDOT, 2),
