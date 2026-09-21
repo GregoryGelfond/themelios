@@ -2,12 +2,13 @@
 //! §10; docs/specification.md §12.5, §12.3): the direct compile-time
 //! dependencies are exactly the two tiers this crate reads and expands to and
 //! the proc-macro2/quote pair its codegen is written with, `syn` is declined,
-//! and the crate carries no build script of its own. What is in the graph is a
-//! question about the resolved graph, so it is read from `cargo metadata` —
-//! Cargo's own account of it — never from a manifest's text (the reading the
-//! tiers beneath established).
+//! the crate carries no build script of its own, and the runtime closure the
+//! expansion names — themelios-program and what it pulls — is FFI-free (§10).
+//! What is in the graph is a question about the resolved graph, so it is read
+//! from `cargo metadata` — Cargo's own account of it — never from a manifest's
+//! text (the reading the tiers beneath established).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -72,6 +73,83 @@ fn direct_normal_dependencies(metadata: &Value) -> BTreeSet<String> {
         .collect()
 }
 
+/// One resolved package, as the runtime-closure FFI check reads it: its name and
+/// whether it links a native library (`links`).
+struct Package {
+    name: String,
+    links: bool,
+}
+
+/// Cargo's resolved packages keyed by id. The FFI check reads each package's name
+/// and `links` key off this map (docs/specification.md §12.3).
+fn resolved_packages(metadata: &Value) -> BTreeMap<String, Package> {
+    metadata["packages"]
+        .as_array()
+        .expect("packages is an array")
+        .iter()
+        .map(|package| {
+            let id = package["id"].as_str().expect("package id").to_owned();
+            (
+                id,
+                Package {
+                    name: package["name"].as_str().expect("package name").to_owned(),
+                    links: !package["links"].is_null(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// The ids reachable from `themelios-program` over normal dependency edges — the
+/// runtime closure a `themelios-macros` consumer links (docs/design/macros.md §10;
+/// docs/specification.md §12.5). The expansion names only the program tier at
+/// runtime (§10: the codegen emits `::themelios_program::` paths alone, and the
+/// equality and law witnesses compile against it alone), so — though Cargo classes
+/// this crate's own edges to the syntax tier and the proc-macro2/quote toolchain as
+/// normal host edges, none distinguishable in the resolved graph as
+/// compile-time-only — the runtime closure is exactly `themelios-program` and what
+/// it pulls. This roots there, the crate the expansion names, and walks its normal
+/// edges as the sibling tiers' closure checks do (themelios-program's own trust.rs).
+fn program_runtime_closure(
+    metadata: &Value,
+    packages: &BTreeMap<String, Package>,
+) -> BTreeSet<String> {
+    let nodes = metadata["resolve"]["nodes"]
+        .as_array()
+        .expect("resolve nodes");
+    let node_of = |id: &str| {
+        nodes
+            .iter()
+            .find(|node| node["id"].as_str() == Some(id))
+            .unwrap_or_else(|| panic!("resolve node for {id}"))
+    };
+    let root = packages
+        .iter()
+        .find(|(_, package)| package.name == "themelios-program")
+        .map(|(id, _)| id.clone())
+        .expect("the program tier is in the graph");
+    let mut closure = BTreeSet::new();
+    closure.insert(root.clone());
+    let mut frontier = vec![root];
+    while let Some(id) = frontier.pop() {
+        for dep in node_of(&id)["deps"].as_array().expect("deps is an array") {
+            let normal = dep["dep_kinds"]
+                .as_array()
+                .expect("dep_kinds is an array")
+                .iter()
+                .any(|kind| kind["kind"].is_null());
+            if !normal {
+                continue;
+            }
+            let pkg = dep["pkg"].as_str().expect("dep pkg id").to_owned();
+            if closure.insert(pkg.clone()) {
+                frontier.push(pkg);
+            }
+        }
+    }
+    closure
+}
+
 #[test]
 fn the_direct_dependencies_are_exactly_the_two_tiers_and_the_token_pair() {
     let metadata = metadata();
@@ -94,6 +172,30 @@ fn syn_is_not_a_direct_dependency() {
         !direct_normal_dependencies(&metadata).contains("syn"),
         "docs/design/macros.md §10: syn is declined — a bespoke token grammar, not Rust's"
     );
+}
+
+#[test]
+fn the_runtime_closure_is_ffi_free() {
+    // docs/design/macros.md §10: the shipped runtime closure is themelios-program
+    // alone, which is FFI-free. This makes that "FFI-free" an executable guard over
+    // Cargo's resolved graph rather than prose — no crate the expansion names at
+    // runtime links native code or is a `-sys` crate (docs/specification.md §12.3).
+    let metadata = metadata();
+    let packages = resolved_packages(&metadata);
+    let closure = program_runtime_closure(&metadata, &packages);
+    for id in &closure {
+        let package = &packages[id];
+        assert!(
+            !package.links,
+            "docs/specification.md §12.3: {} links native code",
+            package.name
+        );
+        assert!(
+            !package.name.ends_with("-sys"),
+            "docs/specification.md §12.3: {} is a sys crate",
+            package.name
+        );
+    }
 }
 
 #[test]
