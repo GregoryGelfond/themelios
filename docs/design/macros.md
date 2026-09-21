@@ -331,7 +331,11 @@ and the target token (`SPLICE`). The engine implements the mapping and answers
   **reserved seam** a later increment opens (§7, §12).
 - `#` forms a keyword exactly when *span-adjacent* to the keyword's word (and,
   for `#sum+`, the `+` beyond it), read from the `proc_macro` spans; a `#`
-  separated from its word is a dialect error. This detached-`#` refusal is a
+  separated from its word is a dialect error. The word it abuts is classified
+  through `themelios_syntax::fusion::keyword` (syntax §10.4), the single home of
+  grammar §4.5's `#`-keyword roster the file lexer classifies through as well,
+  so no keyword table lives in this crate; `#sum+` is formed beside the roster,
+  as the file lexer forms it. This detached-`#` refusal is a
   **fallback-only guarantee**: the byte ranges the adjacency reads are exact
   only under proc-macro2's fallback backend (this crate's tests), and under real
   macro expansion a detached `# kw` is read benignly as `#kw` — the value the
@@ -340,9 +344,15 @@ and the target token (`SPLICE`). The engine implements the mapping and answers
   *adjacency-independently* (`engine::script_keyword_span`), so `program!`
   catches it whether or not its `#` abuts the word.
 - Rust punctuation maps one-to-one onto the operator roster; a multi-character
-  operator exists where its characters are adjacent and joined, and theory-
-  operator runs form the same way inside theory expressions — the source forms
-  them under the parser's `Theory` mode by calling
+  operator exists where its characters are adjacent and joined, and the source
+  forms an operator run by reassembling its `Spacing::Joint`-glued punctuation
+  into text and munching that through `themelios_syntax::fusion::punctuation`
+  (syntax §10.5), the single home of grammar §4.6's punctuation-and-operator
+  formation the file lexer forms through as well: it reaches only the operator
+  part of that roster, a bracket arriving as a Rust group it has already tiled,
+  and a character the formation does not take (a bare `!`) is its own dialect
+  refusal. Theory-operator runs form the same way inside theory expressions —
+  the source forms them under the parser's `Theory` mode by calling
   `themelios_syntax::fusion::theory_operator` (syntax §10.3), the single home of
   grammar §4.7's operator formation the file lexer forms through as well.
 - Comments do not exist in the dialect (Rust has removed them).

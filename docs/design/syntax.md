@@ -2081,10 +2081,11 @@ lexer, so the exact answer is one relex away.
 
 Beside the oracle, this module holds the lexical facts the oracle rests on
 and a second token source shares with the file lexer: the mode an adjacency
-stands in (`lex_mode_of`, §10.2), and the theory-operator-run formation
-(`theory_operator`, §10.3). The one concern is agreement with the file
-lexer — each a fact computed from the lexer this tier owns, not a second
-table kept in step.
+stands in (`lex_mode_of`, §10.2), the theory-operator-run formation
+(`theory_operator`, §10.3), the `#`-keyword roster (`keyword`, §10.4), and
+the punctuation-and-operator formation (`punctuation`, §10.5). The one
+concern is agreement with the file lexer — each a fact computed from the
+lexer this tier owns, not a second table kept in step.
 
 ```rust
 /// What must stand between two tokens for each to lex as itself.
@@ -2137,6 +2138,30 @@ pub fn lex_mode_of(token: &SyntaxToken) -> LexMode;
 /// its own tile. Total; O(the run). The `Token`'s text is the run, so its
 /// length is the extent (§4.2).
 pub fn theory_operator(text: &str) -> Option<Token<'_>>;
+
+/// Grammar §4.5's `#`-keyword roster, the one lexical fact a `#`-word
+/// source shares with the file lexer rather than restates: the kind the
+/// keyword `spelling` names — its leading `#` included, as the roster
+/// holds it (`"#const"`, `"#count"`, …) — or `None` for a `#`-word that is
+/// no keyword. Mode-free: it answers the whole roster, and a source in a
+/// restricted mode (theory mode, where only `#inf`/`#infimum`/`#sup`/
+/// `#supremum` are keywords) filters that answer, its policy over the one
+/// roster. `#sum+` is no entry — a munch each source forms beside the
+/// roster, `+` being no name character — and `#end` is no keyword but the
+/// script terminator (grammar §4.8; §4.4). Total; O(1) over the bounded
+/// roster.
+pub fn keyword(spelling: &str) -> Option<SyntaxKind>;
+
+/// Grammar §4.6's punctuation-and-operator formation, the one lexical fact
+/// a punctuation source shares with the file lexer rather than restates:
+/// the §4.6 token at the front of `text` — a two-character operator where
+/// its characters lead, else the one-character punctuation — as one
+/// `Token`, or `None` when `text` does not begin on §4.6 punctuation. It
+/// forms the whole roster, brackets among the punctuation; a bare `!` is
+/// `None`, `NEQ`'s lead and nothing alone. Total; O(1) over the fixed
+/// roster. The `Token`'s text is the munch, so its length is the extent
+/// (§4.2).
+pub fn punctuation(text: &str) -> Option<Token<'_>>;
 ```
 
 ### 10.1 Why relexing is the whole oracle
@@ -2266,6 +2291,57 @@ forward and maps the returned extent back through its own span map. The
 macro tier is its first consumer (grammar §9): its token source,
 forming ASP from Rust punctuation, reaches here for the run formation as it
 already reaches here for the fusion oracle.
+
+### 10.4 The keyword roster, shared
+
+Grammar §4.5's `#`-keyword roster is another lexical fact a second source
+shares with the file lexer, and §10.3's principle settles it the same way: a
+fact a source cannot restate without risking divergence is owned once and
+exposed, not copied under a corpus check. The risk a copy runs here is
+starker than the munch's. A roster is the plainest lexical fact to let
+drift — no formation makes a mismatch show, so a keyword added, renamed, or
+dropped on one side and not the other parts the two sources silently,
+nothing catching it. So `keyword` is the file lexer's own roster (§4.4), and
+a consuming source classifies a `#`-word by calling it — the same kind by
+construction, no second table to keep in step.
+
+It answers a spelling with its leading `#`, as the roster holds it (`#const`,
+`#count`), over the whole roster and mode-free. A source that admits only
+part of it — the file lexer in theory mode, where only `#inf`/`#infimum`/
+`#sup`/`#supremum` are keywords — filters the one answer to its mode; that
+restriction is the lexer's policy over the one roster, not a second roster to
+own. Two spellings of one kind (`#inf`/`#infimum`, `#maximize`/`#maximise`)
+are two entries, so a consumer needs no collapse of its own; `#sum+` is no
+entry, a munch each source forms beside the roster (`+` is no name
+character); and `#end` is no keyword but the script terminator (grammar
+§4.8). The macro tier is the roster's first consumer (grammar §9): its token
+source, forming a `#`-word from a Rust `#` and the identifier it abuts,
+classifies it here rather than in a table of its own.
+
+### 10.5 The punctuation formation, shared
+
+Grammar §4.6's punctuation-and-operator formation is the last of these
+shared facts, and its divergence risk is the theory munch's exactly (§10.3):
+a maximal-munch formation — a two-character operator where its characters
+lead, else the one-character punctuation — a source cannot restate in its own
+terms without risking a token the file lexer forms differently, and a
+fixed-corpus check is a weaker thing to hold than one implementation. So the
+tier owns the formation once: `punctuation` forms the §4.6 token at the front
+of a text, the whole roster with one home, and a consuming source munches an
+operator run by calling it — identical by construction, no second copy to
+drift.
+
+It forms the whole §4.6 roster, brackets among the punctuation, but its first
+consumer reaches only its operator part. The macro tier (grammar §9) receives
+a bracket as a Rust group, already tiled, and reaches here only for an
+operator run: it reassembles the run — the punctuation its Rust tokens glue
+with `Spacing::Joint` — into text and munches it by calling `punctuation`
+until the run is spent, each character the formation does not take its own
+dialect refusal (grammar §9). A bare `!` is one such refusal: `punctuation`
+answers `None` for it — `NEQ`'s lead and nothing alone — as the file lexer
+too forms no token from a lone `!`. Its result is a `Token` whose text is the
+munch, so its length is the extent (§4.2); it is total and O(1) over the
+fixed roster.
 
 ## 11. Token-stream equivalence
 
@@ -2522,14 +2598,17 @@ table `closer_of` (§4.1); the coordinate conversions; every
 refusal); `NumberLit::radix` and `digits`; `DocLine::content`,
 `Comment::content`; `attach::comments`, `attachments`, and the
 whitespace facts; `separator_between`, `separator`, `lex_mode_of`,
-`theory_operator`; `non_whitespace_tokens`, `token_stream`, `comment_sequence`,
-`canonical_spelling`; `SyntaxError`'s accessors and lowering.
+`theory_operator`, `keyword`, `punctuation`; `non_whitespace_tokens`,
+`token_stream`, `comment_sequence`, `canonical_spelling`; `SyntaxError`'s
+accessors and lowering.
 
 Costs, consolidated: lexing and parsing are O(text) in time and memory
 (§4.6, §6.8); tree navigation is O(1) per step and O(children) per
 accessor; attachment is O(neighborhood) per query and O(subtree) in
 bulk (§9.3); the oracle is O(the two tokens) (§10.2); the theory-operator
-formation is O(the run it forms) (§10.3); the certificate is
+formation is O(the run it forms) (§10.3); the keyword classification is O(1)
+over the bounded roster and the punctuation formation O(1) over the fixed one
+(§10.4, §10.5); the certificate is
 O(both sequences) (§11.3); every walk is iterative or grammar-bounded, and
 tree depth is bounded by `MAX_TREE_DEPTH` (§6.6). The scaling benches
 (§16) hold the shapes.
@@ -3088,3 +3167,23 @@ document and the code together; the §6.1 and §7.1 amendments below likewise.
   exactly as before — so a consuming source (the macro tier its first)
   forms runs by construction identical to the lexer's, with no second copy
   to drift.
+
+- **§4.5, §4.6, §10.4, §10.5, §13** (2026-09-21): two more lexical facts
+  given one home and exposed, on §10.3's precedent. A second token source
+  matched the file lexer's grammar-§4.5 `#`-keyword roster with a hand-copied
+  table and its grammar-§4.6 punctuation-and-operator munch with a
+  hand-copied munch, each a parallel implementation held in step by nothing
+  but care; the first consumer surfaced the duplication — the roster a
+  keyword's-worth of drift away and the plainest lexical fact to let drift,
+  since no formation makes a mismatch show, and the operator munch the theory
+  munch's own divergence risk (§10.3) a second time. Both facts are now the
+  tier's to own once: §10.4 adds `fusion::keyword`, the file lexer's own
+  roster (§4.4) exposed as a `SyntaxKind`-returning lookup a consuming source
+  calls instead of copying, and §10.5 adds `fusion::punctuation`, the file
+  lexer's own §4.6 formation (§4.4) exposed as a `Token`-returning primitive
+  a source munches its operator runs through; §13 lists both total, each O(1)
+  over its roster. The file lexer forms and classifies exactly as before —
+  its roster and the primitive one table, its munch and the primitive one
+  function — so a consuming source (the macro tier its first) is identical to
+  it by construction, with no second copy to drift. Additive to the tier's
+  public surface: two doors added beside `theory_operator`, nothing removed.
