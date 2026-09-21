@@ -12,11 +12,12 @@
 //! among them, the load-bearing proof that each `codegen_term` arm spells the
 //! *right* constructor and not merely a frozen emission (§11, §16).
 
-use themelios_macros::{atom, constraint, external, fact, maximize, minimize, rule, show};
+use themelios_macros::{atom, constraint, external, fact, maximize, minimize, program, rule, show};
 use themelios_program::construct;
 use themelios_program::program::{
-    Atom, Body, BodyElement, Condition, External, IntoHead, Literal, OptimizeElement, Rule, Show,
-    TheoryAtom, TheoryElement, TheoryGuard, TheoryOperator, TheoryTerm, weight,
+    Atom, Body, BodyElement, Condition, External, IntoHead, Literal, OptimizeElement, Program,
+    Rule, Show, Statement, TheoryAtom, TheoryElement, TheoryGuard, TheoryOperator, TheoryTerm,
+    weight,
 };
 use themelios_program::symbol::{Name, Sign, Signature, Symbol, VarName};
 use themelios_program::term::{Term, Variable};
@@ -168,6 +169,38 @@ fn external_macro_over_a_body_equals_the_constructor() {
         None,
     );
     assert_eq!(by_macro, by_hand);
+}
+
+// ---- the program block macro (§8): a whole-program block assembled through `Program::of`,
+// each statement built by its family constructor and converted to `Statement` ----
+
+// `#[rustfmt::skip]`: the block writes its statements ASP-side — the neck `:-` (two joint
+// tokens) and the statement-terminating `.`s — which rustfmt would read as Rust and reflow
+// (`p(1). q` into a method chain). The skip keeps the fixture's statements intact.
+#[rustfmt::skip]
+#[test]
+fn program_macro_equals_program_of() {
+    // Each statement is built by its family constructor and converted to `Statement` — the
+    // homogeneous array `Program::of` admits — the program equal to `Program::of` over the
+    // same hand-spelled statements, structurally and to provenance (§16).
+    let by_macro: Program = program!{ p(1). q(X) :- p(X). };
+    let by_hand = Program::of([
+        Statement::from(Rule::fact(Atom::new(name("p"), [Term::from(1i32)]))),
+        Statement::from(
+            Atom::new(name("q"), [Term::variable(var("X"))])
+                .into_head()
+                .when(Atom::new(name("p"), [Term::variable(var("X"))])),
+        ),
+    ]);
+    assert_eq!(by_macro, by_hand);
+}
+
+#[test]
+fn empty_program_macro_equals_program_empty() {
+    // An empty block is the named empty program, locking the empty-array inference the codegen
+    // sidesteps with `Program::empty()` (program §7.1).
+    let by_macro: Program = program! {};
+    assert_eq!(by_macro, Program::empty());
 }
 
 // ---- the term-shape witnesses (§6): every `codegen_term` arm spells the right
