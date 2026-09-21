@@ -2266,4 +2266,173 @@ mod tests {
             );
         }
     }
+
+    // ---- expansion golden snapshots (docs/design/macros.md §11): representative
+    // expansions frozen as reviewed change-detectors, each committed under
+    // tests/snapshots/*.expanded. proc-macro2's `.to_string()` spacing is
+    // deterministic, so a golden is exactly the emitted stream (`::themelios_program::`
+    // renders `:: themelios_program ::`); the only cross-file variation is the file's
+    // trailing newline, which [`normalized`] trims. A golden freezes the emitted
+    // *spelling* — every path absolute at `::themelios_program::` (§10), every fallible
+    // door discharged by its invariant-naming `.expect()` (the design's law-2 spelling
+    // and totality made visible, §5). The *value* proof beside them — that the emission
+    // builds the right value — is the per-macro equality witness (tests/equality.rs;
+    // program §16). ----
+
+    /// The stable normalization a golden is compared under: proc-macro2's
+    /// `.to_string()` spacing is deterministic, so trimming the golden file's
+    /// trailing newline is the whole of it — the emitted stream carries no
+    /// surrounding whitespace of its own.
+    fn normalized(expansion: &str) -> &str {
+        expansion.trim()
+    }
+
+    #[test]
+    fn the_ground_fact_expansion_matches_its_golden() {
+        assert_eq!(
+            normalized(&codegen_stmt("p(1, a).")),
+            normalized(include_str!("../tests/snapshots/ground_fact.expanded")),
+        );
+    }
+
+    #[test]
+    fn the_rule_with_body_expansion_matches_its_golden() {
+        assert_eq!(
+            normalized(&codegen_stmt("q(X) :- p(X).")),
+            normalized(include_str!("../tests/snapshots/rule_with_body.expanded")),
+        );
+    }
+
+    #[test]
+    fn the_term_splice_expansion_matches_its_golden() {
+        // The splice crossing frozen in place: `Term::from(ToSymbol::to_symbol(&(x)))`,
+        // the captured Rust operand riding its own spans (docs/design/macros.md §7).
+        assert_eq!(
+            normalized(&codegen_stmt("p($x).")),
+            normalized(include_str!("../tests/snapshots/term_splice.expanded")),
+        );
+    }
+
+    #[test]
+    fn the_theory_atom_expansion_matches_its_golden() {
+        let (atom, src) = theory_atom_of(":- &sum { X + 1 } <= n.");
+        assert_eq!(
+            normalized(&codegen_theory_atom(&atom, &src).to_string()),
+            normalized(include_str!("../tests/snapshots/theory_atom.expanded")),
+        );
+    }
+
+    #[test]
+    fn the_optimize_expansion_matches_its_golden() {
+        assert_eq!(
+            normalized(&codegen_stmt("#minimize { 3@1 }.")),
+            normalized(include_str!("../tests/snapshots/optimize.expanded")),
+        );
+    }
+
+    // ---- the expansion references only the program tier (docs/design/macros.md §10):
+    // the concrete proof, over the emitted tokens, that "a consumer's runtime graph
+    // gains only the program tier" — every program-tier path absolute at
+    // `::themelios_program::`, none at `::themelios_syntax::`. The graph-level trust
+    // check (tests/trust.rs) reads Cargo's resolved edges; this reads what the codegen
+    // actually emits, the half the trust check cannot reach (§10). ----
+
+    /// Assert every program-tier path `expansion` emits is absolute — the
+    /// `themelios_program` crate root immediately preceded by `::` — and that it names
+    /// no syntax-tier path (docs/design/macros.md §10; spec §12.5). `::std::…` is the
+    /// only other root a macro emits. The check re-lexes the expansion and walks the
+    /// token tree, so it reads the `::` before a crate root at the token level, robust
+    /// to proc-macro2's `.to_string()` gluing an opening delimiter to the `::` that
+    /// follows it (`fact (:: themelios_program`).
+    fn references_only_program(expansion: &str) {
+        let stream = TokenStream::from_str(expansion).expect("the expansion re-lexes");
+        let mut names_program = false;
+        each_stream(&stream, &mut |trees| {
+            for (index, tree) in trees.iter().enumerate() {
+                let proc_macro2::TokenTree::Ident(ident) = tree else {
+                    continue;
+                };
+                assert!(
+                    ident != "themelios_syntax",
+                    "the expansion names the syntax tier: {expansion}"
+                );
+                if ident == "themelios_program" {
+                    names_program = true;
+                    let colon = |tree: &proc_macro2::TokenTree| matches!(tree, proc_macro2::TokenTree::Punct(punct) if punct.as_char() == ':');
+                    assert!(
+                        index >= 2 && colon(&trees[index - 1]) && colon(&trees[index - 2]),
+                        "a `themelios_program` path is not absolute: {expansion}"
+                    );
+                }
+            }
+        });
+        assert!(
+            names_program,
+            "the expansion names no program-tier path: {expansion}"
+        );
+    }
+
+    /// Visit each token stream in the tree — the top stream and every group's,
+    /// each as a flat slice — so a walker can read a token's neighbours within its
+    /// own stream (a path never crosses a group boundary).
+    fn each_stream(stream: &TokenStream, visit: &mut impl FnMut(&[proc_macro2::TokenTree])) {
+        let trees: Vec<proc_macro2::TokenTree> = stream.clone().into_iter().collect();
+        visit(&trees);
+        for tree in &trees {
+            if let proc_macro2::TokenTree::Group(group) = tree {
+                each_stream(&group.stream(), visit);
+            }
+        }
+    }
+
+    #[test]
+    fn every_committed_expansion_references_only_the_program_tier() {
+        for golden in [
+            include_str!("../tests/snapshots/ground_fact.expanded"),
+            include_str!("../tests/snapshots/rule_with_body.expanded"),
+            include_str!("../tests/snapshots/term_splice.expanded"),
+            include_str!("../tests/snapshots/theory_atom.expanded"),
+            include_str!("../tests/snapshots/optimize.expanded"),
+        ] {
+            references_only_program(golden);
+        }
+    }
+
+    #[test]
+    fn every_codegen_arm_references_only_the_program_tier() {
+        // A broad live sweep past the five goldens — every statement family, the
+        // aggregate and choice heads, the comparison chain, the theory algebra, the
+        // splice crossings, the directives — so the runtime-closure claim rests on the
+        // whole emitted surface, not only the representative snapshots (§10).
+        for input in [
+            "p(1, a).",
+            "q(X) :- p(X).",
+            ":- p(X).",
+            "-p(X).",
+            "p(a; b).",
+            ":- not p.",
+            ":- 1 < X < 5 .",
+            ":- p : q.",
+            "a | b.",
+            "1 { a : q(X) }.",
+            "#count { X : p(X) }.",
+            ":- 1 <= #count { X : p(X) }.",
+            ":- not { a; b }.",
+            "&sum { X + 1 } <= n.",
+            ":- not &sum { X } <= 3 .",
+            "#show p/1 .",
+            "#show a : p(X).",
+            "#external p(X). [a]",
+            "#minimize { 3@1 }.",
+            "#maximize { 5 }.",
+        ] {
+            references_only_program(&codegen_stmt(input));
+        }
+        // The term-level splice crossings (term and theory-term position) and the
+        // whole-program and head-atom doors, each its own codegen entry.
+        references_only_program(&codegen("$x"));
+        references_only_program(&theory_term_codegen("&sum { $x }."));
+        references_only_program(&codegen_program_str("p(1). q(X) :- p(X)."));
+        references_only_program(&codegen_head_atom_str("p(1, a)."));
+    }
 }

@@ -1,0 +1,1 @@
+:: themelios_program :: construct :: minimize ([:: themelios_program :: program :: OptimizeElement :: new (:: themelios_program :: program :: weight (:: themelios_program :: term :: Term :: from (3i32)) . at_priority (:: themelios_program :: term :: Term :: from (1i32)) , [] , :: themelios_program :: program :: Condition :: empty () ,)])

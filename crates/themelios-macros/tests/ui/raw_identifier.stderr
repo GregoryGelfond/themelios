@@ -1,0 +1,5 @@
+error: a raw identifier is not part of the macro dialect
+  --> tests/ui/raw_identifier.rs:11:39
+   |
+11 |     let _ = themelios_macros::fact!(p(r#not));
+   |                                       ^^^^^
