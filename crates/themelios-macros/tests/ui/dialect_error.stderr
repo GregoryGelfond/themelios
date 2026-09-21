@@ -1,0 +1,5 @@
+error: only an unsuffixed integer literal is mapped here; this is a float, a suffixed numeral, or out of range
+ --> tests/ui/dialect_error.rs:8:39
+  |
+8 |     let _ = themelios_macros::fact!(p(1.5));
+  |                                       ^^^

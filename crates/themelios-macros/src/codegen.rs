@@ -47,14 +47,8 @@
 //! input that compiles. A subterm the value cannot represent (a numeral past
 //! the engine's width, a token missing under recovery) becomes the raise's
 //! recovery [`placeholder`] — the anonymous variable — never a panic; in the
-//! wired pipeline (a later increment) that case always coincides with a
-//! compile-time lowering diagnostic (§5.3), so the placeholder is never the
-//! value a compiling program builds.
-// The codegen's surface is reached by the macro entry points a later increment
-// wires; until those exist, this module's own tests are its only callers, so
-// the not-yet-wired surface would read as dead. The allow is removed when the
-// entry points arrive, as on the sibling modules.
-#![allow(dead_code)]
+//! wired pipeline that case always coincides with a compile-time lowering diagnostic
+//! (§5.3), so the placeholder is never the value a compiling program builds.
 
 use proc_macro2::TokenStream;
 use quote::{quote, quote_spanned};
@@ -456,7 +450,7 @@ fn theory_opterms(
 }
 
 /// A theory opterm to the constructor calls that build its `TheoryTerm` (the raise's
-/// `raise_theory_opterm`, program §8): the flat operator sequence is `operators[i]`,
+/// `enter_theory_opterm`, program §8): the flat operator sequence is `operators[i]`,
 /// the run before `operands[i]`. An opterm of one operand under no operators is that
 /// operand; several operands, or any operator, is a `TheoryTerm::Operation` over the
 /// operands, each recursed. An opterm recovered with no operand is the
@@ -627,24 +621,21 @@ pub(crate) fn codegen_theory_atom(atom: &ast::TheoryAtom, src: &MacroSource) -> 
 
 /// A theory element to `TheoryElement::new` (the raise's `raise_theory_element`,
 /// program §8): its opterms as theory terms, under the optional condition the `:`
-/// introduces. The condition is a `Condition` of ordinary literals; its codegen is
-/// the ordinary body/condition codegen the statement macros bring (they reuse this
-/// atom door for a theory-atom head or body element), so a conditioned element emits
-/// a located compile error here until that codegen lands and wires it — total, and
-/// never a silently dropped condition. An unconditioned element (no `:`) is the
-/// common case and needs no such codegen.
+/// introduces. The condition is a `Condition` of ordinary literals, present and
+/// possibly empty when the `:` is, absent otherwise — the raise's reading — and it
+/// codegens through the ordinary [`codegen_condition`], the same door a rule body's
+/// condition takes; an unconditioned element (no `:`) carries `None`.
 fn codegen_theory_element(element: &ast::TheoryElement, src: &MacroSource) -> TokenStream {
-    if element.colon_token().is_some() {
-        return located_compile_error(
-            src,
-            element.syntax().text_range(),
-            "a theory element's condition is not yet lowered here",
-        );
-    }
     let terms = theory_opterms(element.opterms(), src);
+    let condition = if element.colon_token().is_some() {
+        let condition = codegen_condition(element.condition().as_ref(), src);
+        quote!(::std::option::Option::Some(#condition))
+    } else {
+        quote!(::std::option::Option::None)
+    };
     quote!(::themelios_program::program::TheoryElement::new(
         [#(#terms),*],
-        ::std::option::Option::None,
+        #condition,
     ))
 }
 
@@ -684,12 +675,451 @@ fn theory_placeholder() -> TokenStream {
 /// (docs/design/macros.md §5.3, §6): the permitted direction across the seam — a Rust
 /// span carried to an error, never a `proc_macro` span projected into a themelios
 /// `Location`. Keeps a codegen door total where it meets a form no value can yet
-/// stand for (a nameless theory atom, a theory element's not-yet-lowered condition):
-/// the emitted error is discarded in the wired pipeline, where the same form already
-/// raises a compile-time diagnostic.
+/// stand for — a nameless theory atom, a head or body shape a construction macro does
+/// not yet build, a recovered form the value cannot complete: the
+/// emitted error is discarded in the wired pipeline, where the same form already
+/// raises a compile-time diagnostic (or is a construction-site error of the engine's,
+/// §9).
 fn located_compile_error(src: &MacroSource, range: TextRange, message: &str) -> TokenStream {
     let span = src.span_of(range);
     quote_spanned!(span => compile_error!(#message))
+}
+
+// ---- statements: rules, directives, and their heads and bodies (program §4) ----
+
+/// Emit the program-tier §7.1 constructor calls that build the statement `statement`
+/// (docs/design/macros.md §5, step 4; §8) — the codegen half of the seven statement
+/// macros. Each family a construction macro builds codegens to its specific family
+/// constructor, the value the macro returns (§8): a rule (a fact, a rule, or a
+/// constraint), an optimization statement, a `#show`, an `#external`. A statement family
+/// no construction macro builds is a located compile error at the construction site —
+/// a well-formed statement the caller reached for with the wrong macro — never a
+/// fabricated value. The match is exhaustive, so a new statement family is a compile
+/// error here, never a silent drop.
+pub(crate) fn codegen_statement(statement: &ast::Statement, src: &MacroSource) -> TokenStream {
+    match statement {
+        ast::Statement::Rule(rule) => codegen_rule(rule, src),
+        ast::Statement::Optimize(optimize) => codegen_optimize(optimize, src),
+        ast::Statement::Show(show) => codegen_show(show, src),
+        ast::Statement::External(external) => codegen_external(external, src),
+        ast::Statement::WeakConstraint(_)
+        | ast::Statement::Project(_)
+        | ast::Statement::Defined(_)
+        | ast::Statement::Edge(_)
+        | ast::Statement::Heuristic(_)
+        | ast::Statement::Const(_)
+        | ast::Statement::Script(_)
+        | ast::Statement::Include(_)
+        | ast::Statement::ProgramPart(_)
+        | ast::Statement::TheoryDefinition(_)
+        | ast::Statement::Query(_) => located_compile_error(
+            src,
+            statement.syntax().text_range(),
+            "this construction builds a fact, a rule, a constraint, an optimization \
+             statement, a `#show`, or an `#external`, not this statement",
+        ),
+    }
+}
+
+/// A rule (§4.3), mirroring the raise (program §8) but emitting the construction door
+/// each shape names: a head — its absence a constraint (`⊥ ← body`, §4.4) — and a body.
+/// A fact (a head, no body node) is `Rule::fact`, a constraint (no head node)
+/// `Rule::constraint`, and a head over a body `Rule::new` (`Head::when`, §7.1) — the
+/// three shapes the `fact!`, `constraint!`, and `rule!` macros build, told apart by the
+/// head and body the parse carries, so one codegen serves all three.
+fn codegen_rule(rule: &ast::Rule, src: &MacroSource) -> TokenStream {
+    let Some(head) = rule.head() else {
+        // No head node is a constraint: `:- body.` (§4.4).
+        let body = codegen_body(rule.body().as_ref(), src);
+        return quote!(::themelios_program::program::Rule::constraint(#body));
+    };
+    let head = codegen_head(&head, src);
+    match rule.body() {
+        // A head with no body node is a fact: `head.` (§4.3).
+        None => quote!(::themelios_program::program::Rule::fact(#head)),
+        // A head over a body reads as the rule it denotes (§7.1).
+        Some(body) => {
+            let body = codegen_body(Some(&body), src);
+            quote!(::themelios_program::program::Rule::new(#head, #body))
+        }
+    }
+}
+
+/// A rule head (§4.4), emitting an `IntoHead` value the rule constructor coerces
+/// (program §7.1): a literal head — an atom, a comparison, a boolean — through its
+/// [`Literal`](codegen_literal), a theory-atom head through [`codegen_theory_atom`]. A
+/// disjunction, a choice, or a head aggregate is a located compile error here — a head
+/// shape the construction macros do not yet build (§8); total, and never a fabricated
+/// head.
+fn codegen_head(head: &ast::Head, src: &MacroSource) -> TokenStream {
+    match head {
+        ast::Head::Literal(literal) => codegen_literal(literal, src),
+        ast::Head::TheoryAtom(atom) => codegen_theory_atom(atom, src),
+        ast::Head::Disjunction(disjunction) => located_compile_error(
+            src,
+            disjunction.syntax().text_range(),
+            "a disjunctive head is not yet built by a construction macro",
+        ),
+        ast::Head::Aggregate(aggregate) => located_compile_error(
+            src,
+            aggregate.syntax().text_range(),
+            "a choice or aggregate head is not yet built by a construction macro",
+        ),
+    }
+}
+
+/// A rule body (§4.5), emitting a [`Body`]: its elements through the coercion surface, or
+/// the empty body (`Body::empty`) for a fact or a bodiless rule. A body node with no
+/// elements — `h :- .` — is the empty body too, the raise's reading (program §8).
+fn codegen_body(body: Option<&ast::Body>, src: &MacroSource) -> TokenStream {
+    let Some(body) = body else {
+        return quote!(::themelios_program::program::Body::empty());
+    };
+    let elements: Vec<TokenStream> = body
+        .elements()
+        .map(|element| codegen_body_element(&element, src))
+        .collect();
+    if elements.is_empty() {
+        quote!(::themelios_program::program::Body::empty())
+    } else {
+        quote!(::themelios_program::program::Body::new([#(#elements),*]))
+    }
+}
+
+/// A body element (§4.5), emitting a [`BodyElement`] through the coercion surface: a
+/// literal or a conditional literal by its `From`, a theory atom under its own default
+/// negation (`not`/`not not`, program §7.1) or bare. A body aggregate is a located
+/// compile error — a body element the construction macros do not yet build (§8); total.
+fn codegen_body_element(element: &ast::BodyElement, src: &MacroSource) -> TokenStream {
+    match element {
+        ast::BodyElement::Literal(literal) => {
+            let literal = codegen_literal(literal, src);
+            quote!(::themelios_program::program::BodyElement::from(#literal))
+        }
+        ast::BodyElement::ConditionalLiteral(conditional) => {
+            let conditional = codegen_conditional_literal(conditional, src);
+            quote!(::themelios_program::program::BodyElement::from(#conditional))
+        }
+        ast::BodyElement::TheoryAtom(atom) => {
+            let negation = atom.negation();
+            let value = codegen_theory_atom(atom, src);
+            match negation {
+                ast::Negation::None => {
+                    quote!(::themelios_program::program::BodyElement::from(#value))
+                }
+                ast::Negation::Default => quote!(::themelios_program::construct::not(#value)),
+                ast::Negation::DoubleDefault => {
+                    quote!(::themelios_program::construct::not_not(#value))
+                }
+            }
+        }
+        ast::BodyElement::Aggregate(aggregate) => located_compile_error(
+            src,
+            aggregate.syntax().text_range(),
+            "a body aggregate is not yet built by a construction macro",
+        ),
+    }
+}
+
+/// A literal (§4.6), emitting a [`Literal`] value: its default negation over an atom, a
+/// comparison, or a boolean constant (program §8). The atom and comparison, already
+/// canonical from their own doors ([`codegen_atom`], [`codegen_comparison`]; program
+/// §5.1), ride into the literal through the public provenance carrier — the same value
+/// `Literal::from` would build, whose canonicalize is idempotent on a canonical operand.
+/// A literal missing its inner form under recovery is a located compile error,
+/// coincident with the syntax diagnostic that flags it (§5.3).
+fn codegen_literal(literal: &ast::Literal, src: &MacroSource) -> TokenStream {
+    let negation = default_negation(literal.negation());
+    let Some(inner) = literal.inner() else {
+        return located_compile_error(
+            src,
+            literal.syntax().text_range(),
+            "this literal is incomplete",
+        );
+    };
+    let inner = match inner {
+        ast::LiteralInner::True(_) => quote!(::themelios_program::program::LiteralInner::True),
+        ast::LiteralInner::False(_) => quote!(::themelios_program::program::LiteralInner::False),
+        ast::LiteralInner::Atom(atom) => {
+            let atom = codegen_atom(&atom, src);
+            quote!(::themelios_program::program::LiteralInner::Atom(
+                ::themelios_program::provenance::WithProvenance::constructed(#atom)
+            ))
+        }
+        ast::LiteralInner::Comparison(comparison) => {
+            let comparison = codegen_comparison(&comparison, src);
+            quote!(::themelios_program::program::LiteralInner::Comparison(
+                ::themelios_program::provenance::WithProvenance::constructed(#comparison)
+            ))
+        }
+    };
+    quote!(::themelios_program::program::Literal {
+        negation: #negation,
+        inner: #inner,
+    })
+}
+
+/// An atom (§4.6), emitting an [`Atom`] value: a strong sign — a leading `-` the tree
+/// resolved positionally (program §3.3, §8) — a name, and an argument list, one tuple
+/// (`Atom::new`) or an argument-list pool of two or more (`Atom::pooled`, program §7.1).
+/// The name is discharged as elsewhere ([`codegen_name`]); a strong-negated atom wraps in
+/// the `Neg` operator (program §4.6), leaving a canonical atom canonical. A nameless atom
+/// under recovery is a located compile error, coincident with the syntax diagnostic (§8).
+fn codegen_atom(atom: &ast::Atom, src: &MacroSource) -> TokenStream {
+    let Some(identifier) = atom.name() else {
+        return located_compile_error(src, atom.syntax().text_range(), "this atom has no name");
+    };
+    let name = codegen_name(identifier.text());
+    let alternatives: Vec<Vec<TokenStream>> = atom
+        .arguments()
+        .into_iter()
+        .flat_map(|arguments| arguments.alternatives())
+        .map(|tuple| tuple.terms().map(|term| codegen_term(&term, src)).collect())
+        .collect();
+    let unsigned = match alternatives.len() {
+        // One tuple (or none) is a `Single` atom; two or more, an argument-list pool.
+        0 | 1 => {
+            let terms = alternatives.into_iter().next().unwrap_or_default();
+            quote!(::themelios_program::program::Atom::new(#name, [#(#terms),*]))
+        }
+        _ => {
+            let tuples = alternatives
+                .iter()
+                .map(|terms| quote!(::std::vec![#(#terms),*]));
+            quote!(::themelios_program::program::Atom::pooled(#name, [#(#tuples),*])
+                .expect("the grammar parsed a non-empty argument-list pool"))
+        }
+    };
+    if atom.strong_negation_token().is_some() {
+        quote!((-#unsigned))
+    } else {
+        unsigned
+    }
+}
+
+/// A comparison chain (§4.6), emitting a [`Comparison`] through `Comparison::new` and
+/// `Comparison::chain` (program §7.1) — `1 < X < 5` is one literal, not a conjunction. A
+/// step's term absent under recovery is the [`placeholder`]; a chain the parse left with
+/// no step is a located compile error, as the raise's `incomplete` is (program §8),
+/// coincident with the syntax diagnostic.
+fn codegen_comparison(comparison: &ast::Comparison, src: &MacroSource) -> TokenStream {
+    let first = comparison
+        .first()
+        .map_or_else(placeholder, |term| codegen_term(&term, src));
+    let mut steps = comparison.steps().map(|(relation, term)| {
+        (
+            relation_of(relation),
+            term.map_or_else(placeholder, |term| codegen_term(&term, src)),
+        )
+    });
+    let Some((relation, second)) = steps.next() else {
+        return located_compile_error(
+            src,
+            comparison.syntax().text_range(),
+            "this comparison is incomplete",
+        );
+    };
+    let mut chain =
+        quote!(::themelios_program::program::Comparison::new(#first, #relation, #second));
+    for (relation, term) in steps {
+        chain = quote!(#chain.chain(#relation, #term));
+    }
+    chain
+}
+
+/// A conditional literal (§4.6), emitting a [`ConditionalLiteral`]: its literal under its
+/// condition (grammar §5.4). A conditional missing its literal under recovery is a located
+/// compile error, coincident with the syntax diagnostic (§5.3).
+fn codegen_conditional_literal(
+    conditional: &ast::ConditionalLiteral,
+    src: &MacroSource,
+) -> TokenStream {
+    let Some(literal) = conditional.literal() else {
+        return located_compile_error(
+            src,
+            conditional.syntax().text_range(),
+            "this conditional literal is incomplete",
+        );
+    };
+    let literal = codegen_literal(&literal, src);
+    let condition = codegen_condition(conditional.condition().as_ref(), src);
+    quote!(::themelios_program::program::ConditionalLiteral {
+        literal: #literal,
+        condition: #condition,
+    })
+}
+
+/// A condition (§4.6), emitting a [`Condition`]: the literals after a `:`, built through
+/// `Condition::new` (program §7.1), or `Condition::empty` when absent or empty — present
+/// and empty when the colon is (grammar §5.4).
+fn codegen_condition(condition: Option<&ast::Condition>, src: &MacroSource) -> TokenStream {
+    let Some(condition) = condition else {
+        return quote!(::themelios_program::program::Condition::empty());
+    };
+    let literals: Vec<TokenStream> = condition
+        .literals()
+        .map(|literal| codegen_literal(&literal, src))
+        .collect();
+    if literals.is_empty() {
+        quote!(::themelios_program::program::Condition::empty())
+    } else {
+        quote!(::themelios_program::program::Condition::new([#(#literals),*]))
+    }
+}
+
+/// A `#show` directive (§4.8), emitting a [`Show`] in one of its four forms (program §8):
+/// a signature (`#show p/1.`), a term (`#show t.`), a term under a body
+/// (`#show t : body.`, through `Show::term_body`), or all (`#show.`).
+fn codegen_show(show: &ast::ShowStatement, src: &MacroSource) -> TokenStream {
+    if let Some(signature) = show.signature() {
+        let signature = codegen_signature(&signature, src);
+        return quote!(::themelios_program::program::Show::Signature(#signature));
+    }
+    if let Some(term) = show.term() {
+        let term = codegen_term(&term, src);
+        return if show.colon_token().is_some() {
+            let body = codegen_body(show.body().as_ref(), src);
+            quote!(::themelios_program::program::Show::term_body(#term, #body))
+        } else {
+            quote!(::themelios_program::program::Show::Term(#term))
+        };
+    }
+    quote!(::themelios_program::program::Show::All)
+}
+
+/// A signature (grammar §5.9), emitting `Signature::new` (program §7.1): a strong sign, a
+/// name, and an arity. A name or arity the parse left absent, or an arity past the
+/// engine's width, is a located compile error — a signature the value cannot complete,
+/// coincident with the raise's `incomplete` (program §8).
+fn codegen_signature(signature: &ast::Signature, src: &MacroSource) -> TokenStream {
+    let (Some(name), Some(arity)) = (
+        signature.name(),
+        signature.arity().as_ref().and_then(arity_of),
+    ) else {
+        return located_compile_error(
+            src,
+            signature.syntax().text_range(),
+            "this signature is incomplete",
+        );
+    };
+    let name = codegen_name(name.text());
+    let sign = if signature.strong_negation_token().is_some() {
+        quote!(::themelios_program::symbol::Sign::Negative)
+    } else {
+        quote!(::themelios_program::symbol::Sign::Positive)
+    };
+    quote!(::themelios_program::symbol::Signature::new(#sign, #name, #arity))
+}
+
+/// An `#external` directive (§4.8), emitting `External::new` (program §7.1): the atom, its
+/// body, and the optional carried-not-meaningful value (grammar §13). An atom the parse
+/// left absent is a located compile error, coincident with the raise's `incomplete` (§8).
+fn codegen_external(external: &ast::ExternalStatement, src: &MacroSource) -> TokenStream {
+    let Some(atom) = external.atom() else {
+        return located_compile_error(
+            src,
+            external.syntax().text_range(),
+            "this `#external` is incomplete",
+        );
+    };
+    let atom = codegen_atom(&atom, src);
+    let body = codegen_body(external.body().as_ref(), src);
+    let value = external.value().map_or_else(
+        || quote!(::std::option::Option::None),
+        |term| {
+            let term = codegen_term(&term, src);
+            quote!(::std::option::Option::Some(#term))
+        },
+    );
+    quote!(::themelios_program::program::External::new(#atom, #body, #value))
+}
+
+/// An optimization statement (§4.7), emitting `minimize`/`maximize` (program §7.1): the
+/// direction the keyword the parse carries names, over the optimize elements. `#minimize`
+/// and `#maximize` are the two directions; a directive macro's own keyword fixes which.
+fn codegen_optimize(optimize: &ast::OptimizeStatement, src: &MacroSource) -> TokenStream {
+    let elements: Vec<TokenStream> = optimize
+        .elements()
+        .map(|element| codegen_optimize_element(&element, src))
+        .collect();
+    let maximize = optimize
+        .keyword_token()
+        .is_some_and(|token| token.kind() == SyntaxKind::KW_MAXIMIZE);
+    if maximize {
+        quote!(::themelios_program::construct::maximize([#(#elements),*]))
+    } else {
+        quote!(::themelios_program::construct::minimize([#(#elements),*]))
+    }
+}
+
+/// An optimize element (grammar §5.7), emitting `OptimizeElement::new` (program §7.1): a
+/// weight at a priority, a term tuple, and a condition (§4.7).
+fn codegen_optimize_element(element: &ast::OptimizeElement, src: &MacroSource) -> TokenStream {
+    let weight = codegen_weight(element.weight(), element.priority(), src);
+    let terms: Vec<TokenStream> = element
+        .tuple()
+        .map(|term| codegen_term(&term, src))
+        .collect();
+    let condition = codegen_condition(element.condition().as_ref(), src);
+    quote!(::themelios_program::program::OptimizeElement::new(
+        #weight,
+        [#(#terms),*],
+        #condition,
+    ))
+}
+
+/// A `weight@priority` (§4.7), emitting `weight(w)[.at_priority(p)]` (program §7.1). The
+/// weight is mandatory (grammar §5.7); one the recovery left absent is the [`placeholder`]
+/// beside the syntax diagnostic that flags it, as the raise's `step_term` is (§8).
+fn codegen_weight(
+    weight: Option<ast::Term>,
+    priority: Option<ast::Term>,
+    src: &MacroSource,
+) -> TokenStream {
+    let weight = weight.map_or_else(placeholder, |term| codegen_term(&term, src));
+    let base = quote!(::themelios_program::program::weight(#weight));
+    match priority {
+        Some(term) => {
+            let term = codegen_term(&term, src);
+            quote!(#base.at_priority(#term))
+        }
+        None => base,
+    }
+}
+
+/// The program-tier default negation an AST negation prefix names (§4.5).
+fn default_negation(negation: ast::Negation) -> TokenStream {
+    match negation {
+        ast::Negation::None => quote!(::themelios_program::program::DefaultNegation::None),
+        ast::Negation::Default => quote!(::themelios_program::program::DefaultNegation::Not),
+        ast::Negation::DoubleDefault => {
+            quote!(::themelios_program::program::DefaultNegation::NotNot)
+        }
+    }
+}
+
+/// The program-tier relation an AST relation names (§4.6).
+fn relation_of(relation: ast::Relation) -> TokenStream {
+    match relation {
+        ast::Relation::Lt => quote!(::themelios_program::program::Relation::Lt),
+        ast::Relation::Le => quote!(::themelios_program::program::Relation::Le),
+        ast::Relation::Gt => quote!(::themelios_program::program::Relation::Gt),
+        ast::Relation::Ge => quote!(::themelios_program::program::Relation::Ge),
+        ast::Relation::Eq => quote!(::themelios_program::program::Relation::Eq),
+        ast::Relation::Neq => quote!(::themelios_program::program::Relation::Neq),
+    }
+}
+
+/// The `u32` an arity numeral denotes under its radix, or `None` on overflow (grammar
+/// §5.9) — the raise's `number_u32`, mirrored so the codegen reads an arity one way.
+fn arity_of(number: &ast::NumberLit) -> Option<u32> {
+    let radix = match number.radix() {
+        ast::Radix::Decimal => 10,
+        ast::Radix::Hexadecimal => 16,
+        ast::Radix::Octal => 8,
+        ast::Radix::Binary => 2,
+    };
+    u32::from_str_radix(number.digits(), radix).ok()
 }
 
 #[cfg(test)]
@@ -702,16 +1132,29 @@ mod tests {
     use crate::engine::{parse_statement_fragment, parse_term_fragment};
 
     /// The emitted constructor-call stream, as a string, for the term the
-    /// macro source `input` assembles and parses to under the dialect. The
-    /// goldens assert on this string: a compiled macro (needed for a value
-    /// witness) does not exist until the first macro lands, so the arms are
-    /// pinned here by their emitted call, and the value-equality witness
-    /// accretes with that macro (tests/equality.rs; program §16).
+    /// macro source `input` assembles and parses to under the dialect. These
+    /// goldens freeze each arm's emission as a change-detector; the *value*
+    /// proof — that the emission builds the right value — is the equality
+    /// witness beside them (tests/equality.rs; program §16).
     fn codegen(input: &str) -> String {
         let src = MacroSource::build(TokenStream::from_str(input).expect("lexes"), None)
             .expect("maps under the dialect");
         let term = parse_term_fragment(&src).tree().term().expect("a term");
         codegen_term(&term, &src).to_string()
+    }
+
+    /// The emitted constructor-call stream, as a string, for the statement the
+    /// macro source `input` (its own terminating `.` included) assembles and
+    /// parses to. The change-detector twin of [`codegen`] at statement grain;
+    /// the value proof is the per-macro equality witness (tests/equality.rs).
+    fn codegen_stmt(input: &str) -> String {
+        let src = MacroSource::build(TokenStream::from_str(input).expect("lexes"), None)
+            .expect("maps under the dialect");
+        let statement = parse_statement_fragment(&src)
+            .tree()
+            .statement()
+            .expect("a statement");
+        codegen_statement(&statement, &src).to_string()
     }
 
     #[test]
@@ -1009,6 +1452,13 @@ mod tests {
         let (atom, src) = theory_atom_of("&sum { X + 1 }.");
         let ts = codegen_theory_atom(&atom, &src).to_string();
         assert!(ts.contains("TheoryTerm :: Operation"), "{ts}");
+        // The arranged shape, not merely the pieces: the operator-run vector leads with
+        // an *empty* run (before `X`), then the `+` run (before `1`), pinning the
+        // `vec![vec![], vec![…"+"…]]` arrangement the value witness proves (§16).
+        assert!(
+            ts.contains(":: std :: vec ! [:: std :: vec ! [] , :: std :: vec ! ["),
+            "{ts}"
+        );
         assert!(ts.contains("TheoryOperator :: new (\"+\")"), "{ts}");
         assert!(ts.contains("TheoryTerm :: Variable"), "{ts}");
         assert!(ts.contains("Symbol :: Number (1i32)"), "{ts}");
@@ -1026,13 +1476,201 @@ mod tests {
     }
 
     #[test]
-    fn a_conditioned_theory_element_defers_its_condition() {
-        // A theory element's condition is a `Condition` of ordinary literals; its
-        // codegen is the ordinary condition codegen the statement macros bring, so
-        // a conditioned element emits a located compile error here for now, never a
-        // silently dropped condition.
+    fn a_conditioned_theory_element_lowers_its_condition() {
+        // A theory element's condition is a `Condition` of ordinary literals, lowered
+        // through the same door a rule body's condition takes — no longer a deferred
+        // seam. The `Some(condition)` is emitted, the condition built through
+        // `Condition::new` over the literal's `Literal`, never a dropped condition.
         let (atom, src) = theory_atom_of("&sum { X : p(X) }.");
         let ts = codegen_theory_atom(&atom, &src).to_string();
-        assert!(ts.contains("compile_error !"), "{ts}");
+        assert!(!ts.contains("compile_error"), "{ts}");
+        assert!(ts.contains("Option :: Some"), "{ts}");
+        assert!(ts.contains("Condition :: new"), "{ts}");
+        assert!(ts.contains("Name :: new (\"p\")"), "{ts}");
+    }
+
+    // ---- the theory-symbol leaf arms (§4.9): the non-numeric, non-function leaves ----
+
+    #[test]
+    fn a_string_symbolic_theory_term_lifts_symbol_string() {
+        let ts = theory_term_codegen(r#"&sum { "hi" }."#);
+        assert!(ts.contains("TheoryTerm :: Symbolic"), "{ts}");
+        assert!(ts.contains("Symbol :: string (\"hi\")"), "{ts}");
+    }
+
+    #[test]
+    fn the_order_bounds_lift_their_theory_symbols() {
+        assert!(theory_term_codegen("&sum { #inf }.").contains("Symbol :: Infimum"));
+        assert!(theory_term_codegen("&sum { #sup }.").contains("Symbol :: Supremum"));
+    }
+
+    // ---- statement codegen (§8): the change-detector goldens, the value proof beside
+    // them in tests/equality.rs ----
+
+    #[test]
+    fn a_fact_calls_rule_fact() {
+        let ts = codegen_stmt("p(1, a).");
+        assert!(ts.contains("Rule :: fact"), "{ts}");
+        assert!(ts.contains("Atom :: new"), "{ts}");
+    }
+
+    #[test]
+    fn a_rule_calls_rule_new_over_head_and_body() {
+        let ts = codegen_stmt("q(X) :- p(X).");
+        assert!(ts.contains("Rule :: new"), "{ts}");
+        assert!(ts.contains("Body :: new"), "{ts}");
+        assert!(ts.contains("BodyElement :: from"), "{ts}");
+    }
+
+    #[test]
+    fn a_constraint_calls_rule_constraint() {
+        let ts = codegen_stmt(":- p(X).");
+        assert!(ts.contains("Rule :: constraint"), "{ts}");
+    }
+
+    #[test]
+    fn a_strong_negated_atom_head_wraps_in_neg() {
+        // `-p` in a statement head is strong negation the tree resolved positionally;
+        // the codegen wraps the atom in the `Neg` operator (program §4.6).
+        let ts = codegen_stmt("-p(X).");
+        assert!(ts.contains("(- ::"), "{ts}");
+        assert!(ts.contains("Atom :: new"), "{ts}");
+    }
+
+    #[test]
+    fn a_pooled_argument_list_atom_calls_atom_pooled() {
+        // `p(a; b)` is an argument-list pool of two alternatives (program §8).
+        let ts = codegen_stmt("p(a; b).");
+        assert!(ts.contains("Atom :: pooled"), "{ts}");
+        assert!(
+            ts.contains(". expect (\"the grammar parsed a non-empty argument-list pool\")"),
+            "{ts}"
+        );
+    }
+
+    #[test]
+    fn a_default_negated_body_literal_carries_its_negation() {
+        assert!(codegen_stmt(":- not p.").contains("DefaultNegation :: Not"));
+        assert!(codegen_stmt(":- not not p.").contains("DefaultNegation :: NotNot"));
+    }
+
+    #[test]
+    fn a_boolean_body_literal_builds_its_inner() {
+        assert!(codegen_stmt(":- #true.").contains("LiteralInner :: True"));
+        assert!(codegen_stmt(":- #false.").contains("LiteralInner :: False"));
+    }
+
+    #[test]
+    fn a_comparison_body_literal_calls_comparison_new() {
+        let ts = codegen_stmt(":- 1 < X.");
+        assert!(ts.contains("Comparison :: new"), "{ts}");
+        assert!(ts.contains("Relation :: Lt"), "{ts}");
+    }
+
+    #[test]
+    fn a_chained_comparison_calls_comparison_chain() {
+        // `1 < X < 5` is one literal carrying a guard sequence, not a conjunction.
+        let ts = codegen_stmt(":- 1 < X < 5 .");
+        assert!(ts.contains("Comparison :: new"), "{ts}");
+        assert!(ts.contains(". chain"), "{ts}");
+    }
+
+    #[test]
+    fn a_conditional_body_literal_builds_a_conditional_literal() {
+        let ts = codegen_stmt(":- p : q.");
+        assert!(ts.contains("ConditionalLiteral"), "{ts}");
+        assert!(ts.contains("Condition :: new"), "{ts}");
+    }
+
+    #[test]
+    fn a_negated_theory_atom_body_element_calls_not() {
+        let ts = codegen_stmt(":- not &sum { X } <= 3 .");
+        assert!(ts.contains("construct :: not"), "{ts}");
+        assert!(ts.contains("TheoryAtom :: new"), "{ts}");
+    }
+
+    #[test]
+    fn a_theory_atom_head_fact_builds_through_the_theory_constructor() {
+        let ts = codegen_stmt("&sum { X } <= 3 .");
+        assert!(ts.contains("Rule :: fact"), "{ts}");
+        assert!(ts.contains("TheoryAtom :: new"), "{ts}");
+    }
+
+    #[test]
+    fn a_show_signature_builds_the_variant() {
+        let ts = codegen_stmt("#show p/1 .");
+        assert!(ts.contains("Show :: Signature"), "{ts}");
+        assert!(ts.contains("Signature :: new"), "{ts}");
+        assert!(ts.contains("Sign :: Positive"), "{ts}");
+    }
+
+    #[test]
+    fn a_show_strong_negated_signature_reads_the_sign() {
+        assert!(codegen_stmt("#show -p/1 .").contains("Sign :: Negative"));
+    }
+
+    #[test]
+    fn a_show_term_and_term_body_build_their_variants() {
+        assert!(codegen_stmt("#show a.").contains("Show :: Term"));
+        let bodied = codegen_stmt("#show a : p(X).");
+        assert!(bodied.contains("Show :: term_body"), "{bodied}");
+        assert!(bodied.contains("Body :: new"), "{bodied}");
+    }
+
+    #[test]
+    fn a_bare_show_builds_show_all() {
+        assert!(codegen_stmt("#show.").contains("Show :: All"));
+    }
+
+    #[test]
+    fn an_external_builds_through_external_new() {
+        let ts = codegen_stmt("#external p(X).");
+        assert!(ts.contains("External :: new"), "{ts}");
+        assert!(ts.contains("Body :: empty"), "{ts}");
+        assert!(ts.contains("Option :: None"), "{ts}");
+    }
+
+    #[test]
+    fn an_external_carries_its_value() {
+        // The value rides in the post-dot annotation (`#external p. [v]`, grammar §13);
+        // the codegen carries it as `Some`, its span the annotation's.
+        let ts = codegen_stmt("#external p(X). [a]");
+        assert!(ts.contains("External :: new"), "{ts}");
+        assert!(ts.contains("Option :: Some"), "{ts}");
+    }
+
+    #[test]
+    fn minimize_and_maximize_build_their_directions() {
+        let least = codegen_stmt("#minimize { 3@1 }.");
+        assert!(least.contains("construct :: minimize"), "{least}");
+        assert!(least.contains("OptimizeElement :: new"), "{least}");
+        assert!(least.contains("weight"), "{least}");
+        assert!(least.contains(". at_priority"), "{least}");
+        assert!(
+            codegen_stmt("#maximize { 5 }.").contains("construct :: maximize"),
+            "maximize"
+        );
+    }
+
+    #[test]
+    fn a_disjunction_head_is_a_located_error_for_now() {
+        assert!(codegen_stmt("a | b.").contains("compile_error"));
+    }
+
+    #[test]
+    fn a_choice_head_is_a_located_error_for_now() {
+        assert!(codegen_stmt("{ a }.").contains("compile_error"));
+    }
+
+    #[test]
+    fn a_body_aggregate_is_a_located_error_for_now() {
+        assert!(codegen_stmt(":- 1 <= #count { X : p(X) }.").contains("compile_error"));
+    }
+
+    #[test]
+    fn a_statement_family_no_macro_builds_is_a_located_error() {
+        // A well-formed directive no statement macro targets — reached for with the
+        // wrong macro — is a construction-site error, not a fabricated value.
+        assert!(codegen_stmt("#project p/1 .").contains("compile_error"));
     }
 }

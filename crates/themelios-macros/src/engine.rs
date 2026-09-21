@@ -15,22 +15,86 @@
 //! come from (§5, step 3). One parse to a fragment — a sub-statement
 //! category, the atom a fact assembles around, is reached by parsing a
 //! statement and reading its tree (§8), never a bespoke door.
-// These doors have no caller outside this module's own tests until the entry
-// points wire the engine, so the not-yet-reached surface would read as dead.
-// The allow is removed when the entry points arrive.
-#![allow(dead_code)]
-
+use proc_macro2::{Punct, Spacing, Span, TokenStream, TokenTree};
+use quote::{quote, quote_spanned};
+use themelios_program::raise::raise_statement;
 use themelios_syntax::ast;
-use themelios_syntax::parse::{
-    NestingLimit, Parse, parse_program, parse_statement, parse_term, parse_term_value,
-};
+use themelios_syntax::parse::{NestingLimit, Parse, parse_statement};
 
+use crate::codegen::codegen_statement;
+use crate::diagnostics::emit_diagnostics;
 use crate::source::MacroSource;
 
-/// Parses the assembled source as a whole program (syntax §6.1) at
-/// `NestingLimit::DEFAULT`.
-pub(crate) fn parse_program_fragment(src: &MacroSource) -> Parse<ast::Program> {
-    parse_program(src, NestingLimit::DEFAULT)
+/// The grammatical category a construction site fixes (docs/design/macros.md §5): which
+/// fragment door [`run`] parses through, and which codegen it drives. The seven statement
+/// macros all fix [`Entry::Statement`]; the program-block door is a later increment's,
+/// added as a second entry when a macro reaches for it.
+#[derive(Clone, Copy)]
+pub(crate) enum Entry {
+    /// A single statement (grammar §5.11): the door the statement macros parse through,
+    /// each assembling the terminating `.` its fragment needs (§5).
+    Statement,
+}
+
+/// Run the compile-time pipeline for a construction macro (docs/design/macros.md §5): map
+/// the Rust token stream to a `MacroSource` under the dialect (§6), prepending the directive
+/// `keyword` when one is given and appending the fragment's terminating `.`; parse the
+/// fragment `entry` names; diagnose it at the rust-analyzer bar over a splice-free view (§5,
+/// step 3); and, when it is clean, codegen the §7.1 constructor calls that build the value
+/// (§5, step 4). A dialect error of the mapping, or a syntax or lowering diagnostic, is a
+/// compile error at the offending Rust token's span (§9); the pipeline never panics (§2).
+pub(crate) fn run(input: TokenStream, entry: Entry, keyword: Option<&str>) -> TokenStream {
+    let source = match MacroSource::build(with_terminator(input), keyword) {
+        Ok(source) => source,
+        Err(error) => return compile_error(error.span, &error.message),
+    };
+    match entry {
+        Entry::Statement => {
+            let parse = parse_statement_fragment(&source);
+            let view = source.splice_free_view();
+            let lowering = raise_statement(&parse_statement_fragment(&view)).1;
+            if let Some(errors) = emit_diagnostics(&source, parse.diagnostics(), &view, &lowering) {
+                // The diagnostics are a sequence of `compile_error!(…);` statements; a
+                // construction macro stands in expression position (`let r = fact!(…)`),
+                // so they are wrapped in a block — one expression, no stray-`;` noise
+                // beside the real diagnostic (§9).
+                return quote!({ #errors });
+            }
+            match parse.tree().statement() {
+                Some(statement) => codegen_statement(&statement, &source),
+                // A clean parse of a construction carries its statement; a fragment
+                // holding none — an empty invocation — is a construction-site error, not
+                // a fabricated value (§9). Unreachable once the diagnostics above pass.
+                None => compile_error(Span::call_site(), "this construction has no statement"),
+            }
+        }
+    }
+}
+
+/// The macro's assembled input with the fragment's terminating `.` appended (§5): a clean
+/// statement's terminator is the assembler's to supply, so a caller writes the payload
+/// alone. The `.` is a fresh `Alone` punct after the last input token, so the dialect
+/// mapping (§6) tiles it as the `DOT` the parser expects, kept apart from a fusing
+/// neighbour by the source's own separator discipline.
+fn with_terminator(input: TokenStream) -> TokenStream {
+    let mut input = input;
+    input.extend(std::iter::once(TokenTree::Punct(Punct::new(
+        '.',
+        Spacing::Alone,
+    ))));
+    input
+}
+
+/// A `compile_error!(message)` at `span` — the engine's own diagnostics (§9): a dialect
+/// error of the mapping, or a construction with no statement. `quote_spanned!` stamps
+/// `span` on the generated tokens, so the compiler blames the Rust token it came from.
+///
+/// The `compile_error!(…);` is wrapped in a block, exactly as the diagnostics path wraps
+/// its sequence (§9): a construction macro stands in expression position (`let r =
+/// fact!(…)`), so a bare `compile_error!(…);` there draws a stray "macro expansion ignores
+/// token `;`" error beside the real one. The block makes it one expression — one clean error.
+fn compile_error(span: Span, message: &str) -> TokenStream {
+    quote_spanned! { span => { compile_error!(#message); } }
 }
 
 /// Parses the assembled source as one statement position (syntax §6.1) at
@@ -40,14 +104,31 @@ pub(crate) fn parse_statement_fragment(src: &MacroSource) -> Parse<ast::Statemen
     parse_statement(src, NestingLimit::DEFAULT)
 }
 
+// The program-fragment and term doors have no pipeline caller yet — no construction
+// macro parses a whole program or a bare term (a statement macro assembles a statement,
+// §5) — so they are exercised only by this crate's tests until a construction reaches
+// for them. Kept test-scoped meanwhile, rather than carried as a dead public-crate
+// surface.
+#[cfg(test)]
+use themelios_syntax::parse::{parse_program, parse_term, parse_term_value};
+
+/// Parses the assembled source as a whole program (syntax §6.1) at
+/// `NestingLimit::DEFAULT`.
+#[cfg(test)]
+pub(crate) fn parse_program_fragment(src: &MacroSource) -> Parse<ast::Program> {
+    parse_program(src, NestingLimit::DEFAULT)
+}
+
 /// Parses the assembled source as grammar §5.1's `term` (syntax §6.1) at
 /// `NestingLimit::DEFAULT`.
+#[cfg(test)]
 pub(crate) fn parse_term_fragment(src: &MacroSource) -> Parse<ast::TermFragment> {
     parse_term(src, NestingLimit::DEFAULT)
 }
 
 /// Parses the assembled source as grammar §5.10's `value-term`, under its
 /// restriction (syntax §6.1), at `NestingLimit::DEFAULT`.
+#[cfg(test)]
 pub(crate) fn parse_term_value_fragment(src: &MacroSource) -> Parse<ast::TermFragment> {
     parse_term_value(src, NestingLimit::DEFAULT)
 }
@@ -56,6 +137,7 @@ pub(crate) fn parse_term_value_fragment(src: &MacroSource) -> Parse<ast::TermFra
 mod tests {
     use proc_macro2::TokenStream;
     use quote::quote;
+    use themelios_syntax::token::TokenSource;
     use themelios_syntax::tree::AstNode;
 
     use super::*;
@@ -65,6 +147,52 @@ mod tests {
     /// keyword.
     fn source(input: TokenStream) -> MacroSource {
         MacroSource::build(input, None).expect("maps under the dialect")
+    }
+
+    #[test]
+    fn run_of_a_clean_statement_emits_the_constructor_calls() {
+        // A caller writes the payload alone; `run` appends the terminator, parses,
+        // finds it clean, and codegens the constructor calls (§5) — no diagnostic.
+        let expansion = run(quote!(p(1, a)), Entry::Statement, None).to_string();
+        assert!(expansion.contains("Rule :: fact"), "{expansion}");
+        assert!(expansion.contains("Atom :: new"), "{expansion}");
+        assert!(!expansion.contains("compile_error"), "{expansion}");
+    }
+
+    #[test]
+    fn run_of_a_directive_prepends_its_keyword() {
+        // A directive macro supplies its `#`-keyword from its own name (§5): `run`
+        // hands `Some("show")` to the source, which opens the text with `#show`.
+        let expansion = run(quote!(p / 1), Entry::Statement, Some("show")).to_string();
+        assert!(expansion.contains("Show :: Signature"), "{expansion}");
+    }
+
+    #[test]
+    fn run_of_a_dialect_error_is_a_block_expression() {
+        // A float literal is no token the dialect names (§6): the mapping refuses it and
+        // `run` returns a `compile_error!` at its span, never a panic (§2). Like the
+        // lowering path, the engine's own error is wrapped in a block, so it stands in
+        // expression position without a stray-`;` secondary beside it (§9).
+        let expansion = run(quote!(p(1.5)), Entry::Statement, None).to_string();
+        assert!(expansion.contains("compile_error"), "{expansion}");
+        assert!(expansion.starts_with('{'), "{expansion}");
+    }
+
+    #[test]
+    fn run_of_a_lowering_error_is_a_block_expression() {
+        // A numeral past the engine's width is a lowering diagnostic (program §8): the
+        // `compile_error!` is wrapped in a block, so it stands in expression position (§9).
+        let expansion = run(quote!(p(9999999999)), Entry::Statement, None).to_string();
+        assert!(expansion.contains("compile_error"), "{expansion}");
+        assert!(expansion.starts_with('{'), "{expansion}");
+    }
+
+    #[test]
+    fn with_terminator_appends_the_dot() {
+        // The door reads a source whose text carries the statement terminator, so a
+        // caller writes the payload alone (§5).
+        let assembled = MacroSource::build(with_terminator(quote!(p(1))), None).expect("maps");
+        assert!(assembled.text().ends_with('.'), "{}", assembled.text());
     }
 
     #[test]

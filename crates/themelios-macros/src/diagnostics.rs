@@ -15,11 +15,6 @@
 //! placeholder is shorter than the splice it stands for — so a syntax error
 //! re-locates through the real source and a lowering error through the view,
 //! each its own map (§5's isomorphism invariant).
-// `emit_diagnostics` has no caller outside this module's own tests until the
-// entry points wire the pipeline; the not-yet-wired surface would read as dead.
-// The allow is removed when the entry points arrive, as on the sibling modules.
-#![allow(dead_code)]
-
 use proc_macro2::{Span, TokenStream};
 use quote::quote_spanned;
 use themelios_program::raise::LowerError;
