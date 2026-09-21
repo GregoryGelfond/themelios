@@ -3151,7 +3151,7 @@ document and the code together; the §6.1 and §7.1 amendments below likewise.
   scaling checks assert — linear in a node's children, and in a
   statement-free root `%!` run.
 
-- **§4.2, §10.3, §13** (2026-09-15): the theory-operator formation, given
+- **§1, §4.2, §10.3, §13** (2026-09-15): the theory-operator formation, given
   one home and exposed. §4.2 had a second token source "apply its own
   formation rules" for theory-operator runs, matching the file lexer's
   grammar-§4.7 munch by a parallel implementation held in step by a
