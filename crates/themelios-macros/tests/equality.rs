@@ -27,6 +27,7 @@ use themelios_program::program::{
     Rule, Show, Statement, TheoryAtom, TheoryElement, TheoryGuard, TheoryOperator, TheoryTerm,
     weight,
 };
+use themelios_program::provenance::Origin;
 use themelios_program::symbol::{Name, Sign, Signature, Symbol, VarName};
 use themelios_program::term::{Term, Variable};
 
@@ -413,4 +414,21 @@ fn conditioned_theory_element_macro_equals_the_constructor() {
         }),
     ));
     assert_eq!(by_macro, by_hand);
+}
+
+// ---- the "including provenance" half of the acceptance (§11): the `assert_eq!`s above erase
+// provenance (`WithProvenance`'s identity reads content alone), so this witnesses it directly ----
+
+#[rustfmt::skip]
+#[test]
+fn a_built_statement_carries_the_constructed_origin() {
+    // The acceptance is structural equality up to *and including* provenance
+    // (`Origin::Constructed`, program §6), but `WithProvenance`'s equality reads content alone,
+    // so no `assert_eq!` above can observe provenance. Witness the "including provenance" half
+    // directly: a statement a macro builds carries the `Constructed` origin, identical to the
+    // value built by hand (§5, §11).
+    let by_macro: Program = program! { p(1). };
+    let statement = by_macro.statements().next().expect("one statement");
+    let origins: Vec<&Origin> = statement.provenance().origins().collect();
+    assert_eq!(origins, [&Origin::Constructed]);
 }
