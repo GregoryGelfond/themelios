@@ -14,12 +14,16 @@
 //! the load-bearing proof that each spells the *right* constructor and not merely
 //! a frozen emission (§11, §16); the ninth arm, `Splice`, has its value
 //! round-trip in the §11 splice round-trip property law (tests/laws.rs), not
-//! here. Finer emitted shapes rest on a change-detector golden in `codegen.rs`
-//! rather than a value witness here — among them the comparison chain, the
-//! boolean and conditional literals, the pooled atom, an `#external` carrying a
-//! value, a negated theory-atom body element, and several theory container and
-//! symbol-leaf arms — the golden and property instruments the design lists
-//! beside this one (§11).
+//! here. Beyond the term arms, the finer compositional shapes carry a value
+//! witness here too — the comparison chain (its operand order and both step
+//! relations), the atom argument-list pool, an `#external` carrying a value, and
+//! the nullary-function theory symbol — each told exact against the program §7.1
+//! constructor it names (§11, §16), the value proof beside its change-detector
+//! golden. The shapes still resting on a golden in `codegen.rs` rather than a
+//! value witness here are the boolean and conditional literals, a negated
+//! theory-atom body element, and the remaining theory container and symbol-leaf
+//! arms (the `Infimum` and `Supremum` bounds among them) — the golden and
+//! property instruments the design lists beside this one (§11).
 //!
 //! The witnesses are gathered by the **floor role** each macro fills in the
 //! solve floor (spec §3.2): `mod first_solve` (`atom!`, `fact!`, `rule!`,
@@ -37,10 +41,10 @@ use themelios_macros::{atom, constraint, external, fact, maximize, minimize, pro
 use themelios_program::construct;
 use themelios_program::program::{
     Aggregate, AggregateFunction, Atom, Body, BodyAggregateElement, BodyElement, Choice,
-    ChoiceElement, Condition, Disjunction, DisjunctionElement, External, FunctionAggregate, Guard,
-    HeadAggregate, HeadAggregateElement, IntoHead, Literal, OptimizeElement, Program, Relation,
-    Rule, SetAggregate, SetElement, Show, Statement, TheoryAtom, TheoryElement, TheoryGuard,
-    TheoryOperator, TheoryTerm, weight,
+    ChoiceElement, Comparison, Condition, Disjunction, DisjunctionElement, External,
+    FunctionAggregate, Guard, HeadAggregate, HeadAggregateElement, IntoHead, Literal,
+    OptimizeElement, Program, Relation, Rule, SetAggregate, SetElement, Show, Statement,
+    TheoryAtom, TheoryElement, TheoryGuard, TheoryOperator, TheoryTerm, weight,
 };
 use themelios_program::provenance::Origin;
 use themelios_program::symbol::{Name, Sign, Signature, Symbol, VarName};
@@ -275,6 +279,26 @@ mod multi_shot {
         assert_eq!(by_macro, by_hand);
     }
 
+    // `external!` builds only the value-less declaration: it appends its own statement
+    // terminator, so it cannot spell the post-dot value annotation `#external p. [v]`
+    // (grammar §13). The valued form is reached through the program door, which carries its
+    // own dots, so the value slot is witnessed here.
+    #[rustfmt::skip]
+    #[test]
+    fn a_valued_external_equals_the_constructor() {
+        // The `#external` value slot: the atom a solver may assume carries an optional,
+        // not-meaningful value in the post-dot annotation `[a]`, which lands in `External::new`'s
+        // third argument as `Some` — its absence `None`, witnessed above (program §7.1; grammar
+        // §13). One statement, so `Program::of` carries exactly the one `External`.
+        let by_macro: Program = program! { #external p(X). [a] };
+        let by_hand = Program::of([Statement::from(External::new(
+            Atom::new(name("p"), [Term::variable(var("X"))]),
+            Body::empty(),
+            Some(Term::constant(name("a"))),
+        ))]);
+        assert_eq!(by_macro, by_hand);
+    }
+
     /// The behavioral half of the multi-shot floor, seeded for `themelios-solve`
     /// (docs/design/macros.md §11; spec §3.2): a solver must let the `#external`
     /// atom this builds be assumed true, solved, then reassigned false and
@@ -432,6 +456,45 @@ fn negated_body_set_aggregate_macro_equals_the_constructor() {
                 None,
             ),
         ))]));
+    assert_eq!(by_macro, by_hand);
+}
+
+// ---- the finer statement shapes (§8, §4.6): an atom's argument-list pool and a comparison
+// chain, each told exact against the program §7.1 constructor it names, the value proof beside
+// its change-detector golden (§11) ----
+
+#[test]
+fn a_pooled_argument_list_atom_equals_the_constructor() {
+    // `p(a; b)` is one atom whose arguments pool across two alternatives (§8) — `codegen_atom`'s
+    // `Atom::pooled` arm, reached in head position through `fact!`, distinct from the pool *term*
+    // `p((a; b))` below. Pinning the value proves the alternatives are grouped right, which the
+    // golden — asserting only that the emission mentions `Atom::pooled` — does not.
+    let by_macro = fact!(p(a; b));
+    let by_hand = Rule::fact(
+        Atom::pooled(
+            name("p"),
+            [
+                vec![Term::constant(name("a"))],
+                vec![Term::constant(name("b"))],
+            ],
+        )
+        .unwrap(),
+    );
+    assert_eq!(by_macro, by_hand);
+}
+
+#[test]
+fn a_comparison_chain_body_equals_the_constructor() {
+    // `1 < X < 5` is one body literal carrying a guard sequence, not a conjunction (§4.6):
+    // `Comparison::new` for the first step, `.chain` for the second. Pinning the value proves the
+    // operand order *and* both step relations — a single-step comparison would leave a swapped
+    // operand or a wrong second relation uncaught. A comparison is a positive body literal,
+    // riding into the constraint through `IntoBody for Comparison` (program §7.1).
+    let by_macro = constraint!(:- 1 < X < 5);
+    let by_hand = Rule::constraint(
+        Comparison::new(Term::from(1i32), Relation::Lt, Term::variable(var("X")))
+            .chain(Relation::Lt, Term::from(5i32)),
+    );
     assert_eq!(by_macro, by_hand);
 }
 
@@ -596,10 +659,10 @@ fn theory_atom_operation_macro_equals_the_constructor() {
 #[test]
 fn a_string_theory_symbol_equals_the_constructor() {
     // The `Symbol::String` theory-symbol leaf: a string in theory-term position lifts to
-    // `TheoryTerm::Symbolic(Symbol::string(…))`, told exact against the hand spelling. The
-    // numeric, variable, and operation elements witnessed above leave this arm — and its
-    // `Infimum` / `Supremum` / nullary-`Function` siblings — to a change-detector golden;
-    // this pins one symbol-leaf value.
+    // `TheoryTerm::Symbolic(Symbol::string(…))`, told exact against the hand spelling. This
+    // pins the string symbol-leaf value; the nullary-`Function` leaf is pinned by
+    // `a_nullary_function_theory_symbol_equals_the_constructor` below, leaving the `Infimum`
+    // and `Supremum` bounds to a change-detector golden.
     let by_macro = fact!(&sum { "hi" } <= 3);
     let by_hand = Rule::fact(TheoryAtom::new(
         name("sum"),
@@ -611,6 +674,32 @@ fn a_string_theory_symbol_equals_the_constructor() {
         Some(TheoryGuard {
             operator: TheoryOperator::new("<="),
             term: TheoryTerm::Symbolic(Symbol::Number(3)),
+        }),
+    ));
+    assert_eq!(by_macro, by_hand);
+}
+
+#[test]
+fn a_nullary_function_theory_symbol_equals_the_constructor() {
+    // A bare identifier in theory-term position lifts to a nullary, positive `Symbol::Function`
+    // — `codegen_theory_symbol`'s symbolic-constant arm (§7), pinned here by value in both the
+    // element (`a`) and the guard (`n`), where the string witness above pins the `Symbol::String`
+    // leaf. The value proof beside its change-detector golden.
+    let by_macro = fact!(&sum { a } <= n);
+    let by_hand = Rule::fact(TheoryAtom::new(
+        name("sum"),
+        [],
+        [TheoryElement::new(
+            [TheoryTerm::Symbolic(Symbol::function(
+                name("a"),
+                [],
+                Sign::Positive,
+            ))],
+            None,
+        )],
+        Some(TheoryGuard {
+            operator: TheoryOperator::new("<="),
+            term: TheoryTerm::Symbolic(Symbol::function(name("n"), [], Sign::Positive)),
         }),
     ));
     assert_eq!(by_macro, by_hand);
