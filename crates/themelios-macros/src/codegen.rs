@@ -2346,6 +2346,9 @@ mod tests {
     /// follows it (`fact (:: themelios_program`).
     fn references_only_program(expansion: &str) {
         let stream = TokenStream::from_str(expansion).expect("the expansion re-lexes");
+        let colon = |tree: &proc_macro2::TokenTree| matches!(tree, proc_macro2::TokenTree::Punct(punct) if punct.as_char() == ':');
+        let is_ident =
+            |tree: &proc_macro2::TokenTree| matches!(tree, proc_macro2::TokenTree::Ident(_));
         let mut names_program = false;
         each_stream(&stream, &mut |trees| {
             for (index, tree) in trees.iter().enumerate() {
@@ -2358,12 +2361,26 @@ mod tests {
                 );
                 if ident == "themelios_program" {
                     names_program = true;
-                    let colon = |tree: &proc_macro2::TokenTree| matches!(tree, proc_macro2::TokenTree::Punct(punct) if punct.as_char() == ':');
                     assert!(
                         index >= 2 && colon(&trees[index - 1]) && colon(&trees[index - 2]),
                         "a `themelios_program` path is not absolute: {expansion}"
                     );
                 }
+                // The head of an absolute path — an ident preceded by `::` whose pre-`::`
+                // neighbour is not itself an ident — is a crate root. Every root a macro emits is
+                // `themelios_program` (the program tier) or `std` (the caller's own), never a
+                // third crate: the whitelist holds §10's runtime-closure claim mechanically over
+                // the tokens rather than by review. A continuation segment (`program`, `new`,
+                // `Some`) has an ident before its `::`; a method, field, or spliced operand ident
+                // has no `::` before it at all — neither is a root. The colon count is robust to
+                // `.to_string()` gluing, as the absolute check above is.
+                let after_path = index >= 2 && colon(&trees[index - 1]) && colon(&trees[index - 2]);
+                let is_root = after_path && (index < 3 || !is_ident(&trees[index - 3]));
+                assert!(
+                    !is_root || ident == "themelios_program" || ident == "std",
+                    "the expansion names a crate root beyond the program tier and std \
+                     (`{ident}`): {expansion}"
+                );
             }
         });
         assert!(
@@ -2434,5 +2451,18 @@ mod tests {
         references_only_program(&theory_term_codegen("&sum { $x }."));
         references_only_program(&codegen_program_str("p(1). q(X) :- p(X)."));
         references_only_program(&codegen_head_atom_str("p(1, a)."));
+    }
+
+    #[test]
+    #[should_panic(expected = "crate root beyond the program tier and std")]
+    fn a_root_beyond_the_program_tier_is_refused() {
+        // The root-whitelist refuses any crate root beyond the program tier and std (§10). This
+        // exercises that refusal directly — an absolute path whose root is a third crate, here a
+        // plausible sibling tier the codegen must never reach for at runtime — so the check
+        // could not silently stop refusing without this failing. The legitimate program-tier
+        // path alongside it is what the check admits.
+        references_only_program(
+            ":: themelios_base :: thing (:: themelios_program :: program :: Program :: empty ())",
+        );
     }
 }
