@@ -23,9 +23,10 @@
 use themelios_macros::{atom, constraint, external, fact, maximize, minimize, program, rule, show};
 use themelios_program::construct;
 use themelios_program::program::{
-    Atom, Body, BodyElement, Condition, External, IntoHead, Literal, OptimizeElement, Program,
-    Rule, Show, Statement, TheoryAtom, TheoryElement, TheoryGuard, TheoryOperator, TheoryTerm,
-    weight,
+    AggregateFunction, Atom, Body, BodyElement, Choice, ChoiceElement, Condition, Disjunction,
+    DisjunctionElement, External, Guard, HeadAggregate, HeadAggregateElement, IntoHead, Literal,
+    OptimizeElement, Program, Rule, Show, Statement, TheoryAtom, TheoryElement, TheoryGuard,
+    TheoryOperator, TheoryTerm, weight,
 };
 use themelios_program::provenance::Origin;
 use themelios_program::symbol::{Name, Sign, Signature, Symbol, VarName};
@@ -210,6 +211,64 @@ fn empty_program_macro_equals_program_empty() {
     // sidesteps with `Program::empty()` (program §7.1).
     let by_macro: Program = program! {};
     assert_eq!(by_macro, Program::empty());
+}
+
+// ---- the head families (§8): the disjunction, choice, and head-aggregate heads the
+// statement macros build, each fanning out to its program §7.1 constructor as the raise does ----
+
+#[test]
+fn disjunction_head_macro_equals_the_constructor() {
+    // `a | b` — a disjunctive head, each element a bare literal under the empty condition (the
+    // conditional-literal split is exercised by the choice witness). `Disjunction` is `IntoHead`,
+    // so `Rule::fact` coerces it as it does an `Atom`.
+    let by_macro = fact!(a | b);
+    let by_hand = Rule::fact(Disjunction::new([
+        DisjunctionElement::new(Literal::from(Atom::new(name("a"), [])), Condition::empty()),
+        DisjunctionElement::new(Literal::from(Atom::new(name("b"), [])), Condition::empty()),
+    ]));
+    assert_eq!(by_macro, by_hand);
+}
+
+#[test]
+fn choice_head_macro_equals_the_constructor() {
+    // A bounded choice `1 { a : q(X) }`: the left guard `1` (its relation the grammar's default,
+    // stated as absence), one element split from its conditional literal into the literal `a`
+    // under the condition `q(X)`, and no right guard.
+    let by_macro = fact!(1 { a : q(X) });
+    let by_hand = Rule::fact(Choice::new(
+        Some(Guard {
+            relation: None,
+            term: Term::from(1i32),
+        }),
+        [ChoiceElement::new(
+            Literal::from(Atom::new(name("a"), [])),
+            Condition::new([Literal::from(Atom::new(
+                name("q"),
+                [Term::variable(var("X"))],
+            ))]),
+        )],
+        None,
+    ));
+    assert_eq!(by_macro, by_hand);
+}
+
+#[test]
+fn head_aggregate_macro_equals_the_constructor() {
+    // `#count { X : p(X) }`: a head aggregate whose one element *derives* the literal `p(X)` from
+    // the term tuple `X` under the empty condition (a head element is `terms : literal :
+    // condition`, only its first colon written), no guards.
+    let by_macro = fact!(#count { X : p(X) });
+    let by_hand = Rule::fact(HeadAggregate::new(
+        None,
+        AggregateFunction::Count,
+        [HeadAggregateElement::new(
+            [Term::variable(var("X"))],
+            Literal::from(Atom::new(name("p"), [Term::variable(var("X"))])),
+            Condition::empty(),
+        )],
+        None,
+    ));
+    assert_eq!(by_macro, by_hand);
 }
 
 // ---- the term-shape witnesses (§6): the value proof that each non-splice `codegen_term`

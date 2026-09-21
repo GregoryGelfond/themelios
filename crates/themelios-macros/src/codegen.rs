@@ -52,7 +52,7 @@
 
 use proc_macro2::TokenStream;
 use quote::{quote, quote_spanned};
-use themelios_syntax::ast::{self, AstToken};
+use themelios_syntax::ast::{self, AstToken, HasGuards};
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::tree::{AstNode, SyntaxKind, TextRange};
 
@@ -853,25 +853,222 @@ fn codegen_rule(rule: &ast::Rule, src: &MacroSource) -> TokenStream {
 }
 
 /// A rule head (§4.4), emitting an `IntoHead` value the rule constructor coerces
-/// (program §7.1): a literal head — an atom, a comparison, a boolean — through its
-/// [`Literal`](codegen_literal), a theory-atom head through [`codegen_theory_atom`]. A
-/// disjunction, a choice, or a head aggregate is a located compile error here — a head
-/// shape the construction macros do not yet build (§8); total, and never a fabricated
-/// head.
+/// (program §7.1), one arm per `ast::Head` family as the raise's `raise_head` is
+/// (program §8): a literal head — an atom, a comparison, a boolean — through its
+/// [`Literal`](codegen_literal), a theory-atom head through [`codegen_theory_atom`], a
+/// disjunction through [`codegen_disjunction`], and the one `ast::Head::Aggregate` arm
+/// fanning out by the `ast::Aggregate` variant — a set form to a [`Choice`](codegen_choice),
+/// a function form to a [`HeadAggregate`](codegen_head_aggregate) (§8). The match is
+/// exhaustive, so a new head family is a compile error here, never a silent drop.
 fn codegen_head(head: &ast::Head, src: &MacroSource) -> TokenStream {
     match head {
         ast::Head::Literal(literal) => codegen_literal(literal, src),
         ast::Head::TheoryAtom(atom) => codegen_theory_atom(atom, src),
-        ast::Head::Disjunction(disjunction) => located_compile_error(
+        ast::Head::Disjunction(disjunction) => codegen_disjunction(disjunction, src),
+        ast::Head::Aggregate(ast::Aggregate::Set(set)) => codegen_choice(set, src),
+        ast::Head::Aggregate(ast::Aggregate::Function(function)) => {
+            codegen_head_aggregate(function, src)
+        }
+    }
+}
+
+/// A disjunctive head (§4.4) to `Disjunction::new` (the raise's `raise_disjunction`): its
+/// conditioned elements, each through [`codegen_disjunction_element`]. A disjunction is
+/// unguarded (program §7.1).
+fn codegen_disjunction(disjunction: &ast::Disjunction, src: &MacroSource) -> TokenStream {
+    let elements: Vec<TokenStream> = disjunction
+        .elements()
+        .map(|element| codegen_disjunction_element(&element, src))
+        .collect();
+    quote!(::themelios_program::program::Disjunction::new([#(#elements),*]))
+}
+
+/// A disjunction element to `DisjunctionElement::new` (the raise's
+/// `raise_disjunction_element`): the (literal, condition) the element carries — a bare
+/// literal under the empty condition ([`bare_element`]), or a conditional literal split
+/// into its literal and condition ([`split_element`]).
+fn codegen_disjunction_element(
+    element: &ast::DisjunctionElement,
+    src: &MacroSource,
+) -> TokenStream {
+    let (literal, condition) = match element {
+        ast::DisjunctionElement::Literal(literal) => bare_element(literal, src),
+        ast::DisjunctionElement::ConditionalLiteral(conditional) => split_element(conditional, src),
+    };
+    quote!(::themelios_program::program::DisjunctionElement::new(#literal, #condition))
+}
+
+/// A head set form to a choice (§4.4) through `Choice::new` (the raise's `raise_choice`):
+/// its two optional guards ([`codegen_guard`]) over its conditioned elements
+/// ([`codegen_choice_element`]). A set form is a `Choice` in a head, a cardinality
+/// aggregate in a body — the position the tree records (program §8).
+fn codegen_choice(set: &ast::SetAggregate, src: &MacroSource) -> TokenStream {
+    let left = codegen_guard(set.left_guard(), src);
+    let right = codegen_guard(set.right_guard(), src);
+    let elements: Vec<TokenStream> = set
+        .elements()
+        .map(|element| codegen_choice_element(&element, src))
+        .collect();
+    quote!(::themelios_program::program::Choice::new(#left, [#(#elements),*], #right))
+}
+
+/// A choice element to `ChoiceElement::new` (the raise's `raise_choice_element`): the
+/// (literal, condition) the element carries ([`bare_element`] / [`split_element`]) — the
+/// same shape as a disjunction element.
+fn codegen_choice_element(element: &ast::SetElement, src: &MacroSource) -> TokenStream {
+    let (literal, condition) = match element {
+        ast::SetElement::Literal(literal) => bare_element(literal, src),
+        ast::SetElement::ConditionalLiteral(conditional) => split_element(conditional, src),
+    };
+    quote!(::themelios_program::program::ChoiceElement::new(#literal, #condition))
+}
+
+/// The (literal, condition) token pair a bare-literal choice or disjunction element
+/// carries: the literal under the empty condition, mirroring the raise's
+/// `ChoiceElement::new(literal, Condition::empty())` / its disjunction twin (program §8).
+fn bare_element(literal: &ast::Literal, src: &MacroSource) -> (TokenStream, TokenStream) {
+    (
+        codegen_literal(literal, src),
+        quote!(::themelios_program::program::Condition::empty()),
+    )
+}
+
+/// The (literal, condition) token pair a conditional-literal choice or disjunction element
+/// *splits* into (the raise's destructuring of `raise_conditional_literal` in
+/// `raise_choice_element` / `raise_disjunction_element`): its literal and its condition,
+/// codegen'd separately — never through [`codegen_conditional_literal`], which keeps a
+/// conditional literal whole for a body set element (§4.7). A conditional literal missing
+/// its literal under recovery is a located compile error in the literal slot, coincident
+/// with the syntax diagnostic (§5.3).
+fn split_element(
+    conditional: &ast::ConditionalLiteral,
+    src: &MacroSource,
+) -> (TokenStream, TokenStream) {
+    let Some(literal) = conditional.literal() else {
+        return (
+            located_compile_error(
+                src,
+                conditional.syntax().text_range(),
+                "this conditional literal is incomplete",
+            ),
+            quote!(::themelios_program::program::Condition::empty()),
+        );
+    };
+    (
+        codegen_literal(&literal, src),
+        codegen_condition(conditional.condition().as_ref(), src),
+    )
+}
+
+/// A head function aggregate (§4.4) to `HeadAggregate::new` (the raise's
+/// `raise_head_aggregate`): the function, its two optional guards ([`codegen_guard`]), and
+/// its head elements, which *derive* a literal ([`codegen_head_aggregate_element`]). A
+/// function keyword missing under recovery is a located compile error, mirroring the
+/// raise's `incomplete`.
+fn codegen_head_aggregate(function: &ast::FunctionAggregate, src: &MacroSource) -> TokenStream {
+    let Some(kind) = function.function() else {
+        return located_compile_error(
             src,
-            disjunction.syntax().text_range(),
-            "a disjunctive head is not yet built by a construction macro",
-        ),
-        ast::Head::Aggregate(aggregate) => located_compile_error(
+            function.syntax().text_range(),
+            "this head aggregate is incomplete",
+        );
+    };
+    let function_kind = aggregate_function(kind);
+    let left = codegen_guard(function.left_guard(), src);
+    let right = codegen_guard(function.right_guard(), src);
+    let elements: Vec<TokenStream> = function
+        .elements()
+        .map(|element| codegen_head_aggregate_element(&element, src))
+        .collect();
+    quote!(::themelios_program::program::HeadAggregate::new(
+        #left,
+        #function_kind,
+        [#(#elements),*],
+        #right,
+    ))
+}
+
+/// A head aggregate element to `HeadAggregateElement::new` (the raise's
+/// `raise_head_aggregate_element`): a term tuple, the literal it *derives*, and a
+/// condition. A body-shaped element in a head aggregate cannot derive a literal (§4.7), and
+/// an element the parse left without its derived literal is incomplete — each a located
+/// compile error, mirroring the raise's `incomplete`.
+fn codegen_head_aggregate_element(
+    element: &ast::AggregateElement,
+    src: &MacroSource,
+) -> TokenStream {
+    match element {
+        ast::AggregateElement::Head(head) => {
+            let terms: Vec<TokenStream> =
+                head.terms().map(|term| codegen_term(&term, src)).collect();
+            let Some(literal) = head.literal() else {
+                return located_compile_error(
+                    src,
+                    head.syntax().text_range(),
+                    "this head aggregate element is incomplete",
+                );
+            };
+            let literal = codegen_literal(&literal, src);
+            let condition = codegen_condition(head.condition().as_ref(), src);
+            quote!(::themelios_program::program::HeadAggregateElement::new(
+                [#(#terms),*],
+                #literal,
+                #condition,
+            ))
+        }
+        ast::AggregateElement::Body(body) => located_compile_error(
             src,
-            aggregate.syntax().text_range(),
-            "a choice or aggregate head is not yet built by a construction macro",
+            body.syntax().text_range(),
+            "a head aggregate element must derive a literal",
         ),
+    }
+}
+
+/// An aggregate guard to `Option<Guard>` (the raise's `raise_guard`): a present guard's
+/// relation — absent is the grammar's default for its side (§4.7) — over its bound term,
+/// `None` when the aggregate has no guard on that side. A bound missing under recovery
+/// takes the [`placeholder`], as the raise's `step_term` does. `Guard` is a public-field
+/// struct (program §7.1), so it is built as a struct literal, the door the raise uses too.
+fn codegen_guard(guard: Option<ast::Guard>, src: &MacroSource) -> TokenStream {
+    let Some(guard) = guard else {
+        return quote!(::std::option::Option::None);
+    };
+    let relation = guard.relation().map_or_else(
+        || quote!(::std::option::Option::None),
+        |relation| {
+            let relation = relation_of(relation);
+            quote!(::std::option::Option::Some(#relation))
+        },
+    );
+    let term = guard
+        .term()
+        .map_or_else(placeholder, |term| codegen_term(&term, src));
+    quote!(::std::option::Option::Some(::themelios_program::program::Guard {
+        relation: #relation,
+        term: #term,
+    }))
+}
+
+/// The program-tier aggregate function an AST one names (the raise's
+/// `aggregate_function_of`): the token twin of that 1:1 map, `#count` and its kin to the
+/// `AggregateFunction` variant (`#sum+` is `SumPlus`, program §7.1).
+fn aggregate_function(function: ast::AggregateFunction) -> TokenStream {
+    match function {
+        ast::AggregateFunction::Count => {
+            quote!(::themelios_program::program::AggregateFunction::Count)
+        }
+        ast::AggregateFunction::Sum => {
+            quote!(::themelios_program::program::AggregateFunction::Sum)
+        }
+        ast::AggregateFunction::SumPlus => {
+            quote!(::themelios_program::program::AggregateFunction::SumPlus)
+        }
+        ast::AggregateFunction::Min => {
+            quote!(::themelios_program::program::AggregateFunction::Min)
+        }
+        ast::AggregateFunction::Max => {
+            quote!(::themelios_program::program::AggregateFunction::Max)
+        }
     }
 }
 
@@ -1771,13 +1968,34 @@ mod tests {
     }
 
     #[test]
-    fn a_disjunction_head_is_a_located_error_for_now() {
-        assert!(codegen_stmt("a | b.").contains("compile_error"));
+    fn a_disjunction_head_builds_through_disjunction_new() {
+        let ts = codegen_stmt("a | b.");
+        assert!(!ts.contains("compile_error"), "{ts}");
+        assert!(ts.contains("Disjunction :: new"), "{ts}");
+        assert!(ts.contains("DisjunctionElement :: new"), "{ts}");
     }
 
     #[test]
-    fn a_choice_head_is_a_located_error_for_now() {
-        assert!(codegen_stmt("{ a }.").contains("compile_error"));
+    fn a_choice_head_builds_through_choice_new() {
+        // A bounded choice `1 { a : q(X) }`: the left guard `1`, the element split from its
+        // conditional literal into (literal, condition).
+        let ts = codegen_stmt("1 { a : q(X) }.");
+        assert!(!ts.contains("compile_error"), "{ts}");
+        assert!(ts.contains("Choice :: new"), "{ts}");
+        assert!(ts.contains("ChoiceElement :: new"), "{ts}");
+        assert!(ts.contains("Guard"), "{ts}");
+        assert!(ts.contains("Condition :: new"), "{ts}");
+    }
+
+    #[test]
+    fn a_head_aggregate_builds_through_head_aggregate_new() {
+        // `#count { X : p(X) }` in head position: a head element deriving the literal `p(X)`
+        // from the term tuple `X` (its first colon written, the condition empty).
+        let ts = codegen_stmt("#count { X : p(X) }.");
+        assert!(!ts.contains("compile_error"), "{ts}");
+        assert!(ts.contains("HeadAggregate :: new"), "{ts}");
+        assert!(ts.contains("HeadAggregateElement :: new"), "{ts}");
+        assert!(ts.contains("AggregateFunction :: Count"), "{ts}");
     }
 
     #[test]
