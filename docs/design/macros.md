@@ -150,6 +150,10 @@ constructors and parse through the syntax tier's fragment entries: `atom!`,
 program §4.8), distinct from the `#[external]` attribute below — and the
 program-level block `program!` (which excludes `#script`, §8). Their targets all
 exist at this tier's base (§8 names each), so each reduces to a trivial expansion.
+Each builds the complete head and body-element vocabulary its category admits — the
+disjunction, choice, and head-aggregate heads and the set and function body
+aggregates included (the fan-out map is §8) — so no head or body shape is deferred
+within them.
 
 **Theory atoms and theory-term splices are both in.** A theory atom — with or
 without splices, `&sum { 1, 2 } <= n` or `&sum { $x } <= $bound` — is ordinary
@@ -448,6 +452,25 @@ own name (§5) — the caller writes the payload alone.
   from Rust tokens, so refusal beats a mangled body; a script belongs in a file
   raised through program §8.
 
+**Head and body-element coverage.** The statement macros that carry a head or a body
+— `fact!`, `rule!`, `constraint!`, and every statement of a `program!` block — build
+the complete head and body-element vocabulary, each family fanning out to its program
+§7.1 constructor as the raise does (program §8): a disjunction head to
+`Disjunction::new`, a choice head to `Choice::new` (its two optional guards over
+`ChoiceElement::new`), a head aggregate to `HeadAggregate::new` (elements that
+*derive* a literal), and a body aggregate to `FunctionAggregate::new` or
+`SetAggregate::new` (elements that *test*), wrapped by its own default negation
+through `From<Aggregate>` / `not` / `not not`. The one AST arm carrying both choice
+and head aggregate — `ast::Head::Aggregate`, whose payload is the enum `ast::Aggregate
+= Set | Function` — fans out by that discriminator (a **set** to `Choice`, a
+**function** to `HeadAggregate`), and the same `ast::BodyElement::Aggregate` fans a
+**set** to `SetAggregate` and a **function** to `FunctionAggregate`: head-versus-body
+is positional, so the one `#count { … }` node is a `HeadAggregate` in a head and a
+`FunctionAggregate` in a body. A guard is the `Guard` struct — an optional relation
+(absent is the grammar's default for its side) over a bound term. A choice or
+disjunction element *splits* a conditional literal into its literal and condition; a
+body set element keeps it whole — the raise's two readings (program §8), mirrored.
+
 **Composition and return types.** A statement macro returns its *specific* family
 type (`Rule`, `Show`, `External`, `Optimize`), not an erased `Statement`, because
 the specific type is the more useful value and composes into a program through
@@ -470,7 +493,8 @@ The diagnostics carried are the syntax tier's `SyntaxError` and the program
 tier's `LowerError`, both lowering to base's normal form (base §6.5; program §8)
 — one model, so a macro-site diagnostic reads exactly as the file parser's, at
 the rust-analyzer bar (spec §2 item 9). Dialect errors of the mapping itself
-(§6 — a float literal, a detached `#`, `r#not`), a non-`ToSymbol` splice (§7), a
+(§6 — a float literal, a detached `#` (refused only under the fallback backend;
+real expansion reads it benignly), `r#not`), a non-`ToSymbol` splice (§7), a
 non-single-atom `atom!` head (§8), and a `#script` in `program!` (§7) are the
 engine's own diagnostics, located at the offending Rust token's span and worded
 in the same register.
