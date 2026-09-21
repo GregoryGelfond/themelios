@@ -321,10 +321,14 @@ and the target token (`SPLICE`). The engine implements the mapping and answers
 - A Rust identifier lexes by the name classes — lowercase-initial an
   `IDENTIFIER`, uppercase-initial a `VARIABLE`, `_` alone `ANONYMOUS`, `not` the
   keyword; an identifier no class matches whole (`__`, `_1`) is a dialect error.
-- A Rust integer literal is a `NUMBER` **by value**; a Rust string literal a
-  `STRING` **by value** (raw strings included). The source chooses the spelling
-  it tiles (syntax §4.3); a value grammar §4.4 cannot spell is carried as a
-  splice of that value (§7), not respelled.
+- A Rust integer literal is a `NUMBER` **by value**; a simple non-raw Rust string
+  — one whose value grammar §4.4 spells verbatim (printable ASCII, no escape) — is
+  a `STRING` **by its spelling**. A raw string or an escape-needing string, whose
+  value §4.4 cannot carry verbatim, is a dialect error — refused, never guessed.
+  Mapping such a string by its **value** instead — a raw string's contents
+  (`r"raw"` → `raw`) or an escape unescaped, tiled as a `STRING` where §4.4 can
+  spell the value and carried as a splice of that value (§7) where it cannot — is a
+  **reserved seam** a later increment opens (§7, §12).
 - `#` forms a keyword exactly when *span-adjacent* to the keyword's word (and,
   for `#sum+`, the `+` beyond it), read from the `proc_macro` spans; a `#`
   separated from its word is a dialect error. This detached-`#` refusal is a
@@ -397,10 +401,13 @@ not promised"). Splicing a *constant* by `Name` would want a `ToSymbol for Name`
 addition for a later increment, noted so its absence here is deliberate, not
 overlooked.
 
-**The asymmetries, stated.** By-value literals mean macro bodies admit spellings
-files do not and the converse: a Rust string's escapes produce string values
-grammar §4.4 cannot spell (carried as a splice of the value, §6), and a Rust
-numeral may be `0o17` (the value crosses, the spelling does not). **Primed
+**The asymmetries, stated.** A by-value integer literal means a macro body admits
+a spelling a file does not — a Rust numeral may be `0o17` (the value crosses, the
+spelling does not). Its string counterpart — a Rust string's escapes producing a
+value grammar §4.4 cannot spell, carried as a splice of that value — is the
+by-value string mapping's **reserved seam** (§6, §12); until it opens a macro
+string is the §4.4-spellable subset by its spelling, and a raw or escape-needing
+string is refused, not respelled. **Primed
 names** (`a'`) are inexpressible in macros — Rust identifiers carry no primes —
 and remain expressible through the spelled-out constructors. **A `#script`
 body** is inexpressible in a macro and refused, not mangled: its `ScriptBody` is
@@ -593,12 +600,18 @@ what it proves and what it cannot (spec §10.2).
 ## 12. Reserved seams and non-goals
 
 Named reserved seams — deferred with their reasons and arriving consumers, never
-gaps (the deferrals of §4, gathered):
+gaps (the deferrals of §4 and §6, gathered):
 
 - **Further splice sites** — names, tuples, statements (grammar §9): future
   vocabulary, each admitted on argument as the tiers accrete; the v1 floor is the
   term and the theory term (both delivered here, §4, §7). A `ToSymbol for Name`
   (splicing a constant, §7) is the near candidate.
+- **The by-value string mapping** — a raw string or an escape-needing string,
+  whose value grammar §4.4 cannot carry verbatim, is refused today (§6); a later
+  increment maps such a string by its **value** — tiled as a `STRING` where §4.4
+  can spell the value, carried as a splice of that value (§7) where it cannot — so
+  a macro body may spell a string value a file reaches only by an escape or a raw
+  literal. Refused until then, never guessed.
 - **The extraction and registration attributes** — `#[derive(Extract)]`,
   `#[derive(Facts)]`, `#[external]` (§4): land with the structured-decode seam
   (program §3.4, §17) and the extraction / `@`-function surfaces the solve tier
