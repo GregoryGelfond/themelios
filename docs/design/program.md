@@ -1693,12 +1693,18 @@ dialect — never through the free accessor that can. The dialect reaches the ra
 from the parse it is given; a consumer never states it twice.
 
 **Refuse with a span, at the mistake.** Where a raise cannot proceed — a
-recovered statement it cannot complete, or a form the grammar admits under
-recovery but the value cannot represent — it emits a `LowerError` with the
-offending span, at the rust-analyzer bar (spec §2 item 9), and continues. A bad
-name never reaches here (the lexer guaranteed the token's class, §3.2), so name
-refusal is the spelled-out door's concern (§7.2); the raise's diagnostics are
-about structure the parse left incomplete.
+recovered statement it cannot complete, or a form the grammar admits but the
+value cannot represent — it emits a `LowerError` with the offending span, at the
+rust-analyzer bar (spec §2 item 9), and continues. One such form is a **macro
+splice**: splice expansion is the macro surface's, not the raise's (macros §6,
+§7), so a `$` splice that reaches the raise unexpanded — a splice node the parser
+carried structurally (`ast::Term::Splice` or `ast::TheoryTerm::Splice`) — is
+refused with an `UnexpandedSplice` diagnostic and a best-effort placeholder term,
+never silently dropped and never a second splice door here. A bad name never
+reaches here (the lexer guaranteed the token's class, §3.2), so name refusal is
+the spelled-out door's concern (§7.2); the raise's own diagnostics mark a
+construct the parse left incomplete or a value it cannot represent, the unexpanded
+splice among them.
 
 **The corners it settles, each read from the tree, none re-derived.** The `-p`
 ambiguity is positional and the tree already resolved it (§3.3, syntax §8.2); a
