@@ -3,7 +3,8 @@
 //! tolerances wide enough for any machine the checks run on — equality, clone,
 //! rendering, and traversal linear in the structure, construction of an operator chain,
 //! a function nest, and a pool nest through the doors linear in depth (each door
-//! canonicalizing one level, §7.1), `mgu` near-linear in both
+//! canonicalizing one level, §7.1), multi-part construction through `of_keyed_nodes` near-linear in the
+//! parts (§7.1), `mgu` near-linear in both
 //! atoms (the Martelli–Montanari shape a monolithic ground representation would
 //! make quadratic, §11.1), a match against an answer set logarithmic via
 //! `signature_range` (§11.3), and part-wise access logarithmic in the parts
@@ -29,16 +30,13 @@
 use std::collections::BTreeSet;
 use std::time::Instant;
 
-use themelios_base::source::{Source, SourceId};
-
-use themelios_program::program::{Atom, PartKey, Program, Rule};
-use themelios_program::raise::raise;
+use themelios_program::program::{Atom, PartKey, Program, Rule, Statement};
+use themelios_program::provenance::WithProvenance;
 use themelios_program::render::render;
 use themelios_program::symbol::{Name, Sign, Symbol, VarName};
 use themelios_program::term::{Term, Variable};
 use themelios_program::unify::{mgu, signature_range};
 use themelios_syntax::dialect::Dialect;
-use themelios_syntax::parse::parse;
 
 /// The data-size ratio between the small and large cases for a linear or near-linear
 /// claim.
@@ -304,6 +302,38 @@ fn building_a_function_nest_through_the_constructor_is_linear_in_depth() {
     );
 }
 
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
+#[test]
+fn building_a_multi_part_program_through_of_keyed_nodes_is_near_linear_in_parts() {
+    // `of_keyed_nodes` seeds `base`, then routes each `(key, node)` pair through the one ingest
+    // door (§7.1): a `BTreeMap` part entry, O(log parts), plus the single-statement ingest. So a
+    // program of many distinct single-statement parts is O(parts · log parts) — near-linear. A
+    // door that rescanned the parts-so-far at every entry would be Θ(parts²): ~x256 over x16
+    // parts, past the ceiling. One build per measurement: allocation-bound at these part counts,
+    // far above timer resolution, its linear drop inside the window.
+    const PARTS: usize = 256;
+    let ratio = median_ratio(
+        || {
+            time_once(|| {
+                std::hint::black_box(multi_part_program(PARTS));
+            })
+        },
+        || {
+            time_once(|| {
+                std::hint::black_box(multi_part_program(PARTS * SIZE_RATIO));
+            })
+        },
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "of_keyed_nodes's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} parts; the near-linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
 /// `f((f((… X …; 0)); 0))` — `depth` pools, each under a function application, built
 /// bottom-up through `Term::pool` and `Term::function`. The function wrapper keeps each
 /// pool's growing alternative a non-pool, so the pool door's one-level splice meets nothing
@@ -563,18 +593,15 @@ fn matching_an_answer_set_is_logarithmic() {
     );
 }
 
-/// A program of `parts` parts, each opened by a `#program q<i>.` delimiter and holding
-/// one fact — the only public door to a multi-part program (`Program::of` fills only
-/// `base`; the raise lifts `#program` into part structure, §4.1, §8).
+/// A program of `parts` parts, each a `q<i>` part holding the one fact `a`, built through
+/// `Program::of_keyed_nodes` — the public multi-part door (§7.1, §4.1). (Before that door
+/// existed this fixture went through `#program q<i>.` text and the raise; the door now builds
+/// the part structure directly.)
 fn multi_part_program(parts: usize) -> Program {
-    let mut text = String::with_capacity(parts * 16);
-    for i in 0..parts {
-        text.push_str("#program q");
-        text.push_str(&i.to_string());
-        text.push_str(".\na.\n");
-    }
-    let source = Source::new(SourceId::new(0), text).expect("the multi-part text admits");
-    raise(&parse(&source, Dialect::Clingo)).into_program()
+    let fact = Statement::Rule(Rule::fact(Atom::constant(name("a"))));
+    Program::of_keyed_nodes(
+        (0..parts).map(|i| (q_key(i), WithProvenance::constructed(fact.clone()))),
+    )
 }
 
 /// The key of the `q<i>` part.
