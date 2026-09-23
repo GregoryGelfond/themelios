@@ -21,6 +21,9 @@ shape is deliberately governed by a downstream principle — the propagator trai
 litmus (§8) — the design states the **interface and its governing principle** rather than a frozen
 signature, and says so in place.
 
+**Assumed fluency.** Fluent Rust (ownership, lifetimes, traits) and ASP as the grammar and
+specification of record state it; not assumed are rust-analyzer's, rowan's, or an engine's internals.
+
 ---
 
 ## 1. Keystone and design method
@@ -89,7 +92,7 @@ The solve stage adds these workspace members, evolving specification §12.2:
 
 | crate | unsafe | purpose |
 |---|---|---|
-| `themelios-solve` | forbid | The backend **contract**, the outcome vocabulary and MVC models, the session and driving surface, the fault taxonomy, the extension-surface traits (`@`-functions, propagators, extraction), the bridge seam, and the conformance suite. Engine-free. |
+| `themelios-solve` | forbid | The backend **contract**, the outcome vocabulary and MVC models, the agent and its driving surface, the fault taxonomy, the extension-surface traits (`@`-functions, propagators, extraction), the bridge seam, and the conformance suite. Engine-free. |
 | `themelios-query` | forbid | The epistemic reading — three-valued `Answer`, `WorldView`, cautious/brave, bindings — over the program tier's patterns and the solve tier's outcomes. Engine-free. Its own design (`query.md`). |
 | `themelios-reference` | forbid, `publish = false` | The naive pure-Rust reference solver: the small-case oracle, the second implementor of the contract, and the native-backend demonstration (§12). |
 | `themelios-potassco-sys` | allow (bindings only) | Vendored, pinned bindgen output over libclingo's C API. Regeneration is out-of-band. Feature-gated; never in a default build. |
@@ -111,13 +114,13 @@ crate**, not two crates. `themelios-solve` is organised so the auditable heart i
 - `contract` — the `Backend` trait and its capability, refusal, and fault vocabulary. This is the
   "one door" an audit reads; it is deliberately minimal (§4).
 - `outcome` — the models and their views (§5).
-- `session` — the ergonomic driving surface over the contract (§6).
+- `agent` — the ergonomic driving surface over the contract: the `Agent` and the reasoning loop (§6).
 - `extend` — the extension-surface traits and registration (§7–§9).
 - `bridge` — the seam types the adapters implement against (§10).
 - `conformance` — the executable suite every adapter passes (§13).
 
 The lean-core property is that `contract` is small and points at the unsafe floor through a narrow,
-enumerable interface; the ergonomic-facade property is that `session` (and the top `themelios` crate)
+enumerable interface; the ergonomic-facade property is that `agent` (and the top `themelios` crate)
 compose over it. A crate split would be proliferation for a boundary a module already draws; putting
 the driving surface only in the top facade would deny it to a client that composes its own crates
 (an LSP server, say). The top `themelios` crate remains the *just-works* default — the abstract
@@ -139,12 +142,12 @@ Every capability of the tier is reachable two ways, both first-class:
 
 - a **declarative macro face**, for the human writer, spelling ASP as the logician writes it; and
 - a **composable programmatic face**, for humans *and* for programmatic consumers — a code generator,
-  an LLM agent, a REPL — that build up programs, sessions, requests, and queries by composition.
+  an LLM-driven consumer, a REPL — that build up programs, agents, requests, and queries by composition.
 
 The two straddle the crate-home line by design. The *authoring* half lives one tier down — `rule!` /
 `fact!` / `asp!` in `themelios-macros`, the value builders in `themelios-program`'s `construct` —
 because building the `Program` is a program-tier concern (LLVM's `IRBuilder` lives with the IR, not
-the codegen). The *driving* half (sessions, solve, options) and the *reading* half (query) are the
+the codegen). The *driving* half (the agent, its reasoning loop, options) and the *reading* half (query) are the
 solve and query tiers'. The solve tier's obligation is therefore twofold: own its own faces (the
 solve-driving and query macros and builders), and ensure the two faces **cohere end to end** — a
 program authored through either face drives and reads through either face without a seam — because
@@ -176,7 +179,7 @@ The centerpieces are not silos; the design treats their seams as first-class:
   the pillar is the meeting point of `@`-functions (§7), extraction (§9), and construction (program
   tier).
 
-- **`@`-functions and propagators share the extension substrate.** Both register onto a session, both
+- **`@`-functions and propagators share the extension substrate.** Both register onto an agent, both
   cross the FFI seam through a panic-containing trampoline under the interning discipline (§10.5),
   both are engine-portable because both are the contract's (§7, §8). The "quarantined-unsafe floor,
   100%-idiomatic safe surface" machinery is *one* thing serving both — and the theory atoms a
@@ -308,8 +311,10 @@ terms, and it is what makes the audit's job finite.
 /// The logical question: is the program consistent? Closed trichotomy — deliberately NOT
 /// #[non_exhaustive], because the closed set is the affordance that forbids a fourth reading.
 /// Read from a resolved solve via `Solved::determination` (§5.2); each variant carries its evidence.
-pub enum Determination {
-    Consistent(Models),      // read the answer sets, or TAKE the owned WorldView (§5.2)
+/// The `Consistent` payload's world view is a borrowing view over the live engine (§5.2), so the
+/// trichotomy carries that lifetime.
+pub enum Determination<'a> {
+    Consistent(Models<'a>),  // read the answer sets, or open the WorldView (§5.2) — a borrowing view
     Inconsistent(Unsat),     // carries blame (`Refutation`) for an assumption-scoped solve (§5.4)
     Inconclusive(Partial),   // a real value — what a truncated search DID establish; never "no"
 }
@@ -333,12 +338,24 @@ them by satisfying §1.4 in its turn. The `Determination` variants are closed; t
 
 ```rust
 /// `solve` returns this borrowed handle. It resolves the trichotomy, streams the answer sets, and —
-/// on a consistent search — yields the OWNED WorldView the query tier reads.
-impl Solved<'_> {
-    pub fn determination(&mut self) -> Determination;    // §5.1 — the trichotomy, with its payload
+/// on a consistent search — yields the borrowing live `WorldView<'_>` the query tier reads (an
+/// owned-engine `WorldView<'static>` from a single-shot solve; an engine-free `Snapshot` via
+/// `materialize`; §6.4, query.md §2.3).
+impl<'a> Solved<'a> {
+    /// INSPECT the run in place (reborrow): read the trichotomy, then `conclusion` after drain; the
+    /// `WorldView` reachable via this reborrow is bounded by it. For a view that outlives to the agent's
+    /// borrow, use the consuming resolver below.
+    pub fn determination(&mut self) -> Determination<'_>; // §5.1 — the trichotomy, with its payload
+
+    /// RESOLVE the run into a readable outcome (consuming), threading the engine borrow `'a` — so the
+    /// `WorldView<'a>` reached through `Consistent` (§5.2) outlives to the agent's borrow. This is the
+    /// resolver the agent/bare `determination` conveniences (§6.2/§6.4) build over.
+    pub fn into_determination(self) -> Determination<'a>;
 
     /// Lazy stream; each item a Result, so a mid-stream engine fault surfaces at `?`, not as a clean
-    /// end. Iterated by &mut so the terminal `conclusion` is readable after drain. Cost: O(1) resident.
+    /// end. Iterated by `&mut` so the terminal `conclusion` is readable after drain — the stateful-drain
+    /// reason `Solved` reads by `&mut` where a `WorldView`'s engine reads are `&self` under interior
+    /// mutability (query.md §2.3). Cost: O(1) resident.
     pub fn answer_sets(&mut self) -> impl Iterator<Item = Result<AnswerSet, Fault>> + '_;
 
     /// A COMPLETE collection — available ONLY when the search closed the space; refuses otherwise
@@ -349,16 +366,39 @@ impl Solved<'_> {
     pub fn conclusion(&self) -> Option<Conclusion>;   // readable once the search resolves
 }
 
-/// The `Consistent` payload (§5.1): read the answer sets, or TAKE the owned WorldView. The
-/// borrowed-`Solved` → owned-`WorldView` transition is a move — the WorldView owns what the native
-/// cautious/brave door needs (query.md §2.3–§2.4), so it outlives the borrow.
-pub struct Models { /* … */ }
-impl Models {
-    pub fn world_view(self) -> WorldView;   // owned, non-empty by construction (query.md §2.3)
+/// The `Consistent` payload (§5.1): read the answer sets, or open the live `WorldView` the query tier
+/// reads. From a RETAINED agent the world view is a BORROWING handle `WorldView<'a>` over the live engine —
+/// lazy, its engine-driving reads fallible (the native cautious/brave door is one solve, `members`
+/// streams; query.md §2.3–§2.4) — so it borrows for its lifetime and does NOT outlive that borrow. An
+/// owned, engine-free `Snapshot` (to cross a service boundary) is `WorldView::materialize` (query.md §2.3).
+/// The single-shot bare form owns its ephemeral engine instead (a live `WorldView<'static>`, §6.4).
+pub struct Models<'a> { /* … borrows the engine for `'a`; owns it when `'a = 'static` — the single-shot/materialised form */ }
+impl<'a> Models<'a> {
+    pub fn world_view(self) -> WorldView<'a>;   // borrowing; non-empty by construction (query.md §2.3)
 }
 
 /// A PROVEN optimum — no public constructor; it exists only because the solver proved it.
 pub struct Optimum { /* levels, in the objectives' own terms */ }
+
+/// The optimization run handle — the same *resolution* register as `Solved`
+/// (`determination`/`into_determination`/`conclusion`), specialised with `optimum`/`trajectory` in place
+/// of the plain-enumeration accessors, so `optimize` is a sibling of `solve`, not a second vocabulary
+/// (§6.4). Its optimal answer sets / world view are read through the resolved `Determination`'s
+/// `Consistent` world view, ranging over the OPTIMAL set (§5.2) under the optimum-proven/exhausted gate.
+impl<'a> Optimized<'a> {
+    pub fn into_determination(self) -> Determination<'a>;   // resolve (consuming) — Consistent ranges over the optimal set
+    pub fn determination(&mut self) -> Determination<'_>;   // inspect in place
+    pub fn optimum(&self) -> Option<Optimum>;               // the proven optimum, once proved
+    pub fn trajectory(&mut self)                            // the improving sequence — Some iff the request asked (§5.3)
+        -> Option<impl Iterator<Item = Result<Optimum, Fault>> + '_>;
+    pub fn conclusion(&self) -> Option<Conclusion>;
+}
+
+/// Cautious (⋂) or brave (⋃) consequences — a set of ground `Symbol`s carrying the `Mode` that produced
+/// it and, under an objective, whether it ranged over the OPTIMAL set or all stable models (§2.4, §5.2).
+#[non_exhaustive]
+pub struct Consequences { /* Symbol set + Mode + the optimal-vs-all marker */ }
+pub enum Mode { Cautious, Brave }
 ```
 
 - Answer sets are **owned, streamable** values — the lazy `Result`-iterator above. Cost: streaming
@@ -442,63 +482,169 @@ impl Fault { pub fn is_backend_bug(&self) -> bool; }  // a closed bit
 - **Faults** are values with the closed locus taxonomy above, with "is this a backend bug" a closed
   bit; they are `themelios-base` diagnostics (loci and provenance), solved once, here, for every
   consumer.
+- **Statistics** are exposed per solve through a `Statistics` trait — engine-scoped, provenance-marked,
+  typed data (v1: the clingo adapter provides clingo's own). The minimal v1 shape a consumer reads:
+
+  ```rust
+  pub trait Statistics {
+      fn measurements(&self) -> impl Iterator<Item = Measurement> + '_;   // named, typed, provenance-marked
+  }
+  #[non_exhaustive]
+  pub struct Measurement { /* engine-scoped name, a typed Value, and the engine that produced it */ }
+  ```
+
+  The reserved *normalised* cross-backend schema (§14) is a distinct typed **view that consumes** this
+  trait — normalising engine-scoped `Measurement`s into cross-backend ones (a normalised name is not
+  engine-scoped, so it is a consumer, not an implementor) — so it lands as an additive drop-in, touching
+  neither the trait nor `Measurement`, not a breaking change to what a v1 consumer reads.
 
 Every model in this section is typed data first, with a human `Display` and a machine-consumable view
 as derivations (§1.3).
 
 ---
 
-## 6. Sessions and multi-shot mechanics
+## 6. The agent and the reasoning loop
 
-### 6.1 Ownership is the capability substrate
+### 6.1 An agent is a program reified as a reasoner
 
-A session is an **owned value** — the authority to drive the engine. Dropping it is revocation; there
-is no ambient engine and no global mutable state.
+The driving surface is not a session on a solver. **A program made active is an agent** — the same
+knowledge seen not as an object of study but as a reasoner one drives. What individuates one agent from
+another is its knowledge; the loop that drives them is uniform (the Gelfond–Kahl agent). So an agent is
+**instantiated from a `Program` that becomes its knowledge base**, and the primary register's nouns are
+exactly two: `Program`, the knowledge at rest, and `Agent`, the knowledge in action. Neither `Solver`
+nor `Session` appears in the user-facing register — which engine reasons is the installation's business
+(§1.4).
 
 ```rust
-pub struct Session<B: Backend> { /* owns the backend + the program-side state (§6.2) */ }
+pub struct Agent<B: Backend> { /* owns the backend + the evolving knowledge base (§6.2) */ }
 
-impl<B: Backend> Session<B> {
-    pub fn solve(&mut self) -> Result<Solved<'_>, Fault>;                    // no-options path
+impl<B: Backend> Agent<B> {
+    pub fn new(knowledge: Program, backend: B) -> Self;   // the agent OWNS its knowledge base
+    pub fn knowledge(&self) -> &Program;                  // inspect the evolving knowledge base
+}
+
+// The facade prelude hangs the just-works reification on the program tier's `Program` through an
+// extension trait — the idiomatic way to add a method to a lower tier's type; `DefaultEngine` is the
+// facade's default backend (§2.2). The single-shot question surface (§6.4) rides the same trait.
+pub trait Reason {
+    fn into_agent(self) -> Agent<DefaultEngine>;          // reify with the default engine
+    // The single-shot questions (§6.4): each BORROWS the program, lowers it into an ephemeral engine the
+    // returned handle owns, and drives it — so `p` stays usable after, and there is no extra clone (the
+    // lowering is the solve's own cost, §10.1). Refusal: engine/request `Fault`.
+    fn determination(&self) -> Result<Determination<'static>, Fault>;
+    fn optimize(&self, req: &OptimizeRequest) -> Result<Optimized<'static>, Fault>;
+    fn solve(&self) -> Result<Solved<'static>, Fault>;
+}
+impl Reason for Program { /* … */ }
+```
+
+`into_agent` **consumes** the program, and the C-CONV cost/ownership convention fixes that prefix: an
+agent *owns and evolves* its knowledge (§6.2) and outlives any borrow (the service posture), so this is
+an owning `owned → owned` conversion, not a free borrowed view — `String::into_bytes`, whose receiver's
+content lives on inside the result, is the exact analogue. (`as_agent` would signal a cheap borrowed
+view and could back neither an evolving knowledge base nor a `'static`-embeddable agent.)
+
+Ownership is the capability substrate, unchanged from the tier's discipline. An agent is an **owned
+value** — the authority to drive the engine; dropping it is revocation, and there is no ambient engine
+or global mutable state. Asking a question borrows the agent (`&mut self`), so the borrow checker *is*
+the "no mutation while reasoning" lock, and the reasoning state machine (initial → grounded → prepared →
+solved) is expressed in ownership and borrowing rather than runtime checks — an out-of-order call does
+not compile. Thread posture is explicit per backend, and cancellation-from-another-thread is a declared
+capability whose handle (`Interrupt`) is `Send`. Because the agent *owns* its knowledge rather than
+borrowing a `Program` off a stack frame, it is embeddable behind a service boundary or an editor host
+without ceremony — the LSP/pythia posture (specification §1.2, §9.4). Cost: agent construction is one
+engine handle; a question's cost is the engine's, streamed (§5.2).
+
+*The name.* "Agent" is the Gelfond–Kahl term, adopted with its §1.4 warrant and a scope stated so it is
+not over-read: themelios provides the agent's **knowledge and reasoning**; observing and acting upon the
+world are the embedding application's. This is the same move `query.md` §4 makes for the borrowed term
+`WorldView` — a literature name taken deliberately, with its scope named.
+
+### 6.2 The reasoning loop: observe, modify, ask, act
+
+An agent is driven by the loop the architecture names — **observe the world, update the knowledge base,
+reason, act, and repeat.** The *content* of each step is logical (extend or amend the knowledge, then
+ask a question of it); the *state* the loop carries across steps — the grounding, the engine's warm
+search, the open truths in force — is the agent's, retained rather than rebuilt. The tier's footprint in
+this loop is **modify + ask + record-observation**: the embedding application *senses* the world and
+expresses what it sensed as `Facts`; `observe` is the agent *recording* those observations into the
+knowledge base; and *act* has no themelios primitive — the application acts on the typed answers of the
+*ask* step. (This is the §6.1 boundary: themelios provides the agent's knowledge and reasoning; the
+sensing and the acting are the application's.) Multi-shot *is* this loop; a single question is the loop's
+body run once (§6.4).
+
+```rust
+impl<B: Backend> Agent<B> {
+    // --- modify the knowledge base (the logical register) ---
+    pub fn assert(&mut self, stmt: impl Into<Statement>) -> Result<StatementId, Fault>; // add a statement
+    pub fn retract(&mut self, stmt: StatementId) -> Result<(), Fault>;                   // remove it (below)
+    pub fn observe(&mut self, facts: impl Facts) -> Result<Observation, Fault>;          // bulk-assert (§7.3)
+    pub fn forget(&mut self, obs: Observation) -> Result<(), Fault>;                     // retract an observation
+
+    // --- retained full-fidelity multi-shot mechanisms (the loop's realisation floor) ---
+    pub fn ground(&mut self, parts: &[Part]) -> Result<(), Fault>;          // instantiate #program parts
+    pub fn assign_external(&mut self, ext: Symbol, v: TruthValue) -> Result<(), Fault>; // toggle an open truth
+
+    // --- ask (the shared question vocabulary — the same names the bare `Program` carries, §6.4) ---
+    pub fn solve(&mut self) -> Result<Solved<'_>, Fault>;                  // the run handle: stream, inspect, resolve
     pub fn solve_with(&mut self, opts: SolveOptions) -> Result<Solved<'_>, Fault>;
-    pub fn ground(&mut self, parts: &[Part]) -> Result<(), Fault>;
-    pub fn assign_external(&mut self, ext: Symbol, v: TruthValue) -> Result<(), Fault>;
+    pub fn determination(&mut self) -> Result<Determination<'_>, Fault>;   // resolve → the trichotomy (§5.1);
+                                                                           //   WorldView read from Consistent (query.md §2)
+    pub fn optimize(&mut self, req: &OptimizeRequest) -> Result<Optimized<'_>, Fault>;
     pub fn solve_assuming(&mut self, s: &Scenario) -> Result<Solved<'_>, Fault>;
-    pub fn interrupt(&self) -> Interrupt;   // a cancellation handle, if declared (§6.3)
+    pub fn interrupt(&self) -> Interrupt;                                  // a cancellation handle (§6.3)
 }
 ```
 
-`solve` borrows the session (`&mut self`), so the borrow checker *is* the "no mutation while solving"
-lock, and the multi-shot state machine (initial → grounded → prepared → solved) is expressed in
-ownership and borrowing rather than runtime checks — an out-of-order call does not compile. Thread
-posture is explicit per backend, and cancellation-from-another-thread is a declared capability whose
-handle (`Interrupt`) is `Send`. A session is embeddable behind a service boundary or an editor host
-without ceremony — the LSP/pythia posture (specification §1.2, §9.4). Cost: session construction is
-one engine handle; `solve`'s cost is the engine's, streamed (§5.2).
+**Assertion is monotone and clean; retraction is the sharp edge, made honest by owning the knowledge
+base.** `assert` adds one statement — any `Statement` (`program.md` §4.2): a rule, a fact, a
+constraint, an objective (`Optimize`) — and returns a `StatementId` naming it; `ground` instantiates a
+named `#program` part with arguments — the two are the fine- and coarse-grained faces of the same
+monotone extension. `observe` is the bulk assertion of ground facts through the `Facts` pillar (§7.3),
+the loop's *observe* step, returning an `Observation` a later step can `forget`. Because themelios
+**owns the knowledge base as a first-class `Program` value** — which neither Prolog's flat clause
+database nor an engine's write-only backend has — `retract` is a *true* operation on that value: it
+removes the named statement from the knowledge base, and the agent then realises the removal against the
+engine by the cheapest faithful means its declared capabilities allow — **toggling an external** where
+the retracted statement was so guarded and the backend declares `externals`, or **re-grounding** the
+amended program otherwise. The realisation is the agent's to choose; the register the caller writes
+stays declarative. This is why themelios can offer retraction where an engine offers only externals: it
+holds the program the external mechanism can only approximate.
 
-### 6.2 Full-fidelity multi-shot
+Retraction's two realisations diverge in cost by the whole program size and the loss of the engine's
+warm search, so — following §4.2, which forbids hiding a divergence of that magnitude behind a uniform
+signature — retraction is **disclosed before it is paid for and recorded after**: a statement's
+*retraction class* (toggle vs rebuild) is fixed at `assert`, from the backend's `externals` capability
+and whether the statement is externally guarded, and is readable from its `StatementId`; the outcome's
+provenance then records which realisation ran. A stale or duplicate handle is a typed refusal, not a
+silent no-op — `retract` of an already-retracted `StatementId`, or `forget` of a spent `Observation`,
+refuses with `Locus::Request`.
 
-The multi-shot surface exposes the *complete* capability the engine offers, no lowest-common
-denominator: build and ground `#program` parts incrementally, assign and release externals, solve
-under assumption scenarios, interrupt, and re-solve. The session **retains the program-side state** it
-needs to drive the cycle — it does not lower parts and then forget them (a lowering that discards the
-parts it lowered cannot drive the cycle) — so the two-representation correspondence (owned program ↔
-engine-internal state) is maintained across ground/solve/assign, which is also what makes a transform
-on the owned side have a defined effect under multi-shot. Cost: retained state is `Θ(program size)`,
-not `Θ(ground size)` — the ground instantiation stays in the engine.
+Two things are deliberately *not* inherited from Prolog's `assert`/`retract`: the `asserta`/`assertz`
+ordering variants are absent (clause order is meaningless under answer-set set-semantics), and the
+logical-update-view hazards do not arise, because the knowledge base is amended **between** questions, at
+the loop's step boundary, never during a running search. The modification methods rest on the
+capabilities their realisation uses — `multi_shot` to ground an added statement or part incrementally,
+`externals` for the external-toggle retraction path; where a backend declares neither, the agent falls
+back to re-grounding the amended `Program`, which any backend that solves at all supports. The retained
+state upholds the two-representation correspondence (owned program ↔ engine-internal state) across the
+cycle, which is also what gives a transform on the owned side a defined effect under multi-shot. Cost:
+retained state is `Θ(program size)`, not `Θ(ground size)` — the ground instantiation stays in the
+engine (§10); an external-toggle step is `O(1)` at the seam, a rebuild is one lowering (§10.1).
 
 ### 6.3 Per-operation typed options; budgets; cancellation; assumptions
 
 Configuration, where it exists at all, is **surfaced at the operation it affects and nowhere else** —
-solve-options at `solve`, grounding-options at `ground`, and so on. Each is a typed options value
-carrying `Default` (the empty case is free) and `#[non_exhaustive]` (a new knob is not a breaking
-change), surfaced either as a paired method (`solve()` clean, `solve_with(SolveOptions)` configured)
-or a fluent builder on the request. The bare `solve()` stays a no-options call — the pristine "just
-the abstract object" path.
+solve-options where answer sets are asked, grounding-options where knowledge is asserted, and so on.
+Each is a typed options value carrying `Default` (the empty case is free) and `#[non_exhaustive]` (a new
+knob is not a breaking change), surfaced either as a paired method (`solve()` clean,
+`solve_with(SolveOptions)` configured) or a fluent builder on the request. The bare ask stays a
+no-options call — the pristine "just the abstract object" path.
 
 **Assumptions and scenarios are typed request-side values**, defined once so the blame surface (§5.4)
-and multi-shot both use them. An `Assumption` fixes one program atom true or false for a solve; the
-*raw set* of them is what the literature calls **assumptions**, and it is what `solve_assuming` scopes
+and the reasoning loop both use them. An `Assumption` fixes one program atom true or false for one
+question; the *raw set* of them is what the literature calls **assumptions**, and it is what
+`solve_assuming` scopes
 by and what blame (§5.4) reports. A **`Scenario`** is this library's coined term (specification §8) for
 a *reusable, named assumption configuration* — the §1.4 reason it owes: the literature's word names the
 raw sets, so a named, reusable *bundle* of them is a concept this library introduces and therefore
@@ -523,11 +669,53 @@ pub trait IntoAssumption { fn into_assumption(self) -> Result<Assumption, NotAnA
 // scenario! { p(1), not q(2) }  ==>  Result<Scenario, NotAnAssumption>   (macro law, §3.2)
 ```
 
+Assumptions and retraction are distinct on purpose: an assumption fixes an atom's truth for the span of
+one question and is discharged after it (a hypothesis — *if this held, what would follow?*); a
+retraction (§6.2) amends the knowledge base itself and persists (a change of mind). The reasoning loop
+uses both.
+
 **Budgets** (time at minimum, with room for model-count caps) are a typed, request-side surface;
 enforcement is a declared capability — an engine without native support gets it through the adapter's
 cancellation machinery — and `Conclusion::Budget` reports a hit budget as what it is. The long tail of
 engine parameters, when a real consumer needs it, follows the two-tier facade pattern (typed knobs
 over a legible open form); it is YAGNI-gated, grown on demand, never a CLI-string passthrough.
+
+### 6.4 Single-shot: the questions asked of a program directly
+
+The simplest use asks a question of a program with no loop around it. The **question vocabulary lives on
+`Program` itself**, through the same facade `Reason` trait that provides `into_agent` (§6.1) — the
+logician's questions asked of the object, the register made literal. Because there is no retained agent
+to borrow against, the bare forms return **owned** results — the owned analogue of §5's borrowed handles:
+
+```rust
+p.determination()?  // owned Determination<'static> (§5.1): Consistent(Models<'static>)→world_view() / Inconsistent(blame) / Inconclusive
+p.optimize(&req)?   // owned Optimized<'static> (§5.2): trajectory, proven Optimum, optimal world view
+p.solve()?          // the owned run handle: stream, inspect, resolve
+```
+
+These are **exactly the agent's questions, asked once.** The engine-ownership principle, stated per
+handle so a builder can implement it: **each bare handle owns the ephemeral agent it drove and drops it
+when the handle drops.** So a returned answer-set stream or `WorldView` stays *lazy* — it retains the
+engine to pull the next member or to re-enter the solver for a conjunctive query — and §5.2's
+constant-resident guarantee and query.md §2.3's opt-in materialisation hold for the bare form exactly as
+for the agent. The agent's forms (§6.2) borrow against the agent you retain; the bare forms *own* it.
+That is the only difference; the answers are the same. Concretely the reading resolves to a
+`Determination`: from a retained agent, `agent.determination() -> Result<Determination<'_>, Fault>`,
+whose `Consistent` world view **borrows** the agent (§5.2's consuming resolver threads the borrow); from
+a bare `Program`, `p.determination() -> Result<Determination<'static>, Fault>`, **owning** its ephemeral
+engine; and `WorldView::materialize` (query.md §2.3) turns a live world view into an owned engine-free
+`Snapshot` when one must outlive its agent. `Fault` is reserved for engine/request errors — an
+inconsistent (blame-carrying) or inconclusive program is a value of the `Determination`, never a `Fault`
+(§5.1). So the identity is denotational — the reading is the same, the ownership differs:
+
+```rust
+p.determination()   and   p.into_agent().determination()   read the same determination
+```
+
+so the *questions* are the shared spine and the loop is only what multi-shot adds. This is why the tier
+keeps no separate one-shot API in step with the multi-shot one: there is one question vocabulary, hosted
+bare or in the loop. Cost: identical to the agent's; the ephemeral engine lives for the returned handle's
+lifetime, not merely the call's.
 
 ---
 
@@ -535,13 +723,13 @@ over a legible open form); it is YAGNI-gated, grown on demand, never a CLI-strin
 
 ### 7.1 The mechanism
 
-Named Rust functions (or a context value) register on a session; `@name(args)` calls into Rust through
+Named Rust functions (or a context value) register on an agent; `@name(args)` calls into Rust through
 a **panic-containing trampoline**; arguments and results cross as typed symbols via the conversion
 pillar; multi-valued returns are supported; a failing `@`-function is a typed ground-time fault with a
 locus.
 
 ```rust
-/// A registered ground-time function. Registration is on the session (§4.1).
+/// A registered ground-time function. Registration is on the agent (§4.1).
 pub trait Function {
     fn call(&self, args: &[Symbol]) -> Result<SmallVec<Symbol>, GroundFault>;  // multi-valued
 }
@@ -851,7 +1039,7 @@ Two roster points this tier discharges specifically:
 - **`theory-uniformity` (witness 15) is discharged by a worked CP witness *in themelios*.** With the
   clingcon adapter superseded (§11.1, §16), theory-uniformity is demonstrated by a worked CP
   propagator — `alldifferent` + `&sum`, real global-constraint CP — whose constraint assignments read
-  back through `TheoryAssignments` (§5.4) as typed data, with the session-driving and outcome-reading
+  back through `TheoryAssignments` (§5.4) as typed data, with the agent-driving and outcome-reading
   code identical to first-solve but for the propagator registration. This is the §9.5 contingency's
   "demonstrated through the propagator surface," made permanent; the full best-of-breed CP theory is
   the satellite (§8.3, §14), of which this witness is the in-themelios floor.
@@ -865,8 +1053,9 @@ exercises query), making the crate-home split visible in the learning surface.
 
 **The whole stack is the target.** There is no minimal "first increment" and no deadline pressure; the
 mission-critical quality bar governs the pace, not a ship date. When the stage is done, the complete
-tier ships: the contract, the outcome vocabulary and models, sessions and full multi-shot, all four
-centerpieces and extraction, the bridge and its ground-program-IR capability, the potassco (clingo)
+tier ships: the contract, the outcome vocabulary and models, the agent and full multi-shot (the
+reasoning loop), all four centerpieces and extraction, the bridge and its ground-program-IR capability,
+the potassco (clingo)
 adapter, the reference solver, the facade, and the example set (reactive-tier witnesses included). The
 query tier ships with it (`query.md`).
 
@@ -878,8 +1067,30 @@ The **reserved seams** are only the genuinely-separate:
   the difference-logic witness, and the CP theory-uniformity witness of §13.4 — not the satellites);
 - **multi-threaded propagation** (the engine-level parallel-propagation problem, specification §9.6 —
   distinct from the intra-propagator parallelism of §8.4, which ships);
-- the **native grounder and solver** (a separate program that implements this contract and grows the
-  fragment-backend seed of §12);
+- the **native grounder and solver** — a separate engine that implements this contract and grows the
+  fragment-backend seed of §12. This is **not hypothetical**: a clingo-free native answer-set engine on a
+  candidate-generation + Ferraris-reduct-checking architecture (deliberately *not* CDNL) — **zetesis**,
+  co-designed as an estate member — is being built to this contract, so the native-engine seam has a real
+  anchor (§10.4's "the anchor exists" test), not a hypothetical one. The contract's
+  **architecture-neutrality is argued, not asserted**, and the argument stands on its own: the
+  `Determination`/`Conclusion` split (§5.1) separates the logical question from the search question, so
+  no engine's operational vocabulary can leak into the surface. That a native engine on a *radically
+  different* (non-CDNL) architecture is being built to the very same contract bears that neutrality out —
+  corroboration, not the proof, which is §5.1. Such an engine slots in behind `Backend` as a further
+  backend when its adapter is built; being one-shot, it declares `multi_shot: false` and refuses the
+  reasoning loop's mechanisms (§4.2) until, if ever, it grows them;
+- the **normalised, cross-backend statistics schema.** v1 *does* ship statistics — the clingo adapter
+  exposes clingo's own, engine-scoped and provenance-marked, behind the **`Statistics` trait whose v1
+  shape §5.4 states**, so a clingo-backed user keeps a capability the comparator has (§15 criterion 2).
+  What is reserved is the
+  *normalised cross-backend schema*: clingo and zetesis measure *different work* by construction — CDNL
+  decisions/conflicts/restarts versus region-candidate search, reduct-closure rounds, and gate coverage —
+  so a normalised schema drafted with one engine live would be guesswork. Because v1's statistics already
+  sit behind the trait, that normalised surface — designed when a second engine (zetesis) is live and both
+  measurement models can be read together — is a **later typed view that consumes the trait, an additive
+  drop-in** (it touches neither the trait nor `Measurement`), not a breaking change; the future
+  **multi-backend benchmarking driver** (themelios-solve as a neutral harness
+  over a corpus) builds on the trait;
 - and the standing specification seams that touch this tier: the ground-program observer's fuller
   surface beyond what the committed §10.4 capability delivers, formal-methods tooling over the TCB,
   and additional engine backends beyond the Potassco family.
@@ -899,18 +1110,29 @@ The tier is done when all of the following hold:
    declarative macro face and a clean composable programmatic face, both first-class, coherent end to
    end, held to the Rust-exemplar bar and the comparator against clingo's Python API (specification
    §3.1).
-3. **Full multi-shot fidelity** — assumptions, `#program` parts, repeated ground/solve, externals — no
-   lowest-common-denominator, program-side state retained.
+3. **Full multi-shot fidelity, as the reasoning loop.** The agent drives the Gelfond–Kahl loop —
+   observe / assert / retract / ask — over retained program-side state: assumptions, `#program` parts,
+   repeated ground/solve, externals, and statement-level assertion and true retraction, no
+   lowest-common-denominator. A single-shot question is the loop's body run once (§6.4). A backend that
+   lacks the loop's mechanisms declares them absent (§4.1) and refuses rather than degrading — a native
+   one-shot engine is a conformant backend.
 4. **The extension surfaces are complete and pleasant.** `@`-functions (with the library door and the
    `Facts` bulk conversion) and the propagator platform (validated against the DL/CP/LP litmus, the CP
    half a *full* constraint theory), each idiomatic-Rust and engine-portable; extraction over the
    conversion pillar.
-5. **The committed clients build with minimal friction.** The design is validated against the
-   definitely-planned in-house satellites: **elenctic** (the reading/query half), **xclingo** (the
-   explanation half — the ground-program-IR capability), the **full in-house clingcon alternative**
-   (the CP theory on the propagator platform), and **a theory-driven service consumer** (the
-   pythia-class boundary — theory-driven solving + the service posture). The standard is absolute: *if
-   a client cannot be built cleanly on the abstractions, the design is short.*
+5. **The committed clients build with minimal friction, in a stated order.** The design is validated
+   against the definitely-planned arm's-length products — each its own repository on the keryx/morphe
+   pattern — built in the order they stress the surface, from the primary register outward: **(1)
+   elenctic**, the reading/query half (`query.md` §4), built first and the near-term priority (it
+   retires the standing Python project); **(2) the full in-house clingcon alternative**, the CP theory
+   on the propagator platform, which exercises the deepest seam and against which the design is
+   pressure-tested up front (§8, the worked CP witness §13.4); **(3) xclingo**, the explanation half,
+   over the ground-program-IR capability (§10.4). A **theory-driven service consumer** (the pythia-class
+   boundary) rides on these. Each is a first-consumer checkpoint that closes before the surface it drives
+   is called done and then continues as a product; elenctic and xclingo, on the question and provenance
+   layers, may drive additive surface revisions afterward, the way keryx/morphe drove the program/syntax
+   regularity pass. The standard is absolute: *if a client cannot be built cleanly on the abstractions,
+   the design is short.*
 6. **The bridge is fast and faithful** — the differential against the engine and the worst-case
    tripwires green (§10.1, §13.3).
 7. **The example set ships** (§13.4), and the mission bar holds throughout (§13.3).
@@ -943,6 +1165,18 @@ The tier is done when all of the following hold:
 - **Intra-propagator parallelism (§9.6).** Ships as a v1 capability the specification does not mention
   (§8.4); consistent with §9.6's "single solver thread," and distinct from the reserved engine-level
   multi-threaded-propagation seam.
+- **The driving surface (the multi-shot presentation).** Presented as the **agent and the reasoning
+  loop** (§6): an `Agent` is a `Program` reified as its knowledge base, driven by the Gelfond–Kahl
+  observe/modify/ask/act loop, with a declarative `assert`/`retract`/`observe`/`forget` register beside
+  the retained `#program`-part and external mechanisms. It rests on the existing contract — retraction is
+  realised via `lower` (rebuild) or `assign_external` (toggle), so no new required `Backend` method — and
+  the question vocabulary is shared with a single-shot surface on `Program` (§6.4). The specification's
+  full-multi-shot obligation is met in full; only its presentation changes, from a session/control model
+  to the agent loop.
+- **Statistics.** v1 ships engine-scoped statistics behind a `Statistics` trait (§5.4; the clingo
+  adapter exposes clingo's own, provenance-marked); the **normalised cross-backend schema** is the
+  reserved seam (§14), a later typed view that consumes the trait — an additive drop-in when a second
+  engine is live and the divergent measurement models can be co-analysed.
 
 **Trust architecture.** `themelios-solve`, `themelios-query`, and `themelios-reference` are
 `forbid(unsafe_code)`, FFI-free by dependency closure. `themelios-potassco-sys` carries the vendored
@@ -983,3 +1217,23 @@ necessity where it is declared.
    set named "assumptions", and blame carries the raw responsible subset (§6.3, §5.4). `Facts::facts()`
    corrected to yield `Symbol` (§7.3). The `themelios-potassco` family-name warrant leads with
    forward-compatibility (§11.1). The clingcon supersession's revised §4 form is restated (§16).
+4. **The reasoning-loop reframe** (2026-09-23). The driving surface is recast from a session/control
+   model to the **agent and the Gelfond–Kahl reasoning loop** (§6): `Agent<B>`, a `Program` reified as
+   its knowledge base via the C-CONV owning conversion `into_agent`; a declarative
+   `assert`/`retract`/`observe`/`forget` knowledge register — true retraction realised over the existing
+   contract (external-toggle or rebuild), no new required `Backend` method — beside the retained
+   full-fidelity `#program`-part and external mechanisms; and the question vocabulary shared with a new
+   single-shot surface on `Program`, single-shot being the loop's body run once (§6.4). The reading resolves through a consuming
+   `Solved<'a>`/`Optimized<'a>` → `Determination<'a>` resolver (§5.2) that threads the engine borrow:
+   `agent.determination()`/`p.determination()` return the trichotomy (`Fault` reserved for engine/request
+   errors), the `WorldView` read from `Consistent` is the live, engine-driving handle (borrowing a
+   retained agent, or owning an ephemeral engine single-shot) with fallible `&mut` reads, while
+   `WorldView::materialize` yields an engine-free `Snapshot` with infallible reads; `Optimized` shares
+   `Solved`'s resolution register. The native-engine seam names
+   **zetesis** — a co-designed, clingo-free candidate/reduct engine (non-CDNL) built to this contract,
+   anchoring the seam, with architecture-neutrality argued on the §5.1 split (zetesis corroborates, not
+   proves) — and v1 ships engine-scoped statistics behind a `Statistics` trait (v1 shape stated §5.4), the
+   normalised cross-backend schema reserved as a later drop-in view that consumes the trait (§14). The committed
+   clients are ordered elenctic → clingcon → xclingo, elenctic first and the near-term priority, with the
+   design pressure-tested against clingcon's deep seam up front (§15). Session/driving vocabulary updated
+   throughout (§2–§3, §7, §13); the amendments are consolidated in §16.

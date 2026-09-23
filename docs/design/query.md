@@ -17,6 +17,11 @@ The register of this document matches its built siblings (`program.md`, `analysi
 load-bearing surface is stated as a Rust signature with its refusal and its cost model. The
 implementation is written at build time; the types, the laws, and the costs are decided here.
 
+**Assumed fluency.** Fluent Rust and ASP as the grammar and specification of record state it; not
+assumed are an engine's internals. *Taught, not assumed:* the three-valued epistemic reading (§2.2) and
+the epistemic-specifications frame behind `WorldView` (§4), for an application author new to that
+literature.
+
 ---
 
 ## 1. Keystone: the epistemic reading
@@ -65,8 +70,14 @@ without foreclosing the others.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Answer { Yes, No, Unknown }
 
-// A world view: an owned, non-empty-by-construction collection of answer sets (§2.3).
-pub struct WorldView { /* private; see §2.3 for the invariant */ }
+// A program's world view (§2.3), in two forms split along the ENGINE axis (not the ownership axis):
+// `WorldView<'a>` is the LIVE, engine-driving handle — borrowing the agent's engine (`'a`, from a
+// retained agent, solve.md §6.2) or owning an ephemeral one (`'static`, from a single-shot `Program`,
+// solve.md §6.4); its engine-driving reads are FALLIBLE (`&mut self -> Result<_, Fault>`, §2.3).
+// `Snapshot` is the engine-free owned value from `WorldView::materialize`; its reads are INFALLIBLE
+// (`&self`, pure data). Both are non-empty by construction (§2.3).
+pub struct WorldView<'a> { /* live, engine-driving; see §2.3 for the invariant */ }
+pub struct Snapshot     { /* engine-free, owned — the materialised world view (§2.3) */ }
 
 // Cautious (⋂) / brave (⋃) consequences — the solve tier's typed sets, re-exported for the
 // reading side (solve.md §5.2), each carrying the mode that produced it.
@@ -78,7 +89,9 @@ pub struct Bindings { /* yes / no / brave-unknown partitions */ }
 
 // The central input to `answer`/`entails`: a ground query — an atom, a literal, or a conjunction.
 // Construction REFUSES a non-denoting term (arithmetic-with-variable, interval, pool) — the refusal
-// §3.1 describes — so `answer`/`entails` are infallible: a `Query` that EXISTS denotes.
+// §3.1 describes — so a `Query` that EXISTS denotes: the reads never fail on query *validity*. (On the
+// live `WorldView` they still return `Result<_, Fault>` for engine faults/exhaustion, §2.3; on a
+// `Snapshot` they are infallible.)
 pub struct Query { /* atom | literal | conjunction — a closed set of denoting shapes */ }
 impl Query {
     pub fn of(atom: Atom) -> Result<Self, NotAQuery>;             // an atom/literal; refuses non-denoting
@@ -135,8 +148,11 @@ reason `Answer` is not a projection of the consequence sets.
 **Signature and cost.**
 
 ```rust
-impl WorldView {
-    /// The Gelfond–Kahl three-valued reading of a ground query.
+impl<'a> WorldView<'a> {   // the LIVE handle — engine-driving, fallible
+    /// The Gelfond–Kahl three-valued reading of a ground query (drives the engine; §2.3).
+    pub fn answer(&mut self, q: &Query) -> Result<Answer, Fault>;
+}
+impl Snapshot {            // the engine-free form — the same reading over materialised data, infallible
     pub fn answer(&self, q: &Query) -> Answer;
 }
 ```
@@ -172,31 +188,56 @@ a value meaning "invalid" inside the space of valid world views would be a senti
 `solve.md` §5.3 forbids.)
 
 ```rust
-impl WorldView {
+impl<'a> WorldView<'a> {   // the LIVE handle — engine-driving reads are `&mut self -> Result<_, Fault>`
     // --- primitives (the exposed surface of §1.1) ---
-    pub fn cautious(&self) -> Consequences;                       // ⋂ — see §2.4
-    pub fn brave(&self) -> Consequences;                          // ⋃ — see §2.4
-    pub fn members(&self) -> impl Iterator<Item = Result<AnswerSet, Fault>> + '_;
-    pub fn is_exhausted(&self) -> bool;                           // the search closed the space
-    pub fn scenario(&self) -> &Scenario;                         // what it ranged over
+    pub fn cautious(&mut self) -> Result<Consequences, Fault>;    // ⋂ — one solve (§2.4)
+    pub fn brave(&mut self) -> Result<Consequences, Fault>;       // ⋃ — one solve (§2.4)
+    pub fn members(&mut self) -> impl Iterator<Item = Result<AnswerSet, Fault>> + '_;
+    pub fn is_exhausted(&self) -> bool;                           // pure — the search closed the space
+    pub fn scenario(&self) -> &Scenario;                         // pure — what it ranged over
+    pub fn materialize(self) -> Result<Snapshot, Fault>;         // drain to an engine-free snapshot (eager; opt-in)
 
-    // --- derived readings ---
+    // --- derived readings (drive the engine) ---
+    pub fn answer(&mut self, q: &Query) -> Result<Answer, Fault>;              // §2.2
+    pub fn bindings(&mut self, pat: &Atom) -> Result<Bindings, Fault>;         // §2.5 (a non-pattern → Locus::Request)
+    pub fn entails(&mut self, q: &Query) -> Result<bool, Fault>;               // §2.6 (ASP-Core-2 cautious)
+}
+
+/// The engine-free form: `WorldView::materialize` drained the world view into owned data, so every read
+/// is INFALLIBLE `&self`. Non-empty by construction and complete, like the live handle it came from.
+impl Snapshot {
+    pub fn cautious(&self) -> Consequences;
+    pub fn brave(&self) -> Consequences;
+    pub fn members(&self) -> impl Iterator<Item = &AnswerSet> + '_;
+    pub fn is_exhausted(&self) -> bool;                           // a snapshot is complete
+    pub fn scenario(&self) -> &Scenario;
     pub fn answer(&self, q: &Query) -> Answer;                    // §2.2
-    pub fn bindings(&self, pat: &Atom) -> Result<Bindings, NotAPattern>; // §2.5 (a pattern is a signed Atom)
-    pub fn entails(&self, q: &Query) -> bool;                     // §2.6 (ASP-Core-2 cautious)
+    pub fn bindings(&self, pat: &Atom) -> Result<Bindings, NotAPattern>; // §2.5 — only query-validity can refuse
+    pub fn entails(&self, q: &Query) -> bool;                     // §2.6
 }
 ```
 
 Properties and cost:
 
-- **Owned, exhaustion-gated, scenario-scoped.** A universal reading (all members, all optimal, a
-  cautious consequence) is answerable only from a search that closed the space; `is_exhausted` gates
-  it, and a truncated search cannot answer a universal (the accessor refuses, §3.2).
+- **Live vs snapshot, exhaustion-gated, scenario-scoped.** A `WorldView<'a>` is the live handle —
+  borrowing the agent's engine (`'a`) or owning an ephemeral one (`'static`, single-shot, solve.md §6.4);
+  a `Snapshot` (from `materialize`) owns its data, engine-free. A universal reading (all members, all
+  optimal, a cautious consequence) is answerable only from a search that closed the space; on the live
+  handle a truncated search makes the accessor **return `Err`** (§3.2), and `is_exhausted` gates it; a
+  `Snapshot` is complete by construction.
 - **Lazy where possible.** Because a world view can have very high cardinality (exponentially many
   answer sets), `cautious`/`brave` go through the **native door** (§2.4) — one solve, *no*
   enumeration — and `members` **streams** (each item a `Result`, so a mid-stream engine fault surfaces
   at the item, not as a clean end). Materializing the whole member set is **opt-in, never forced**;
   genuine lazy/incremental *machinery* beyond streaming is the specification's §7.8 reserved seam.
+- **Receiver, fallibility, and exclusion.** The live `WorldView<'a>` drives the engine, so its reads
+  take **`&mut self` and return `Result<_, Fault>`** — matching `solve.md`'s `Solved` (compile-time
+  serialisation by the borrow checker, no interior mutability), and giving engine faults, the exhaustion
+  refusal, and a non-pattern each a typed home (`Fault`, with `Locus` as appropriate). Holding a `members`
+  stream (a `&mut` borrow) therefore *cannot* overlap another read — the borrow checker forbids it at
+  compile time, so there is no runtime re-entrancy case to refuse. The **`Snapshot`** (from `materialize`)
+  needs no engine; its reads are infallible `&self`. The fallibility axis lives here — engine-driving vs
+  engine-free — kept off the ownership/lifetime axis.
 - **Under an optimization objective the world view is the set of *optimal* answer sets** — those tied
   at the proven optimum (`solve.md` §5.2); with no objective it is all stable models (the degenerate
   case). A query therefore ranges over *the answer sets the program denotes*, uniformly, so the
@@ -212,9 +253,9 @@ computed in, so a value that has travelled still says which question it answers.
 answer sets and carry their own type for that reason.
 
 ```rust
-impl WorldView {
-    pub fn cautious(&self) -> Consequences;   // ⋂
-    pub fn brave(&self)    -> Consequences;   // ⋃
+impl<'a> WorldView<'a> {   // live — fallible; a `Snapshot`'s `cautious`/`brave` are the infallible mirror (§2.3)
+    pub fn cautious(&mut self) -> Result<Consequences, Fault>;   // ⋂
+    pub fn brave(&mut self)    -> Result<Consequences, Fault>;   // ⋃
 }
 ```
 
@@ -265,9 +306,9 @@ this surface — and it is a *different* question from the three-valued default,
 **own** operation, not a rename of `Answer`:
 
 ```rust
-impl WorldView {
+impl<'a> WorldView<'a> {   // live — fallible; a `Snapshot`'s `entails` is the infallible mirror (§2.3)
     /// The ASP-Core-2 standard's query answer: cautious, two-valued (witness 20, grammar §6.1).
-    pub fn entails(&self, q: &Query) -> bool;
+    pub fn entails(&mut self, q: &Query) -> Result<bool, Fault>;
 }
 ```
 
@@ -285,11 +326,11 @@ default-and-expose). Cost: one cautious check — a single solve through the nat
 
 **The non-ground query is answered by substitution.** The ASP-Core-2 query admits variables
 (`q(X)?`, grammar §6.1), and the standard answers a non-ground query by *substitution* — the set of
-cautiously entailed instances, not a boolean. That answer is **`bindings(pat).yes()`** (§2.5): the
+cautiously entailed instances, not a boolean. That answer is **`bindings(pat)?.yes()`** (§2.5): the
 cautiously-entailed instances of the pattern *are* the standard's cautious substitution answer, under
 the same `Yes` vs `(No ∪ Unknown)` projection `entails` draws for the ground case (an instance is in
 `yes()` iff its `answer` is `Yes`, never the three-valued partition mistaken for the two-valued cautious
-answer). So witness 20 is served for both shapes — `entails` for a ground query, `bindings(pat).yes()`
+answer). So witness 20 is served for both shapes — `entails` for a ground query, `bindings(pat)?.yes()`
 for a non-ground one — and the query surface is silent on neither.
 
 ### 2.7 The dual face
@@ -297,9 +338,17 @@ for a non-ground one — and the query surface is silent on neither.
 The query surface carries the two centerpiece faces of `solve.md` §3 through the reading side: a
 declarative macro form (a `query!` / `ask!`-style spelling of the goal, through the one grammar,
 expanding by the macro law to the same programmatic calls) and the composable programmatic form
-(`answer`, `bindings`, `cautious`, `brave`, `entails`, `world_view`). A query's goal is authored the
+(`answer`, `bindings`, `cautious`, `brave`, `entails`, and `determination` to obtain the world view). A query's goal is authored the
 same way a program's atoms are; a run-time patient name, a generated goal, or an LLM's question enter
 through the programmatic form.
+
+The `WorldView` these readings range over is obtained from a resolved `Determination`'s `Consistent`
+branch (`solve.md` §5.2), and it is the same *reading* whether a `Program` is asked directly (single-shot)
+or an `Agent` is asked within its reasoning loop (`solve.md` §6): the epistemic questions and their
+answers are identical either way. The forms differ only in whether they hold an engine — a live
+`WorldView<'_>` (borrowing the agent's engine, or owning an ephemeral one single-shot) with fallible
+reads, versus an engine-free `Snapshot` after `materialize` with infallible reads (`solve.md` §6.4) — not
+in what they answer.
 
 ---
 
@@ -360,8 +409,10 @@ model quantifier per tool.
 ## 4. Acceptance, assurance, reserved seams
 
 **elenctic is the acceptance test.** The elenctic-successor (a declarative ASP testing framework, to
-be rewritten in Rust on themelios) is the query tier's named arm's-length consumer; its `SolveResult`
-is, structurally, the solve tier's `Determination`, and its verdict system already treats
+be rewritten in Rust on themelios) is the query tier's named arm's-length consumer — and the near-term
+priority: it is built **first** among the solve-stage committed clients (`solve.md` §15) and retires the
+standing Python project. Its `SolveResult` is, structurally, the solve tier's `Determination`, and its
+verdict system already treats
 cannot-decide as a value never collapsed into "no". The standard is the tier-wide one: **if
 elenctic-on-themelios cannot be built cleanly on this surface, the design is short.** Its query-form
 classifier and its cautious/brave/optimal reasoning modes are the concrete checklist — and, per §1.1,
@@ -410,6 +461,10 @@ it.
 3. **Completeness refinements** (2026-09-03). The central `Query` type defined — an atom / literal /
    conjunction whose construction refuses a non-denoting term, which is why `answer`/`entails` are
    infallible (§2.1). `Pattern` resolved to the program tier's signed `Atom` (§2.1, §2.5). The
-   ASP-Core-2 *non-ground* query answered by substitution — `bindings(pat).yes()` as the standard's
+   ASP-Core-2 *non-ground* query answered by substitution — `bindings(pat)?.yes()` as the standard's
    cautious substitution answer (§2.6, witness 20). The native consequence door's obligation to range
    over the optimal set under an objective stated (§2.4).
+4. **Alignment with the reasoning-loop reframe** (2026-09-23). The epistemic reading is unchanged; its
+   vocabulary is aligned to `solve.md` §6's agent framing — the `WorldView` it ranges over is obtained
+   from a `Program` asked directly or an `Agent` in its reasoning loop, identically (§2.7). elenctic is
+   recorded as the **first** of the solve-stage committed clients and the near-term priority (§4).
