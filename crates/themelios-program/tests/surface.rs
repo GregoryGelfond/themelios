@@ -94,3 +94,19 @@ fn the_crate_root_names_the_doors_their_refusals_and_the_base_seam() {
     let _: Option<themelios_program::TooLarge> = None;
     let _: Option<themelios_program::base::source::Source> = None; // the `base` module door
 }
+
+/// `AnswerSet` is declared at the crate root — not because the program tier itself names it
+/// (it does not: `signature_range` returns `RangeInclusive<Symbol>`, and the `range` scan lives
+/// in the query tier), but as the declaration point the solve and query tiers re-export
+/// (their `pub use themelios_program::AnswerSet`); its audience is the outcome-reader. It is
+/// deliberately kept OUT of the prelude — the program author's working vocabulary. Locked here
+/// as the `BTreeSet<Symbol>` the pattern surface's `signature_range` scan ranges over.
+#[test]
+fn the_crate_root_declares_answer_set_as_a_btreeset_of_symbols_for_its_re_exporters() {
+    use std::collections::BTreeSet;
+    let empty: themelios_program::AnswerSet = BTreeSet::new();
+    assert!(empty.is_empty());
+    // The alias IS `BTreeSet<Symbol>` — assignable both ways with no conversion.
+    let symbols: BTreeSet<themelios_program::Symbol> = empty;
+    let _back: themelios_program::AnswerSet = symbols;
+}

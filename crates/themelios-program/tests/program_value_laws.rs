@@ -10,9 +10,9 @@ use themelios_program::analyze::DependencyKind;
 use themelios_program::program::{
     Aggregate, AggregateFunction, Arguments, Atom, Body, BodyAggregateElement, BodyElement,
     Condition, DefaultNegation, Disjunction, DisjunctionElement, FunctionAggregate, Head, Literal,
-    LiteralInner, Program, Rule, Statement,
+    LiteralInner, PartKey, Program, Rule, Statement,
 };
-use themelios_program::provenance::{Origin, Provenance, WithProvenance};
+use themelios_program::provenance::{Origin, Provenance, TransformTag, WithProvenance};
 use themelios_program::symbol::{Name, Sign, Signature, Symbol, VarName};
 use themelios_program::term::{Term, Variable};
 
@@ -297,4 +297,113 @@ fn each_anonymous_variable_is_distinct_while_a_named_one_is_deduped() {
         variables,
         vec![named("X"), Variable::Anonymous, Variable::Anonymous]
     );
+}
+
+// --- `Program::of_keyed_nodes`: the public multi-part construction door (§7.1) ---
+
+fn part_key(part: &str, formals: &[&str]) -> PartKey {
+    PartKey {
+        name: name(part),
+        formals: formals.iter().map(|formal| name(formal)).collect(),
+    }
+}
+
+fn fact_node(predicate: &str) -> WithProvenance<Statement> {
+    WithProvenance::constructed(Statement::Rule(Rule::fact(atom(predicate, vec![]))))
+}
+
+#[test]
+fn of_keyed_nodes_places_each_node_in_the_part_its_key_names() {
+    let base = part_key("base", &[]);
+    let step = part_key("step", &["t"]);
+    let program = Program::of_keyed_nodes([
+        (base.clone(), fact_node("p")),
+        (step.clone(), fact_node("q")),
+    ]);
+    assert_eq!(
+        program
+            .part(&base)
+            .expect("base present")
+            .statements()
+            .count(),
+        1
+    );
+    assert_eq!(
+        program
+            .part(&step)
+            .expect("step(t) opened")
+            .statements()
+            .count(),
+        1
+    );
+    assert_eq!(program.parts().count(), 2);
+}
+
+#[test]
+fn of_keyed_nodes_keeps_content_equal_statements_under_different_keys_distinct() {
+    // Part identity (§4.1): the SAME statement under two different part keys stays two
+    // statements, one per part — never merged. The invariant that distinguishes multi-part
+    // construction from single-part, and the reason the door carries a `PartKey` per node.
+    let step_t = part_key("step", &["t"]);
+    let step_u = part_key("step", &["u"]);
+    let program = Program::of_keyed_nodes([
+        (step_t.clone(), fact_node("p")),
+        (step_u.clone(), fact_node("p")),
+    ]);
+    assert_eq!(
+        program.part(&step_t).expect("step(t)").statements().count(),
+        1
+    );
+    assert_eq!(
+        program.part(&step_u).expect("step(u)").statements().count(),
+        1
+    );
+    assert_eq!(program.statements().count(), 2); // two statements total — not one merged
+}
+
+#[test]
+fn of_keyed_nodes_merges_content_equal_statements_under_the_same_key_unioning_provenance() {
+    let key = part_key("step", &["t"]);
+    let origin = |tag: &str| Provenance::from(Origin::Transformed(TransformTag::new(tag)));
+    let rule = || Statement::Rule(Rule::fact(atom("p", vec![])));
+    let here = WithProvenance::new(rule(), origin("here"));
+    let there = WithProvenance::new(rule(), origin("there"));
+    let program = Program::of_keyed_nodes([(key.clone(), here), (key.clone(), there)]);
+    assert_eq!(program.part(&key).expect("step(t)").statements().count(), 1);
+    let origins: Vec<Origin> = program
+        .statements()
+        .flat_map(|statement| statement.provenance().origins().cloned())
+        .collect();
+    assert!(origins.contains(&Origin::Transformed(TransformTag::new("here"))));
+    assert!(origins.contains(&Origin::Transformed(TransformTag::new("there"))));
+}
+
+#[test]
+fn of_keyed_nodes_seeds_a_present_base_even_with_no_base_node() {
+    let program = Program::of_keyed_nodes([(part_key("step", &["t"]), fact_node("p"))]);
+    assert_eq!(program.base().statements().count(), 0); // base present and empty (§4.1)
+    assert!(program.part(&part_key("base", &[])).is_some());
+}
+
+#[test]
+fn of_keyed_nodes_is_invariant_under_input_permutation() {
+    let a = (part_key("base", &[]), fact_node("p"));
+    let b = (part_key("step", &["t"]), fact_node("q"));
+    let one = Program::of_keyed_nodes([a.clone(), b.clone()]);
+    let other = Program::of_keyed_nodes([b, a]);
+    assert_eq!(one, other);
+}
+
+#[test]
+fn of_keyed_nodes_round_trips_a_multi_part_program_through_its_public_parts() {
+    let original = Program::of_keyed_nodes([
+        (part_key("base", &[]), fact_node("p")),
+        (part_key("step", &["t"]), fact_node("q")),
+        (part_key("step", &["u"]), fact_node("q")),
+    ]);
+    let keyed: Vec<(PartKey, WithProvenance<Statement>)> = original
+        .parts()
+        .flat_map(|part| part.statements().map(|s| (part.key().clone(), s.clone())))
+        .collect();
+    assert_eq!(Program::of_keyed_nodes(keyed), original);
 }

@@ -321,6 +321,30 @@ impl Program {
         program
     }
 
+    /// Build a program from `(part, node)` pairs — the multi-part analogue of
+    /// [`of_nodes`](Program::of_nodes), which fills `base` only. A *node* is a
+    /// [`WithProvenance<Statement>`](crate::provenance::WithProvenance), exactly as in
+    /// `of_nodes`; each pair places its node in the part its [`PartKey`] names, opening the
+    /// part with its first statement. Each statement is admitted through the one ingest door
+    /// (§6.3) — canonicalized, and merged with any content-equal statement **already present in
+    /// the same part**, provenances unioned; content-equal statements under **different** keys
+    /// stay distinct, one per part (part identity, §4.1). The base part is always present.
+    /// Total; `O(Σ statement sizes + parts)`.
+    ///
+    /// This is the programmatic multi-part door for a structural client — the solve tier's agent
+    /// rebuilding a knowledge base, or a code generator. An ASP author writes parts as `#program`
+    /// text through the macros, [`of`](Program::of), or the raise (§8), and does not assemble
+    /// `(PartKey, _)` pairs by hand.
+    pub fn of_keyed_nodes(
+        keyed_nodes: impl IntoIterator<Item = (PartKey, WithProvenance<Statement>)>,
+    ) -> Program {
+        let mut program = Program::default();
+        for (key, statement) in keyed_nodes {
+            program.ingest_into(key, statement);
+        }
+        program
+    }
+
     /// The parts, in `PartKey` order (§4.1).
     pub fn parts(&self) -> impl Iterator<Item = &Part> {
         self.parts.values()

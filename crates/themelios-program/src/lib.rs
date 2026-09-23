@@ -63,3 +63,14 @@ pub use themelios_base as base;
 pub use themelios_base::source::{Source, SourceId, TooLarge};
 pub use themelios_base::span::Location;
 pub use themelios_syntax::dialect::Dialect;
+
+/// An answer set: a set of ground [`Symbol`]s in the tier's canonical `Ord`.
+///
+/// Declared here as the lowest tier that can express it and the type the pattern surface's
+/// [`signature_range`](crate::unify::signature_range) scan ranges over
+/// (`answer_set.range(signature_range(&pattern))`); the solve and query tiers re-export it for
+/// the outcome-reading audience (the program tier itself does not name it — it is a declaration
+/// point, not part of the [`prelude`]). It is a plain `BTreeSet<Symbol>` — an answer set *is* a
+/// set of ground symbols under that order — so no wrapper stands between the `range` scan and the
+/// set algebra.
+pub type AnswerSet = std::collections::BTreeSet<Symbol>;

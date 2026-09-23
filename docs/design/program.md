@@ -1487,17 +1487,22 @@ every member canonicalizing per §7.2's boundary:
   both classes; the
   comparison is body-able alone, a comparison head reached through the two-step
   `Literal` path.
-- **The statement class, and the two program doors.** Every statement family (§4.2)
+- **The statement class, and the program doors.** Every statement family (§4.2)
   has a `From<_> for Statement`, so a downstream *need not* name the variants of the
   `#[non_exhaustive]` enum, and a `Statement` itself passes by the reflexive `From`,
   so mixed families meet at `Statement::from`. A `Program` is built through **two
-  doors**: `Program::of`, over bare statements, stamping each a `Constructed` origin
-  (§6.2); and `Program::of_nodes`, over statements carrying their own `Parsed` or
-  `Transformed` provenance (§6.2), the door the raise (§8) and a transformation (§9)
-  build on. Both admit each statement through the one ingest door (§6.3), which
-  canonicalizes and merges. The empty program is `Program::empty` (or
-  `Program::default()`), named so the generic `of` need not infer an element type
-  from a bare `[]`.
+  authoring doors** onto the `base` part — `Program::of`, over bare statements, stamping
+  each a `Constructed` origin (§6.2); and `Program::of_nodes`, over statements carrying
+  their own `Parsed` or `Transformed` provenance (§6.2), the door the raise (§8) and a
+  transformation (§9) build on — and a third, **structural** door,
+  `Program::of_keyed_nodes`, over `(PartKey, node)` pairs, which fills parts by key: the
+  multi-part analogue of `of_nodes`, for a code generator or the solve tier's agent
+  rebuilding its knowledge base, not an authoring convenience (an ASP author writes parts
+  as `#program` text through the raise, §8). All three admit each statement through the
+  one ingest door (§6.3), which canonicalizes and merges — content-equal statements under
+  *different* part keys staying distinct, one per part (part identity, §4.1). The empty
+  program is `Program::empty` (or `Program::default()`), named so the generic `of` need
+  not infer an element type from a bare `[]`.
 - **Directive and optimization constructors.** Each directive family carries its
   `new` — `Const::new` (its value canonicalized, a deep-repair door, §7.2),
   `Defined::new` and `Signature::new` (flat values whose constructor is the struct
@@ -2166,7 +2171,10 @@ ground arithmetic composes with the evaluator (§3.5): a `p(1+2)` query evaluate
 
 ### 11.3 Matching against an answer set
 
-An answer set is a `BTreeSet<Symbol>` (a solve-tier value), and a pattern's
+An answer set is a `BTreeSet<Symbol>` — the `AnswerSet` alias declared at this tier's
+crate root, the lowest tier that can express it (its *values* are produced by the solve
+tier, which with the query tier re-exports the alias for the outcome-reading audience) —
+and a pattern's
 predicate, arity, and sign are always concrete (an `Atom` carries them, §4.6), so
 the symbols a pattern *could* match form one contiguous range of that ordered set:
 
@@ -2187,8 +2195,7 @@ exactly what a full scan finds is a stated law (§16).
 
 The three-valued query — is a ground atom *yes*, *no*, or *unknown*; what are a
 pattern's bindings, partitioned by that trichotomy; the cautious and brave
-consequences — is **not** in this tier. It needs *answer sets* (a solve-tier
-value), and it is pure computation over them plus this tier's matching, so it is
+consequences — is **not** in this tier. It needs *answer sets* (the `AnswerSet` values the solve tier produces), and it is pure computation over them plus this tier's matching, so it is
 **engine-free**: a client crate — `themelios-query` — over the program tier's
 patterns and the solve tier's answer sets, depending on no FFI. It is built
 *alongside the solve tier*, in the solve stage — the mirror of the adjacency
@@ -2671,7 +2678,7 @@ evolution with its argument, not a drift.
 - **The programmatic construction surface, recorded (§1, §5.1, §7.1, §7.2, §17).**
   The regularity the built surface carries is written into the design rather than
   left to the code: §7.1 states the surface in full — the value constructors, the
-  scalar coercions, the closed body/head and statement coercion classes, the two
+  scalar coercions, the closed body/head and statement coercion classes, the
   `Program` doors, and the directive constructors; §5.1 and §7.2 name the two
   strengths of the canonicalization pass (the one-level door and the deep-repair
   boundary) and the residue each meets (a value **repaired** versus one **refused**);
@@ -2689,3 +2696,16 @@ evolution with its argument, not a drift.
   own raise, not a divergence — the lowering already existed per source statement, and
   `raise` is its composition with the collection (`into_raised`). The `Program` value,
   its equality, and its merge are unchanged.
+- **The pre-solve additive surface, recorded (§7.1, §11.3, §11.4, §1).** Two additive
+  doors were added ahead of the solve stage, so the accepted solve/query design of record
+  is realizable without a mid-slice change to this tier. **`AnswerSet`** — the
+  `pub type AnswerSet = BTreeSet<Symbol>` alias — is declared at the crate root, the lowest
+  tier that can express it and the type `signature_range`'s scan ranges over (§11.3); its
+  *values* are produced by the solve tier, and its reading audience is the solve and query
+  tiers, which re-export it — so it is a declaration point, kept out of the prelude (§1), and
+  §11.3/§11.4's earlier "a solve-tier value" phrasing is reconciled accordingly (who produces
+  the values, not where the alias is declared). **`Program::of_keyed_nodes`** — over
+  `(PartKey, WithProvenance<Statement>)` pairs (§7.1) — is the multi-part construction door, the
+  structural analogue of `of_nodes` for a code generator or the solve tier's agent, reusing the
+  one ingest door so part identity (§4.1) holds: content-equal statements under *different* keys
+  stay distinct. Purely additive; the `Program` value, its equality, and its merge are unchanged.
