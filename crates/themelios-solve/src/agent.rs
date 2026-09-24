@@ -6,3 +6,7 @@
 /// §6.3); its constructors and readers are defined with the agent.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Scenario;
+
+/// A handle that interrupts an in-flight solve from another thread. Reserved;
+/// its surface is defined with §6.1 and §6.3.
+pub struct Interrupt;
