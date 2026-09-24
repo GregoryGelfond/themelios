@@ -2,6 +2,14 @@
 //! capability declaration, and the fault and locus vocabulary — the one door an
 //! audit reads.
 //!
+//! The [`Backend`] trait (§4.1, §4.3) is the sole crossing between the
+//! engine-free core and any engine: four methods required of every backend —
+//! the declaration, the solve, the bridge, and the ground-program observer —
+//! and, beyond them, methods required exactly when the matching capability
+//! bit is declared, each provided with a default that refuses, so an
+//! undeclared capability is a typed refusal at the seam, never a compile
+//! burden and never a silent degrade (§4.2).
+//!
 //! The capability declaration (§4.1) is a closed set of bits and enums a
 //! backend answers for itself, read before a request is paid for: a request
 //! beyond it is a typed fault, never a silent degrade, and the one
@@ -24,8 +32,142 @@ use std::fmt;
 use std::time::Duration;
 
 use themelios_base::diagnostic::{Diagnostic, DiagnosticId, Label, Severity, ToDiagnostic};
+use themelios_program::Symbol;
+use themelios_program::program::Part;
 
-use crate::agent::Scenario;
+use crate::agent::{Interrupt, Scenario};
+use crate::bridge::{Door, GroundProgram};
+use crate::extend::{Function, Propagator};
+use crate::outcome::{Consequences, Optimized, Solved};
+
+// ---- The backend contract (§4.1, §4.3) ----
+
+/// The backend contract (docs/design/solve.md §4.1, §4.3): the sole crossing
+/// between the engine-free core and any engine — the one door an audit
+/// reads. A backend implements engine mechanism alone; the derived readings —
+/// consequences by enumeration (§4.2) and blame (§5.4) — are the core's, over
+/// this surface, never a backend author's.
+///
+/// Four methods are required of every backend: [`capabilities`], [`solve`],
+/// [`lower`], and [`ground_program`]. The design marks the rest required
+/// exactly when the matching capability bit is declared — `optimize` under
+/// `optimization`; `solve_assuming` under `assumptions`; `ground`,
+/// `assign_external`, and `reset` under `multi_shot`; `register_function`
+/// under `functions`; `register_propagator` under `propagators`. The trait
+/// encodes that obligation as a provided default that refuses: a backend that
+/// declares the bit overrides the method, and one that does not inherits the
+/// typed refusal — a request beyond the declaration is a [`Fault`] at the
+/// request surface, never a silent degrade (§4.2) — with no method to write
+/// for a capability it lacks. The remaining methods are provided outright and
+/// overridden by a capable engine: [`interrupt`], `None` unless the backend
+/// cancels; [`consequences_native`], refusing unless the backend has the
+/// native door.
+///
+/// Usable as a trait object: the core holds any engine behind this one door.
+///
+/// [`capabilities`]: Backend::capabilities
+/// [`solve`]: Backend::solve
+/// [`lower`]: Backend::lower
+/// [`ground_program`]: Backend::ground_program
+/// [`interrupt`]: Backend::interrupt
+/// [`consequences_native`]: Backend::consequences_native
+pub trait Backend {
+    /// Required. What this backend can do, read before a request is paid for
+    /// (§4.1). Pure; O(1).
+    fn capabilities(&self) -> Capabilities;
+
+    /// Required. Consistency and enumeration: the handle resolves the
+    /// trichotomy and streams the answer sets lazily (§5.2).
+    fn solve(&mut self, request: &SolveRequest) -> Result<Solved<'_>, Fault>;
+
+    /// Required. The bridge (§10): consume a program through a door. On a
+    /// multi-shot backend a repeat `lower` accumulates into the engine's
+    /// program — the assert path lowers only the delta (§6.2) — so a rebuild
+    /// is `reset` then `lower` the amended whole; on a single-shot backend a
+    /// `lower` replaces the program, so a rebuild is one `lower`.
+    fn lower(&mut self, door: Door<'_>) -> Result<(), Fault>;
+
+    /// Required. The ground program the backend exposes — the committed
+    /// observer (§10.4); `None` when it has none to expose.
+    fn ground_program(&self) -> Option<&GroundProgram>;
+
+    /// Provided. A handle that interrupts an in-flight solve from another
+    /// thread — `Some` exactly when `capabilities().cancellation` (§6.1,
+    /// §6.3). The default answers `None`, so a non-cancelling backend inherits
+    /// it and a cancelling one overrides. It is the one primitive the
+    /// request-side time budget (§6.3) and the agent's interrupt (§6.2) are
+    /// realised over; the conformance suite (§13.1) checks that a declared
+    /// cancellation answers `Some`, so the bit cannot lie.
+    fn interrupt(&self) -> Option<Interrupt> {
+        None
+    }
+
+    /// Required under `capabilities().optimization`. The proven optimum, with
+    /// the improving trajectory iff the request asks (§5.3); refuses
+    /// otherwise.
+    fn optimize(&mut self, _request: &OptimizeRequest) -> Result<Optimized<'_>, Fault> {
+        Err(Fault::unsupported())
+    }
+
+    /// Required under `capabilities().assumptions`. Solve under a scenario
+    /// (§6.3); the core derives blame (§5.4) over this, so there is no
+    /// separate blame method. Refuses otherwise.
+    fn solve_assuming(
+        &mut self,
+        _scenario: &Scenario,
+        _request: &SolveRequest,
+    ) -> Result<Solved<'_>, Fault> {
+        Err(Fault::unsupported())
+    }
+
+    /// Required under `capabilities().multi_shot`. Instantiate the named
+    /// program parts under the options (§6.2); refuses otherwise.
+    fn ground(&mut self, _parts: &[Part], _options: &GroundOptions) -> Result<(), Fault> {
+        Err(Fault::unsupported())
+    }
+
+    /// Required under `capabilities().multi_shot`. Assign an external atom its
+    /// truth value (§6.2); refuses otherwise.
+    fn assign_external(&mut self, _external: Symbol, _value: TruthValue) -> Result<(), Fault> {
+        Err(Fault::unsupported())
+    }
+
+    /// Required under `capabilities().multi_shot`. Clear the engine's
+    /// accumulated program so the agent can rebuild it — the rebuild-class
+    /// retraction path (§6.2), `lower` then reloading the amended whole.
+    /// Distinct from `assign_external`, a toggle, and `ground`, an addition;
+    /// not called on a single-shot backend, where `lower` replaces. Refuses
+    /// otherwise.
+    fn reset(&mut self) -> Result<(), Fault> {
+        Err(Fault::unsupported())
+    }
+
+    /// Required under `capabilities().functions`. Register an `@`-function
+    /// for ground-time evaluation (§7); refuses otherwise.
+    fn register_function(&mut self, _function: Box<dyn Function>) -> Result<(), Fault> {
+        Err(Fault::unsupported())
+    }
+
+    /// Required under `capabilities().propagators`. Register a custom
+    /// propagator (§8); refuses otherwise.
+    fn register_propagator(&mut self, _propagator: Box<dyn Propagator>) -> Result<(), Fault> {
+        Err(Fault::unsupported())
+    }
+
+    /// Optional: overridden exactly when `capabilities().native_consequences`
+    /// is `Native`. The engine's own cautious or brave door, in one solve,
+    /// over the scenario the request ranges over (§4.2; docs/design/query.md
+    /// §2.4). Absent, the core derives the consequences by enumeration over
+    /// `solve`, and the request surface says which path runs. Refuses by
+    /// default.
+    fn consequences_native(
+        &mut self,
+        _mode: Mode,
+        _request: &ConsequenceRequest,
+    ) -> Result<Consequences, Fault> {
+        Err(Fault::unsupported())
+    }
+}
 
 // ---- The capability declaration (§4.1, §4.2) ----
 
@@ -421,5 +563,49 @@ mod tests {
     fn a_consequence_request_s_debug_view_names_its_scenario() {
         let rendered = format!("{:?}", some_consequence_request());
         assert!(rendered.contains("scenario"), "{rendered}");
+    }
+
+    /// A backend that implements the required surface alone, so the provided
+    /// default of `consequences_native` is the one it inherits — exercised
+    /// here, in the defining crate, because the request it takes is built
+    /// here.
+    struct Nothing;
+
+    impl Backend for Nothing {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities::default()
+        }
+
+        fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
+            Err(Fault::unsupported())
+        }
+
+        fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
+            Err(Fault::unsupported())
+        }
+
+        fn ground_program(&self) -> Option<&GroundProgram> {
+            None
+        }
+    }
+
+    #[test]
+    fn consequences_native_refuses_without_the_native_door() {
+        let mut nothing = Nothing;
+        // The declaration names the derived path (§4.2), so the native door
+        // is the refusal.
+        assert_eq!(
+            nothing.capabilities().native_consequences,
+            ConsequenceSupport::DerivedByEnumeration
+        );
+        let refused = nothing
+            .consequences_native(Mode::Cautious, &some_consequence_request())
+            .err();
+        assert_eq!(refused, Some(Fault::unsupported()));
+    }
+
+    #[test]
+    fn a_backend_with_nothing_lowered_exposes_no_ground_program() {
+        assert!(Nothing.ground_program().is_none());
     }
 }
