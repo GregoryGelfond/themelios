@@ -456,6 +456,25 @@ impl<'a> Solved<'a> {
     }
 }
 
+#[cfg(test)]
+impl<'a> Solved<'a> {
+    /// A solved handle over `run`, ranging over `scenario`, with nothing yet
+    /// pulled — the door an in-crate test backend answers a question through.
+    pub(crate) fn over(run: Box<dyn Run + 'a>, scenario: Scenario) -> Solved<'a> {
+        Solved {
+            live: LiveRun {
+                current: Some(run),
+                scenario,
+                lookahead: None,
+                drain: DrainState::Fresh,
+                witnessed: false,
+                faulted: None,
+                _engine: PhantomData,
+            },
+        }
+    }
+}
+
 /// A PROVEN optimum (docs/design/solve.md §5.2): its levels, in the terms the
 /// objectives were written in — a maximized level shows what was maximized,
 /// not the negation an engine optimizes internally. It has NO public
