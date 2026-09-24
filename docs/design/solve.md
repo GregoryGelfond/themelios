@@ -223,16 +223,18 @@ pub trait Backend {
     /// REQUIRED. Consistency and enumeration; the handle streams answer sets lazily (§5.2).
     fn solve(&mut self, req: &SolveRequest) -> Result<Solved<'_>, Fault>;
 
-    /// REQUIRED. A handle to interrupt an in-flight solve from another thread — `Some` iff
-    /// `capabilities().cancellation` (the handle is `Send`, §6.1/§6.3), `None` otherwise. It is the one
-    /// primitive the request-side time budget (§6.3) and `Agent::interrupt` (§6.2) are realised over —
-    /// without it the `cancellation` bit would be a capability with no method behind it.
-    fn interrupt(&self) -> Option<Interrupt>;
+    /// A handle to interrupt an in-flight solve from another thread — `Some` iff
+    /// `capabilities().cancellation` (the handle is `Send`, §6.1/§6.3); the provided default answers
+    /// `None`, so a non-cancelling backend inherits it and a cancelling one overrides. It is the one
+    /// primitive the request-side time budget (§6.3) and `Agent::interrupt` (§6.2) are realised over; the
+    /// conformance suite (§13.1) checks `cancellation ⇒ interrupt().is_some()` so the bit cannot lie.
+    fn interrupt(&self) -> Option<Interrupt> { None }
 
-    /// REQUIRED. The bridge (§10): consume a `Program` — an initial load, or, on a multi-shot backend,
-    /// an incremental addition that ACCUMULATES into the engine's program (the `assert` path lowers only
-    /// the delta, §6.2). A rebuild is `reset` then `lower` the amended whole; a second `lower` of the
-    /// whole would double the accumulated program, so it is never that. Expose the ground program.
+    /// REQUIRED. The bridge (§10): consume a `Program`. On a **multi-shot** backend a repeat `lower`
+    /// ACCUMULATES into the engine's program (the `assert` path lowers only the delta, §6.2), so a rebuild
+    /// is `reset` then `lower` the amended whole. On a **single-shot** backend a `lower` REPLACES the
+    /// program (each solve is independent; nothing accumulates), so a rebuild is one `lower` and `reset`
+    /// is not called. Expose the ground program.
     fn lower(&mut self, door: Door<'_>) -> Result<(), Fault>;
     fn ground_program(&self) -> Option<&GroundProgram>;   // the committed observer (§10.4)
 
@@ -247,8 +249,9 @@ pub trait Backend {
     fn ground(&mut self, parts: &[Part], opts: &GroundOptions) -> Result<(), Fault>;
     fn assign_external(&mut self, ext: Symbol, v: TruthValue) -> Result<(), Fault>;
     /// Clear the engine's accumulated program so the agent can REBUILD it (the rebuild-class retraction
-    /// path, §6.2); `lower` then reloads the amended program. Distinct from `assign_external` (a toggle)
-    /// and from `ground` (an addition) — this is the tear-down the accumulate semantics of `lower` require.
+    /// path, §6.2); `lower` then reloads the amended program. Only a multi-shot backend needs it: on a
+    /// single-shot backend `lower` REPLACES the program (nothing accumulates), so a rebuild is one `lower`
+    /// and `reset` is not called. Distinct from `assign_external` (a toggle) and `ground` (an addition).
     fn reset(&mut self) -> Result<(), Fault>;
 
     // --- REQUIRED iff the matching capability bit (functions / propagators); extension reg. (§7–§9) ---
@@ -256,7 +259,9 @@ pub trait Backend {
     fn register_propagator(&mut self, p: Box<dyn Propagator>) -> Result<(), Fault>;
 
     /// OPTIONAL — override iff `capabilities().native_consequences == Native`. Absent, the core derives
-    /// cautious/brave by enumeration over `solve` (§4.2); the request surface says which path runs.
+    /// cautious/brave by enumeration over `solve` (§4.2); the request surface says which path runs. The
+    /// `ConsequenceRequest` carries the assumptions it ranges over, so a scenario-scoped world view's
+    /// cautious/brave range over that scenario's models (query.md §2.4), never the unscoped program.
     fn consequences_native(&mut self, mode: Mode, req: &ConsequenceRequest)
         -> Result<Consequences, Fault> { Err(Fault::unsupported()) }  // provided default
 }
@@ -282,11 +287,12 @@ A request beyond declared capability receives a **typed refusal** (`Fault`, §5.
 degrade. Cost note: `capabilities()` is `O(1)` and pure — it is read *before* a request is paid for.
 
 **Required versus provided — why the core stays lean.** The required surface is `capabilities`,
-`solve`, `interrupt`, `lower`, `ground_program`, and the capability-gated `optimize` / `solve_assuming`
-/ `ground` / `assign_external` / `reset` / `register_*`; `consequences_native` is the one *optional*
-method a natively-capable engine overrides. (`interrupt` is required but returns `Option`, so a
-non-cancelling backend answers `None` rather than carrying a method it cannot honour; `reset` is the
-tear-down the multi-shot rebuild path needs given `lower` accumulates, §6.2.) The **core** provides, over that surface and *not* on the trait,
+`solve`, `lower`, `ground_program`, and the capability-gated `optimize` / `solve_assuming`
+/ `ground` / `assign_external` / `reset` / `register_*`; `interrupt` and `consequences_native` are the
+*provided* methods a capable engine overrides. (`interrupt` returns `Option` and defaults to `None`, so a
+non-cancelling backend inherits it; the conformance suite checks `cancellation ⇒ interrupt().is_some()`
+so a declared-cancelling backend cannot forget the override. `reset` is the tear-down the multi-shot
+rebuild path needs given `lower` accumulates, §6.2, and is not called on single-shot backends.) The **core** provides, over that surface and *not* on the trait,
 the two derived readings a backend author does not write: cautious/brave **consequences by
 enumeration** when a backend lacks `consequences_native` (§4.2), and **blame** (`Refutation`, §5.4)
 over `solve_assuming`. No smaller required set exposes consistency, enumeration, optimization, theory,
@@ -387,10 +393,12 @@ impl<'a> Solved<'a> {
 /// streams; query.md §2.3–§2.4) — so it borrows for its lifetime and does NOT outlive that borrow. An
 /// owned, engine-free `Snapshot` (to cross a service boundary) is `WorldView::materialize` (query.md §2.3).
 /// The single-shot bare form owns its ephemeral engine instead (a live `WorldView<'static>`, §6.4).
-pub struct Models<'a> { /* … borrows the engine for `'a`; owns it when `'a = 'static` — the single-shot/materialised form */ }
-impl<'a> Models<'a> {
-    pub fn world_view(self) -> WorldView<'a>;   // borrowing; non-empty by construction (query.md §2.3)
-}
+pub struct Models<'a> { /* … the live-engine-access handle: borrows the engine for `'a`; owns it when `'a = 'static` */ }
+// The `Models<'a> → WorldView<'a>` transition lives on the QUERY side (query.md §2.7): a `WorldView` is
+// constructed from a resolved `Consistent(Models)` via `themelios_query::WorldView::of(models)`, so
+// `themelios-solve` does not depend on `themelios-query`. `Models` exposes the live-run material a world
+// view drives — the answer-set stream, `is_exhausted`, `scenario`, and the engine for the native door —
+// and carries no `world_view()` method of its own.
 
 /// A PROVEN optimum — no public constructor; it exists only because the solver proved it.
 pub struct Optimum { /* levels, in the objectives' own terms */ }
@@ -655,7 +663,9 @@ logical-update-view hazards do not arise, because the knowledge base is amended 
 the loop's step boundary, never during a running search. The modification methods rest on the
 capabilities their realisation uses — `multi_shot` to ground an added statement or part incrementally,
 `externals` for the external-toggle retraction path; where a backend declares neither, the agent falls
-back to re-grounding the amended `Program`, which any backend that solves at all supports. The retained
+back to re-grounding the amended `Program` — a `reset` then a `lower` on a multi-shot backend, and on a
+**single-shot** backend a plain `lower`, which *replaces* the program there (each solve is independent, so
+nothing accumulates and no `reset` is needed) — a rebuild any backend that solves at all supports. The retained
 state upholds the two-representation correspondence (owned program ↔ engine-internal state) across the
 cycle, which is also what gives a transform on the owned side a defined effect under multi-shot. Cost:
 retained state is `Θ(program size)`, not `Θ(ground size)` — the ground instantiation stays in the
@@ -718,7 +728,7 @@ logician's questions asked of the object, the register made literal. Because the
 to borrow against, the bare forms return **owned** results — the owned analogue of §5's borrowed handles:
 
 ```rust
-p.determination()?  // owned Determination<'static> (§5.1): Consistent(Models<'static>)→world_view() / Inconsistent(blame) / Inconclusive
+p.determination()?  // owned Determination<'static> (§5.1): Consistent(Models<'static>) → WorldView::of (query.md §2.7) / Inconsistent(blame) / Inconclusive
 p.optimize(&req)?   // owned Optimized<'static> (§5.2): trajectory, proven Optimum, optimal world view
 p.solve()?          // the owned run handle: stream, inspect, resolve
 ```
@@ -813,7 +823,10 @@ desired set of extensions** — and validated at build time against the **DL/CP/
 the design *does* fix is the interface shape and its laws:
 
 ```rust
-// Interface shape (governing principle: the DL/CP/LP litmus, §8.2 — finalized at build).
+// Interface shape (governing principle: the DL/CP/LP litmus, §8.2 — finalized at build). The State-bearing
+// trait below is the built (reactive-tier) shape; because the registration seam `register_propagator`
+// takes `Box<dyn Propagator>`, an *object-safe* form (no associated `State`) is what a declaration-only
+// tier registers through, the full signature being finalized where the theory is built.
 pub trait Propagator {
     type State: Send;   // per-thread; the hot methods take &self + &mut Self::State
     fn init(&self, ctx: &mut InitCtx) -> Result<Self::State, TheoryFault>;
@@ -1279,12 +1292,18 @@ necessity where it is declared.
    clients are ordered elenctic → clingcon → xclingo, elenctic first and the near-term priority, with the
    design pressure-tested against clingcon's deep seam up front (§15). Session/driving vocabulary updated
    throughout (§2–§3, §7, §13); the amendments are consolidated in §16.
-5. **Refinements** (2026-09-23). The `Backend` contract gains two required primitives the earlier form
-   named a capability for without a method: `interrupt(&self) -> Option<Interrupt>` — the handle behind
-   the `cancellation` bit, over which the request-side time budget and `Agent::interrupt` are realised
-   (§4.1, §6.3) — and the multi-shot `reset` door, the tear-down the rebuild-class retraction needs
-   because `lower` *accumulates* into the engine's program (so `assert` lowers only the delta and a
-   rebuild is `reset` then one `lower`, never a bare re-lower of the whole; §4.1, §6.2). `Fault` is
+5. **Refinements** (2026-09-23/24). The `Backend` contract gains the method behind the `cancellation` bit —
+   `interrupt(&self) -> Option<Interrupt>`, a provided method defaulting to `None` (a cancelling backend
+   overrides; the conformance suite checks `cancellation ⇒ interrupt().is_some()`), over which the
+   request-side time budget and `Agent::interrupt` are realised (§4.1, §6.3) — and the multi-shot `reset`
+   door, the tear-down the rebuild-class retraction needs because `lower` *accumulates* into a multi-shot
+   engine's program (so `assert` lowers only the delta and a rebuild is `reset` then one `lower`); on a
+   **single-shot** backend `lower` *replaces* the program, so a rebuild is one `lower` and `reset` is not
+   called (§4.1, §6.2). The `Models<'a> → WorldView<'a>` transition lives on the query side
+   (`themelios_query::WorldView::of`, query.md §2.7), so `themelios-solve` does not depend on the query
+   tier (§5.2, §6.4). `ConsequenceRequest` carries the assumptions it ranges over, so a scenario-scoped
+   cautious/brave ranges over that scenario's models (§4.1, query.md §2.4). The propagator *registration*
+   seam is object-safe, the `State`-bearing trait being the built shape (§8.1). `Fault` is
    stated as owning its model and lowering to a `themelios-base` `Diagnostic` only through `LocatedFault`
    where it carries a `Location`; an unlocated fault renders through `Display`, not a fabricated span at
    an unknown source (§5.4). The `@`-function `Function` result is `Vec<Symbol>` — `program.md` §3.4's
