@@ -1,6 +1,6 @@
 //! The outcome vocabulary (docs/design/solve.md §5): the models and their
 //! views — determination, conclusion, the solved outcome, models, consequences,
-//! and unsatisfiability.
+//! and unsatisfiability with its assumption blame.
 //!
 //! Two closed distinctions open the vocabulary (§5.1). A [`Determination`]
 //! answers the logical question — is the program consistent? — as a closed
@@ -13,11 +13,13 @@
 //! re-exported so the program, solve, and query tiers speak one answer-set
 //! vocabulary.
 
+use std::collections::BTreeSet;
 use std::marker::PhantomData;
 
-use crate::agent::Scenario;
-use crate::contract::Fault;
+use crate::agent::{Assumption, Scenario};
+use crate::contract::{Fault, Mode};
 pub use themelios_program::AnswerSet;
+use themelios_program::Symbol;
 
 // ---- The closed distinctions (§5.1) ----
 
@@ -57,7 +59,7 @@ pub enum Conclusion {
     Budget,
     /// The search was cut short before closing the space — cancelled through the
     /// interrupt handle (§6.3), or, provisionally, stopped by an engine fault
-    /// (see [`Partial::faulted`]).
+    /// (see [`Partial::cause`]).
     Interrupted,
 }
 
@@ -318,7 +320,9 @@ impl<'a> Determination<'a> {
     pub(crate) fn of_live(mut live: LiveRun<'a>) -> Determination<'a> {
         match live.classify() {
             Class::Consistent => Determination::Consistent(Models::owned(live)),
-            Class::Inconsistent => Determination::Inconsistent(Unsat { _private: () }),
+            // Read unscoped: blame is the derived reading of an
+            // assumption-scoped solve (§5.4).
+            Class::Inconsistent => Determination::Inconsistent(Unsat { blame: None }),
             Class::Inconclusive(conclusion) => {
                 Determination::Inconclusive(Partial::truncated(conclusion))
             }
@@ -331,7 +335,8 @@ impl<'a> Determination<'a> {
     pub(crate) fn of_live_ref<'b>(live: &'b mut LiveRun<'a>) -> Determination<'b> {
         match live.classify() {
             Class::Consistent => Determination::Consistent(Models::borrowed(live)),
-            Class::Inconsistent => Determination::Inconsistent(Unsat { _private: () }),
+            // Read unscoped, as the consuming resolver does.
+            Class::Inconsistent => Determination::Inconsistent(Unsat { blame: None }),
             Class::Inconclusive(conclusion) => {
                 Determination::Inconclusive(Partial::truncated(conclusion))
             }
@@ -456,9 +461,37 @@ pub struct Optimized<'a> {
     _engine: PhantomData<&'a ()>,
 }
 
-/// Cautious or brave consequences: a set of ground symbols carrying the mode
-/// that produced it. Reserved; its surface is defined with §5.2.
-pub struct Consequences;
+/// Cautious (⋂) or brave (⋃) consequences (docs/design/solve.md §5.2): a set
+/// of ground symbols carrying the [`Mode`] that produced it, so a value that
+/// has travelled still says which question it answers. Not an answer set —
+/// its own type, for that reason. Under an objective the set ranges over the
+/// optimal answer sets, and the optimal-vs-all marker joins these fields with
+/// optimization; non-exhaustive leaves it the room.
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Consequences {
+    pub(crate) symbols: BTreeSet<Symbol>,
+    pub(crate) mode: Mode,
+}
+
+impl Consequences {
+    /// Which question this set answers: the mode that produced it. Total;
+    /// O(1).
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// The symbols, each once, in the term order. Borrowed: reading does not
+    /// spend the set. Cost: O(n) over the whole stream.
+    pub fn symbols(&self) -> impl Iterator<Item = &Symbol> + '_ {
+        self.symbols.iter()
+    }
+
+    /// Whether `symbol` is among the consequences. Total; O(log n).
+    pub fn contains(&self, symbol: &Symbol) -> bool {
+        self.symbols.contains(symbol)
+    }
+}
 
 /// The lifetime-erased view of a live run that a [`Models`] holds, so `Models<'a>`
 /// carries a single lifetime — the access — while the engine's own lifetime lives
@@ -563,16 +596,50 @@ impl<'a> Models<'a> {
     }
 }
 
+// ---- Assumption blame (§5.4) ----
+
 /// The `Inconsistent` payload (docs/design/solve.md §5.1): the program has no
-/// answer set, and an assumption-scoped solve carries its blame here (§5.4).
-/// Reserved; its surface is defined with §5.4.
+/// answer set. For an assumption-scoped solve it answers blame (§5.4) — which
+/// of the scenario's assumptions are responsible; for a plain solve the
+/// question is out of scope, which is not the same as answering it "none".
+/// Non-exhaustive: a payload that may grow.
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Unsat {
-    pub(crate) _private: (),
+    pub(crate) blame: Option<Refutation>,
+}
+
+impl Unsat {
+    /// Which assumptions are responsible — `Some` iff the solve was
+    /// assumption-scoped (docs/design/solve.md §5.4). `None` says the question
+    /// was not in scope, never that no assumption is to blame: that reading is
+    /// [`Refutation::NotThese`]. Total; O(k) in the assumptions named, which
+    /// are cloned out.
+    pub fn blame(&self) -> Option<Refutation> {
+        self.blame.clone()
+    }
+}
+
+/// Assumption blame (docs/design/solve.md §5.4): which assumptions are
+/// responsible for a scenario's inconsistency. The culprit is a raw set of
+/// assumptions — the literature's notion — not a named scenario (§6.3).
+/// Closed: the three readings are the readings there are, so a consumer
+/// matches them with no fallback arm.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Refutation {
+    /// This minimal subset of the scenario's assumptions is responsible.
+    These(Box<[Assumption]>),
+    /// The inconsistency is independent of the assumptions: the program is
+    /// inconsistent without them.
+    NotThese,
+    /// The program is inconsistent with none assumed.
+    NoAssumptions,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use themelios_program::Name;
 
     /// The closed set of conclusions, each beside its rendering.
     const CONCLUSIONS: [(Conclusion, &str); 4] = [
@@ -834,8 +901,9 @@ mod tests {
         ))))
     }
 
+    /// An unscoped inconsistency: no scenario in scope, so no blame.
     fn some_unsat() -> Unsat {
-        Unsat { _private: () }
+        Unsat { blame: None }
     }
 
     #[test]
@@ -1312,5 +1380,163 @@ mod tests {
         let _ = solved.determination();
         assert!(solved.all_answer_sets().unwrap_err().cause.is_some());
         assert!(solved.all_answer_sets().unwrap_err().cause.is_some());
+    }
+
+    // ---- Assumption blame (§5.4) ----
+
+    /// The assumptions a blame names. Placeholders here: an assumption's
+    /// constructors are the agent's.
+    fn culprits() -> Box<[Assumption]> {
+        Box::from([Assumption])
+    }
+
+    /// The readings of blame under which no assumption is named.
+    fn blaming_none() -> [Refutation; 2] {
+        [Refutation::NotThese, Refutation::NoAssumptions]
+    }
+
+    /// An assumption-scoped inconsistency answering blame with `refutation`.
+    fn unsat_blaming(refutation: Refutation) -> Unsat {
+        Unsat {
+            blame: Some(refutation),
+        }
+    }
+
+    #[test]
+    fn an_unscoped_inconsistency_carries_no_blame() {
+        assert!(some_unsat().blame().is_none());
+    }
+
+    #[test]
+    fn a_scoped_inconsistency_names_its_responsible_subset() {
+        let unsat = unsat_blaming(Refutation::These(culprits()));
+        assert_eq!(unsat.blame(), Some(Refutation::These(culprits())));
+    }
+
+    #[test]
+    fn a_scoped_inconsistency_may_blame_none_of_its_assumptions() {
+        for refutation in blaming_none() {
+            let unsat = unsat_blaming(refutation.clone());
+            assert_eq!(unsat.blame().as_ref(), Some(&refutation));
+        }
+    }
+
+    #[test]
+    fn reading_the_blame_does_not_spend_it() {
+        // The reader clones the blame out; the payload keeps it.
+        let unsat = unsat_blaming(Refutation::NotThese);
+        let _first = unsat.blame();
+        assert_eq!(unsat.blame(), Some(Refutation::NotThese));
+    }
+
+    #[test]
+    fn a_cloned_unsat_equals_its_original() {
+        let unsat = unsat_blaming(Refutation::These(culprits()));
+        assert_eq!(unsat.clone(), unsat);
+    }
+
+    #[test]
+    fn an_unscoped_unsat_is_unequal_to_a_scoped_one() {
+        for refutation in blaming_none() {
+            assert_ne!(some_unsat(), unsat_blaming(refutation));
+        }
+    }
+
+    #[test]
+    fn an_unsat_s_debug_view_shows_its_blame() {
+        let unsat = unsat_blaming(Refutation::NoAssumptions);
+        let rendered = format!("{unsat:?}");
+        assert!(rendered.contains("NoAssumptions"), "{rendered}");
+    }
+
+    // ---- Consequences (§5.2) ----
+
+    /// Both modes, so a law over the mode holds of each.
+    const MODES: [Mode; 2] = [Mode::Cautious, Mode::Brave];
+
+    /// A constant symbol by name.
+    fn constant(name: &str) -> Symbol {
+        Symbol::constant(Name::new(name).expect("an identifier"))
+    }
+
+    /// The consequences `mode` produced over `symbols`, built here as the
+    /// derived and native doors will build them.
+    fn consequences(mode: Mode, symbols: &[Symbol]) -> Consequences {
+        Consequences {
+            symbols: symbols.iter().cloned().collect(),
+            mode,
+        }
+    }
+
+    fn cautious_consequences(symbols: &[Symbol]) -> Consequences {
+        consequences(Mode::Cautious, symbols)
+    }
+
+    #[test]
+    fn consequences_carry_the_mode_that_produced_them() {
+        // A value that has travelled still says which question it answers.
+        for mode in MODES {
+            let travelled = consequences(mode, &[constant("a")]);
+            assert_eq!(travelled.mode(), mode);
+        }
+    }
+
+    #[test]
+    fn consequences_yield_the_symbols_they_were_built_over() {
+        let cautious = cautious_consequences(&[constant("a"), constant("b")]);
+        let yielded: BTreeSet<Symbol> = cautious.symbols().cloned().collect();
+        assert_eq!(yielded, BTreeSet::from([constant("a"), constant("b")]));
+    }
+
+    #[test]
+    fn consequences_yield_their_symbols_in_the_term_order() {
+        let reversed = cautious_consequences(&[constant("b"), constant("a")]);
+        let yielded: Vec<Symbol> = reversed.symbols().cloned().collect();
+        assert_eq!(yielded, vec![constant("a"), constant("b")]);
+    }
+
+    #[test]
+    fn consequences_yield_a_repeated_symbol_once() {
+        let repeated = cautious_consequences(&[constant("a"), constant("a")]);
+        assert_eq!(repeated.symbols().count(), 1);
+    }
+
+    #[test]
+    fn consequences_contain_each_symbol_they_carry() {
+        let cautious = cautious_consequences(&[constant("a"), constant("b")]);
+        for member in [constant("a"), constant("b")] {
+            assert!(cautious.contains(&member), "{member:?}");
+        }
+    }
+
+    #[test]
+    fn consequences_do_not_contain_a_symbol_they_do_not_carry() {
+        let cautious = cautious_consequences(&[constant("a")]);
+        assert!(!cautious.contains(&constant("b")));
+    }
+
+    #[test]
+    fn a_cloned_consequence_set_equals_its_original() {
+        let cautious = cautious_consequences(&[constant("a")]);
+        assert_eq!(cautious.clone(), cautious);
+    }
+
+    #[test]
+    fn consequence_sets_differing_only_in_mode_are_unequal() {
+        // The mode is part of the value: the same symbols read cautiously and
+        // bravely answer different questions (§5.2).
+        let symbols = [constant("a")];
+        assert_ne!(
+            consequences(Mode::Cautious, &symbols),
+            consequences(Mode::Brave, &symbols)
+        );
+    }
+
+    #[test]
+    fn a_consequence_set_s_debug_view_names_its_mode() {
+        for mode in MODES {
+            let rendered = format!("{:?}", consequences(mode, &[]));
+            assert!(rendered.contains(&format!("{mode:?}")), "{rendered}");
+        }
     }
 }
