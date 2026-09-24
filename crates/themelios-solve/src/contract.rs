@@ -285,10 +285,11 @@ pub struct OptimizeRequest {
 /// A cautious or brave consequence request (docs/design/solve.md §5.2): the
 /// scenario the consequences range over, so a scenario-scoped world view's
 /// cautious and brave range over that scenario's models, never the unscoped
-/// program (docs/design/query.md §2.4). The mode is the method's own
-/// parameter, not carried here a second time.
+/// program (docs/design/query.md §2.4). Empty — the unscoped program, under
+/// no assumption — is `Default`. The mode is the method's own parameter, not
+/// carried here a second time.
 #[non_exhaustive]
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct ConsequenceRequest {
     /// The assumptions the consequences range over; an empty scenario is the
     /// unscoped program.
@@ -541,16 +542,23 @@ mod tests {
         }
     }
 
-    /// A consequence request is built here, in the defining crate: it has no
-    /// `Default` — its scenario's constructors are the agent's — and a
-    /// non-exhaustive struct is not built by a struct expression elsewhere.
+    /// A consequence request built here, in the defining crate, by the struct
+    /// expression a non-exhaustive struct admits nowhere else: over the
+    /// unscoped scenario.
     fn some_consequence_request() -> ConsequenceRequest {
-        ConsequenceRequest { scenario: Scenario }
+        ConsequenceRequest {
+            scenario: Scenario::default(),
+        }
     }
 
     #[test]
     fn a_consequence_request_carries_the_scenario_it_ranges_over() {
-        assert_eq!(some_consequence_request().scenario, Scenario);
+        assert_eq!(some_consequence_request().scenario, Scenario::default());
+    }
+
+    #[test]
+    fn the_default_consequence_request_ranges_over_the_unscoped_program() {
+        assert_eq!(ConsequenceRequest::default().scenario, Scenario::default());
     }
 
     #[test]

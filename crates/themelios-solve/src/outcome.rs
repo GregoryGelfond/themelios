@@ -1000,7 +1000,7 @@ mod tests {
     fn live_with(run: Box<dyn Run>) -> LiveRun<'static> {
         LiveRun {
             current: Some(run),
-            scenario: Scenario,
+            scenario: Scenario::default(),
             lookahead: None,
             drain: DrainState::Fresh,
             witnessed: false,
@@ -1286,7 +1286,7 @@ mod tests {
         let Determination::Consistent(models) = solved.into_determination() else {
             panic!("Consistent");
         };
-        assert_eq!(*models.scenario(), Scenario);
+        assert_eq!(*models.scenario(), Scenario::default());
     }
 
     #[test]
@@ -1332,7 +1332,7 @@ mod tests {
         let Determination::Consistent(models) = solved.determination() else {
             panic!("Consistent");
         };
-        assert_eq!(*models.scenario(), Scenario);
+        assert_eq!(*models.scenario(), Scenario::default());
     }
 
     #[test]
@@ -1511,10 +1511,9 @@ mod tests {
 
     // ---- Assumption blame (§5.4) ----
 
-    /// The assumptions a blame names. Placeholders here: an assumption's
-    /// constructors are the agent's.
+    /// The assumptions a blame names: that the constant atom `p` holds.
     fn culprits() -> Box<[Assumption]> {
-        Box::from([Assumption])
+        Box::from([Assumption::new(constant("p"), true).expect("an atom")])
     }
 
     /// The readings of blame under which no assumption is named.

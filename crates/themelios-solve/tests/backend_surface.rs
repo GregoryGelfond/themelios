@@ -101,7 +101,7 @@ fn solve_assuming_refuses_without_assumptions() {
     let mut nothing = Nothing;
     assert_eq!(
         nothing
-            .solve_assuming(&Scenario, &SolveRequest::default())
+            .solve_assuming(&Scenario::default(), &SolveRequest::default())
             .err(),
         Some(Fault::unsupported())
     );
