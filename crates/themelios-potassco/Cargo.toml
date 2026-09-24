@@ -1,0 +1,44 @@
+[package]
+name = "themelios-potassco"
+version = "0.1.0"
+description = "The Potassco adapter: the mechanism-only kernel over the clingo bindings and the safe adapter implementing the solve tier's backend contract against clingo 5.8.2 — the trusted computing base, named for the engine family it adapts."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The solve tier's contract, which the adapter implements, and the bindings it
+# implements it over. The bindings are optional and off by default: with the
+# `potassco` feature disabled the crate is an empty shell and the whole stack is
+# FFI-free (docs/design/solve.md §11.3, §16).
+[dependencies]
+themelios-solve = { path = "../themelios-solve" }
+themelios-potassco-sys = { path = "../themelios-potassco-sys", optional = true }
+
+[features]
+# The adapter proper: the bindings, and through them the link against the
+# vendored clingo 5.8.2. The facade enables it by default; disabling it there
+# leaves the stack FFI-free (docs/design/solve.md §2.1, §11.3, §16).
+potassco = ["dep:themelios-potassco-sys", "themelios-potassco-sys/clingo"]
+
+# The workspace lint tables restated — `[lints] workspace = true` admits no
+# per-lint departure beside it — with the one departure the trusted computing
+# base carries: unsafe is allowed here and in themelios-potassco-sys, and
+# nowhere else (docs/design/solve.md §2.1, §16). Every other line, and the
+# argument for each clippy allowance, is the workspace's own (the root
+# Cargo.toml).
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "deny"
+unused = { level = "deny", priority = -1 }
+unused_must_use = "deny"
+dead_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+module_name_repetitions = "allow"
+cast_possible_truncation = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+doc_markdown = "allow"
+large_enum_variant = "allow"

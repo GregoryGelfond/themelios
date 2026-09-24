@@ -1,0 +1,52 @@
+[package]
+name = "themelios-potassco-sys"
+version = "0.1.0"
+description = "The pinned bindings over libclingo's C API — clingo 5.8.2, the vendored authority: the binding half of the potassco trusted computing base. Feature-gated; never in a default build."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# The one native library this workspace ever links, claimed by name so that no
+# second package can link it (docs/design/solve.md §11.1, §11.3).
+links = "clingo"
+
+# Nothing: the bindings stand on the C ABI alone.
+[dependencies]
+
+# bindgen regenerates the vendored bindings from libclingo's C header — an
+# out-of-band act behind the `bindgen` feature, so a default build never
+# compiles or runs it (docs/design/solve.md §2.1, §16).
+[build-dependencies]
+bindgen = { version = "0.73", optional = true }
+
+[features]
+# The binding proper: the vendored bindings and the link against the pinned
+# clingo 5.8.2 built from the vendored source. Off by default, so a default
+# workspace build compiles this crate as an empty shell and links nothing — the
+# stack stays FFI-free (docs/design/solve.md §2.1, §11.3, §16). Reached through
+# themelios-potassco's `potassco` feature.
+clingo = []
+# Regenerating the vendored bindings over `libclingo/clingo.h` with bindgen:
+# out-of-band, never in a default build (docs/design/solve.md §2.1, §16).
+bindgen = ["dep:bindgen"]
+
+# The workspace lint tables restated — `[lints] workspace = true` admits no
+# per-lint departure beside it — with the one departure the trusted computing
+# base carries: unsafe is allowed here and in themelios-potassco, and nowhere
+# else (docs/design/solve.md §2.1, §16). Every other line, and the argument for
+# each clippy allowance, is the workspace's own (the root Cargo.toml).
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "deny"
+unused = { level = "deny", priority = -1 }
+unused_must_use = "deny"
+dead_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+module_name_repetitions = "allow"
+cast_possible_truncation = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+doc_markdown = "allow"
+large_enum_variant = "allow"
