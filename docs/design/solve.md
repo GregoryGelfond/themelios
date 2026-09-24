@@ -145,7 +145,7 @@ Every capability of the tier is reachable two ways, both first-class:
   an LLM-driven consumer, a REPL — that build up programs, agents, requests, and queries by composition.
 
 The two straddle the crate-home line by design. The *authoring* half lives one tier down — `rule!` /
-`fact!` / `asp!` in `themelios-macros`, the value builders in `themelios-program`'s `construct` —
+`fact!` / `program!` in `themelios-macros`, the value builders in `themelios-program`'s `construct` —
 because building the `Program` is a program-tier concern (LLVM's `IRBuilder` lives with the IR, not
 the codegen). The *driving* half (the agent, its reasoning loop, options) and the *reading* half (query) are the
 solve and query tiers'. The solve tier's obligation is therefore twofold: own its own faces (the
@@ -223,7 +223,16 @@ pub trait Backend {
     /// REQUIRED. Consistency and enumeration; the handle streams answer sets lazily (§5.2).
     fn solve(&mut self, req: &SolveRequest) -> Result<Solved<'_>, Fault>;
 
-    /// REQUIRED. The bridge (§10): consume a Program, expose the ground program.
+    /// REQUIRED. A handle to interrupt an in-flight solve from another thread — `Some` iff
+    /// `capabilities().cancellation` (the handle is `Send`, §6.1/§6.3), `None` otherwise. It is the one
+    /// primitive the request-side time budget (§6.3) and `Agent::interrupt` (§6.2) are realised over —
+    /// without it the `cancellation` bit would be a capability with no method behind it.
+    fn interrupt(&self) -> Option<Interrupt>;
+
+    /// REQUIRED. The bridge (§10): consume a `Program` — an initial load, or, on a multi-shot backend,
+    /// an incremental addition that ACCUMULATES into the engine's program (the `assert` path lowers only
+    /// the delta, §6.2). A rebuild is `reset` then `lower` the amended whole; a second `lower` of the
+    /// whole would double the accumulated program, so it is never that. Expose the ground program.
     fn lower(&mut self, door: Door<'_>) -> Result<(), Fault>;
     fn ground_program(&self) -> Option<&GroundProgram>;   // the committed observer (§10.4)
 
@@ -237,6 +246,10 @@ pub trait Backend {
     // --- REQUIRED iff capabilities().multi_shot ---
     fn ground(&mut self, parts: &[Part], opts: &GroundOptions) -> Result<(), Fault>;
     fn assign_external(&mut self, ext: Symbol, v: TruthValue) -> Result<(), Fault>;
+    /// Clear the engine's accumulated program so the agent can REBUILD it (the rebuild-class retraction
+    /// path, §6.2); `lower` then reloads the amended program. Distinct from `assign_external` (a toggle)
+    /// and from `ground` (an addition) — this is the tear-down the accumulate semantics of `lower` require.
+    fn reset(&mut self) -> Result<(), Fault>;
 
     // --- REQUIRED iff the matching capability bit (functions / propagators); extension reg. (§7–§9) ---
     fn register_function(&mut self, f: Box<dyn Function>) -> Result<(), Fault>;
@@ -269,9 +282,11 @@ A request beyond declared capability receives a **typed refusal** (`Fault`, §5.
 degrade. Cost note: `capabilities()` is `O(1)` and pure — it is read *before* a request is paid for.
 
 **Required versus provided — why the core stays lean.** The required surface is `capabilities`,
-`solve`, `lower`, `ground_program`, and the capability-gated `optimize` / `solve_assuming` / `ground`
-/ `assign_external` / `register_*`; `consequences_native` is the one *optional* method a
-natively-capable engine overrides. The **core** provides, over that surface and *not* on the trait,
+`solve`, `interrupt`, `lower`, `ground_program`, and the capability-gated `optimize` / `solve_assuming`
+/ `ground` / `assign_external` / `reset` / `register_*`; `consequences_native` is the one *optional*
+method a natively-capable engine overrides. (`interrupt` is required but returns `Option`, so a
+non-cancelling backend answers `None` rather than carrying a method it cannot honour; `reset` is the
+tear-down the multi-shot rebuild path needs given `lower` accumulates, §6.2.) The **core** provides, over that surface and *not* on the trait,
 the two derived readings a backend author does not write: cautious/brave **consequences by
 enumeration** when a backend lacks `consequences_native` (§4.2), and **blame** (`Refutation`, §5.4)
 over `solve_assuming`. No smaller required set exposes consistency, enumeration, optimization, theory,
@@ -462,11 +477,22 @@ pub enum Refutation {
     NoAssumptions,              // the program is inconsistent with none assumed
 }
 
-/// A fault is a value with a CLOSED locus taxonomy at the seam.
+/// A fault is a value with a CLOSED locus taxonomy at the seam. It OWNS its model — a message, the
+/// `Locus`, the backend-bug bit, and a `base::Location` ONLY where it has one (Program/Request faults).
+/// An unlocated fault (Engine/Resource/Adapter) is NOT a degenerate diagnostic with a fabricated span
+/// at an "unknown source" but a different thing (base's §diagnostic): it renders through its own `Display`.
 #[non_exhaustive]
-pub struct Fault { /* a base::Diagnostic + the locus below */ }
+pub struct Fault { /* message + Locus + Option<base::Label> + the backend-bug bit */ }
 pub enum Locus { Program, Request, Resource, Engine, Adapter }
-impl Fault { pub fn is_backend_bug(&self) -> bool; }  // a closed bit
+impl Fault {
+    pub fn is_backend_bug(&self) -> bool;                  // a closed bit
+    pub fn locus(&self) -> Locus;
+    pub fn located(&self) -> Option<LocatedFault<'_>>;     // Some iff it carries a Location
+}
+impl std::fmt::Display for Fault {}                        // Fault is Display + Error — NOT ToDiagnostic
+/// The only form of a fault that IS a `base::Diagnostic`: one that carries a `Location`.
+/// `impl ToDiagnostic for LocatedFault` — a fault without a span does not lower to a diagnostic.
+pub struct LocatedFault<'a> { /* a &Fault whose Location is guaranteed present */ }
 ```
 
 - **Theory results — constraint assignments — are a distinct typed component** of the outcome, beside
@@ -480,8 +506,9 @@ impl Fault { pub fn is_backend_bug(&self) -> bool; }  // a closed bit
 - **Assumption blame** — when a scenario is inconsistent, which assumptions are responsible is an
   answerable, typed question (`Refutation` above), scoped by the scenario it ranged over.
 - **Faults** are values with the closed locus taxonomy above, with "is this a backend bug" a closed
-  bit; they are `themelios-base` diagnostics (loci and provenance), solved once, here, for every
-  consumer.
+  bit; a *located* fault (Program/Request) lowers to a `themelios-base` `Diagnostic` through
+  `LocatedFault` (loci and provenance, solved once, here, for every consumer), while an unlocated one
+  (Engine/Resource/Adapter) renders through its own `Display` — a fault is not, in general, a diagnostic.
 - **Statistics** are exposed per solve through a `Statistics` trait — engine-scoped, provenance-marked,
   typed data (v1: the clingo adapter provides clingo's own). The minimal v1 shape a consumer reads:
 
@@ -592,7 +619,7 @@ impl<B: Backend> Agent<B> {
                                                                            //   WorldView read from Consistent (query.md §2)
     pub fn optimize(&mut self, req: &OptimizeRequest) -> Result<Optimized<'_>, Fault>;
     pub fn solve_assuming(&mut self, s: &Scenario) -> Result<Solved<'_>, Fault>;
-    pub fn interrupt(&self) -> Interrupt;                                  // a cancellation handle (§6.3)
+    pub fn interrupt(&self) -> Option<Interrupt>;                         // a cancellation handle — Some iff the backend cancels (§6.3)
 }
 ```
 
@@ -606,8 +633,10 @@ the loop's *observe* step, returning an `Observation` a later step can `forget`.
 database nor an engine's write-only backend has — `retract` is a *true* operation on that value: it
 removes the named statement from the knowledge base, and the agent then realises the removal against the
 engine by the cheapest faithful means its declared capabilities allow — **toggling an external** where
-the retracted statement was so guarded and the backend declares `externals`, or **re-grounding** the
-amended program otherwise. The realisation is the agent's to choose; the register the caller writes
+the retracted statement was so guarded and the backend declares `externals`, or **resetting** the
+engine's accumulated program (`Backend::reset`) and reloading the amended program (`lower`) otherwise —
+`lower` accumulates, so a rebuild is a reset then one lowering, never a bare re-lower. The realisation
+is the agent's to choose; the register the caller writes
 stays declarative. This is why themelios can offer retraction where an engine offers only externals: it
 holds the program the external mechanism can only approximate.
 
@@ -675,8 +704,9 @@ retraction (§6.2) amends the knowledge base itself and persists (a change of mi
 uses both.
 
 **Budgets** (time at minimum, with room for model-count caps) are a typed, request-side surface;
-enforcement is a declared capability — an engine without native support gets it through the adapter's
-cancellation machinery — and `Conclusion::Budget` reports a hit budget as what it is. The long tail of
+enforcement is a declared capability — an engine without a native time limit gets it through the
+`interrupt` primitive (§4.1): a timer thread that calls it on the cut — and `Conclusion::Budget`
+reports a hit budget as what it is. The long tail of
 engine parameters, when a real consumer needs it, follows the two-tier facade pattern (typed knobs
 over a legible open form); it is YAGNI-gated, grown on demand, never a CLI-string passthrough.
 
@@ -731,7 +761,10 @@ locus.
 ```rust
 /// A registered ground-time function. Registration is on the agent (§4.1).
 pub trait Function {
-    fn call(&self, args: &[Symbol]) -> Result<SmallVec<Symbol>, GroundFault>;  // multi-valued
+    // multi-valued; results cross as `Vec<Symbol>` — program.md §3.4's `IntoIterator<Item=Symbol>` shape,
+    // realised so `themelios-solve` takes NO dependency beyond the lower tiers (§16, spec §12.5). A
+    // stack-inline small-vector is a later measurement away if the ground-time 3% is ever identified.
+    fn call(&self, args: &[Symbol]) -> Result<Vec<Symbol>, GroundFault>;
 }
 // #[external] derives an impl from a plain Rust fn, with COMPILE-TIME-checked signatures
 // where the Python comparator has duck typing (the ground-extension witness, spec §3 witness 13).
@@ -871,21 +904,28 @@ scaling bench asserts it, §13.3); it never materializes the ground instantiatio
 ### 10.2 The doors
 
 Mirroring the engine's own construction paths and the two-doors study in `program.md` §7 (the raise,
-§8), the seam offers distinct doors of distinct grades:
+§8), the seam offers three grades. **Doors A and B are two *entry values* into one grounding
+mechanism** — the engine's non-ground input (its AST builder), driven to `ground` — differing only in
+what they preserve; **Door C is the aspif-level ingestion** the engine's ground-by-construction backend
+exposes, which takes ground objects only:
 
-- **Door A — typed AST → the grounder's input**, order- and span-preserving, where the highest
-  fidelity is possible.
-- **Door B — `themelios_program::Program` → the grounder's input**, canonical-order, carrying `Origin`
-  provenance through to every ground rule (a capability the C grounder lacks). Programs constructed in
-  Rust, transformed, or loaded through a client enter here.
-- **Door C — aspif → the solver's ingestion**, for driving a solver from a foreign grounder and for
-  the differential harness.
+- **Door A — the typed AST (`&Parse<ast::Program>`) → the grounder's input**, order- and
+  span-preserving, where the highest fidelity is possible.
+- **Door B — `themelios_program::Program` → the grounder's input** *through the same mechanism as Door
+  A*, canonical-order, carrying `Origin` provenance through to every ground rule (a capability the C
+  grounder lacks). Programs constructed in Rust, transformed, or loaded through a client enter here. A
+  non-ground `Program` — a variable, an aggregate, a `#program` part — crosses only through A or B, into
+  the grounder; it can **not** be expressed through the ground-by-construction backend (that is Door C),
+  and mapping it there is a category error.
+- **Door C — aspif → the solver's ingestion** (the engine's ground-object backend), for driving a
+  solver from a foreign grounder, for the differential harness, and for an agent's ground-fact
+  additions where the values are already ground.
 
 ```rust
 pub enum Door<'a> {
-    Ast(&'a SyntaxTree),        // A: highest fidelity
-    Program(&'a Program),       // B: canonical, provenance-carrying
-    Aspif(&'a mut dyn AspifSource), // C: foreign grounder / differential
+    Ast(&'a Parse<ast::Program>),   // A: highest fidelity (spans preserved)
+    Program(&'a Program),           // B: canonical, provenance-carrying — same grounding mechanism as A
+    Aspif(&'a mut dyn AspifSource), // C: aspif-level, ground-object ingestion (foreign grounder / differential)
 }
 ```
 
@@ -929,8 +969,10 @@ It is a capability over the contract, not part of the mandatory lean core.
 
 ### 10.5 The interning discipline and the `Symbol` correspondence
 
-`themelios_program::Symbol` is engine-faithful (`i32`, `program.md` §3.1), so lowering a symbol is a
-near-direct correspondence, not a re-intern. The FFI cost concentrates at the engine's process-global
+`themelios_program::Symbol` carries the engine's own number width (`i32`, `program.md` §3.1), so no
+value is lost or reshaped crossing the seam; but creating the engine's symbol *handle* from a `Symbol`
+**is** an interning write — serialized under the single interning discipline below, not a free
+correspondence. The FFI cost concentrates at the engine's process-global
 interning; the adapter owns a single interning discipline (specification §5.2) — interning writers
 under one lock, a reentrant-interning tripwire, and a lint over every direct interning FFI call — so
 `@`-functions and located AST construction intern correctly and a non-returning grounder call is a
@@ -1237,3 +1279,19 @@ necessity where it is declared.
    clients are ordered elenctic → clingcon → xclingo, elenctic first and the near-term priority, with the
    design pressure-tested against clingcon's deep seam up front (§15). Session/driving vocabulary updated
    throughout (§2–§3, §7, §13); the amendments are consolidated in §16.
+5. **Refinements** (2026-09-23). The `Backend` contract gains two required primitives the earlier form
+   named a capability for without a method: `interrupt(&self) -> Option<Interrupt>` — the handle behind
+   the `cancellation` bit, over which the request-side time budget and `Agent::interrupt` are realised
+   (§4.1, §6.3) — and the multi-shot `reset` door, the tear-down the rebuild-class retraction needs
+   because `lower` *accumulates* into the engine's program (so `assert` lowers only the delta and a
+   rebuild is `reset` then one `lower`, never a bare re-lower of the whole; §4.1, §6.2). `Fault` is
+   stated as owning its model and lowering to a `themelios-base` `Diagnostic` only through `LocatedFault`
+   where it carries a `Location`; an unlocated fault renders through `Display`, not a fabricated span at
+   an unknown source (§5.4). The `@`-function `Function` result is `Vec<Symbol>` — `program.md` §3.4's
+   `IntoIterator<Item = Symbol>` shape — keeping `themelios-solve` free of any dependency beyond the
+   lower tiers (§7.1, §16). Doors A and B are recast as two *entry values* (`&Parse<ast::Program>` and
+   `&Program`) into one grounding mechanism, with the engine's ground-by-construction backend named as
+   Door C: a non-ground program crosses only through A or B, never the ground-object backend (§10.2). The
+   §10.5 symbol correspondence is corrected — a `Symbol` carries the engine's number width, but creating
+   the engine's symbol handle is an interning write under the single discipline, not a free
+   correspondence. The §3.1 block-macro name is corrected to `program!`.
