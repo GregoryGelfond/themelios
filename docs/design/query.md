@@ -189,6 +189,7 @@ a value meaning "invalid" inside the space of valid world views would be a senti
 
 ```rust
 impl<'a> WorldView<'a> {   // the LIVE handle — engine-driving reads are `&mut self -> Result<_, Fault>`
+    pub fn of(models: Models<'a>) -> WorldView<'a>;   // the construction door — from a resolved `Consistent(Models)` (solve.md §5.2)
     // --- primitives (the exposed surface of §1.1) ---
     pub fn cautious(&mut self) -> Result<Consequences, Fault>;    // ⋂ — one solve (§2.4)
     pub fn brave(&mut self) -> Result<Consequences, Fault>;       // ⋃ — one solve (§2.4)
@@ -212,9 +213,14 @@ impl Snapshot {
     pub fn is_exhausted(&self) -> bool;                           // a snapshot is complete
     pub fn scenario(&self) -> &Scenario;
     pub fn answer(&self, q: &Query) -> Answer;                    // §2.2
-    pub fn bindings(&self, pat: &Atom) -> Result<Bindings, NotAPattern>; // §2.5 — only query-validity can refuse
+    pub fn bindings(&self, pat: &Atom) -> Result<Bindings, NotABindingPattern>; // §2.5 — a query-owned refusal (below)
     pub fn entails(&self, q: &Query) -> bool;                     // §2.6
 }
+/// The `bindings` refusal — the program tier's `NotAPattern` (a non-denoting term) *plus* the query tier's
+/// own partition policy: an anonymous position (`p(X,_)`) is a well-formed pattern to the mgu (`_` denotes;
+/// it matches anything) but breaks the yes/no/unknown partition (its instances land in `yes` AND `no`), so
+/// it is refused HERE, not laundered into `NonDenoting`. `query.md` §3.1 keeps matching apart from policy.
+#[non_exhaustive] pub enum NotABindingPattern { NotAPattern(NotAPattern), AnonymousPosition }
 ```
 
 Properties and cost:
@@ -468,3 +474,9 @@ it.
    vocabulary is aligned to `solve.md` §6's agent framing — the `WorldView` it ranges over is obtained
    from a `Program` asked directly or an `Agent` in its reasoning loop, identically (§2.7). elenctic is
    recorded as the **first** of the solve-stage committed clients and the near-term priority (§4).
+5. **Construction and refusal refinements** (2026-09-24). `WorldView::of(models)` is stated as the
+   construction door — a `WorldView` is built on the query side from a resolved `Consistent(Models)`
+   (solve.md §5.2, §6.4), keeping `themelios-solve` free of a query dependency (§2.3). `bindings` refuses
+   through a query-owned `NotABindingPattern { NotAPattern, AnonymousPosition }`: an anonymous position is
+   a well-formed pattern to the mgu but breaks the yes/no/unknown partition, so it is refused in the query
+   tier's own type rather than laundered into the program tier's `NonDenoting` (§2.3, §2.5).
