@@ -4,8 +4,10 @@
 
 use std::fmt;
 
-use crate::contract::Backend;
-use themelios_program::{Program, Symbol};
+use crate::contract::{Backend, Fault, TruthValue};
+use crate::extend::Facts;
+use themelios_program::program::{Arguments, PartKey};
+use themelios_program::{Atom, Program, Rule, Statement, Symbol, Term, WithProvenance};
 
 /// A program made active — the same knowledge seen not as an object of study
 /// but as a reasoner one drives (docs/design/solve.md §6.1). An agent is
@@ -23,31 +25,25 @@ use themelios_program::{Program, Symbol};
 pub struct Agent<B: Backend> {
     /// The engine that reasons for the agent, driven by the reasoning loop
     /// (§6.2).
-    #[expect(
-        dead_code,
-        reason = "driven by the reasoning loop (docs/design/solve.md §6.2)"
-    )]
     backend: B,
     /// The knowledge base: the program the agent was instantiated from,
     /// evolving as the loop asserts and retracts (§6.2).
     knowledge: Program,
     /// The ledger kept beside the knowledge base (§6.2).
-    #[expect(
-        dead_code,
-        reason = "read by the reasoning loop (docs/design/solve.md §6.2)"
-    )]
     ledger: KnowledgeLedger,
 }
 
 impl<B: Backend> Agent<B> {
     /// Instantiate an agent from a program, which becomes its knowledge base,
     /// over the backend that reasons for it (docs/design/solve.md §6.1). The
-    /// agent owns both. Total; O(1) — both values move in.
+    /// agent owns both; the knowledge is indexed for later modification. Cost:
+    /// `Θ(program size)` — each statement is recorded in the ledger.
     pub fn new(knowledge: Program, backend: B) -> Self {
+        let ledger = KnowledgeLedger::of(&knowledge);
         Agent {
             backend,
             knowledge,
-            ledger: KnowledgeLedger::default(),
+            ledger,
         }
     }
 
@@ -56,14 +52,347 @@ impl<B: Backend> Agent<B> {
     pub fn knowledge(&self) -> &Program {
         &self.knowledge
     }
+
+    /// Add a statement to the knowledge base, returning the handle that names it
+    /// and its retraction class (docs/design/solve.md §6.2). Assertion is
+    /// monotone and clean: it amends the owned knowledge base and discloses how
+    /// the statement would retract — `Toggle` at the seam where the backend
+    /// guards externals, `Rebuild` (re-grounding) otherwise — readable from the
+    /// handle before any retraction is paid for. The engine is brought level
+    /// with the amended knowledge at the next ask, not here, so a single
+    /// `assert` touches no backend. Two content-equal assertions get distinct
+    /// handles — the set-valued program shows the statement once, and it stays
+    /// while either handle is unretracted. Cost: `Θ(program size)`.
+    pub fn assert(&mut self, statement: impl Into<Statement>) -> Result<StatementId, Fault> {
+        let node = WithProvenance::constructed(statement.into());
+        let id = self.ledger.push(node, self.retraction_class());
+        self.knowledge = self.ledger.rebuild();
+        Ok(id)
+    }
+
+    /// Retract a statement named by its handle (docs/design/solve.md §6.2):
+    /// remove it from the owned knowledge base. The handle is honoured only by
+    /// the ledger that issued it; a stale handle — one already retracted — or
+    /// one from another agent is a typed refusal at
+    /// [`Locus::Request`](crate::contract::Locus::Request), never a silent
+    /// no-op. The engine is brought level at the next ask; the retraction class
+    /// the handle disclosed governs how cheaply a warm engine realises the
+    /// removal there. Cost: `Θ(program size)`.
+    pub fn retract(&mut self, statement: StatementId) -> Result<(), Fault> {
+        if !self.ledger.is_live(statement) {
+            return Err(Fault::request("retract of a statement that is not live"));
+        }
+        self.ledger.retire(statement);
+        self.knowledge = self.ledger.rebuild();
+        Ok(())
+    }
+
+    /// Record a bulk set of observed ground facts, returning the observation
+    /// that names them (docs/design/solve.md §6.2, §7.3). The observation is
+    /// all-or-nothing: every fact the source denotes is converted to a base fact
+    /// first, so a symbol that is not an atom — a number, string, tuple, `#inf`,
+    /// or `#sup` — refuses with the knowledge base untouched, leaving no orphaned
+    /// statement. A later step retracts the whole set with
+    /// [`forget`](Agent::forget). Cost: `Θ(facts + program size)` — one rebuild,
+    /// not one per fact.
+    // The fact source is taken by value — the design's surface (§6.2): the caller
+    // hands its observations over, though a `Facts` is only read to enumerate them.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn observe(&mut self, facts: impl Facts) -> Result<Observation, Fault> {
+        let rules = facts
+            .facts()
+            .map(|symbol| fact_of(&symbol))
+            .collect::<Result<Vec<_>, _>>()?;
+        if rules.is_empty() {
+            return Ok(Observation {
+                members: Box::default(),
+            });
+        }
+        let class = self.retraction_class();
+        let members: Box<[StatementId]> = rules
+            .into_iter()
+            .map(|rule| {
+                self.ledger
+                    .push(WithProvenance::constructed(rule.into()), class)
+            })
+            .collect();
+        self.knowledge = self.ledger.rebuild();
+        Ok(Observation { members })
+    }
+
+    /// Retract an observation's facts as a unit (docs/design/solve.md §6.2). The
+    /// retraction is all-or-nothing: a spent observation — one already forgotten,
+    /// or holding any spent handle — refuses at
+    /// [`Locus::Request`](crate::contract::Locus::Request) with the knowledge base
+    /// untouched, as a stale statement handle does. Cost: `Θ(facts + program
+    /// size)` — one rebuild, not one per fact.
+    pub fn forget(&mut self, observation: Observation) -> Result<(), Fault> {
+        let Observation { members } = observation;
+        if members.is_empty() {
+            return Ok(());
+        }
+        if members.iter().any(|&member| !self.ledger.is_live(member)) {
+            return Err(Fault::request("forget of a spent observation"));
+        }
+        for &member in &members {
+            self.ledger.retire(member);
+        }
+        self.knowledge = self.ledger.rebuild();
+        Ok(())
+    }
+
+    /// Ground the named program parts through the backend (docs/design/solve.md
+    /// §6.2) — one of the retained multi-shot mechanisms a caller drives
+    /// explicitly, distinct from the monotone `assert`.
+    pub fn ground(&mut self, parts: &[themelios_program::program::Part]) -> Result<(), Fault> {
+        self.backend
+            .ground(parts, &crate::contract::GroundOptions::default())
+    }
+
+    /// Assign an external atom a truth value at the seam (docs/design/solve.md
+    /// §6.2) — the retained multi-shot mechanism a caller toggles an open truth
+    /// with.
+    pub fn assign_external(&mut self, external: Symbol, value: TruthValue) -> Result<(), Fault> {
+        self.backend.assign_external(external, value)
+    }
+
+    /// The retraction class an asserted statement is disclosed under
+    /// (docs/design/solve.md §6.2): `Toggle` when the backend declares
+    /// `externals` — the agent guards an asserted statement with an external so
+    /// its retraction is an `O(1)` toggle, the realisation being the agent's to
+    /// choose — and `Rebuild` otherwise, where retraction re-grounds the amended
+    /// program. O(1).
+    fn retraction_class(&self) -> RetractionClass {
+        if self.backend.capabilities().externals {
+            RetractionClass::Toggle
+        } else {
+            RetractionClass::Rebuild
+        }
+    }
 }
 
-/// The side structure the agent keeps beside its knowledge base: each asserted
-/// statement's identity and its retraction class, fixed at assertion
-/// (docs/design/solve.md §6.2). Seeded empty at construction; its entries are
-/// defined with the modification surface.
-#[derive(Default)]
-pub(crate) struct KnowledgeLedger {}
+/// The base fact a ground atom symbol denotes (docs/design/solve.md §6.2, §7.3),
+/// or a refusal when the symbol is not an atom. An atom is a function symbol; a
+/// number, string, tuple, `#inf`, or `#sup` is not one a program asserts.
+fn fact_of(symbol: &Symbol) -> Result<Rule, Fault> {
+    match symbol {
+        Symbol::Function {
+            name,
+            arguments,
+            sign,
+        } => {
+            let terms = arguments.iter().cloned().map(Term::from).collect();
+            Ok(Rule::fact(Atom {
+                sign: *sign,
+                name: name.clone(),
+                arguments: Arguments::Single(terms),
+            }))
+        }
+        // The symbol is not embedded in the message: a symbol is unbounded in
+        // size, and a fault message is not the place to render one.
+        _ => Err(Fault::request(
+            "an observed fact must be an atom, not a number, string, tuple, #inf, or #sup",
+        )),
+    }
+}
+
+/// How a statement's retraction is realised (docs/design/solve.md §6.2), fixed
+/// at assertion and readable from the statement's handle before any retraction
+/// is paid for: a `Toggle` clears an external guard at the seam in `O(1)`, a
+/// `Rebuild` re-grounds the amended program in `Θ(program size)`. The divergence
+/// is disclosed so no caller pays a rebuild believing it a toggle.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum RetractionClass {
+    /// Retracts by clearing an external guard at the seam — `O(1)`.
+    Toggle,
+    /// Retracts by re-grounding the amended program — `Θ(program size)`.
+    Rebuild,
+}
+
+/// A handle naming a statement in an agent's knowledge base together with its
+/// retraction class (docs/design/solve.md §6.2). The class is readable before
+/// the retraction the handle names is paid for. A handle is honoured only by the
+/// ledger that issued it, and only until it is spent: retracting a spent handle,
+/// or one issued by another agent, is a typed refusal, not a silent no-op.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct StatementId {
+    ledger: u64,
+    slot: usize,
+    generation: u64,
+    class: RetractionClass,
+}
+
+impl StatementId {
+    /// The retraction class fixed at assertion — readable before the retraction
+    /// is paid for (docs/design/solve.md §6.2). O(1).
+    pub fn retraction_class(&self) -> RetractionClass {
+        self.class
+    }
+}
+
+/// A bulk-observed fact set: the statements one [`observe`](Agent::observe)
+/// recorded, named as a unit so a later step can [`forget`](Agent::forget) them
+/// together (docs/design/solve.md §6.2).
+#[derive(Clone, Debug)]
+pub struct Observation {
+    members: Box<[StatementId]>,
+}
+
+impl Observation {
+    /// How many facts the observation recorded. O(1).
+    pub fn len(&self) -> usize {
+        self.members.len()
+    }
+
+    /// Whether the observation recorded no facts. O(1).
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+}
+
+/// The brand a [`KnowledgeLedger`] stamps its handles with, so a handle names a
+/// statement in the ledger that issued it and nowhere else. Process-unique.
+static NEXT_LEDGER_BRAND: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The side structure the agent keeps beside its knowledge base (docs/design/
+/// solve.md §6.2): a generational slot map over the statements — the part each
+/// belongs to and the statement with its provenance. A retraction frees the slot
+/// and bumps its generation, so a spent handle reads spent and the slot is reused
+/// by the next assertion — the map is bounded by the high-water mark of
+/// concurrently live statements, not the count ever asserted. The owned
+/// knowledge base is
+/// [`rebuild`](KnowledgeLedger::rebuild)ed from the live slots after each
+/// mutation.
+pub(crate) struct KnowledgeLedger {
+    brand: u64,
+    base: PartKey,
+    slots: Vec<Slot>,
+    free: Vec<usize>,
+}
+
+/// One slot of a [`KnowledgeLedger`]: its generation, and the statement it holds
+/// while live. The generation tells a handle to the statement once here apart
+/// from a handle to a statement that later reused the slot.
+struct Slot {
+    generation: u64,
+    entry: Option<LedgerEntry>,
+}
+
+/// One statement held in a [`KnowledgeLedger`]: the part it belongs to and the
+/// statement with its provenance. The retraction class travels in the
+/// [`StatementId`], not here — the ledger stores, the handle discloses.
+struct LedgerEntry {
+    part: PartKey,
+    node: WithProvenance<Statement>,
+}
+
+impl KnowledgeLedger {
+    /// Seed a ledger from a program's statements, each under the part it belongs
+    /// to (docs/design/solve.md §6.2). Seeded statements carry no handle, so they
+    /// are the knowledge base's permanent floor; only asserted statements are
+    /// retractable. `Θ(program size)` — every statement is cloned into the map.
+    pub(crate) fn of(program: &Program) -> KnowledgeLedger {
+        let brand = NEXT_LEDGER_BRAND.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = program.base().key().clone();
+        let slots = program
+            .parts()
+            .flat_map(|part| {
+                let key = part.key().clone();
+                part.statements().map(move |node| Slot {
+                    generation: 0,
+                    entry: Some(LedgerEntry {
+                        part: key.clone(),
+                        node: node.clone(),
+                    }),
+                })
+            })
+            .collect();
+        KnowledgeLedger {
+            brand,
+            base,
+            slots,
+            free: Vec::new(),
+        }
+    }
+
+    /// Rebuild the owned program from the live slots in one pass (docs/design/
+    /// solve.md §6.2). The multi-part rebuild door canonicalizes and merges
+    /// content-equal statements within a part. `Θ(slots)` — bounded by the
+    /// high-water mark of concurrently live statements, since a freed slot is
+    /// reused rather than left a permanent hole.
+    pub(crate) fn rebuild(&self) -> Program {
+        Program::of_keyed_nodes(
+            self.slots
+                .iter()
+                .filter_map(|slot| slot.entry.as_ref())
+                .map(|entry| (entry.part.clone(), entry.node.clone())),
+        )
+    }
+
+    /// Add a statement to the base part, returning its handle carrying the
+    /// retraction `class`. Reuses a freed slot when one is available, so the map
+    /// does not grow with the count ever asserted. O(1) amortised.
+    pub(crate) fn push(
+        &mut self,
+        node: WithProvenance<Statement>,
+        class: RetractionClass,
+    ) -> StatementId {
+        let entry = LedgerEntry {
+            part: self.base.clone(),
+            node,
+        };
+        let slot = if let Some(slot) = self.free.pop() {
+            self.slots[slot].entry = Some(entry);
+            slot
+        } else {
+            self.slots.push(Slot {
+                generation: 0,
+                entry: Some(entry),
+            });
+            self.slots.len() - 1
+        };
+        StatementId {
+            ledger: self.brand,
+            slot,
+            generation: self.slots[slot].generation,
+            class,
+        }
+    }
+
+    /// Whether the handle still names a live statement in this ledger — false for
+    /// a spent handle, a reused slot, or a handle from another ledger. O(1).
+    pub(crate) fn is_live(&self, id: StatementId) -> bool {
+        id.ledger == self.brand
+            && matches!(
+                self.slots.get(id.slot),
+                Some(Slot {
+                    generation,
+                    entry: Some(_),
+                }) if *generation == id.generation
+            )
+    }
+
+    /// Retire the live statement the handle names: free its slot and bump the
+    /// slot's generation so the spent handle reads spent. The caller has
+    /// confirmed the handle is live. O(1).
+    pub(crate) fn retire(&mut self, id: StatementId) {
+        let slot = &mut self.slots[id.slot];
+        // The caller confirms liveness before retiring, and an observation's
+        // members are distinct — so a slot is never freed twice, which would
+        // double-enter the free list and hand two assertions the same handle.
+        debug_assert!(slot.entry.is_some(), "retire of an already-freed slot");
+        slot.entry = None;
+        slot.generation = slot.generation.wrapping_add(1);
+        self.free.push(id.slot);
+    }
+
+    /// The number of slots the map holds — live plus freed-and-not-yet-reused.
+    /// Bounded by the high-water mark of concurrently live statements.
+    #[cfg(test)]
+    pub(crate) fn slot_count(&self) -> usize {
+        self.slots.len()
+    }
+}
 
 // ---- Assumptions and scenarios (§6.3) ----
 
@@ -225,5 +554,106 @@ mod tests {
     fn a_cloned_conversion_refusal_equals_its_original() {
         let refused = NotAnAssumption {};
         assert_eq!(refused.clone(), refused);
+    }
+}
+
+#[cfg(test)]
+mod ledger_laws {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    /// The rebuild-scaling probe size: large enough that a quadratic rebuild
+    /// stands clear of timing noise, small enough to stay a fast unit test.
+    const PROBE_ENTRIES: usize = 4_000;
+    /// Doubling the entries at most triples the time — a linear rebuild roughly
+    /// doubles (~2×), a quadratic one quadruples (~4×), so the tripwire trips
+    /// between them.
+    const LINEAR_CEILING: u128 = 3;
+    /// The rebuild is timed several times and the fastest kept, so a scheduling
+    /// hiccup in one run does not read as super-linear growth.
+    const SAMPLES: usize = 9;
+
+    /// A ledger seeded with `n` distinct base facts `c0.` … `c{n-1}.`.
+    fn ledger_of_size(n: usize) -> KnowledgeLedger {
+        let facts = (0..n).map(|i| {
+            themelios_program::Rule::fact(themelios_program::Atom::constant(
+                themelios_program::Name::new(format!("c{i}")).expect("a valid identifier"),
+            ))
+        });
+        KnowledgeLedger::of(&Program::of(facts))
+    }
+
+    /// The fastest of several rebuilds of `ledger`, in nanoseconds.
+    fn fastest_rebuild_nanos(ledger: &KnowledgeLedger) -> u128 {
+        (0..SAMPLES)
+            .map(|_| {
+                let start = Instant::now();
+                black_box(ledger.rebuild());
+                start.elapsed().as_nanos()
+            })
+            .min()
+            .expect("at least one sample")
+    }
+
+    #[test]
+    fn the_rebuild_scales_linearly_with_the_program_size() {
+        let single = fastest_rebuild_nanos(&ledger_of_size(PROBE_ENTRIES));
+        let double = fastest_rebuild_nanos(&ledger_of_size(PROBE_ENTRIES * 2));
+        assert!(
+            double < single.saturating_mul(LINEAR_CEILING),
+            "rebuild grew worse than linearly — {single}ns at {PROBE_ENTRIES} entries, \
+             {double}ns at {} entries — the reinsertion recurrence to avoid",
+            PROBE_ENTRIES * 2,
+        );
+    }
+
+    /// The number of assert/retract cycles a long-running loop stands in for.
+    const CHURN_CYCLES: usize = 10_000;
+
+    #[test]
+    fn a_long_churn_reuses_freed_slots_rather_than_growing() {
+        let mut ledger = KnowledgeLedger::of(&Program::empty());
+        let seeded = ledger.slot_count();
+        for i in 0..CHURN_CYCLES {
+            let node = WithProvenance::constructed(themelios_program::Statement::from(
+                themelios_program::Rule::fact(themelios_program::Atom::constant(
+                    themelios_program::Name::new(format!("c{i}")).expect("a valid identifier"),
+                )),
+            ));
+            let id = ledger.push(node, RetractionClass::Rebuild);
+            ledger.retire(id);
+        }
+        // Each cycle frees the slot it took, so the map never grows past the
+        // seed plus one transient slot — never the count ever asserted.
+        assert!(
+            ledger.slot_count() <= seeded + 1,
+            "the slot map grew with the count ever asserted: {} slots after {CHURN_CYCLES} cycles",
+            ledger.slot_count(),
+        );
+    }
+
+    #[test]
+    fn a_rebuild_preserves_a_statements_provenance() {
+        let doc = "an observed fact";
+        let documented = WithProvenance::constructed_with_doc(
+            themelios_program::Statement::from(themelios_program::Rule::fact(
+                themelios_program::Atom::constant(
+                    themelios_program::Name::new("a").expect("a valid identifier"),
+                ),
+            )),
+            doc,
+        );
+        let mut ledger = KnowledgeLedger::of(&Program::empty());
+        ledger.push(documented, RetractionClass::Rebuild);
+        let rebuilt = ledger.rebuild();
+        let statement = rebuilt.statements().next().expect("one statement");
+        // Program equality erases provenance, so pin it by inspection: the doc
+        // annotation must survive the rebuild, not just the statement's content.
+        assert!(
+            format!("{:?}", statement.provenance()).contains(doc),
+            "the rebuild lost the provenance: {:?}",
+            statement.provenance()
+        );
     }
 }
