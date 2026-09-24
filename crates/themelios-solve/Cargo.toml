@@ -1,0 +1,32 @@
+[package]
+name = "themelios-solve"
+version = "0.1.0"
+description = "The abstract-solver contract over the program tier's IR: the backend contract, the outcome vocabulary and its model–view types, the agent and its reasoning loop, the fault taxonomy, the extension-surface traits, the bridge seam, and the conformance suite — engine-free."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The shipped closure: the four lower tiers and, beneath them, syntax's own
+# closure — no dependency of this crate's own beyond them (docs/design/solve.md
+# §16; docs/specification.md §12.3, §12.5). No small-vector crate: the `Function`
+# trait returns `Vec<Symbol>` (docs/design/program.md §3.4). tests/trust.rs holds
+# the closure over Cargo's resolved graph.
+[dependencies]
+themelios-base = { path = "../themelios-base" }
+themelios-syntax = { path = "../themelios-syntax" }
+themelios-program = { path = "../themelios-program" }
+themelios-analysis = { path = "../themelios-analysis" }
+
+# The stage instruments, outside the shipped closure's claim: proptest as in the
+# tiers beneath, and serde_json solely so tests/trust.rs reads `cargo metadata`'s
+# JSON.
+[dev-dependencies]
+proptest = "1"
+serde_json = "1"
+
+# The default engine is wired at the facade behind its `potassco` feature, not
+# here: this crate is engine-free (docs/design/solve.md §2.1, §16).
+[features]
+
+[lints]
+workspace = true

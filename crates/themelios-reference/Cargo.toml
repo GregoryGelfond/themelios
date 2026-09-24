@@ -1,0 +1,27 @@
+[package]
+name = "themelios-reference"
+version = "0.1.0"
+publish = false
+description = "The naive pure-Rust reference solver: the small-case oracle, the second implementor of the backend contract, and the native-backend demonstration — engine-free, unpublished."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The closure: the solve tier and, beneath it, the program and analysis tiers
+# and their own closures — engine-free, no dependency of this crate's own
+# (docs/design/solve.md §12, §16). Unpublished: it is the small-case oracle and
+# the second implementor of the contract, not a shipped engine. The solve tier's
+# tests/trust.rs holds the closure over Cargo's resolved graph.
+[dependencies]
+themelios-base = { path = "../themelios-base" }
+themelios-program = { path = "../themelios-program" }
+themelios-analysis = { path = "../themelios-analysis" }
+themelios-solve = { path = "../themelios-solve" }
+
+# The stage instruments, outside the closure's claim: proptest as in the tiers
+# beneath.
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true

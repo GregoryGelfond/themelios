@@ -1,0 +1,26 @@
+[package]
+name = "themelios-query"
+version = "0.1.0"
+description = "The epistemic reading over the program tier's patterns and the solve tier's outcomes: the three-valued answer, the world view, cautious and brave consequence, and bindings — engine-free."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The shipped closure: the solve tier and, beneath it, the lower tiers and
+# syntax's own closure — no dependency of this crate's own beyond them
+# (docs/design/query.md; docs/design/solve.md §16; docs/specification.md §12.3,
+# §12.5). The solve tier's tests/trust.rs holds the closure over Cargo's
+# resolved graph.
+[dependencies]
+themelios-base = { path = "../themelios-base" }
+themelios-syntax = { path = "../themelios-syntax" }
+themelios-program = { path = "../themelios-program" }
+themelios-solve = { path = "../themelios-solve" }
+
+# The stage instruments, outside the shipped closure's claim: proptest as in
+# the tiers beneath.
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true
