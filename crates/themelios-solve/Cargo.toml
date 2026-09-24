@@ -18,11 +18,13 @@ themelios-program = { path = "../themelios-program" }
 themelios-analysis = { path = "../themelios-analysis" }
 
 # The stage instruments, outside the shipped closure's claim: proptest as in the
-# tiers beneath, and serde_json solely so tests/trust.rs reads `cargo metadata`'s
-# JSON.
+# tiers beneath, trybuild for the compile-fail witness that a proven optimum has
+# no public constructor (docs/design/solve.md §5.3), and serde_json solely so
+# tests/trust.rs reads `cargo metadata`'s JSON.
 [dev-dependencies]
 proptest = "1"
 serde_json = "1"
+trybuild = "1"
 
 # The default engine is wired at the facade behind its `potassco` feature, not
 # here: this crate is engine-free (docs/design/solve.md §2.1, §16).

@@ -1,6 +1,7 @@
 //! The outcome vocabulary (docs/design/solve.md §5): the models and their
-//! views — determination, conclusion, the solved outcome, models, consequences,
-//! and unsatisfiability with its assumption blame.
+//! views — determination, conclusion, the solved and optimized outcomes,
+//! models, consequences, unsatisfiability with its assumption blame, theory
+//! assignments, and statistics.
 //!
 //! Two closed distinctions open the vocabulary (§5.1). A [`Determination`]
 //! answers the logical question — is the program consistent? — as a closed
@@ -455,10 +456,64 @@ impl<'a> Solved<'a> {
     }
 }
 
-/// The run handle `optimize` returns, borrowing its engine for `'a`. Reserved;
-/// its surface is defined with §5.2.
+/// A PROVEN optimum (docs/design/solve.md §5.2): its levels, in the terms the
+/// objectives were written in — a maximized level shows what was maximized,
+/// not the negation an engine optimizes internally. It has NO public
+/// constructor: a value of this type exists only because a solver proved it,
+/// so a best-found cannot pose as proven — the last of the named pathologies,
+/// closed structurally rather than by test (§5.3). The levels are reported
+/// once optimization is realised; until then the type is declared, with the
+/// crate-private field that keeps it unconstructible elsewhere, so the
+/// backend contract's `optimize` and the [`Optimized`] register are shaped by
+/// it already.
+pub struct Optimum {
+    pub(crate) _levels: (),
+}
+
+/// The run handle `optimize` returns (docs/design/solve.md §5.2): the same
+/// resolution register as [`Solved`] — `determination`/`into_determination`/
+/// `conclusion` — specialised with `optimum`/`trajectory` in place of the
+/// plain-enumeration accessors, so `optimize` is a sibling of `solve`, not a
+/// second vocabulary (§6.4). Its optimal answer sets are read through the
+/// resolved [`Determination`]'s `Consistent` models, ranging over the OPTIMAL
+/// set under the optimum-proven/exhausted gate. It holds the same live run a
+/// `Solved` does, borrowing its engine for `'a`.
 pub struct Optimized<'a> {
-    _engine: PhantomData<&'a ()>,
+    pub(crate) live: LiveRun<'a>,
+}
+
+impl<'a> Optimized<'a> {
+    /// RESOLVE the run into the trichotomy (consuming), threading the engine
+    /// borrow `'a`; `Consistent` ranges over the optimal set
+    /// (docs/design/solve.md §5.2).
+    pub fn into_determination(self) -> Determination<'a> {
+        Determination::of_live(self.live)
+    }
+
+    /// INSPECT the run in place (reborrow): the trichotomy, bounded by the
+    /// borrow (docs/design/solve.md §5.2).
+    pub fn determination(&mut self) -> Determination<'_> {
+        Determination::of_live_ref(&mut self.live)
+    }
+
+    /// The proven optimum, once proved — `None` while none is. Reserved until
+    /// optimization is realised; answers `None` meanwhile. Total; O(1).
+    pub fn optimum(&self) -> Option<Optimum> {
+        None
+    }
+
+    /// The improving sequence, each step a `Result` so a mid-search engine
+    /// fault surfaces at the step — `Some` iff the request asked for it
+    /// (docs/design/solve.md §5.3). Reserved until optimization is realised;
+    /// answers `None` meanwhile.
+    pub fn trajectory(&mut self) -> Option<impl Iterator<Item = Result<Optimum, Fault>> + '_> {
+        None::<std::iter::Empty<_>>
+    }
+
+    /// How the search ended — readable once it resolves.
+    pub fn conclusion(&self) -> Option<Conclusion> {
+        self.live.conclusion()
+    }
 }
 
 /// Cautious (⋂) or brave (⋃) consequences (docs/design/solve.md §5.2): a set
@@ -663,6 +718,42 @@ pub enum Refutation {
     /// The program is inconsistent with none assumed.
     NoAssumptions,
 }
+
+// ---- Theory assignments and statistics (§5.4) ----
+
+/// Theory (constraint) assignments — a DISTINCT typed component of the
+/// outcome, beside the answer set, never laundered into Herbrand-looking atoms
+/// (docs/design/solve.md §5.4): program literals stay `Symbol` (`i32`), while
+/// a constraint assignment is a wider solve-tier typed value, rich enough for a
+/// full CP theory (§8.2) — a global constraint's domain values, a sum's result,
+/// an `alldifferent`'s witness assignment, each read back as typed data.
+/// Non-exhaustive: the per-variable typed constraint values join when the
+/// theory door is realised; until then the component is declared, and empty,
+/// so the outcome is shaped by it already.
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct TheoryAssignments {}
+
+/// Per-solve statistics (docs/design/solve.md §5.4): engine-scoped,
+/// provenance-marked, typed data, read through this trait — the minimal shape
+/// a consumer reads (v1: the clingo adapter provides clingo's own). The
+/// reserved normalised cross-backend schema (§14) is a distinct view that
+/// CONSUMES this trait, so it lands additively, touching neither the trait nor
+/// [`Measurement`]. Not a trait object: the measurement stream is a
+/// return-position `impl Iterator`, read where the source's type is known.
+pub trait Statistics {
+    /// The measurements this source holds, each named, typed, and
+    /// provenance-marked. Borrowed: reading does not spend the source.
+    fn measurements(&self) -> impl Iterator<Item = Measurement> + '_;
+}
+
+/// One statistic (docs/design/solve.md §5.4): an engine-scoped name, a typed
+/// value, and the engine that produced it. Non-exhaustive: those fields join
+/// when an engine adapter exposes its statistics; until then the measurement
+/// is declared, and empty, so what a consumer reads is shaped by it already.
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Measurement {}
 
 #[cfg(test)]
 mod tests {
@@ -1645,5 +1736,123 @@ mod tests {
             Consequences::fold(Mode::Brave, &members).mode(),
             Mode::Brave
         );
+    }
+
+    // ---- The optimization register (§5.2, §5.3) ----
+
+    /// An optimization handle over `sets`, ending `terminal` — the register's
+    /// laws are `Solved`'s, over the same live run.
+    fn optimized_over(sets: Vec<AnswerSet>, terminal: Conclusion) -> Optimized<'static> {
+        Optimized {
+            live: live_with(Box::new(StubRun::new(sets, terminal))),
+        }
+    }
+
+    #[test]
+    fn an_optimized_search_with_a_model_resolves_consistent() {
+        let optimized = optimized_over(vec![singleton(0)], Conclusion::Exhausted);
+        assert!(matches!(
+            optimized.into_determination(),
+            Determination::Consistent(_)
+        ));
+    }
+
+    #[test]
+    fn an_empty_closed_optimized_search_resolves_inconsistent() {
+        let optimized = optimized_over(vec![], Conclusion::Exhausted);
+        assert!(matches!(
+            optimized.into_determination(),
+            Determination::Inconsistent(_)
+        ));
+    }
+
+    #[test]
+    fn a_cut_optimized_search_with_no_model_resolves_inconclusive() {
+        for conclusion in TRUNCATING {
+            let optimized = optimized_over(vec![], conclusion);
+            assert!(
+                matches!(
+                    optimized.into_determination(),
+                    Determination::Inconclusive(_)
+                ),
+                "{conclusion:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_inspecting_resolver_leaves_the_optimized_handle_live() {
+        // A reborrow, not a move: the handle answers a second inspection.
+        let mut optimized = optimized_over(vec![singleton(0)], Conclusion::Exhausted);
+        assert!(matches!(
+            optimized.determination(),
+            Determination::Consistent(_)
+        ));
+        assert!(matches!(
+            optimized.determination(),
+            Determination::Consistent(_)
+        ));
+    }
+
+    #[test]
+    fn an_unresolved_optimized_run_has_no_conclusion() {
+        let optimized = optimized_over(vec![], Conclusion::Exhausted);
+        assert_eq!(optimized.conclusion(), None);
+    }
+
+    #[test]
+    fn a_resolved_optimized_run_reports_its_conclusion() {
+        let mut optimized = optimized_over(vec![], Conclusion::Budget);
+        let _ = optimized.determination();
+        assert_eq!(optimized.conclusion(), Some(Conclusion::Budget));
+    }
+
+    #[test]
+    fn no_optimum_is_reported_while_optimization_is_reserved() {
+        let optimized = optimized_over(vec![singleton(0)], Conclusion::Exhausted);
+        assert!(optimized.optimum().is_none());
+    }
+
+    #[test]
+    fn no_trajectory_is_reported_while_optimization_is_reserved() {
+        let mut optimized = optimized_over(vec![singleton(0)], Conclusion::Exhausted);
+        assert!(optimized.trajectory().is_none());
+    }
+
+    // ---- Theory assignments and statistics (§5.4) ----
+
+    /// How many measurements the counted statistics source holds.
+    const MEASUREMENTS: usize = 3;
+
+    /// A statistics source holding `MEASUREMENTS` measurements, built here, in
+    /// the defining crate, as an engine adapter will build them.
+    struct Counted;
+
+    impl Statistics for Counted {
+        fn measurements(&self) -> impl Iterator<Item = Measurement> + '_ {
+            std::iter::repeat_n(Measurement {}, MEASUREMENTS)
+        }
+    }
+
+    #[test]
+    fn statistics_yield_each_measurement_the_source_holds() {
+        assert_eq!(Counted.measurements().count(), MEASUREMENTS);
+    }
+
+    #[test]
+    fn a_cloned_measurement_equals_its_original() {
+        let measurement = Measurement {};
+        assert_eq!(measurement.clone(), measurement);
+    }
+
+    #[test]
+    fn a_measurement_s_debug_view_names_the_type() {
+        let rendered = format!("{:?}", Measurement {});
+        assert!(rendered.contains("Measurement"), "{rendered}");
+    }
+
+    #[test]
+    fn a_theory_assignment_s_default_is_the_empty_component() {
+        assert_eq!(TheoryAssignments::default(), TheoryAssignments {});
     }
 }

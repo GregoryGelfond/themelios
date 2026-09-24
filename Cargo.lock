@@ -971,6 +971,7 @@ dependencies = [
  "themelios-base",
  "themelios-program",
  "themelios-syntax",
+ "trybuild",
 ]
 
 [[package]]

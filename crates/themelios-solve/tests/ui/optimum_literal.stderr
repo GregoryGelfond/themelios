@@ -1,0 +1,5 @@
+error: cannot construct `Optimum` with struct literal syntax due to private fields
+ --> tests/ui/optimum_literal.rs:7:13
+  |
+7 |     let _ = themelios_solve::outcome::Optimum {};
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
