@@ -11,7 +11,7 @@ use themelios_solve::bridge::{Door, GroundProgram};
 use themelios_solve::contract::{
     Backend, Capabilities, Fault, GroundOptions, OptimizeRequest, SolveRequest, TruthValue,
 };
-use themelios_solve::extend::{Function, Propagator};
+use themelios_solve::extend::{Function, GroundFault, Propagator};
 use themelios_solve::outcome::Solved;
 
 /// A backend that implements the required surface alone (§4.1): it declares
@@ -40,7 +40,11 @@ impl Backend for Nothing {
 /// An `@`-function offered to a backend that evaluates none (§7).
 struct NoFunction;
 
-impl Function for NoFunction {}
+impl Function for NoFunction {
+    fn call(&self, _arguments: &[Symbol]) -> Result<Vec<Symbol>, GroundFault> {
+        Ok(Vec::new())
+    }
+}
 
 /// A propagator offered to a backend that runs none (§8).
 struct NoPropagator;
