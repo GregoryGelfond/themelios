@@ -491,6 +491,34 @@ impl Consequences {
     pub fn contains(&self, symbol: &Symbol) -> bool {
         self.symbols.contains(symbol)
     }
+
+    /// The cautious (⋂) or brave (⋃) consequences of a collection of answer sets
+    /// — the derived reading a world view folds when the backend has no native
+    /// door (docs/design/solve.md §4.2; query.md §2.4). This is the construction
+    /// door the query tier's `Snapshot`/`WorldView` build a `Consequences`
+    /// through, over an exhausted, non-empty collection. Cautious is the
+    /// intersection (a symbol in EVERY answer set), brave the union (a symbol in
+    /// SOME); over no models both are empty. Cost: O(members × set size).
+    pub fn fold<'m, I>(mode: Mode, members: I) -> Consequences
+    where
+        I: IntoIterator<Item = &'m AnswerSet>,
+    {
+        let mut members = members.into_iter();
+        let symbols = match members.next() {
+            None => BTreeSet::new(),
+            Some(first) => {
+                let mut acc = first.clone();
+                for member in members {
+                    match mode {
+                        Mode::Cautious => acc.retain(|symbol| member.contains(symbol)),
+                        Mode::Brave => acc.extend(member.iter().cloned()),
+                    }
+                }
+                acc
+            }
+        };
+        Consequences { symbols, mode }
+    }
 }
 
 /// The lifetime-erased view of a live run that a [`Models`] holds, so `Models<'a>`
@@ -864,9 +892,17 @@ mod tests {
         }
     }
 
-    /// A one-symbol answer set — content the exhaustion gate never inspects.
+    /// An answer set containing exactly the given numbered symbols.
+    fn answer_set(symbols: &[i32]) -> AnswerSet {
+        symbols
+            .iter()
+            .map(|&n| themelios_program::Symbol::number(n))
+            .collect()
+    }
+
+    /// A one-symbol answer set — dummy content the exhaustion gate never inspects.
     fn singleton(symbol: i32) -> AnswerSet {
-        std::collections::BTreeSet::from([themelios_program::Symbol::number(symbol)])
+        answer_set(&[symbol])
     }
 
     /// A live run over `run`, ranging over the empty scenario, engine reserved.
@@ -1538,5 +1574,76 @@ mod tests {
             let rendered = format!("{:?}", consequences(mode, &[]));
             assert!(rendered.contains(&format!("{mode:?}")), "{rendered}");
         }
+    }
+
+    // ---- Cautious/brave consequence folding (§4.2, query.md §2.4) ----
+
+    /// The folded symbols as a set, for exact comparison against an expectation.
+    fn folded(mode: Mode, members: &[AnswerSet]) -> AnswerSet {
+        Consequences::fold(mode, members)
+            .symbols()
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn cautious_consequences_are_the_intersection() {
+        let members = [answer_set(&[1, 2]), answer_set(&[1, 3])];
+        assert_eq!(folded(Mode::Cautious, &members), answer_set(&[1]));
+    }
+
+    #[test]
+    fn brave_consequences_are_the_union() {
+        let members = [answer_set(&[1, 2]), answer_set(&[1, 3])];
+        assert_eq!(folded(Mode::Brave, &members), answer_set(&[1, 2, 3]));
+    }
+
+    #[test]
+    fn cautious_folding_intersects_across_three_members() {
+        // {1,2,3} ∩ {1,2} ∩ {2,4} = {2}; a fold that stopped after the second
+        // member would wrongly keep 1.
+        let members = [
+            answer_set(&[1, 2, 3]),
+            answer_set(&[1, 2]),
+            answer_set(&[2, 4]),
+        ];
+        assert_eq!(folded(Mode::Cautious, &members), answer_set(&[2]));
+    }
+
+    #[test]
+    fn brave_folding_unions_across_three_members() {
+        let members = [
+            answer_set(&[1, 2, 3]),
+            answer_set(&[1, 2]),
+            answer_set(&[2, 4]),
+        ];
+        assert_eq!(folded(Mode::Brave, &members), answer_set(&[1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn a_single_model_folds_to_itself_under_either_mode() {
+        let members = [answer_set(&[1, 2])];
+        assert_eq!(folded(Mode::Cautious, &members), answer_set(&[1, 2]));
+        assert_eq!(folded(Mode::Brave, &members), answer_set(&[1, 2]));
+    }
+
+    #[test]
+    fn folding_no_models_yields_the_empty_set() {
+        let members: [AnswerSet; 0] = [];
+        assert_eq!(folded(Mode::Cautious, &members), answer_set(&[]));
+        assert_eq!(folded(Mode::Brave, &members), answer_set(&[]));
+    }
+
+    #[test]
+    fn a_folded_consequence_carries_its_mode() {
+        let members = [answer_set(&[1])];
+        assert_eq!(
+            Consequences::fold(Mode::Cautious, &members).mode(),
+            Mode::Cautious
+        );
+        assert_eq!(
+            Consequences::fold(Mode::Brave, &members).mode(),
+            Mode::Brave
+        );
     }
 }
