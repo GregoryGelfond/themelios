@@ -10,15 +10,20 @@
 
 use std::fmt::Debug;
 
-use themelios_program::Symbol;
+use themelios_program::{Name, Symbol};
 use themelios_solve::agent::Assumption;
 use themelios_solve::contract::Mode;
 use themelios_solve::outcome::{Consequences, Refutation, Unsat};
 
-/// A blame that names assumptions. The assumptions are placeholders: an
-/// assumption's constructors are the agent's.
+/// The assumption a blame names: that the constant atom `p` holds.
+fn culprit() -> Assumption {
+    let p = Symbol::constant(Name::new("p").expect("an identifier"));
+    Assumption::new(p, true).expect("an atom")
+}
+
+/// A blame that names one assumption.
 fn blaming_some() -> Refutation {
-    Refutation::These(Box::from([Assumption]))
+    Refutation::These(Box::from([culprit()]))
 }
 
 /// The three readings of blame, each beside the head of its debug rendering.
@@ -51,7 +56,7 @@ fn a_refutation_is_a_closed_reading() {
 
 #[test]
 fn a_blame_that_names_assumptions_yields_the_assumptions_it_names() {
-    let named: Box<[Assumption]> = Box::from([Assumption]);
+    let named: Box<[Assumption]> = Box::from([culprit()]);
     let Refutation::These(culprits) = Refutation::These(named.clone()) else {
         panic!("These");
     };
