@@ -3,9 +3,12 @@
 //! assumptions, per-operation options, and cancellation.
 
 use std::fmt;
+use std::time::Duration;
 
-use crate::contract::{Backend, Fault, TruthValue};
+use crate::bridge::Door;
+use crate::contract::{Backend, Fault, OptimizeRequest, SolveRequest, TruthValue};
 use crate::extend::Facts;
+use crate::outcome::{Determination, Optimized, Solved};
 use themelios_program::program::{Arguments, PartKey};
 use themelios_program::{Atom, Program, Rule, Statement, Symbol, Term, WithProvenance};
 
@@ -154,6 +157,91 @@ impl<B: Backend> Agent<B> {
     /// with.
     pub fn assign_external(&mut self, external: Symbol, value: TruthValue) -> Result<(), Fault> {
         self.backend.assign_external(external, value)
+    }
+
+    // ---- ask (§6.2, §6.4) ----
+
+    /// Ask the question `solve` of the knowledge base (docs/design/solve.md
+    /// §6.2): bring the engine level with the owned knowledge, then the run
+    /// handle — stream the answer sets, inspect or resolve the trichotomy, read
+    /// the conclusion (§5.2). The handle borrows the agent for its life: the
+    /// borrow checker is the "no mutation while reasoning" lock (§6.1), so an
+    /// amendment or a second question while it is held does not compile. The
+    /// same question the bare `Program` answers with an owned handle (§6.4).
+    /// Refusal: an engine or request `Fault` — an inconsistent or inconclusive
+    /// knowledge base is a reading of the handle, never a fault (§5.1). Cost:
+    /// one lowering, then the engine's, streamed.
+    pub fn solve(&mut self) -> Result<Solved<'_>, Fault> {
+        self.bring_level()?;
+        self.backend.solve(&SolveRequest::default())
+    }
+
+    /// The configured pair of [`solve`](Agent::solve) (docs/design/solve.md
+    /// §6.3): the same question under the options — the time budget the
+    /// question carries, handed to the backend on the request.
+    // The options are taken by value — the design's surface (§6.3): the caller
+    // hands the configuration over, though only its knobs are read.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn solve_with(&mut self, options: SolveOptions) -> Result<Solved<'_>, Fault> {
+        self.bring_level()?;
+        self.backend.solve(&SolveRequest { time: options.time })
+    }
+
+    /// Ask, and resolve the run into the trichotomy (docs/design/solve.md
+    /// §6.2, §5.1): consistent, with the models a world view is read from
+    /// (query.md §2); inconsistent; or inconclusive, with what the search did
+    /// establish. The determination borrows the agent as the run handle does —
+    /// the consuming resolver threads the borrow (§5.2). Refusal: an engine or
+    /// request `Fault`.
+    pub fn determination(&mut self) -> Result<Determination<'_>, Fault> {
+        self.bring_level()?;
+        Ok(self
+            .backend
+            .solve(&SolveRequest::default())?
+            .into_determination())
+    }
+
+    /// Ask for the proven optimum under the request (docs/design/solve.md
+    /// §6.2, §5.3): bring the engine level, then the optimization run handle —
+    /// a sibling of [`solve`](Agent::solve), not a second vocabulary. Refuses
+    /// at the request locus over a backend that does not declare
+    /// `optimization` (§4.2).
+    pub fn optimize(&mut self, request: &OptimizeRequest) -> Result<Optimized<'_>, Fault> {
+        self.bring_level()?;
+        self.backend.optimize(request)
+    }
+
+    /// Ask under a scenario (docs/design/solve.md §6.3): each of its
+    /// assumptions fixed for the span of this one question and discharged
+    /// after it — a hypothesis, as distinct from a retraction (§6.2), which
+    /// amends the knowledge base. Refuses at the request locus over a backend
+    /// that does not declare `assumptions` (§4.2).
+    pub fn solve_assuming(&mut self, scenario: &Scenario) -> Result<Solved<'_>, Fault> {
+        self.bring_level()?;
+        self.backend
+            .solve_assuming(scenario, &SolveRequest::default())
+    }
+
+    /// A handle that interrupts an in-flight question from another thread
+    /// (docs/design/solve.md §6.1, §6.3) — `Some` exactly when the backend
+    /// declares `cancellation`; `None` says the engine cannot be interrupted,
+    /// readable before any question is paid for. O(1).
+    pub fn interrupt(&self) -> Option<Interrupt> {
+        self.backend.interrupt()
+    }
+
+    /// Bring the engine level with the owned knowledge base before a question
+    /// is put to it (docs/design/solve.md §6.2): lower the knowledge as it
+    /// stands, through Door B (§10.2), so the engine reasons over exactly what
+    /// the agent holds — the assertions and retractions since the last question
+    /// included. A refused lowering is the question's fault, and nothing is
+    /// delegated after it. Every question lowers the whole knowledge base; the
+    /// retained-engine realisations the retraction classes disclose — the
+    /// external toggle, the rebuild as a `reset` then one lowering, the
+    /// incremental grounding of an addition — are reserved until the retained
+    /// engine is implemented. Cost: one lowering (§10.1).
+    fn bring_level(&mut self) -> Result<(), Fault> {
+        self.backend.lower(Door::Program(&self.knowledge))
     }
 
     /// The retraction class an asserted statement is disclosed under
@@ -530,6 +618,23 @@ impl fmt::Display for NotAnAssumption {
 
 impl std::error::Error for NotAnAssumption {}
 
+// ---- Per-question options and cancellation (§6.3) ----
+
+/// The options the configured question [`solve_with`](Agent::solve_with)
+/// carries (docs/design/solve.md §6.3): surfaced at the operation they affect
+/// and nowhere else. The empty options — the pristine question `solve` asks —
+/// are `Default`; non-exhaustive, so a new knob is a new field, not a breaking
+/// change. Owned plain data.
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct SolveOptions {
+    /// The time budget the question carries (§6.3), handed to the backend on
+    /// the request: enforcement is a declared capability, and a hit budget
+    /// resolves as [`Conclusion::Budget`](crate::outcome::Conclusion::Budget),
+    /// never as a clean end.
+    pub time: Option<Duration>,
+}
+
 /// A handle that interrupts an in-flight solve from another thread. Reserved;
 /// its surface is defined with §6.1 and §6.3.
 pub struct Interrupt;
@@ -655,5 +760,174 @@ mod ledger_laws {
             "the rebuild lost the provenance: {:?}",
             statement.provenance()
         );
+    }
+}
+
+#[cfg(test)]
+mod ask_laws {
+    use super::*;
+    use crate::bridge::GroundProgram;
+    use crate::contract::Capabilities;
+    use crate::outcome::{AnswerSet, Conclusion, Run};
+    use themelios_program::Name;
+
+    // A question resolves over a run, and a run is built here, in the defining
+    // crate: the laws below drive the agent's questions through a backend that
+    // answers with a scripted search, so the resolution register is exercised
+    // end to end — a recording backend outside the crate can only refuse.
+
+    /// A scripted search: a fixed answer-set sequence, then a closed space.
+    struct Scripted {
+        sets: std::vec::IntoIter<AnswerSet>,
+        ended: bool,
+    }
+
+    impl Run for Scripted {
+        fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+            let next = self.sets.next().map(Ok);
+            if next.is_none() {
+                self.ended = true;
+            }
+            next
+        }
+
+        fn conclusion(&self) -> Option<Conclusion> {
+            self.ended.then_some(Conclusion::Exhausted)
+        }
+    }
+
+    /// A solved handle over a scripted search of `sets`, ranging over
+    /// `scenario`.
+    fn solved_over(sets: Vec<AnswerSet>, scenario: Scenario) -> Solved<'static> {
+        Solved::over(
+            Box::new(Scripted {
+                sets: sets.into_iter(),
+                ended: false,
+            }),
+            scenario,
+        )
+    }
+
+    /// A backend that answers every question with the answer sets it was given
+    /// — an engine-free stand-in that lets the agent's questions resolve.
+    struct Answering {
+        sets: Vec<AnswerSet>,
+    }
+
+    impl Backend for Answering {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                enumeration: true,
+                assumptions: true,
+                ..Capabilities::default()
+            }
+        }
+
+        fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
+            Ok(solved_over(self.sets.clone(), Scenario::default()))
+        }
+
+        fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
+            Ok(())
+        }
+
+        fn ground_program(&self) -> Option<&GroundProgram> {
+            None
+        }
+
+        fn solve_assuming(
+            &mut self,
+            scenario: &Scenario,
+            _request: &SolveRequest,
+        ) -> Result<Solved<'_>, Fault> {
+            Ok(solved_over(self.sets.clone(), scenario.clone()))
+        }
+    }
+
+    fn constant(name: &str) -> Symbol {
+        Symbol::constant(Name::new(name).expect("a valid identifier"))
+    }
+
+    /// An answer set of the named constants.
+    fn answer_set(names: &[&str]) -> AnswerSet {
+        names.iter().copied().map(constant).collect()
+    }
+
+    /// An agent over an empty knowledge base and a backend answering `sets`.
+    fn agent_answering(sets: Vec<AnswerSet>) -> Agent<Answering> {
+        Agent::new(Program::empty(), Answering { sets })
+    }
+
+    #[test]
+    fn determination_resolves_a_consistent_knowledge_base() {
+        let mut agent = agent_answering(vec![answer_set(&["a"])]);
+        assert!(matches!(
+            agent.determination(),
+            Ok(Determination::Consistent(_))
+        ));
+    }
+
+    #[test]
+    fn determination_resolves_an_inconsistent_knowledge_base() {
+        let mut agent = agent_answering(Vec::new());
+        assert!(matches!(
+            agent.determination(),
+            Ok(Determination::Inconsistent(_))
+        ));
+    }
+
+    #[test]
+    fn a_question_after_an_amendment_resolves() {
+        // The loop's shape (§6.2): amend the knowledge base, then ask — the
+        // amendment's disclosed class is read off the backend, and the question
+        // still resolves over what the engine answers.
+        let mut agent = agent_answering(vec![answer_set(&["a"])]);
+        agent
+            .assert(themelios_program::Rule::fact(Atom::constant(
+                Name::new("a").expect("a valid identifier"),
+            )))
+            .expect("assert succeeds");
+        assert!(matches!(
+            agent.determination(),
+            Ok(Determination::Consistent(_))
+        ));
+    }
+
+    #[test]
+    fn the_answering_backend_exposes_no_ground_program() {
+        assert!(Answering { sets: Vec::new() }.ground_program().is_none());
+    }
+
+    #[test]
+    fn solve_streams_the_answer_sets_the_backend_yields() {
+        let sets = vec![answer_set(&["a"]), answer_set(&["a", "b"])];
+        let mut agent = agent_answering(sets.clone());
+        let mut solved = agent.solve().expect("the backend answers");
+        assert_eq!(solved.all_answer_sets().expect("a closed search"), sets);
+    }
+
+    #[test]
+    fn solve_with_answers_as_solve_does() {
+        let sets = vec![answer_set(&["a"])];
+        let mut agent = agent_answering(sets.clone());
+        let mut solved = agent
+            .solve_with(SolveOptions::default())
+            .expect("the backend answers");
+        assert_eq!(solved.all_answer_sets().expect("a closed search"), sets);
+    }
+
+    #[test]
+    fn the_models_of_a_scenario_scoped_question_range_over_the_scenario() {
+        let scenario: Scenario = [Assumption::new(constant("p"), true).expect("an atom")]
+            .into_iter()
+            .collect();
+        let mut agent = agent_answering(vec![answer_set(&["p"])]);
+        let Ok(Determination::Consistent(models)) = agent
+            .solve_assuming(&scenario)
+            .map(Solved::into_determination)
+        else {
+            panic!("a consistent, scenario-scoped determination");
+        };
+        assert_eq!(*models.scenario(), scenario);
     }
 }
