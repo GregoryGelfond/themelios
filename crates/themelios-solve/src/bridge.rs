@@ -10,17 +10,97 @@
 //! write, serialised under the single [`InterningDiscipline`] — not a free
 //! correspondence.
 
-use std::marker::PhantomData;
+use themelios_program::{Origin, Program};
+use themelios_syntax::{Parse, ast};
 
-use themelios_program::Origin;
+use crate::contract::{Fault, TruthValue};
 
-use crate::contract::Fault;
-
-/// A door from the program IR into an engine, borrowing what it carries for
-/// `'a`. Reserved; its forms are defined with §10.2.
-pub struct Door<'a> {
-    _carried: PhantomData<&'a ()>,
+/// A door from the program IR into an engine (docs/design/solve.md §10.2),
+/// borrowing what it carries for `'a`. Three grades, mirroring the engine's
+/// own construction paths, and a closed set: a match over the doors is
+/// exhaustive without a wildcard, so a new grade is a new variant every
+/// backend's [`lower`](crate::contract::Backend::lower) must answer.
+///
+/// Doors A and B are two entry values into one grounding mechanism — the
+/// engine's non-ground input, driven to ground — differing only in what
+/// they preserve; Door C is the aspif-level ingestion the engine's
+/// ground-by-construction backend exposes, which takes ground objects only.
+/// A non-ground program — a variable, an aggregate, a `#program` part —
+/// crosses only through A or B; mapping it to C is a category error.
+///
+/// **The discipline is absolute: never render to text and re-parse across
+/// the seam** (§10.2). Every door carries a typed value — a parse, a
+/// program, a source of ground objects — so rendered text has no door to
+/// enter: the fragile, slow path a shell-out imposes is exactly what the
+/// typed doors erase, and the huge ground instantiation lives in the
+/// engine's compact internals, streamed, never on the owned side.
+pub enum Door<'a> {
+    /// Door A — the typed tree, order- and span-preserving: the highest
+    /// fidelity the seam offers. Its full lowering is realised with the
+    /// higher-fidelity path; declared here so the door set is closed.
+    Ast(&'a Parse<ast::Program>),
+    /// Door B — the owned `Program` in canonical order, carrying `Origin`
+    /// provenance through to every ground rule, a capability the engine's
+    /// own grounder lacks. Programs constructed in Rust, transformed, or
+    /// loaded through a client enter here.
+    Program(&'a Program),
+    /// Door C — an aspif-level source of ground objects, driven into the
+    /// solver's ingestion: a foreign grounder, the differential harness, or
+    /// an agent's ground-fact additions where the values are already ground.
+    Aspif(&'a mut dyn AspifSource),
 }
+
+/// A ground atom's id at the seam: the engine's `clingo_atom_t`, always
+/// greater than zero. Distinct from [`AspifLit`], so an atom cannot pass
+/// where a literal is wanted (§10.3).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct AspifAtom(pub u32);
+
+/// A ground literal at the seam: the engine's `clingo_literal_t`, signed —
+/// its magnitude names the atom, its sign the polarity. Distinct from
+/// [`AspifAtom`], so a literal cannot pass where an atom is wanted (§10.3).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct AspifLit(pub i32);
+
+/// A source of ground, aspif-level objects — what Door C carries (§10.2): a
+/// foreign grounder, the differential harness, or an agent's ground-fact
+/// additions. Driving it streams its objects into a sink; a trait object,
+/// so a door carries any source.
+pub trait AspifSource {
+    /// Stream every ground object into `sink`, in the source's own order.
+    /// The first fault — the sink's, or the source's own — ends the drive.
+    fn drive(&mut self, sink: &mut dyn AspifSink) -> Result<(), Fault>;
+}
+
+/// The typed program-backend sink in the image of the engines' own backend
+/// (§10.3): the seam between the grounder and the solver, typed with the
+/// distinct [`AspifAtom`] and [`AspifLit`] newtypes for the id roles, which
+/// Rust makes cheap. Its implementors are the native solver's ingestion, an
+/// aspif writer, and the `--text`/reify projections; a trait object, so a
+/// source drives a sink it never names. The committed surface is the
+/// backend's full roster — the four declared here, and the remaining backend
+/// methods (`bd_aggr`, `project`, `heuristic`, `edge`, `show`, step framing,
+/// `next_lit`/`fact_lit`, §10.3) join with the lowering that drives them.
+pub trait AspifSink {
+    /// A rule: `head` holds — or, with `choice`, may hold — when every
+    /// literal of `body` holds. An empty `head` without `choice` is an
+    /// integrity constraint; an empty `body` makes a fact.
+    fn rule(&mut self, choice: bool, head: &[AspifAtom], body: &[AspifLit]) -> Result<(), Fault>;
+
+    /// A minimize statement at `priority`: each literal with its weight, in
+    /// the engine's own weight width.
+    fn minimize(&mut self, priority: i32, literals: &[(AspifLit, i32)]) -> Result<(), Fault>;
+
+    /// An external atom, at its initial truth value.
+    fn external(&mut self, atom: AspifAtom, value: TruthValue) -> Result<(), Fault>;
+
+    /// Literals assumed to hold for the next solve.
+    fn assume(&mut self, literals: &[AspifLit]) -> Result<(), Fault>;
+}
+
+/// The companion theory-backend sink (§10.3); its methods join when the
+/// theory door is realised.
+pub trait TheorySink {}
 
 /// The ground program a backend exposes (§10.4): the machine-IR of §1.1 as a
 /// first-class, engine-free value — plain data, not FFI — carrying `Origin`
