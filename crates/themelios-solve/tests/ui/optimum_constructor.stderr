@@ -1,0 +1,5 @@
+error[E0599]: no associated function or constant named `new` found for struct `Optimum` in the current scope
+ --> tests/ui/optimum_constructor.rs:5:48
+  |
+5 |     let _ = themelios_solve::outcome::Optimum::new();
+  |                                                ^^^ associated function or constant not found in `Optimum`
