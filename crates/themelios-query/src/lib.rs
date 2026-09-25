@@ -22,9 +22,9 @@ use themelios_program::program::{Arguments, Atom};
 use themelios_program::symbol::{Sign, Symbol};
 use themelios_program::term::{EvalError, Term, Variable};
 use themelios_program::unify::{NotAPattern, Substitution, mgu, signature_range};
-use themelios_solve::agent::Scenario;
-use themelios_solve::contract::{Fault, Mode};
-use themelios_solve::outcome::Models;
+use themelios_solve::agent::{Agent, Scenario};
+use themelios_solve::contract::{Backend, Fault, Mode};
+use themelios_solve::outcome::{Determination, Models};
 
 pub mod prelude;
 
@@ -684,6 +684,73 @@ pub(crate) fn matched_in(pattern: &Atom, set: &AnswerSet) -> Result<Vec<Symbol>,
         }
     }
     Ok(out)
+}
+
+/// The query readings an [`Agent`] answers over its own knowledge base (docs/design/
+/// query.md §2.2, §2.5, §2.6; solve.md §6.2) — the reading half of the agent's
+/// surface, held in the query tier so the solve tier need not depend on it. An
+/// extension trait, implemented for every `Agent<B: Backend>` and brought into scope
+/// with the reading vocabulary, so `agent.answer(q)?` reads as an inherent method.
+///
+/// Each reading takes `&mut self` and returns **owned** values — no handle is held
+/// across the call — so the readings compose freely, the surface shaped around the
+/// question asked rather than the engine's control-flow (solve.md §6.2). Each solves
+/// ONCE and materialises the world view; to ask
+/// many questions of one search, take a [`snapshot`](AgentReading::snapshot) and read
+/// it (its reads are infallible and re-solve nothing). A reading over a program with
+/// no decided world view — inconsistent, or a search that did not close — **refuses
+/// with a [`Fault`]** rather than inventing an answer, mirroring the agent's own
+/// consequence door (solve.md §6.2): the reading needs a decided program and says so.
+pub trait AgentReading {
+    /// Solve once and materialise the consistent world view into an engine-free
+    /// [`Snapshot`] (docs/design/query.md §2.3): the cache the other readings are
+    /// each a shorthand for, exposed so many questions cost one solve. **Refuses** a
+    /// program with no answer set, or a search that did not close — there is no world
+    /// view to snapshot — carrying why at the [`Fault`]'s locus.
+    fn snapshot(&mut self) -> Result<Snapshot, Fault>;
+
+    /// The three-valued [`Answer`] to a ground `query` over the agent's world view
+    /// (docs/design/query.md §2.2): solve, materialise, and read. Refuses as
+    /// [`snapshot`](AgentReading::snapshot) does.
+    fn answer(&mut self, query: &Query) -> Result<Answer, Fault>;
+
+    /// The ASP-Core-2 cautious, two-valued reading of `query` (docs/design/query.md
+    /// §2.6): `true` exactly when the query is [`Answer::Yes`]. Refuses as
+    /// [`snapshot`](AgentReading::snapshot) does.
+    fn entails(&mut self, query: &Query) -> Result<bool, Fault>;
+
+    /// The three-valued [`Bindings`] of an open `pat` over the agent's world view
+    /// (docs/design/query.md §2.5). Refuses as [`snapshot`](AgentReading::snapshot)
+    /// does, and additionally when `pat` is not a binding pattern (an anonymous
+    /// position or a non-pattern) — surfaced as a request [`Fault`], the locus a
+    /// non-pattern asked for lives at (§2.5).
+    fn bindings(&mut self, pat: &Atom) -> Result<Bindings, Fault>;
+}
+
+impl<B: Backend> AgentReading for Agent<B> {
+    fn snapshot(&mut self) -> Result<Snapshot, Fault> {
+        match self.determination()? {
+            Determination::Consistent(models) => WorldView::of(models).materialize(),
+            Determination::Inconsistent(_) => Err(Fault::request(
+                "no world view: the program has no answer set",
+            )),
+            Determination::Inconclusive(partial) => Err(partial.into()),
+        }
+    }
+
+    fn answer(&mut self, query: &Query) -> Result<Answer, Fault> {
+        Ok(self.snapshot()?.answer(query))
+    }
+
+    fn entails(&mut self, query: &Query) -> Result<bool, Fault> {
+        Ok(self.snapshot()?.entails(query))
+    }
+
+    fn bindings(&mut self, pat: &Atom) -> Result<Bindings, Fault> {
+        self.snapshot()?
+            .bindings(pat)
+            .map_err(|refusal| Fault::request(refusal.to_string()))
+    }
 }
 
 #[cfg(test)]

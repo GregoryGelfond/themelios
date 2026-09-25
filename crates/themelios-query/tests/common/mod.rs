@@ -55,7 +55,7 @@ impl Run for Enumeration {
 }
 
 /// A backend answering every question with `sets`, its search ending `terminal`.
-struct Fixed {
+pub struct Fixed {
     sets: Vec<AnswerSet>,
     terminal: Conclusion,
 }
@@ -99,6 +99,20 @@ pub fn with_world_view<R>(
         Determination::Consistent(models) => f(WorldView::of(models)),
         _ => panic!("the fixture yields a consistent world view"),
     }
+}
+
+/// Build an agent over a backend answering with `sets`, its search ending
+/// `terminal`, and hand it to `f`. The reading-facade tests drive the agent itself
+/// — its `AgentReading` methods — so they receive the agent, not a world view;
+/// unlike [`with_world_view`] this does not require consistency, so a fixture with
+/// no answer set (or a truncated search) exercises the refusing readings.
+pub fn with_agent<R>(
+    sets: Vec<AnswerSet>,
+    terminal: Conclusion,
+    f: impl FnOnce(&mut Agent<Fixed>) -> R,
+) -> R {
+    let mut agent = Agent::new(Program::empty(), Fixed { sets, terminal });
+    f(&mut agent)
 }
 
 /// The enumeration behind [`Faulting`]: one model, then an engine fault, then the
