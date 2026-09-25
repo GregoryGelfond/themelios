@@ -47,7 +47,8 @@ pub enum Answer {
     /// False in every member of the world view: the contrary is present in
     /// each, which is more than the query being absent (§2.2).
     No,
-    /// Neither — true in some member and not in all, or settled by none.
+    /// Neither `Yes` nor `No`: not true in every member, and not false in every
+    /// member (§2.2) — settled by some and open in the rest, or open throughout.
     Unknown,
 }
 
@@ -132,7 +133,9 @@ impl Query {
     /// The conjunction (∧) of `parts` (docs/design/query.md §2.1, §2.2):
     /// evaluated within each member of a world view as the weakest of its
     /// parts over `false < unknown < true`. Total; the empty conjunction is the
-    /// query true everywhere. O(parts).
+    /// query true everywhere. O(parts). The nesting is read recursively, so a
+    /// pathologically deep composition can exhaust the stack; the iterative treatment
+    /// deep structures get elsewhere in the stack is reserved for `Query`.
     pub fn all(parts: impl IntoIterator<Item = Query>) -> Query {
         Query {
             shape: Shape::Conjunction(parts.into_iter().collect()),
@@ -142,7 +145,8 @@ impl Query {
     /// The disjunction (∨) of `parts` (docs/design/query.md §2.1, §2.2):
     /// evaluated within each member of a world view as the strongest of its
     /// parts over `false < unknown < true`. Total; the empty disjunction is the
-    /// query false everywhere. O(parts).
+    /// query false everywhere. O(parts). Deeply nested composition carries the same
+    /// stack caveat as [`all`](Query::all).
     pub fn any(parts: impl IntoIterator<Item = Query>) -> Query {
         Query {
             shape: Shape::Disjunction(parts.into_iter().collect()),
@@ -364,6 +368,12 @@ impl Query {
 /// trichotomy as [`Answer`], carried to a pattern's bindings rather than to a single
 /// ground query.
 ///
+/// The cells are pairwise disjoint — a *partition* — over a conforming backend,
+/// whose answer sets are consistent (no member holds an atom and its contrary): that
+/// consistency is what keeps a `yes` instance out of `no` and out of the brave
+/// domain of the contrary. The reading assumes that backend contract (solve.md §5);
+/// a member that violated it would not be a partition.
+///
 /// Owned plain data; the readings borrow it and never spend it. Non-exhaustive:
 /// room for a later facet (a binding's value under an optimization objective, say)
 /// as a new field, not a migration.
@@ -384,22 +394,24 @@ impl Bindings {
     }
 
     /// The refuted instances — those whose *contrary* is cautiously entailed (its
-    /// strong negation present in every member), reported as the positive instance
-    /// (docs/design/query.md §2.5). This is more than mere absence: a `no` instance
-    /// is settled false by the world view, never merely unmentioned. Exact and
-    /// finite. Borrowed; O(n) over the set.
+    /// strong negation present in every member), reported with the pattern's own
+    /// sign, the contrary of the matched contrary (docs/design/query.md §2.5): a
+    /// negative pattern's `no` instances are negative. This is more than mere
+    /// absence: a `no` instance is settled false by the world view, never merely
+    /// unmentioned. Exact and finite. Borrowed; O(n) over the set.
     pub fn no(&self) -> impl Iterator<Item = &Symbol> + '_ {
         self.no.iter()
     }
 
-    /// The unsettled instances — **the brave domain, less the settled** (docs/design/
-    /// query.md §2.5): the ground instances *some* member mentions, minus those
-    /// already `yes`. **This is not an exhaustive listing of every instance the
-    /// program leaves open.** This tier holds answer sets, not the program that
-    /// produced them, so it cannot enumerate the full Herbrand base; it lists the
-    /// brave domain (what some answer set mentions), and a caller must read it as
-    /// that — an instance mentioned by no answer set is simply absent here, not
-    /// proof the program settles it. Borrowed; O(n) over the set.
+    /// The unsettled instances — **the brave domain of the pattern, less the settled**
+    /// (docs/design/query.md §2.5): the ground instances *of the pattern's sign* that
+    /// some member mentions, minus those already `yes`. **This is not an exhaustive
+    /// listing of every instance the program leaves open.** This tier holds answer
+    /// sets, not the program that produced them, so it cannot enumerate the full
+    /// Herbrand base; it lists the brave domain (what some answer set mentions with the
+    /// pattern's own sign — an instance mentioned only by its *contrary* is listed
+    /// under the contrary pattern, not here), and a caller must read it as that, not as
+    /// proof the program leaves nothing else open. Borrowed; O(n) over the set.
     pub fn unknown(&self) -> impl Iterator<Item = &Symbol> + '_ {
         self.unknown.iter()
     }
@@ -409,10 +421,13 @@ impl Bindings {
 /// tier's own [`NotAPattern`] (a non-denoting or pooled argument, §3.1) *plus* this
 /// tier's own partition policy — an anonymous position. An anonymous `_` is a
 /// well-formed pattern to the unifier (it denotes, matching anything), but it names
-/// no binding for an instance to be attributed to, so its instances would fall on
-/// both sides of the yes/no partition; it is refused HERE, as this tier's own
-/// refusal, never laundered into the program tier's `NonDenoting` (§3.1 keeps
-/// matching apart from policy). Non-exhaustive: a later reason is a new variant.
+/// no binding: two instances that differ only in a `_` position — which the caller
+/// declared "don't care" — can settle differently, so a reading keyed on the named
+/// variables' binding is ill-posed. It is refused HERE as a policy (a binding
+/// pattern's positions are named), at no cost to expressiveness — a fresh named
+/// variable yields the same instances — never laundered into the program tier's
+/// `NonDenoting` (§3.1 keeps matching apart from policy). Non-exhaustive: a later
+/// reason is a new variant.
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum NotABindingPattern {
@@ -420,8 +435,8 @@ pub enum NotABindingPattern {
     /// the program tier's refusal, carried as this refusal's source.
     NotAPattern(NotAPattern),
     /// An argument bears an anonymous variable `_` (§2.5): well formed to the
-    /// unifier, but naming no binding, so its instances cannot be partitioned.
-    /// Refused here rather than matched.
+    /// unifier, but naming no binding to key the partition on. Refused here rather
+    /// than matched.
     AnonymousPosition,
 }
 
@@ -544,21 +559,25 @@ impl Snapshot {
     /// The three-valued [`Bindings`] of an open `pat` over this world view (docs/
     /// design/query.md §2.5): every ground instance of the pattern partitioned into
     /// `yes` (present in every member), `no` (its contrary present in every member),
-    /// and `unknown` (the brave domain, less the settled). The trichotomy of
-    /// [`answer`](Snapshot::answer), carried to a pattern's instances. Infallible over
-    /// the materialised members once the pattern is accepted.
+    /// and `unknown` (the brave domain of the pattern, less the settled — the
+    /// instances of `pat`'s own sign some member holds; an instance only whose
+    /// *contrary* is bravely present is listed under the contrary pattern, not here).
+    /// The trichotomy of [`answer`](Snapshot::answer), carried to a pattern's
+    /// instances. Infallible over the materialised members once the pattern is accepted.
     ///
     /// **Refuses**, set-independently, a `pat` that is not a binding pattern (docs/
-    /// design/query.md §2.5): an anonymous position (`p(X, _)`) — well formed to the
-    /// unifier, but naming no binding — as [`AnonymousPosition`], and a non-pattern (a
-    /// non-denoting or pooled argument) as the program tier's [`NotAPattern`], carried.
-    /// Cost: the cautious and brave folds, then an `O(log n + k)` block scan per cell.
+    /// design/query.md §2.5). The anonymous check runs first: an anonymous position
+    /// (`p(X, _)`, at any depth) — well formed to the unifier, but naming no binding —
+    /// is [`AnonymousPosition`], taking precedence for an atom that is also a
+    /// non-pattern; a non-denoting or pooled argument is the program tier's
+    /// [`NotAPattern`], carried. Cost: the cautious and brave folds, then, per cell, an
+    /// `O(log n + k)` block scan with each candidate unified at a cost linear in its size.
     ///
     /// [`AnonymousPosition`]: NotABindingPattern::AnonymousPosition
     pub fn bindings(&self, pat: &Atom) -> Result<Bindings, NotABindingPattern> {
-        // An anonymous `_` denotes to the unifier but names no binding, so its
-        // instances would land on both sides of the partition; refuse it here, before
-        // any matching, as this tier's own refusal (§2.5).
+        // An anonymous `_` names no binding to key the partition on, so a reading over
+        // the named variables' binding is ill-posed; refuse it here, before any
+        // matching, as this tier's own refusal (§2.5).
         if has_anonymous_position(pat) {
             return Err(NotABindingPattern::AnonymousPosition);
         }
@@ -572,8 +591,8 @@ impl Snapshot {
         let brave: AnswerSet = self.brave().symbols().cloned().collect();
         // `yes`: the instances present in every member.
         let yes: BTreeSet<Symbol> = matched_in(pat, &cautious)?.into_iter().collect();
-        // `no`: the instances whose contrary is cautiously entailed, reported as the
-        // positive instance (the contrary of each matched `-g`). Disjoint from the
+        // `no`: the instances whose contrary is cautiously entailed, reported with the
+        // pattern's sign (the contrary of each matched contrary). Disjoint from the
         // brave domain of `pat` by answer-set consistency (no member holds both `g`
         // and `-g`), so it never re-enters `unknown`.
         let no: BTreeSet<Symbol> = matched_in(&contrary_pattern(pat), &cautious)?
@@ -747,9 +766,18 @@ impl<B: Backend> AgentReading for Agent<B> {
     }
 
     fn bindings(&mut self, pat: &Atom) -> Result<Bindings, Fault> {
-        self.snapshot()?
-            .bindings(pat)
-            .map_err(|refusal| Fault::request(refusal.to_string()))
+        self.snapshot()?.bindings(pat).map_err(|refusal| {
+            // A `Fault` carries text only, and the refusal's `Display` names the
+            // category (per Rust convention) while its `source()` carries the
+            // program tier's specific reason — which term does not denote. Fold that
+            // reason into the message so the facade caller does not lose it.
+            let mut message = refusal.to_string();
+            if let Some(source) = std::error::Error::source(&refusal) {
+                message.push_str(": ");
+                message.push_str(&source.to_string());
+            }
+            Fault::request(message)
+        })
     }
 }
 
@@ -1374,16 +1402,20 @@ mod bindings {
         Snapshot::of(members.into_iter().collect(), Scenario::default())
     }
 
-    /// The open pattern `pred(X)` with one named variable — the pattern `bindings`
-    /// partitions.
-    fn var_pattern(pred: &str, variable: &str) -> Atom {
+    /// The open pattern `sign pred(X)` with one named variable and the given sign.
+    fn signed_var_pattern(pred: &str, variable: &str, sign: Sign) -> Atom {
         Atom {
-            sign: Sign::Positive,
+            sign,
             name: Name::new(pred).expect("a valid identifier"),
             arguments: Arguments::Single(vec![Term::variable(
                 VarName::new(variable).expect("a valid variable name"),
             )]),
         }
+    }
+
+    /// The open positive pattern `pred(X)` — the pattern `bindings` partitions.
+    fn var_pattern(pred: &str, variable: &str) -> Atom {
+        signed_var_pattern(pred, variable, Sign::Positive)
     }
 
     /// The pattern `p(t)` over one argument term, for the refusal cases.
@@ -1520,7 +1552,7 @@ mod bindings {
         assert_eq!(
             no,
             member([atom_symbol("p", "c", Sign::Positive)]),
-            "-p(c) is cautiously entailed, so p(c) is a No, reported as the positive instance",
+            "-p(c) is cautiously entailed, so p(c) is a No — a positive pattern reports positive",
         );
     }
 
@@ -1620,17 +1652,25 @@ mod bindings {
     }
 
     #[test]
-    fn matched_in_refuses_a_non_pattern_set_independently() {
+    fn matched_in_refuses_a_non_pattern_whichever_members_the_set_holds() {
         // Like matches_in, matched_in classifies the pattern up front, so a non-pattern
-        // refuses over the empty set — never a quiet empty match.
-        let interval = Term::Interval {
+        // refuses set-independently: the identical Err over the empty set, a
+        // same-signature member, and an other-signature one — never a quiet empty match.
+        let interval = || Term::Interval {
             lower: Box::new(Term::Symbolic(Symbol::number(1))),
             upper: Box::new(Term::Symbolic(Symbol::number(3))),
         };
-        assert!(matches!(
-            matched_in(&pattern(interval), &AnswerSet::new()),
-            Err(NotAPattern::NonDenoting { .. }),
-        ));
+        let refusal = matched_in(&pattern(interval()), &AnswerSet::new());
+        assert!(matches!(refusal, Err(NotAPattern::NonDenoting { .. })));
+        let same_signature = member([atom_symbol("p", "a", Sign::Positive)]);
+        let other_signature = member([atom_symbol("q", "b", Sign::Positive)]);
+        for set in [&same_signature, &other_signature] {
+            assert_eq!(
+                matched_in(&pattern(interval()), set),
+                refusal,
+                "the refusal is identical whichever members the set holds",
+            );
+        }
     }
 
     proptest! {
@@ -1669,6 +1709,68 @@ mod bindings {
             prop_assert!(yes.is_disjoint(&no), "yes ∩ no must be empty: {yes:?} / {no:?}");
             prop_assert!(yes.is_disjoint(&unknown), "yes ∩ unknown must be empty");
             prop_assert!(no.is_disjoint(&unknown), "no ∩ unknown must be empty");
+        }
+
+        /// Each cell agrees with the ground query answer — the property disjointness
+        /// cannot see (a cell in the wrong bucket): for every instance `g` of the
+        /// pattern's sign, `g ∈ yes ⇔ answer(g) = Yes`, `g ∈ no ⇔ answer(g) = No`, and
+        /// `g ∈ unknown ⇔ answer(g) = Unknown ∧ g` is bravely present. Both signs.
+        #[test]
+        fn each_cell_agrees_with_the_ground_query_answer(
+            raw in prop::collection::vec(
+                prop::collection::vec((0usize..3usize, any::<bool>()), 0..4),
+                1..4usize,
+            ),
+            negative in any::<bool>(),
+        ) {
+            let args = ["a", "b", "c"];
+            let sign = if negative { Sign::Negative } else { Sign::Positive };
+            let members: Vec<AnswerSet> = raw
+                .iter()
+                .map(|pairs| {
+                    let signs: std::collections::BTreeMap<usize, bool> =
+                        pairs.iter().copied().collect();
+                    member(signs.into_iter().map(|(arg, positive)| {
+                        atom_symbol(
+                            "p",
+                            args[arg],
+                            if positive { Sign::Positive } else { Sign::Negative },
+                        )
+                    }))
+                })
+                .collect();
+            let world = snapshot(members.clone());
+            let bindings = world
+                .bindings(&signed_var_pattern("p", "X", sign))
+                .expect("a binding pattern");
+            let yes: BTreeSet<Symbol> = bindings.yes().cloned().collect();
+            let no: BTreeSet<Symbol> = bindings.no().cloned().collect();
+            let unknown: BTreeSet<Symbol> = bindings.unknown().cloned().collect();
+            let brave: BTreeSet<Symbol> = members.iter().flatten().cloned().collect();
+            for arg in args {
+                let instance = atom_symbol("p", arg, sign);
+                let query = Query::of(lift(&instance).expect("a function symbol"))
+                    .expect("a ground literal is a query");
+                let answer = world.answer(&query);
+                prop_assert_eq!(
+                    yes.contains(&instance),
+                    answer == Answer::Yes,
+                    "yes holds exactly the Yes instances ({})",
+                    arg,
+                );
+                prop_assert_eq!(
+                    no.contains(&instance),
+                    answer == Answer::No,
+                    "no holds exactly the No instances ({})",
+                    arg,
+                );
+                prop_assert_eq!(
+                    unknown.contains(&instance),
+                    answer == Answer::Unknown && brave.contains(&instance),
+                    "unknown holds exactly the Unknown, bravely-present instances ({})",
+                    arg,
+                );
+            }
         }
     }
 }
