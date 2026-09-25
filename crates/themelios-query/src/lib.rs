@@ -17,7 +17,7 @@
 
 use themelios_program::AnswerSet;
 use themelios_program::program::{Arguments, Atom};
-use themelios_program::symbol::Symbol;
+use themelios_program::symbol::{Sign, Symbol};
 use themelios_program::term::{EvalError, Term};
 use themelios_program::unify::{NotAPattern, Substitution, mgu, signature_range};
 use themelios_solve::agent::Scenario;
@@ -274,6 +274,72 @@ pub struct Snapshot {
     scenario: Scenario,
 }
 
+/// The three-valued truth of a query within one member (docs/design/query.md
+/// §2.2): the lattice `False < Unknown < True`, so a conjunction is the weakest
+/// (`min`) of its parts and a disjunction the strongest (`max`).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Truth {
+    False,
+    Unknown,
+    True,
+}
+
+/// The contrary of a ground literal symbol — its strong negation, the same
+/// function symbol with the sign flipped (docs/design/query.md §2.2). A query
+/// literal is always a function symbol (built by [`Query::of`]), so the contrary
+/// is always defined; any other symbol is returned unchanged (unreachable through
+/// a query). `O(arity)`.
+fn contrary(symbol: &Symbol) -> Symbol {
+    match symbol {
+        Symbol::Function {
+            name,
+            arguments,
+            sign,
+        } => Symbol::function(
+            name.clone(),
+            arguments.iter().cloned(),
+            match sign {
+                Sign::Positive => Sign::Negative,
+                Sign::Negative => Sign::Positive,
+            },
+        ),
+        other => other.clone(),
+    }
+}
+
+impl Query {
+    /// The three-valued truth of this query within one `member` (docs/design/
+    /// query.md §2.2): a literal is `True` if present, `False` if its contrary is
+    /// present, `Unknown` otherwise; a conjunction is the weakest of its parts, a
+    /// disjunction the strongest. Evaluated WITHIN the member — never over ⋂/⋃ — so
+    /// a compound that holds through different literals in different members reads
+    /// correctly. The empty conjunction is `True`, the empty disjunction `False`.
+    /// Cost: `O(query size × member lookup)`.
+    fn truth_in(&self, member: &AnswerSet) -> Truth {
+        match &self.shape {
+            Shape::Literal(symbol) => {
+                if member.contains(symbol) {
+                    Truth::True
+                } else if member.contains(&contrary(symbol)) {
+                    Truth::False
+                } else {
+                    Truth::Unknown
+                }
+            }
+            Shape::Conjunction(parts) => parts
+                .iter()
+                .map(|part| part.truth_in(member))
+                .min()
+                .unwrap_or(Truth::True),
+            Shape::Disjunction(parts) => parts
+                .iter()
+                .map(|part| part.truth_in(member))
+                .max()
+                .unwrap_or(Truth::False),
+        }
+    }
+}
+
 impl Snapshot {
     /// The engine-free snapshot of `members`, ranging over `scenario` — the value
     /// [`WorldView::materialize`] drains into (docs/design/query.md §2.3).
@@ -317,6 +383,45 @@ impl Snapshot {
     /// Borrowed; reading does not spend the snapshot. O(1).
     pub fn scenario(&self) -> &Scenario {
         &self.scenario
+    }
+
+    /// The three-valued epistemic reading of a ground `query` over this world view
+    /// (docs/design/query.md §2.2, the one authoritative definition): `Yes` iff the
+    /// query is true in EVERY member, `No` iff false in every member — its contrary
+    /// present, never merely absent — and `Unknown` otherwise. Evaluated within each
+    /// member (never over ⋂/⋃), so a compound holding through different literals in
+    /// different members is read correctly. Infallible and complete over the
+    /// materialised members. Cost: `O(members × query size × member lookup)`.
+    pub fn answer(&self, query: &Query) -> Answer {
+        let mut all_true = true;
+        let mut all_false = true;
+        for member in &self.members {
+            match query.truth_in(member) {
+                Truth::True => all_false = false,
+                Truth::False => all_true = false,
+                Truth::Unknown => {
+                    all_true = false;
+                    all_false = false;
+                }
+            }
+        }
+        // A snapshot is non-empty by construction, so at most one of these holds.
+        if all_true {
+            Answer::Yes
+        } else if all_false {
+            Answer::No
+        } else {
+            Answer::Unknown
+        }
+    }
+
+    /// The ASP-Core-2 cautious, two-valued reading (docs/design/query.md §2.6):
+    /// `true` exactly when the query is [`Answer::Yes`] — cautiously entailed —
+    /// projecting the three-valued [`answer`](Snapshot::answer) onto `Yes` versus
+    /// (`No` ∪ `Unknown`), never collapsing `Unknown` to the wrong side. Infallible.
+    /// Cost: as [`answer`](Snapshot::answer).
+    pub fn entails(&self, query: &Query) -> bool {
+        self.answer(query) == Answer::Yes
     }
 }
 
@@ -463,6 +568,153 @@ mod snapshot {
         // The empty (unscoped) scenario round-trips — its assumptions are none.
         let snapshot = Snapshot::of(vec![answer_set(["a"])], Scenario::default());
         assert_eq!(snapshot.scenario().assumptions().count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod epistemic {
+    use super::*;
+    use proptest::prelude::*;
+    use themelios_program::symbol::{Name, Sign};
+
+    /// The ground constant symbol `name`, signed.
+    fn symbol(name: &str, sign: Sign) -> Symbol {
+        Symbol::function(Name::new(name).expect("a valid identifier"), [], sign)
+    }
+
+    /// The answer set holding exactly the given symbols.
+    fn answer_set(symbols: impl IntoIterator<Item = Symbol>) -> AnswerSet {
+        symbols.into_iter().collect()
+    }
+
+    /// A snapshot over the given members, ranging over the unscoped program.
+    fn snapshot(members: impl IntoIterator<Item = AnswerSet>) -> Snapshot {
+        Snapshot::of(members.into_iter().collect(), Scenario::default())
+    }
+
+    /// The positive ground literal query `name`.
+    fn lit(name: &str) -> Query {
+        Query::of(Atom {
+            sign: Sign::Positive,
+            name: Name::new(name).expect("a valid identifier"),
+            arguments: Arguments::Single(vec![]),
+        })
+        .expect("a ground literal is a query")
+    }
+
+    #[test]
+    fn absence_is_not_falsity() {
+        // W = { {a}, {b} }: a ∧ b is Unknown — in {a}, b is merely absent (its
+        // contrary is not present), so the conjunction is unknown there, not false.
+        let world = snapshot([
+            answer_set([symbol("a", Sign::Positive)]),
+            answer_set([symbol("b", Sign::Positive)]),
+        ]);
+        assert_eq!(
+            world.answer(&Query::all([lit("a"), lit("b")])),
+            Answer::Unknown,
+        );
+    }
+
+    #[test]
+    fn a_conjunction_refuted_in_every_member_is_no() {
+        // W = { {sunny, warm, -swim}, {swim, -warm} }: warm ∧ swim is No — the first
+        // member refutes swim (-swim present), the second refutes warm (-warm present).
+        let world = snapshot([
+            answer_set([
+                symbol("sunny", Sign::Positive),
+                symbol("warm", Sign::Positive),
+                symbol("swim", Sign::Negative),
+            ]),
+            answer_set([
+                symbol("swim", Sign::Positive),
+                symbol("warm", Sign::Negative),
+            ]),
+        ]);
+        assert_eq!(
+            world.answer(&Query::all([lit("warm"), lit("swim")])),
+            Answer::No,
+        );
+    }
+
+    #[test]
+    fn a_disjunction_true_in_every_member_is_yes() {
+        // W = { {a}, {b} }: a ∨ b is Yes — true in the first through a, in the second
+        // through b, though no single disjunct is cautiously entailed (the errata).
+        let world = snapshot([
+            answer_set([symbol("a", Sign::Positive)]),
+            answer_set([symbol("b", Sign::Positive)]),
+        ]);
+        assert_eq!(world.answer(&Query::any([lit("a"), lit("b")])), Answer::Yes,);
+    }
+
+    #[test]
+    fn a_literal_in_every_member_is_yes() {
+        let world = snapshot([answer_set([symbol("a", Sign::Positive)])]);
+        assert_eq!(world.answer(&lit("a")), Answer::Yes);
+    }
+
+    #[test]
+    fn a_literal_whose_contrary_is_present_is_no() {
+        let world = snapshot([answer_set([symbol("a", Sign::Negative)])]); // { -a }
+        assert_eq!(world.answer(&lit("a")), Answer::No);
+    }
+
+    #[test]
+    fn a_literal_neither_present_nor_refuted_is_unknown() {
+        let world = snapshot([answer_set([symbol("a", Sign::Positive)])]); // { a }
+        assert_eq!(world.answer(&lit("b")), Answer::Unknown);
+    }
+
+    #[test]
+    fn entails_is_yes_against_no_or_unknown() {
+        // The ASP-Core-2 projection: `Yes` → true; both `No` and `Unknown` → false,
+        // never collapsing Unknown to the wrong side (query.md §2.6).
+        let entailed = snapshot([answer_set([symbol("a", Sign::Positive)])]);
+        let refuted = snapshot([answer_set([symbol("a", Sign::Negative)])]);
+        let open = snapshot([answer_set([symbol("a", Sign::Positive)])]);
+        assert!(entailed.entails(&lit("a")), "Yes projects to true");
+        assert!(!refuted.entails(&lit("a")), "No projects to false");
+        assert!(!open.entails(&lit("b")), "Unknown projects to false");
+    }
+
+    proptest! {
+        /// A literal and its contrary are never both `Yes` over a consistent world
+        /// view: a member holds at most one sign of an atom, so if `a` is in every
+        /// member `-a` is in none — the two cautious entailments are mutually
+        /// exclusive, whatever the members are.
+        #[test]
+        fn a_literal_and_its_contrary_are_never_both_yes(
+            raw in prop::collection::vec(
+                prop::collection::vec((0usize..3usize, any::<bool>()), 0..4),
+                1..4usize,
+            ),
+        ) {
+            let names = ["a", "b", "c"];
+            // Consistent members: within a member each atom takes at most one sign
+            // (last write wins), so no member holds both `a` and `-a`.
+            let members = raw.iter().map(|pairs| {
+                let signs: std::collections::BTreeMap<usize, bool> =
+                    pairs.iter().copied().collect();
+                answer_set(signs.into_iter().map(|(atom, positive)| {
+                    symbol(names[atom], if positive { Sign::Positive } else { Sign::Negative })
+                }))
+            });
+            let world = snapshot(members);
+            let signed = |name: &str, sign| {
+                Query::of(Atom {
+                    sign,
+                    name: Name::new(name).expect("a valid identifier"),
+                    arguments: Arguments::Single(vec![]),
+                })
+                .expect("a ground literal is a query")
+            };
+            for name in names {
+                let both_yes = world.answer(&signed(name, Sign::Positive)) == Answer::Yes
+                    && world.answer(&signed(name, Sign::Negative)) == Answer::Yes;
+                prop_assert!(!both_yes, "{name} and its contrary are both Yes");
+            }
+        }
     }
 }
 
