@@ -124,22 +124,33 @@ impl Partial {
 
 // ---- Answer sets, optima, consequences (§5.2) ----
 
-/// The internal streaming/terminal-state protocol a backend's solve drives. A
-/// run holds only its own enumeration state and, where an engine is involved, a
-/// raw handle into it — never a Rust borrow of the backend — so the live handle,
-/// not the borrow checker, serialises engine access (docs/design/solve.md §5.2).
-/// Because a run carries a raw engine handle, a `Solved`/`Models` built over one
-/// is `!Send` for every backend — a deliberate consequence (the pinned engine's
-/// control is single-threaded), not an accident.
+/// The streaming/terminal-state protocol a backend's `solve` drives (docs/design/
+/// solve.md §5.2): the enumeration a backend wraps into the [`Solved`] it returns,
+/// built through [`Solved::running`]. A run holds only its own enumeration state
+/// and, where an engine is involved, a raw handle into it — never a Rust borrow of
+/// the backend — so the live handle, not the borrow checker, serialises engine
+/// access.
+/// A `Solved`/`Models` built over a run is `!Send`: a run may hold a raw engine
+/// handle whose control is single-threaded, and the protocol does not require a run
+/// to be `Send`, so the live handle stays on one thread by construction — a
+/// deliberate consequence, not an accident (a pure-Rust run carries no such handle,
+/// yet the handle is `!Send` all the same, so no consumer may rely on it being
+/// otherwise).
 ///
-/// Two obligations every implementor owes, which the live handle relies on when
-/// it re-polls a spent run (after an inspecting resolve, a second stream, a
+/// The obligations every implementor owes, which the live handle relies on when it
+/// re-polls a spent run (after an inspecting resolve, a second stream, a
 /// completeness drain):
 /// - **Fused**: once `next_answer_set` has returned `None`, it returns `None`
 ///   forever.
 /// - **Terminal conclusion**: once `next_answer_set` has returned `None`,
 ///   `conclusion` returns `Some`; it is `None` only while the search is open.
-pub(crate) trait Run {
+/// - **After a fault**: a completeness drain ([`Solved::all_answer_sets`],
+///   [`Models::all_members`]) stops at the first `Some(Err(_))`, keeping it as the
+///   cause, while a lazy stream ([`Solved::answer_sets`], [`Models::members`])
+///   relays exactly what the run yields — so a conforming run yields `None` after a
+///   fault rather than enumerate past it, since a run that never ends is a stream
+///   that never ends.
+pub trait Run {
     /// The next answer set, or `None` at the end of the search (fused — see the
     /// trait obligations). Each item a `Result`, so a mid-stream engine fault
     /// surfaces at the item, not as a clean end.
@@ -504,11 +515,16 @@ impl<'a> Solved<'a> {
     }
 }
 
-#[cfg(test)]
 impl<'a> Solved<'a> {
-    /// A solved handle over `run`, ranging over `scenario`, with nothing yet
-    /// pulled — the door an in-crate test backend answers a question through.
-    pub(crate) fn over(run: Box<dyn Run + 'a>, scenario: Scenario) -> Solved<'a> {
+    /// The backend-facing construction door (docs/design/solve.md §5.2): wrap an
+    /// enumeration `run`, ranging over `scenario`, into the solved handle a
+    /// backend's [`solve`](crate::contract::Backend::solve) — or
+    /// [`solve_assuming`](crate::contract::Backend::solve_assuming) — returns, with
+    /// nothing yet pulled. The core drives the run and classifies the trichotomy
+    /// over it (§5.1), so a backend supplies only its enumeration and the terminal
+    /// [`Conclusion`]; it never constructs the [`Determination`], so it cannot pose
+    /// an empty or truncated search as consistent. O(1).
+    pub fn running(run: Box<dyn Run + 'a>, scenario: Scenario) -> Solved<'a> {
         Solved {
             live: LiveRun {
                 current: Some(run),

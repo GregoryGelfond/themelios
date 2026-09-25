@@ -859,7 +859,7 @@ mod ask_laws {
     /// A solved handle over a scripted search of `sets`, ranging over
     /// `scenario`.
     fn solved_over(sets: Vec<AnswerSet>, scenario: Scenario) -> Solved<'static> {
-        Solved::over(
+        Solved::running(
             Box::new(Scripted {
                 sets: sets.into_iter(),
                 ended: false,
@@ -1103,7 +1103,7 @@ mod ask_laws {
         }
 
         fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
-            Ok(Solved::over(
+            Ok(Solved::running(
                 Box::new(Truncated {
                     sets: self.sets.clone().into_iter(),
                     ended: false,
@@ -1172,7 +1172,7 @@ mod ask_laws {
         }
 
         fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
-            Ok(Solved::over(Box::new(Faulting), Scenario::default()))
+            Ok(Solved::running(Box::new(Faulting), Scenario::default()))
         }
 
         fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
