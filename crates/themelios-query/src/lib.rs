@@ -13,10 +13,11 @@
 //! sets (§3.2).
 #![forbid(unsafe_code)]
 
+use themelios_program::AnswerSet;
 use themelios_program::program::{Arguments, Atom};
 use themelios_program::symbol::Symbol;
 use themelios_program::term::{EvalError, Term};
-use themelios_program::unify::NotAPattern;
+use themelios_program::unify::{NotAPattern, Substitution, mgu, signature_range};
 
 pub mod prelude;
 
@@ -178,6 +179,427 @@ impl std::error::Error for NotAQuery {
         match self {
             NotAQuery::NotGround { .. } => None,
             NotAQuery::NotAPattern(inner) => Some(inner),
+        }
+    }
+}
+
+/// Lift a ground `Symbol` to the signed `Atom` that matches it (docs/design/
+/// query.md §3.1). Only a `Function` symbol denotes an atom a pattern can match;
+/// a number, string, tuple, `#inf`, or `#sup` has no signature and never
+/// matches, so it lifts to `None`. The arguments become `Symbolic` terms — the
+/// value each already is — so the mgu reads them without re-evaluation, and the
+/// sign is carried through unchanged. `O(arity)`.
+///
+/// The building block of `matches_in`; the world view (§2.3) and the bindings
+/// (§2.5) reach it from there.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn lift(symbol: &Symbol) -> Option<Atom> {
+    match symbol {
+        Symbol::Function {
+            name,
+            arguments,
+            sign,
+        } => Some(Atom {
+            // Built directly from parts that are already a canonical ground atom —
+            // the name and sign as they stand, each argument wrapped verbatim as a
+            // `Symbolic` term — so no constructor canonicalization pass is owed.
+            sign: *sign,
+            name: name.clone(),
+            arguments: Arguments::Single(arguments.iter().cloned().map(Term::Symbolic).collect()),
+        }),
+        _ => None,
+    }
+}
+
+/// Every substitution under which `pattern` matches a member of `set` (docs/
+/// design/query.md §3.1). The candidates are the contiguous block of symbols
+/// sharing `pattern`'s signature — `set.range(signature_range(pattern))`, an
+/// `O(log n + k)` scan of the `k` candidates, not the whole `n`-member set, each
+/// then lifted and unified at a cost linear in its own size. Reuse, not
+/// reinvention: the unifier, the signature range, the triangular substitution,
+/// and the forced occurs-check are the program tier's; only enumerating the
+/// candidates is this tier's.
+///
+/// Refusal is *set-independent*. A `pattern` that is not a pattern is an `Err`,
+/// and the same `Err`, whether or not `set` holds a same-signature member: it is
+/// classified once, up front, by self-unifying `pattern` — the program tier's own
+/// `mgu` refuses a pool and a non-denoting argument (a variable-bearing arithmetic
+/// term, an undefined or out-of-range ground operation, an interval, a pooled
+/// argument, an unevaluated `@`-call, §3.1) alike — never incidentally by a `mgu`
+/// reached only when the candidate block is non-empty. That classification runs
+/// before `signature_range`, whose value on a pool is the empty range
+/// `#sup..=#inf` that `BTreeSet::range` would panic on (`start > end`), so the
+/// panic is unreachable. *Cannot decide* is never *no match*.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn matches_in(
+    pattern: &Atom,
+    set: &AnswerSet,
+) -> Result<Vec<Substitution>, NotAPattern> {
+    mgu(pattern, pattern)?;
+    let mut out = Vec::new();
+    for candidate in set.range(signature_range(pattern)) {
+        if let Some(atom) = lift(candidate)
+            && let Some(substitution) = mgu(pattern, &atom)?
+        {
+            out.push(substitution);
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod matching {
+    use super::*;
+    use proptest::prelude::*;
+    use themelios_program::symbol::{Name, Sign, VarName};
+
+    /// A 0-ary constant symbol.
+    fn constant(name: &str) -> Symbol {
+        Symbol::function(
+            Name::new(name).expect("a valid identifier"),
+            [],
+            Sign::Positive,
+        )
+    }
+
+    /// The applied symbol `name(args…)`.
+    fn applied(name: &str, args: impl IntoIterator<Item = Symbol>) -> Symbol {
+        Symbol::function(
+            Name::new(name).expect("a valid identifier"),
+            args,
+            Sign::Positive,
+        )
+    }
+
+    /// The pattern `name(terms…)`, a `Single` argument list.
+    fn pattern(name: &str, terms: Vec<Term>) -> Atom {
+        Atom {
+            sign: Sign::Positive,
+            name: Name::new(name).expect("a valid identifier"),
+            arguments: Arguments::Single(terms),
+        }
+    }
+
+    /// The ground argument term denoting `symbol`, the value it already is — a
+    /// ground query pattern's argument.
+    fn ground(symbol: Symbol) -> Term {
+        Term::Symbolic(symbol)
+    }
+
+    /// The named variable `text` (`X`, `Y`, …) as a pattern argument.
+    fn var(text: &str) -> Term {
+        Term::variable(VarName::new(text).expect("a valid variable name"))
+    }
+
+    /// The ground argument term for the number `value`.
+    fn num(value: i32) -> Term {
+        Term::Symbolic(Symbol::number(value))
+    }
+
+    /// The nested ground symbol `f(f(… f(a) …))`, `depth` applications deep — the
+    /// adversarial shape the deep-ground-symbol bound is about.
+    fn nested(depth: usize) -> Symbol {
+        let mut symbol = constant("a");
+        for _ in 0..depth {
+            symbol = applied("f", [symbol]);
+        }
+        symbol
+    }
+
+    /// The full-scan reference: lift and `mgu` every member, not just the block.
+    fn full_scan(pattern: &Atom, set: &AnswerSet) -> Vec<Substitution> {
+        let mut out = Vec::new();
+        for candidate in set {
+            if let Some(atom) = lift(candidate)
+                && let Some(substitution) = mgu(pattern, &atom).expect("a pattern")
+            {
+                out.push(substitution);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_non_function_symbol_never_lifts_to_a_pattern_match() {
+        assert!(lift(&Symbol::number(3)).is_none());
+        assert!(lift(&Symbol::string("x")).is_none());
+        assert!(lift(&Symbol::tuple([constant("a"), constant("b")])).is_none());
+        assert!(lift(&Symbol::Infimum).is_none());
+        assert!(lift(&Symbol::Supremum).is_none());
+    }
+
+    #[test]
+    fn lift_carries_the_sign_of_a_function_symbol() {
+        let negative = Symbol::function(
+            Name::new("p").expect("a valid identifier"),
+            [constant("a")],
+            Sign::Negative,
+        );
+        let atom = lift(&negative).expect("a function symbol lifts to an atom");
+        assert_eq!(
+            atom.sign,
+            Sign::Negative,
+            "lift preserves the sign; the lifted atom matches only a same-signed member",
+        );
+    }
+
+    #[test]
+    fn a_lifted_symbol_matches_its_own_member() {
+        // lift inverts a ground query pattern's construction: the atom a symbol
+        // lifts to matches that very symbol, and binds nothing.
+        let symbol = applied("p", [constant("a")]);
+        let atom = lift(&symbol).expect("a function symbol lifts to an atom");
+        let set: AnswerSet = [symbol].into_iter().collect();
+        let matches = matches_in(&atom, &set).expect("a pattern");
+        assert_eq!(matches.len(), 1);
+        assert!(
+            matches[0].iter().next().is_none(),
+            "a lifted ground symbol matches itself exactly, binding nothing",
+        );
+    }
+
+    #[test]
+    fn a_pooled_pattern_is_refused_not_matched() {
+        let pooled = Atom {
+            sign: Sign::Positive,
+            name: Name::new("p").expect("a valid identifier"),
+            arguments: Arguments::Pooled(vec![
+                vec![Term::Symbolic(constant("a"))],
+                vec![Term::Symbolic(constant("b"))],
+            ]),
+        };
+        let set: AnswerSet = [applied("p", [constant("a")])].into_iter().collect();
+        assert!(matches!(
+            matches_in(&pooled, &set),
+            Err(NotAPattern::Pooled)
+        ));
+    }
+
+    #[test]
+    fn a_ground_pattern_finds_its_member_within_its_block() {
+        // p(a) over { p(a), p(b), q(c) }: the range is the p/1 block, so q(c) —
+        // a different signature — is never scanned, and within the block only
+        // the equal member matches.
+        let set: AnswerSet = [
+            applied("p", [constant("a")]),
+            applied("p", [constant("b")]),
+            applied("q", [constant("c")]),
+        ]
+        .into_iter()
+        .collect();
+        let matches =
+            matches_in(&pattern("p", vec![ground(constant("a"))]), &set).expect("a pattern");
+        assert_eq!(matches.len(), 1);
+        assert!(
+            matches[0].iter().next().is_none(),
+            "a ground pattern binds nothing: its one match is the empty substitution",
+        );
+    }
+
+    #[test]
+    fn a_variable_pattern_matches_every_member_of_its_block() {
+        // p(X) over { p(a), p(b), q(c) }: the range is the p/1 block, so both
+        // p-members match — a variable pattern is not a single-member match — and
+        // q(c), a different signature, is never scanned.
+        let set: AnswerSet = [
+            applied("p", [constant("a")]),
+            applied("p", [constant("b")]),
+            applied("q", [constant("c")]),
+        ]
+        .into_iter()
+        .collect();
+        let matches = matches_in(&pattern("p", vec![var("X")]), &set).expect("a pattern");
+        assert_eq!(matches.len(), 2, "X binds to each of a and b, never to c");
+        for substitution in &matches {
+            assert_eq!(
+                substitution.iter().count(),
+                1,
+                "a one-variable pattern binds exactly its one variable",
+            );
+        }
+    }
+
+    #[test]
+    fn the_inclusive_range_reaches_both_block_edges() {
+        // The p/1 block runs from p(#inf) to p(#sup) — the least and greatest p/1
+        // symbols. A range narrowed by one at either end would drop an edge member;
+        // p(X) must find all three.
+        let set: AnswerSet = [
+            applied("p", [Symbol::Infimum]),
+            applied("p", [constant("a")]),
+            applied("p", [Symbol::Supremum]),
+        ]
+        .into_iter()
+        .collect();
+        let matches = matches_in(&pattern("p", vec![var("X")]), &set).expect("a pattern");
+        assert_eq!(
+            matches.len(),
+            3,
+            "the inclusive signature range spans p(#inf)..=p(#sup)",
+        );
+    }
+
+    #[test]
+    fn a_non_pattern_is_refused_whichever_members_the_set_holds() {
+        // p(1..3) is not a pattern: an interval names a set (§3.1). The refusal is
+        // the same — NonDenoting, never a quiet empty match — whether the set holds
+        // a same-signature member, a different one, or none. The classification is
+        // set-independent, not a side effect of the candidate block being non-empty.
+        let interval = pattern(
+            "p",
+            vec![Term::Interval {
+                lower: Box::new(num(1)),
+                upper: Box::new(num(3)),
+            }],
+        );
+        let with_same_signature: AnswerSet = [applied("p", [constant("a")])].into_iter().collect();
+        let with_other_signature: AnswerSet = [applied("q", [constant("a")])].into_iter().collect();
+        let empty = AnswerSet::new();
+        let refusal = matches_in(&interval, &empty);
+        assert!(
+            matches!(refusal, Err(NotAPattern::NonDenoting { .. })),
+            "an interval pattern is a non-denoting refusal, not a match",
+        );
+        for set in [&with_same_signature, &with_other_signature] {
+            assert_eq!(
+                matches_in(&interval, set),
+                refusal,
+                "the refusal is identical whichever members the set holds",
+            );
+        }
+    }
+
+    #[test]
+    fn a_signed_pattern_matches_only_a_same_signed_member() {
+        // lift carries the sign and the mgu requires signs to agree, so the negative
+        // pattern -p(X) over { p(a), -p(a) } matches only the negative member.
+        let negative = Symbol::function(
+            Name::new("p").expect("a valid identifier"),
+            [constant("a")],
+            Sign::Negative,
+        );
+        let set: AnswerSet = [applied("p", [constant("a")]), negative]
+            .into_iter()
+            .collect();
+        let pattern = Atom {
+            sign: Sign::Negative,
+            name: Name::new("p").expect("a valid identifier"),
+            arguments: Arguments::Single(vec![var("X")]),
+        };
+        let matches = matches_in(&pattern, &set).expect("a pattern");
+        assert_eq!(
+            matches.len(),
+            1,
+            "only -p(a) matches -p(X), never the positive p(a)"
+        );
+    }
+
+    /// The base nesting depth for the near-linear match proof; the large case is
+    /// `SIZE_RATIO` deeper.
+    const DEPTH: usize = 2_000;
+    /// The data-size ratio between the small and large deep-symbol cases.
+    const SIZE_RATIO: usize = 16;
+    /// A near-linear claim at `SIZE_RATIO` may cost at most this factor: fourfold
+    /// noise headroom above linear (x16), fourfold separation below quadratic
+    /// (x256).
+    const LINEAR_CEILING: u128 = SIZE_RATIO as u128 * 4;
+    /// Interleaved runs per measurement; the median of their ratios is taken.
+    const SAMPLES: usize = 5;
+    /// Ratios are scaled by this factor so the median arithmetic stays in integers;
+    /// a ceiling `C` is the scaled bound `C * RATIO_SCALE`.
+    const RATIO_SCALE: u128 = 1_000;
+    /// Matches timed per measurement, to lift a single reading clear of timer noise.
+    const REPEAT: usize = 8;
+
+    /// One elapsed measurement of `work`, in nanoseconds, floored to 1 so a
+    /// sub-nanosecond reading can still divide.
+    fn time_once(mut work: impl FnMut()) -> u128 {
+        let start = std::time::Instant::now();
+        work();
+        start.elapsed().as_nanos().max(1)
+    }
+
+    /// The median over `SAMPLES` interleaved runs of `big`'s cost over `small`'s,
+    /// scaled by `RATIO_SCALE`. Each run times `small` then `big` back-to-back, so a
+    /// load spike lands on both, not on one side of a separately-batched median.
+    fn median_ratio(mut small: impl FnMut() -> u128, mut big: impl FnMut() -> u128) -> u128 {
+        let mut ratios = Vec::with_capacity(SAMPLES);
+        for _ in 0..SAMPLES {
+            let s = small().max(1);
+            let b = big();
+            ratios.push(b * RATIO_SCALE / s);
+        }
+        ratios.sort_unstable();
+        ratios[SAMPLES / 2]
+    }
+
+    #[cfg_attr(
+        not(feature = "scale-proofs"),
+        ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+    )]
+    #[test]
+    fn deep_ground_symbols_match_in_near_linear_time() {
+        // Matching one deep ground symbol lifts and unifies a term linear in its
+        // depth; a per-level re-walk would be quadratic. The program tier's mgu is
+        // near-linear and this crate adds only the O(log n + k) block scan over a
+        // one-member set, so SIZE_RATIO more depth must cost near SIZE_RATIO more,
+        // well below quadratic (§3.1).
+        let match_at = |depth: usize| -> u128 {
+            let set: AnswerSet = [applied("p", [nested(depth)])].into_iter().collect();
+            let pat = pattern("p", vec![ground(nested(depth))]);
+            time_once(|| {
+                for _ in 0..REPEAT {
+                    let found = matches_in(&pat, &set).expect("a pattern");
+                    std::hint::black_box(&found);
+                }
+            })
+        };
+        let ratio = median_ratio(|| match_at(DEPTH), || match_at(DEPTH * SIZE_RATIO));
+        assert!(
+            ratio <= LINEAR_CEILING * RATIO_SCALE,
+            "matching a deep ground symbol grew worse than near-linearly: the median cost \
+             ratio across x{SIZE_RATIO} more depth was {ratio} (scaled by {RATIO_SCALE}), \
+             over the ceiling {}; the mgu quadratic must stay closed",
+            LINEAR_CEILING * RATIO_SCALE,
+        );
+    }
+
+    proptest! {
+        /// The signature-range scan is not lossy for a ground pattern: it finds
+        /// exactly what a lift-and-mgu over the whole set finds — here, at most the
+        /// one equal member.
+        #[test]
+        fn a_ground_scan_finds_exactly_what_a_full_scan_finds(
+            members in prop::collection::vec((0u8..3, 0i32..4), 0..12),
+            pat_pred in 0u8..3,
+            pat_arg in 0i32..4,
+        ) {
+            let arg = |a: i32| applied("c", [Symbol::number(a)]);
+            let sym = |pred: u8, a: i32| applied(&format!("p{pred}"), [arg(a)]);
+            let set: AnswerSet = members.iter().map(|&(pred, a)| sym(pred, a)).collect();
+            let pat = pattern(&format!("p{pat_pred}"), vec![ground(arg(pat_arg))]);
+            prop_assert_eq!(
+                matches_in(&pat, &set).expect("a pattern"),
+                full_scan(&pat, &set)
+            );
+        }
+
+        /// The same for a *variable* pattern, which matches its whole block — so a
+        /// range too narrow at either end would drop members the full scan keeps, a
+        /// loss the single-member ground case cannot expose.
+        #[test]
+        fn a_variable_scan_finds_its_whole_block(
+            members in prop::collection::vec((0u8..3, 0i32..4), 0..12),
+            pat_pred in 0u8..3,
+        ) {
+            let arg = |a: i32| applied("c", [Symbol::number(a)]);
+            let sym = |pred: u8, a: i32| applied(&format!("p{pred}"), [arg(a)]);
+            let set: AnswerSet = members.iter().map(|&(pred, a)| sym(pred, a)).collect();
+            let pat = pattern(&format!("p{pat_pred}"), vec![var("X")]);
+            prop_assert_eq!(
+                matches_in(&pat, &set).expect("a pattern"),
+                full_scan(&pat, &set)
+            );
         }
     }
 }
