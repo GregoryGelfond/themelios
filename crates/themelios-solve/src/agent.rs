@@ -6,9 +6,12 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::bridge::Door;
-use crate::contract::{Backend, Fault, OptimizeRequest, SolveRequest, TruthValue};
+use crate::contract::{
+    Backend, ConsequenceRequest, ConsequenceSupport, Fault, Mode, OptimizeRequest, SolveRequest,
+    TruthValue,
+};
 use crate::extend::Facts;
-use crate::outcome::{Determination, Optimized, Solved};
+use crate::outcome::{Consequences, Determination, Optimized, Solved};
 use themelios_program::program::{Arguments, PartKey};
 use themelios_program::{Atom, Program, Rule, Statement, Symbol, Term, WithProvenance};
 
@@ -228,6 +231,61 @@ impl<B: Backend> Agent<B> {
     /// readable before any question is paid for. O(1).
     pub fn interrupt(&self) -> Option<Interrupt> {
         self.backend.interrupt()
+    }
+
+    /// The cautious consequences (`⋂`, "what must hold") of the knowledge base
+    /// (docs/design/solve.md §5.2; query.md §2.4): the atoms true in EVERY answer
+    /// set. Routed on the backend's declared consequence support — the engine's
+    /// own door in one solve where it has one, otherwise the core's fold over the
+    /// enumerated world view — and ranges over the unscoped program. Refuses over
+    /// a program with no answer set (`⋂` over the empty world view is undefined,
+    /// not `∅`) and over a search that did not close. Cost: one solve for the
+    /// native door, `Θ(|W|)` for the derived.
+    pub fn cautious(&mut self) -> Result<Consequences, Fault> {
+        self.consequences(Mode::Cautious)
+    }
+
+    /// The brave consequences (`⋃`, "what can hold") of the knowledge base
+    /// (docs/design/solve.md §5.2; query.md §2.4): the atoms true in SOME answer
+    /// set. Routed and gated as the cautious reading is.
+    pub fn brave(&mut self) -> Result<Consequences, Fault> {
+        self.consequences(Mode::Brave)
+    }
+
+    /// The consequences in `mode` — the shared body of the cautious and brave
+    /// readings. The native door computes them in one solve; the derived door
+    /// folds the enumerated CONSISTENT world view. The consistency gate is
+    /// load-bearing: folding zero members returns an empty set for both modes, and
+    /// an empty cautious set would say the program forces nothing — of a program
+    /// that has no model, where `⋂` is undefined — so it refuses (query.md §2.3).
+    /// Both doors range over the unscoped program (the agent holds no
+    /// persistent scenario, §6.3), so the native and derived results agree (the
+    /// free differential, query.md §2.4). Both range over ALL stable models today;
+    /// under an optimization objective they must instead range over the optimal
+    /// set (solve.md §5.2), the obligation that joins when optimization lands.
+    fn consequences(&mut self, mode: Mode) -> Result<Consequences, Fault> {
+        self.bring_level()?;
+        match self.backend.capabilities().native_consequences {
+            ConsequenceSupport::Native => self
+                .backend
+                .consequences_native(mode, &ConsequenceRequest::default()),
+            ConsequenceSupport::DerivedByEnumeration => {
+                match self
+                    .backend
+                    .solve(&SolveRequest::default())?
+                    .into_determination()
+                {
+                    Determination::Consistent(mut models) => {
+                        let members = models.all_members()?;
+                        Ok(Consequences::fold(mode, members.iter()))
+                    }
+                    Determination::Inconsistent(_) => Err(Fault::request(
+                        "no consequences: the program has no answer set",
+                    )),
+                    Determination::Inconclusive(partial) => Err(partial.into()),
+                }
+            }
+        }
     }
 
     /// Bring the engine level with the owned knowledge base before a question
@@ -766,6 +824,8 @@ mod ledger_laws {
 #[cfg(test)]
 mod ask_laws {
     use super::*;
+    use std::collections::BTreeSet;
+
     use crate::bridge::GroundProgram;
     use crate::contract::Capabilities;
     use crate::outcome::{AnswerSet, Conclusion, Run};
@@ -856,6 +916,284 @@ mod ask_laws {
     /// An agent over an empty knowledge base and a backend answering `sets`.
     fn agent_answering(sets: Vec<AnswerSet>) -> Agent<Answering> {
         Agent::new(Program::empty(), Answering { sets })
+    }
+
+    /// The intersection of the answer sets — computed directly, not through the
+    /// core fold, so a native door built on it can be held against the fold.
+    fn intersect(sets: &[AnswerSet]) -> BTreeSet<Symbol> {
+        let mut sets = sets.iter();
+        let mut common = sets.next().cloned().unwrap_or_default();
+        for set in sets {
+            common = common.intersection(set).cloned().collect();
+        }
+        common
+    }
+
+    /// The union of the answer sets — the direct twin of `intersect`.
+    fn union(sets: &[AnswerSet]) -> BTreeSet<Symbol> {
+        sets.iter().flat_map(|set| set.iter().cloned()).collect()
+    }
+
+    /// A backend that answers with its answer sets AND declares a native
+    /// consequence door: its own `⋂`/`⋃` over those sets, computed independently
+    /// of the core fold, and refusing an inconsistent program as the derived door
+    /// does — so the two doors can be held against each other.
+    struct Dual {
+        sets: Vec<AnswerSet>,
+    }
+
+    impl Backend for Dual {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                enumeration: true,
+                native_consequences: ConsequenceSupport::Native,
+                ..Capabilities::default()
+            }
+        }
+
+        fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
+            Ok(solved_over(self.sets.clone(), Scenario::default()))
+        }
+
+        fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
+            Ok(())
+        }
+
+        fn ground_program(&self) -> Option<&GroundProgram> {
+            None
+        }
+
+        fn consequences_native(
+            &mut self,
+            mode: Mode,
+            _request: &ConsequenceRequest,
+        ) -> Result<Consequences, Fault> {
+            if self.sets.is_empty() {
+                return Err(Fault::request(
+                    "no consequences: the program has no answer set",
+                ));
+            }
+            let symbols = match mode {
+                Mode::Cautious => intersect(&self.sets),
+                Mode::Brave => union(&self.sets),
+            };
+            Ok(Consequences { symbols, mode })
+        }
+    }
+
+    #[test]
+    fn the_native_door_and_the_derived_fold_agree() {
+        // The free differential (query.md §2.4): a backend's own ⋂/⋃ door and the
+        // core's fold over the SAME backend's enumerated models give the same
+        // answer. A shared atom in only two of the three models, so a truncating
+        // fold (stopping short) would be caught for both modes: the full cautious
+        // ⋂ is {a}, a two-model fold keeps e; the full brave ⋃ has d, a two-model
+        // fold drops it.
+        let sets = vec![
+            answer_set(&["a", "b", "e"]),
+            answer_set(&["a", "c", "e"]),
+            answer_set(&["a", "d"]),
+        ];
+        let mut agent = Agent::new(Program::empty(), Dual { sets: sets.clone() });
+        let enumerated = match agent.determination().expect("a consistent program") {
+            Determination::Consistent(mut models) => {
+                models.all_members().expect("an exhausted search")
+            }
+            _ => panic!("the backend answers consistent"),
+        };
+        assert_eq!(
+            enumerated, sets,
+            "the backend enumerates the models it holds"
+        );
+        assert_eq!(
+            agent.cautious().expect("a consistent program"),
+            Consequences::fold(Mode::Cautious, enumerated.iter()),
+            "the native cautious door and the derived fold disagree",
+        );
+        assert_eq!(
+            agent.brave().expect("a consistent program"),
+            Consequences::fold(Mode::Brave, enumerated.iter()),
+            "the native brave door and the derived fold disagree",
+        );
+    }
+
+    #[test]
+    fn the_native_door_refuses_a_program_with_no_answer_set() {
+        // Like the derived door, the native door refuses ⋂/⋃ over a program with
+        // no answer set, so the two agree there too (query.md §2.4). The stub
+        // honours that contract; the agent forwards its verdict — a contract exemplar.
+        let mut agent = Agent::new(Program::empty(), Dual { sets: Vec::new() });
+        assert!(agent.cautious().is_err());
+        assert!(agent.brave().is_err());
+    }
+
+    #[test]
+    fn cautious_consequences_are_the_atoms_in_every_model() {
+        // { {a,b}, {a,c} }: only a holds in both.
+        let mut agent = agent_answering(vec![answer_set(&["a", "b"]), answer_set(&["a", "c"])]);
+        let cautious = agent.cautious().expect("a consistent program");
+        assert!(
+            cautious.contains(&constant("a")),
+            "a must hold in every model"
+        );
+        assert!(
+            !cautious.contains(&constant("b")),
+            "b holds in only one model, so it is not a cautious consequence",
+        );
+    }
+
+    #[test]
+    fn brave_consequences_are_the_atoms_in_some_model() {
+        // { {a,b}, {a,c} }: every model's atoms hold in some model.
+        let mut agent = agent_answering(vec![answer_set(&["a", "b"]), answer_set(&["a", "c"])]);
+        let brave = agent.brave().expect("a consistent program");
+        assert!(
+            brave.contains(&constant("a"))
+                && brave.contains(&constant("b"))
+                && brave.contains(&constant("c")),
+            "every model's atoms are brave consequences",
+        );
+    }
+
+    #[test]
+    fn the_consequences_of_a_program_with_no_answer_set_refuse() {
+        // ⋂/⋃ over the empty world view is undefined, not ∅: folding zero models
+        // would return an empty cautious set — a claim that the program forces
+        // nothing, of a program with no model at all (query.md §2.3). Refuse.
+        let mut agent = agent_answering(Vec::new());
+        assert!(
+            agent.cautious().is_err(),
+            "cautious of an inconsistent program is a refusal, not the empty set",
+        );
+        assert!(agent.brave().is_err());
+    }
+
+    /// A scripted search that TRUNCATES: a fixed sequence, then a space left open
+    /// (a budget hit) rather than closed.
+    struct Truncated {
+        sets: std::vec::IntoIter<AnswerSet>,
+        ended: bool,
+    }
+
+    impl Run for Truncated {
+        fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+            let next = self.sets.next().map(Ok);
+            if next.is_none() {
+                self.ended = true;
+            }
+            next
+        }
+
+        fn conclusion(&self) -> Option<Conclusion> {
+            self.ended.then_some(Conclusion::Budget)
+        }
+    }
+
+    /// A backend whose search truncates on a budget rather than closing the space.
+    struct Budgeted {
+        sets: Vec<AnswerSet>,
+    }
+
+    impl Backend for Budgeted {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                enumeration: true,
+                ..Capabilities::default()
+            }
+        }
+
+        fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
+            Ok(Solved::over(
+                Box::new(Truncated {
+                    sets: self.sets.clone().into_iter(),
+                    ended: false,
+                }),
+                Scenario::default(),
+            ))
+        }
+
+        fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
+            Ok(())
+        }
+
+        fn ground_program(&self) -> Option<&GroundProgram> {
+            None
+        }
+    }
+
+    #[test]
+    fn the_consequences_of_a_truncated_search_refuse() {
+        // A search that did not close the space cannot give complete ⋂/⋃, and does
+        // not fold a partial world view: a witnessed but unexhausted run refuses
+        // through the completeness gate, a truncated run with no model through the
+        // inconclusive gate. Both name the budget the search hit (solve.md §5.3).
+        let mut witnessed = Agent::new(
+            Program::empty(),
+            Budgeted {
+                sets: vec![answer_set(&["a"])],
+            },
+        );
+        let refusal = witnessed
+            .cautious()
+            .expect_err("an unexhausted world view refuses");
+        assert!(
+            refusal.to_string().contains("budget"),
+            "the refusal names the budget the search hit",
+        );
+        let mut inconclusive = Agent::new(Program::empty(), Budgeted { sets: Vec::new() });
+        let refusal = inconclusive
+            .brave()
+            .expect_err("an inconclusive search refuses");
+        assert!(refusal.to_string().contains("budget"));
+    }
+
+    /// A run that faults on its first pull, before any model.
+    struct Faulting;
+
+    impl Run for Faulting {
+        fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+            Some(Err(Fault::engine("the engine died mid-search")))
+        }
+
+        fn conclusion(&self) -> Option<Conclusion> {
+            None
+        }
+    }
+
+    /// A backend whose search faults before witnessing any model.
+    struct Faulty;
+
+    impl Backend for Faulty {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                enumeration: true,
+                ..Capabilities::default()
+            }
+        }
+
+        fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
+            Ok(Solved::over(Box::new(Faulting), Scenario::default()))
+        }
+
+        fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
+            Ok(())
+        }
+
+        fn ground_program(&self) -> Option<&GroundProgram> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_faulted_search_carries_its_engine_fault_to_the_consequences() {
+        // An engine fault before any model reaches the reader as an engine-locus
+        // fault, its cause intact — end to end, not laundered into a request fault
+        // (docs/design/solve.md §5.1). The witnessed-truncation path names its
+        // conclusion; this path names its cause; both stay honest.
+        let mut agent = Agent::new(Program::empty(), Faulty);
+        let refusal = agent.cautious().expect_err("a faulted search refuses");
+        assert_eq!(refusal.locus(), crate::contract::Locus::Engine);
+        assert!(refusal.to_string().contains("the engine died"));
     }
 
     #[test]
