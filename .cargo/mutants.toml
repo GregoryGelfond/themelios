@@ -4,7 +4,10 @@
 # value would exhaust memory before the timeout fires. The one kill these proofs add that a
 # small law input cannot — the non-equivalent survivor recorded below (`symbol.rs:453`), which
 # only a deep-tuple drop distinguishes — is the acknowledged cost of holding them out; every
-# other kill a small law input also makes. The analysis tier has no such feature: its scaling proofs use flat fixtures
+# other kill a small law input also makes. The query tier's deep-symbol match proof
+# (crates/themelios-query/Cargo.toml) sits behind the same-named feature and is held out the
+# same way — a wall-clock ratio over a deep value, flaky under the mutation build and slow on a
+# runaway mutant. The analysis tier has no such feature: its scaling proofs use flat fixtures
 # (chains, cycles, and self-loops, O(n) memory), so they run in the mutation loop by design,
 # where a complexity-regression mutant trips their ratio ceiling. The behavioural law tests
 # that discriminate the mutants are unaffected.

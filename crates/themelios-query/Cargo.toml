@@ -17,6 +17,14 @@ themelios-syntax = { path = "../themelios-syntax" }
 themelios-program = { path = "../themelios-program" }
 themelios-solve = { path = "../themelios-solve" }
 
+[features]
+# The in-suite scaling proofs (src/lib.rs) that hold the deep-symbol match to
+# near-linear cost. On by default so the ordinary test and coverage runs check
+# them; held out of the mutation loop with `--no-default-features`, as the program
+# tier does.
+scale-proofs = []
+default = ["scale-proofs"]
+
 # The stage instruments, outside the shipped closure's claim: proptest as in
 # the tiers beneath.
 [dev-dependencies]
