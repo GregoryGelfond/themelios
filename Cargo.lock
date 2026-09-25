@@ -952,17 +952,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "themelios-reference"
-version = "0.1.0"
-dependencies = [
- "proptest",
- "themelios-analysis",
- "themelios-base",
- "themelios-program",
- "themelios-solve",
-]
-
-[[package]]
 name = "themelios-solve"
 version = "0.1.0"
 dependencies = [

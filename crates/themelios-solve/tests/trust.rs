@@ -1,5 +1,5 @@
 //! The solve stage's trust posture (docs/design/solve.md §16): the engine-free
-//! crates — `themelios-solve`, `themelios-query`, `themelios-reference` — are
+//! crates — `themelios-solve` and `themelios-query` — are
 //! `forbid(unsafe_code)` and FFI-free by dependency closure, and unsafe lives
 //! only in the named potassco trusted computing base. What is in a closure is a
 //! question about the resolved graph, so it is read from `cargo metadata
@@ -21,7 +21,7 @@ use serde_json::Value;
 
 /// The engine-free crates: `forbid(unsafe_code)` at the root, FFI-free by
 /// closure (docs/design/solve.md §2.1, §16).
-const ENGINE_FREE: [&str; 3] = ["themelios-solve", "themelios-query", "themelios-reference"];
+const ENGINE_FREE: [&str; 2] = ["themelios-solve", "themelios-query"];
 
 /// The named trusted computing base: the only crates whose lint tables allow
 /// unsafe (docs/design/solve.md §2.1, §11.3, §16).
@@ -38,7 +38,6 @@ const PURE_CLOSURE: &[&str] = &[
     "themelios-analysis",
     "themelios-solve",
     "themelios-query",
-    "themelios-reference",
     "rowan",
     "text-size",
     "rustc-hash",
