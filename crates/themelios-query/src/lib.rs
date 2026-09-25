@@ -8,9 +8,11 @@
 //! vocabulary that question is asked and answered in: [`Answer`], the closed
 //! trichotomy; [`Query`], the ground question, which refuses at construction
 //! anything it could not answer, so a query that exists denotes; and
-//! [`NotAQuery`], that refusal. The matching a query rests on is the program
-//! tier's own (§3.1); this tier owns only the policy over a collection of answer
-//! sets (§3.2).
+//! [`NotAQuery`], that refusal. The collection those readings range over is a
+//! [`WorldView`] — the live handle over a consistent program's answer sets — or
+//! its engine-free, materialised [`Snapshot`], built here from the solve tier's
+//! outcomes (§2.3). The matching a query rests on is the program tier's own
+//! (§3.1); this tier owns only the policy over a collection of answer sets (§3.2).
 #![forbid(unsafe_code)]
 
 use themelios_program::AnswerSet;
@@ -18,6 +20,9 @@ use themelios_program::program::{Arguments, Atom};
 use themelios_program::symbol::Symbol;
 use themelios_program::term::{EvalError, Term};
 use themelios_program::unify::{NotAPattern, Substitution, mgu, signature_range};
+use themelios_solve::agent::Scenario;
+use themelios_solve::contract::{Fault, Mode};
+use themelios_solve::outcome::Models;
 
 pub mod prelude;
 
@@ -183,6 +188,138 @@ impl std::error::Error for NotAQuery {
     }
 }
 
+/// A program's *world view* (docs/design/query.md §2.3): the live reading over a
+/// consistent program's answer sets, driving the engine that produced them. It is
+/// built only from a resolved `Determination::Consistent(Models)` (solve.md §5.2)
+/// through [`of`](WorldView::of), so a world view that exists is **non-empty by
+/// construction** — an inconsistent program is `Determination::Inconsistent`, never
+/// an empty world view, and there is no empty value here to mistake for one.
+///
+/// The reads borrow the engine, so a member stream is fallible (a mid-stream engine
+/// fault surfaces at the item) and touching it forfeits completeness;
+/// [`materialize`](WorldView::materialize) drains the view once into an engine-free
+/// [`Snapshot`] whose reads are infallible and repeatable. Holding a
+/// [`members`](WorldView::members) stream borrows the handle mutably, so a second
+/// overlapping read cannot even be written — the borrow checker is the
+/// serialisation, not a run-time re-entrancy check (§2.3).
+pub struct WorldView<'a> {
+    models: Models<'a>,
+}
+
+impl<'a> WorldView<'a> {
+    /// Build the world view over `models` — the construction door, on the query
+    /// side, from a resolved `Consistent(Models)` (docs/design/query.md §2.3): the
+    /// solve tier does not depend on the query tier, so the `Models` → `WorldView`
+    /// transition lives here. O(1).
+    pub fn of(models: Models<'a>) -> WorldView<'a> {
+        WorldView { models }
+    }
+
+    /// Stream the answer sets (docs/design/query.md §2.3): each item a `Result`, so
+    /// a mid-stream engine fault surfaces at the item, not as a clean end. Touching
+    /// the stream forfeits the complete collection
+    /// [`materialize`](WorldView::materialize) would drain. Borrows the handle for
+    /// the stream's life. Cost: O(1) resident.
+    pub fn members(&mut self) -> impl Iterator<Item = Result<AnswerSet, Fault>> + '_ {
+        self.models.members()
+    }
+
+    /// Whether the search has so far closed the space (docs/design/query.md §2.3):
+    /// it reads the conclusion the run has reached. A lazily-enumerating run reports
+    /// that conclusion only once its stream has been driven to the end, so a fresh
+    /// world view over one reports `false` until it is drained — by streaming its
+    /// members, or by [`materialize`](WorldView::materialize) — and then reflects
+    /// the true conclusion; an eagerly-deciding run may report it sooner. The
+    /// completeness gate `materialize` enforces does not rest on this reading; it
+    /// drains and gates directly, so a truncated search cannot pass as complete
+    /// whatever this returns. Total; O(1).
+    pub fn is_exhausted(&self) -> bool {
+        self.models.is_exhausted()
+    }
+
+    /// The scenario the answer sets range over (docs/design/query.md §2.3): the
+    /// assumptions in force, or the empty scenario for the unscoped program.
+    /// Borrowed; reading does not spend the handle. O(1).
+    pub fn scenario(&self) -> &Scenario {
+        self.models.scenario()
+    }
+
+    /// Drain the world view into an engine-free [`Snapshot`] (docs/design/query.md
+    /// §2.3): read every member and hold them as owned data whose reads are then
+    /// infallible and repeatable. **Refuses** a world view whose search did not
+    /// close the space, or whose members were already streamed — a `Snapshot` is
+    /// complete and non-empty by construction, so a partial or non-exhausted view
+    /// must not pass as one. The gate is the solve tier's own completeness refusal,
+    /// carried as its [`Fault`], so a truncated search cannot be laundered into a
+    /// complete snapshot. Cost: O(members) to drain, plus a clone of the scenario.
+    pub fn materialize(mut self) -> Result<Snapshot, Fault> {
+        let members = self.models.all_members()?;
+        let scenario = self.models.scenario().clone();
+        Ok(Snapshot::of(members, scenario))
+    }
+}
+
+/// The engine-free form of a world view (docs/design/query.md §2.3): the owned,
+/// materialised answer sets and the scenario they range over, every reading
+/// **infallible** — no engine remains to fault, no stream to exhaust. Built only by
+/// [`WorldView::materialize`], from a world view whose search closed the space, so
+/// a snapshot is **complete and non-empty by construction**: its cautious and brave
+/// consequences are the true ⋂ and ⋃ over the whole collection, never a partial
+/// fold posing as complete.
+///
+/// Owned plain data; the readings borrow it and never spend it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Snapshot {
+    members: Vec<AnswerSet>,
+    scenario: Scenario,
+}
+
+impl Snapshot {
+    /// The engine-free snapshot of `members`, ranging over `scenario` — the value
+    /// [`WorldView::materialize`] drains into (docs/design/query.md §2.3).
+    /// Crate-private: a snapshot is reached only by materialising a live world view,
+    /// so the "complete and non-empty by construction" invariant it inherits is not
+    /// forgeable from arbitrary data. O(1) — the members move in.
+    pub(crate) fn of(members: Vec<AnswerSet>, scenario: Scenario) -> Snapshot {
+        Snapshot { members, scenario }
+    }
+
+    /// The cautious consequences — the intersection of the answer sets, what holds
+    /// in every member (docs/design/query.md §2.4). Infallible over owned data, and
+    /// complete because the collection is. Cost: O(members × set size).
+    pub fn cautious(&self) -> Consequences {
+        Consequences::fold(Mode::Cautious, &self.members)
+    }
+
+    /// The brave consequences — the union of the answer sets, what holds in some
+    /// member (docs/design/query.md §2.4). Infallible over owned data, and complete
+    /// because the collection is. Cost: O(members × set size).
+    pub fn brave(&self) -> Consequences {
+        Consequences::fold(Mode::Brave, &self.members)
+    }
+
+    /// The answer sets, each borrowed (docs/design/query.md §2.3): reading does not
+    /// spend the snapshot, and every member is present — the collection is complete
+    /// by construction. Cost: O(1) to open; O(n) over the whole stream.
+    pub fn members(&self) -> impl Iterator<Item = &AnswerSet> + '_ {
+        self.members.iter()
+    }
+
+    /// Whether the search that produced this snapshot closed the space
+    /// (docs/design/query.md §2.3): always `true`, a fact of the type — a snapshot
+    /// is materialised only from an exhausted world view. Total; O(1).
+    pub fn is_exhausted(&self) -> bool {
+        true
+    }
+
+    /// The scenario the answer sets range over (docs/design/query.md §2.3): the
+    /// assumptions in force, or the empty scenario for the unscoped program.
+    /// Borrowed; reading does not spend the snapshot. O(1).
+    pub fn scenario(&self) -> &Scenario {
+        &self.scenario
+    }
+}
+
 /// Lift a ground `Symbol` to the signed `Atom` that matches it (docs/design/
 /// query.md §3.1). Only a `Function` symbol denotes an atom a pattern can match;
 /// a number, string, tuple, `#inf`, or `#sup` has no signature and never
@@ -245,6 +382,88 @@ pub(crate) fn matches_in(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod snapshot {
+    use super::*;
+    use themelios_program::symbol::{Name, Sign};
+
+    /// The ground constant `name`.
+    fn atom(name: &str) -> Symbol {
+        Symbol::function(
+            Name::new(name).expect("a valid identifier"),
+            [],
+            Sign::Positive,
+        )
+    }
+
+    /// The answer set holding exactly the named constants.
+    fn answer_set<'a>(names: impl IntoIterator<Item = &'a str>) -> AnswerSet {
+        names.into_iter().map(atom).collect()
+    }
+
+    #[test]
+    fn a_snapshot_is_exhausted_by_construction() {
+        let snapshot = Snapshot::of(vec![answer_set(["a"])], Scenario::default());
+        assert!(
+            snapshot.is_exhausted(),
+            "a snapshot is materialised only from a closed search",
+        );
+    }
+
+    #[test]
+    fn a_snapshot_streams_its_owned_members() {
+        let snapshot = Snapshot::of(
+            vec![answer_set(["a"]), answer_set(["b"])],
+            Scenario::default(),
+        );
+        let members: Vec<_> = snapshot.members().cloned().collect();
+        assert_eq!(members, vec![answer_set(["a"]), answer_set(["b"])]);
+    }
+
+    #[test]
+    fn a_snapshot_reads_cautious_as_the_intersection() {
+        let snapshot = Snapshot::of(
+            vec![answer_set(["a", "b"]), answer_set(["a", "c"])],
+            Scenario::default(),
+        );
+        let cautious: Vec<_> = snapshot.cautious().symbols().cloned().collect();
+        assert_eq!(cautious, vec![atom("a")], "the intersection holds a alone");
+    }
+
+    #[test]
+    fn a_snapshot_reads_brave_as_the_union() {
+        let snapshot = Snapshot::of(
+            vec![answer_set(["a", "b"]), answer_set(["a", "c"])],
+            Scenario::default(),
+        );
+        let brave: Vec<_> = snapshot.brave().symbols().cloned().collect();
+        assert_eq!(
+            brave,
+            vec![atom("a"), atom("b"), atom("c")],
+            "the union holds every atom",
+        );
+    }
+
+    #[test]
+    fn a_cautious_reading_carries_the_cautious_mode() {
+        let snapshot = Snapshot::of(vec![answer_set(["a"])], Scenario::default());
+        assert_eq!(snapshot.cautious().mode(), Mode::Cautious);
+    }
+
+    #[test]
+    fn a_brave_reading_carries_the_brave_mode() {
+        let snapshot = Snapshot::of(vec![answer_set(["a"])], Scenario::default());
+        assert_eq!(snapshot.brave().mode(), Mode::Brave);
+    }
+
+    #[test]
+    fn a_snapshot_carries_the_scenario_it_ranges_over() {
+        // The empty (unscoped) scenario round-trips — its assumptions are none.
+        let snapshot = Snapshot::of(vec![answer_set(["a"])], Scenario::default());
+        assert_eq!(snapshot.scenario().assumptions().count(), 0);
+    }
 }
 
 #[cfg(test)]

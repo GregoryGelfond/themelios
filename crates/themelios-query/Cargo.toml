@@ -26,9 +26,11 @@ scale-proofs = []
 default = ["scale-proofs"]
 
 # The stage instruments, outside the shipped closure's claim: proptest as in
-# the tiers beneath.
+# the tiers beneath, and trybuild for the compile-fail witness that the borrow
+# checker serialises a world view's overlapping reads (docs/design/query.md §2.3).
 [dev-dependencies]
 proptest = "1"
+trybuild = "1"
 
 [lints]
 workspace = true
