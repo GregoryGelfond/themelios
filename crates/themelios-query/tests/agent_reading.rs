@@ -121,6 +121,20 @@ fn a_reading_over_a_truncated_search_refuses() {
 }
 
 #[test]
+fn a_reading_over_a_witnessed_but_unclosed_search_refuses() {
+    // A model was witnessed (so the outcome is consistent), but the search stopped at
+    // its budget without closing the space: materialize's completeness gate refuses
+    // rather than pass a partial world view off as complete — a distinct path from
+    // the nothing-witnessed inconclusive arm above.
+    with_agent(vec![answer_set(["a"])], Conclusion::Budget, |agent| {
+        let refusal = agent
+            .snapshot()
+            .expect_err("a search that did not close has no complete world view");
+        assert_eq!(refusal.locus(), Locus::Request);
+    });
+}
+
+#[test]
 fn bindings_refuses_a_non_binding_pattern_at_the_request_locus() {
     // An anonymous position is a query-owned refusal; the facade surfaces it as a
     // request fault (the locus a non-pattern is asked for lives at, query.md §2.5).
@@ -141,9 +155,34 @@ fn bindings_refuses_a_non_binding_pattern_at_the_request_locus() {
 }
 
 #[test]
+fn bindings_carries_the_non_pattern_reason_into_the_fault() {
+    // A non-pattern (an interval names a set) refuses at the request locus, and the
+    // facade folds the program tier's specific reason — which term does not denote —
+    // into the fault message, not only the refusal's category.
+    with_agent(vec![answer_set(["a"])], Conclusion::Exhausted, |agent| {
+        let interval = Atom {
+            sign: Sign::Positive,
+            name: Name::new("p").expect("a valid identifier"),
+            arguments: Arguments::Single(vec![Term::Interval {
+                lower: Box::new(Term::Symbolic(Symbol::number(1))),
+                upper: Box::new(Term::Symbolic(Symbol::number(3))),
+            }]),
+        };
+        let refusal = agent
+            .bindings(&interval)
+            .expect_err("an interval is not a pattern");
+        assert_eq!(refusal.locus(), Locus::Request);
+        assert!(
+            refusal.to_string().contains("does not denote"),
+            "the facade carries the program tier's reason, not only the category",
+        );
+    });
+}
+
+#[test]
 fn owned_readings_compose_without_a_lingering_borrow() {
     // Each reading returns owned values, so a second question after the first
-    // compiles — the anti-clingo surface: no handle is held across the calls.
+    // compiles — no handle is held across the calls.
     with_agent(vec![answer_set(["a"])], Conclusion::Exhausted, |agent| {
         let first = agent.answer(&lit("a")).expect("a reading");
         let snapshot = agent.snapshot().expect("a world view");

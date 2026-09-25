@@ -1,3 +1,4 @@
 /target
 /crates/themelios-syntax/fuzz/artifacts
 /.pixi
+proptest-regressions/
