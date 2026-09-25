@@ -160,6 +160,14 @@ pub trait Backend {
     /// §2.4). Absent, the core derives the consequences by enumeration over
     /// `solve`, and the request surface says which path runs. Refuses by
     /// default.
+    ///
+    /// Like the derived door, an implementation refuses — a [`Fault`] — over a
+    /// program with no answer set: `⋂`/`⋃` over the empty world view is
+    /// undefined, not `∅`. It refuses likewise over a search that did not close
+    /// the space — a native cautious solve that stopped early has converged on a
+    /// *super*set of `⋂`, an over-approximation, not the consequences. So the
+    /// native and derived doors give the same answer, the free differential of
+    /// `query.md` §2.4.
     fn consequences_native(
         &mut self,
         _mode: Mode,

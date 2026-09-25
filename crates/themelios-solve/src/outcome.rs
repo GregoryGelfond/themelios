@@ -390,6 +390,54 @@ impl NotExhausted {
     }
 }
 
+impl From<NotExhausted> for Fault {
+    /// This refusal as a [`Fault`], for a reading that needs a complete world view
+    /// and cannot proceed without one — the query tier's `materialize` and cautious
+    /// reading among them. A mid-stream engine fault surfaces as its own cause; a
+    /// truncation or an already-taken handle surfaces as a request fault that NAMES
+    /// why, so the inconclusive reason stays visible, never laundered into an
+    /// anonymous error (docs/design/solve.md §5.1, §5.3).
+    fn from(refusal: NotExhausted) -> Fault {
+        let NotExhausted {
+            conclusion,
+            cause,
+            already_taken,
+        } = refusal;
+        if let Some(fault) = cause {
+            return fault;
+        }
+        if already_taken {
+            return Fault::request(
+                "the answer sets were already taken from this handle, so a complete world view is unavailable",
+            );
+        }
+        match conclusion {
+            Some(conclusion) => Fault::request(format!(
+                "the search did not yield a complete world view: {conclusion}"
+            )),
+            None => Fault::request(
+                "the search did not close the space, so a complete world view is unavailable",
+            ),
+        }
+    }
+}
+
+impl From<Partial> for Fault {
+    /// This inconclusive reading as a [`Fault`], for a reading that needs a decided
+    /// program and cannot proceed without one. The engine fault that stopped the
+    /// search surfaces as its own cause; a plain truncation surfaces as a request
+    /// fault naming the conclusion it reached — the reason the search stopped stays
+    /// visible, symmetric with a witnessed truncation (docs/design/solve.md §5.1).
+    fn from(partial: Partial) -> Fault {
+        let Partial { conclusion, cause } = partial;
+        cause.unwrap_or_else(|| {
+            Fault::request(format!(
+                "the search did not decide the program: {conclusion}"
+            ))
+        })
+    }
+}
+
 impl std::fmt::Display for NotExhausted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.already_taken {
@@ -794,6 +842,40 @@ mod tests {
         Conclusion::Budget,
         Conclusion::Interrupted,
     ];
+
+    #[test]
+    fn a_completeness_refusal_becomes_an_honest_fault() {
+        // A mid-stream engine fault surfaces as its own cause — locus, message, and
+        // bug bit — not laundered into a generic request error.
+        let cause = Fault::engine("a distinctive underlying failure");
+        assert_eq!(
+            Fault::from(NotExhausted::faulted(None, cause.clone())),
+            cause,
+            "the underlying fault must surface verbatim",
+        );
+        // A truncation, a named conclusion, and an already-taken handle each name
+        // their reason as a request fault, so the inconclusive cause stays visible
+        // (docs/design/solve.md §5.1).
+        let not_closed = Fault::from(NotExhausted::not_closed(None));
+        assert_eq!(not_closed.locus(), crate::contract::Locus::Request);
+        assert!(not_closed.to_string().contains("did not close"));
+        let budgeted = Fault::from(NotExhausted::not_closed(Some(Conclusion::Budget)));
+        assert!(budgeted.to_string().contains("budget"));
+        let taken = Fault::from(NotExhausted::already_taken(None));
+        assert!(taken.to_string().contains("already taken"));
+    }
+
+    #[test]
+    fn an_inconclusive_reading_carries_its_cause_or_names_its_conclusion() {
+        // The engine fault that stopped the search surfaces as its own cause,
+        // verbatim; a plain truncation names the conclusion it reached, so neither
+        // reason is laundered away (docs/design/solve.md §5.1).
+        let cause = Fault::engine("the engine died mid-search");
+        assert_eq!(Fault::from(Partial::faulted(cause.clone())), cause);
+        let truncated = Fault::from(Partial::truncated(Conclusion::Budget));
+        assert_eq!(truncated.locus(), crate::contract::Locus::Request);
+        assert!(truncated.to_string().contains("budget"));
+    }
 
     #[test]
     fn a_conclusion_s_debug_view_names_its_variant() {
