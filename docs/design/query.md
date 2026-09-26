@@ -71,105 +71,159 @@ without foreclosing the others.
 pub enum Answer { Yes, No, Unknown }
 
 // A program's world view (§2.3), in two forms split along the ENGINE axis (not the ownership axis):
-// `WorldView<'a>` is the LIVE, engine-driving handle — borrowing the agent's engine (`'a`, from a
-// retained agent, solve.md §6.2) or owning an ephemeral one (`'static`, from a single-shot `Program`,
-// solve.md §6.4); its engine-driving reads are FALLIBLE (`&mut self -> Result<_, Fault>`, §2.3).
-// `Snapshot` is the engine-free owned value from `WorldView::materialize`; its reads are INFALLIBLE
-// (`&self`, pure data). Both are non-empty by construction (§2.3).
-pub struct WorldView<'a> { /* live, engine-driving; see §2.3 for the invariant */ }
-pub struct Snapshot     { /* engine-free, owned — the materialised world view (§2.3) */ }
+// `WorldView<'a>` is the LIVE handle — borrowing the agent's engine (`'a`, from a retained agent,
+// solve.md §6.2) or owning an ephemeral one (`'static`, from a single-shot `Program`, solve.md §6.4). It
+// exposes the live-run material — the `members` stream, `is_exhausted`, `scenario` — and `materialize`;
+// it carries NO epistemic reading of its own, because a reading is a self-contained solve, not a drain
+// of this stream (§2.3). `Snapshot` is the engine-free owned value from `WorldView::materialize`, and it
+// is where the INFALLIBLE readings (`&self`, pure data) live. Both are non-empty by construction (§2.3).
+// The live-handle readings are hosted on the AGENT instead (`AgentReading`, §2.2/§2.7).
+pub struct WorldView<'a> { /* live; the run material + materialize; see §2.3 for the invariant */ }
+pub struct Snapshot     { /* engine-free, owned — the materialised world view + its readings (§2.3) */ }
 
 // Cautious (⋂) / brave (⋃) consequences — the solve tier's typed sets, re-exported for the
 // reading side (solve.md §5.2), each carrying the mode that produced it.
-pub use themelios_solve::Consequences;
+pub use themelios_solve::outcome::Consequences;
 
 // Bindings of an open pattern, partitioned by the trichotomy (§2.5).
 #[non_exhaustive]
 pub struct Bindings { /* yes / no / brave-unknown partitions */ }
 
-// The central input to `answer`/`entails`: a ground query — an atom, a literal, or a conjunction.
-// Construction REFUSES a non-denoting term (arithmetic-with-variable, interval, pool) — the refusal
-// §3.1 describes — so a `Query` that EXISTS denotes: the reads never fail on query *validity*. (On the
-// live `WorldView` they still return `Result<_, Fault>` for engine faults/exhaustion, §2.3; on a
-// `Snapshot` they are infallible.)
-pub struct Query { /* atom | literal | conjunction — a closed set of denoting shapes */ }
+// The central input to `answer`/`entails`: a ground query — a literal, or a conjunction or disjunction
+// of literals (Gelfond–Kahl Def. 2.2.2, errata-corrected; §2.2). Construction REFUSES anything that is
+// not a ground literal, in two arms (`NotAQuery`, below): a well-formed **pattern** that is not ground
+// (its question is its bindings, §2.5) and a **non-denoting** term (an interval, a pool, or arithmetic
+// with a variable; program.md §11.2). So a `Query` that EXISTS is ground and denoting: the reads never
+// fail on query *validity*. (On the AGENT they still return `Result<_, Fault>` for engine
+// faults/exhaustion, §2.2; on a `Snapshot` they are infallible.)
+pub struct Query { /* literal | conjunction | disjunction — a closed set of denoting shapes */ }
 impl Query {
-    pub fn of(atom: Atom) -> Result<Self, NotAQuery>;             // an atom/literal; refuses non-denoting
-    pub fn all(parts: impl IntoIterator<Item = Query>) -> Query;  // conjunction (evaluated per-model, §2.2)
+    pub fn of(atom: Atom) -> Result<Self, NotAQuery>;             // a literal; refuses a pattern or a non-denoting term
+    pub fn all(parts: impl IntoIterator<Item = Query>) -> Query;  // conjunction (∧), evaluated per-model §2.2
+    pub fn any(parts: impl IntoIterator<Item = Query>) -> Query;  // disjunction (∨), evaluated per-model §2.2
 }
+/// `Query::of`'s two refusal arms, distinguished so a consumer can classify a query form (elenctic's
+/// classifier does, §4): a well-formed pattern that is not ground — ask its bindings (§2.5) — and a term
+/// that is not a pattern at all (a non-denoting interval / pool / arithmetic-with-variable, program.md
+/// §11.2), which carries the program tier's `NotAPattern` as its `source()`.
+#[non_exhaustive] pub enum NotAQuery { NotGround { term: Term }, NotAPattern(NotAPattern) }
 
 // A pattern is a signed `Atom` (program.md §11.2); the query tier reuses it directly — no new type.
 pub use themelios_program::Atom;
 ```
 
-The primitives (`WorldView::members`, `cautious`, `brave`, and the program tier's matching) sit under
-the derived readings (`answer`, `bindings`, `entails`); §1.1 is why both are public.
+The primitives (`WorldView::members`, the `Agent`/`Snapshot` `cautious` and `brave`, and the program
+tier's matching) sit under the derived readings (`answer`, `bindings`, `entails`); §1.1 is why both are
+public.
 
 ### 2.2 Three-valued `Answer` — the one authoritative definition
 
 The core question is Gelfond–Kahl's: *is this true, given the program.* Its answer is
 `Answer::{Yes, No, Unknown}`, with **`Unknown` a genuine value, never collapsed into `No`.** There is
-**one** definition of `Answer`, stated here once; the atomic case, the conjunction case, and the
-matching relationship (§3.1) are all *derived* from it, so that "what `No` means" cannot drift across
-the document.
+**one** definition of `Answer`, stated here once; the literal case, the conjunction and disjunction
+cases, and the matching relationship (§3.1) are all *derived* from it, so that "what `No` means" cannot
+drift across the document.
 
-Let a **world view** `W` be a non-empty set of answer sets (§2.3), and let `q` be a ground query — an
-atom, a literal, or a conjunction of them. The **contrary** of a ground atom `a` is its strong
-negation `-a` (and the contrary of `-a` is `a`). Then, evaluating `q` **within each member** of `W`
-and quantifying over the members:
+**themelios adopts the Gelfond–Kahl three-valued query answer as its default — the opinionated stance
+(§1.1).** The definition below is Gelfond & Kahl's *Definition 2.2.2 (Answer to a Query)* **as
+corrected by the authors' published errata**: the uniform per-member reading, which supersedes the
+book's original statement of the conjunctive and disjunctive cases over a *single* cautiously-entailed
+literal. Choosing the Gelfond–Kahl reading as this tier's default is the opinion — not a correction of
+it; the primitives beneath it (`cautious`/`brave`, the `WorldView` and its members, the program tier's
+matching) are exposed so a consumer wanting a different policy — the standard's two-valued cautious
+query (§2.6), a bespoke epistemic reading (§4) — *derives* it rather than forking.
 
-- **`Answer::Yes`** iff `q` is **cautiously entailed** by `W` — every member satisfies `q` (for a
-  conjunction, every member contains every conjunct).
-- **`Answer::No`** iff the **contrary of `q` is cautiously entailed** — every member *strongly
-  refutes* `q` (for a conjunction, every member contains the contrary of at least one conjunct).
+Let a **world view** `W` be a non-empty set of answer sets (§2.3), and let `q` be a ground query — a
+literal, or a conjunction or disjunction of literals. The **contrary** of a ground atom `a` is its
+strong negation `-a` (and the contrary of `-a` is `a`). Evaluate `q` **within each member** of `W`
+under the three-valued reading — a literal is *true* in a member containing it, *false* in one
+containing its contrary, *unknown* otherwise; a conjunction is the weakest (`min`) and a disjunction
+the strongest (`max`) of its parts over `false < unknown < true` — and quantify over the members:
+
+- **`Answer::Yes`** iff `q` is **true in every member**.
+- **`Answer::No`** iff `q` is **false in every member**.
 - **`Answer::Unknown`** otherwise.
 
 The load-bearing subtlety is the boundary between `No` and `Unknown`, and it is where a reader from
-SQL or Prolog goes wrong first: **absence is not falsity.** A conjunct merely *missing* from a member
-is not the same as its contrary being *present*. Worked, on the world view `{ {a}, {b} }` and the
-query `a ∧ b`:
+SQL or Prolog goes wrong first: **absence is not falsity.** A literal merely *missing* from a member is
+not the same as its contrary being *present*. Worked, on the world view `{ {a}, {b} }` and the query
+`a ∧ b`:
 
-- Member `{a}` contains `a`; `b` is *absent*, but `-b` is **not present** — so `{a}` does not contain
-  the contrary of any conjunct, and does not strongly refute `a ∧ b`.
-- Therefore not every member strongly refutes `a ∧ b` → the answer is **`Unknown`**, not `No`.
+- In member `{a}`, `a` is true but `b` is *absent* — `-b` is **not present**, so `b` is *unknown*
+  there, and `a ∧ b` (the `min`) is *unknown*, not false.
+- So `a ∧ b` is not false in every member → the answer is **`Unknown`**, not `No`.
 
-Contrast the world view `{ {sunny, warm, -swim}, {swim, -warm} }` and the query `warm ∧ swim`: the
-first member contains `-swim` (a conjunct's contrary), the second contains `-warm` — every member
-strongly refutes the conjunction, so the answer is a genuine **`No`**. The distinction between these
-two cases is the whole point of the third value; the closed-world assumption is something a program
-states for itself (`-p(X) :- not p(X).`), and ASP does not impose it, which is exactly why the answer
-has three values.
+Contrast `{ {sunny, warm, -swim}, {swim, -warm} }` and `warm ∧ swim`: the first member has `-swim` (so
+`swim` is false there), the second has `-warm` — `warm ∧ swim` is false in *every* member, so the
+answer is a genuine **`No`**. And the errata's own point shows on `{ {a}, {b} }` with the *disjunction*
+`a ∨ b`: `a` is true in the first member and `b` in the second, so `a ∨ b` (the `max`) is **true in
+every member** and the answer is **`Yes`** — though no single disjunct is cautiously entailed. The
+book's pre-errata statement, keyed to one entailed disjunct, would have called this `Unknown`; the
+corrected per-member reading calls it `Yes`. The distinction between these cases is the whole point of
+the third value; the closed-world assumption is something a program states for itself
+(`-p(X) :- not p(X).`), and ASP does not impose it, which is exactly why the answer has three values.
 
-**The insight this preserves.** A conjunction is evaluated *within* each member — the model quantifier
-scopes the whole query — **never over ⋂ or ⋃**, because `brave(a) ∧ brave(b)` does not give
-`brave(a ∧ b)` and `cautious` cannot express a per-model refutation. That is correct and is the
-reason `Answer` is not a projection of the consequence sets.
+**The insight this preserves.** A query is evaluated *within* each member — the model quantifier scopes
+the whole query — **never over ⋂ or ⋃**, because `brave(a) ∧ brave(b)` does not give `brave(a ∧ b)` and
+`cautious` cannot express a per-model refutation. That is correct and is the reason `Answer` is not a
+projection of the consequence sets.
 
 **Signature and cost.**
 
 ```rust
-impl<'a> WorldView<'a> {   // the LIVE handle — engine-driving, fallible
-    /// The Gelfond–Kahl three-valued reading of a ground query (drives the engine; §2.3).
-    pub fn answer(&mut self, q: &Query) -> Result<Answer, Fault>;
+// The reading hangs on the AGENT — through the query-side `AgentReading` facade (§2.7), impl'd for
+// `Agent<B>` and re-exported in the prelude so `agent.answer(q)?` reads inherent — where it is
+// engine-driving and FALLIBLE (each call solves once, §2.7); and on a materialised `Snapshot`, where it
+// is engine-free and INFALLIBLE. It is NOT on the live `WorldView`: a reading is a self-contained solve,
+// not a drain of that handle's `members` stream (§2.3).
+pub trait AgentReading {   // impl'd for `Agent<B>` (solve.md §6); solves once, then reads
+    /// The Gelfond–Kahl three-valued reading of a ground query (drives the engine, then reads; §2.7).
+    fn answer(&mut self, q: &Query) -> Result<Answer, Fault>;
+    fn entails(&mut self, q: &Query) -> Result<bool, Fault>;       // §2.6
+    fn bindings(&mut self, pat: &Atom) -> Result<Bindings, Fault>; // §2.5; the refusal is flattened — note below
+    fn snapshot(&mut self) -> Result<Snapshot, Fault>;             // §2.7 — solve once + materialise (whole program)
+    /// A scenario-scoped `Snapshot` (§2.7): `solve_assuming` once, then materialise, so every reading off
+    /// it ranges over the scenario's models. REQUIRES the backend's `assumptions` capability (a scenario
+    /// needs `solve_assuming`) — otherwise `Fault::unsupported()` at `Locus::Request`; else the same
+    /// refusals as `snapshot` (no answer set under the scenario, or an unclosed search). Cost: one
+    /// `solve_assuming`, then `Θ(|W|)` to materialise.
+    fn snapshot_assuming(&mut self, s: &Scenario) -> Result<Snapshot, Fault>;
 }
 impl Snapshot {            // the engine-free form — the same reading over materialised data, infallible
     pub fn answer(&self, q: &Query) -> Answer;
 }
+// NAMED DEPARTURE (§1.3): the agent's `bindings` returns `Result<Bindings, Fault>` — the query-owned
+// `NotABindingPattern` (§2.3) is folded into the `Fault`'s message text, because `Fault` (solve.md §5.4)
+// carries a message, not a source chain. So on the AGENT path the `AnonymousPosition` / `NonDenoting` /
+// `Pooled` distinction is legible only as prose, where §1.3 asks for typed data; the typed refusal
+// survives intact on `Snapshot::bindings` (§2.3). Carrying it typed on the agent (a `Fault` with a source,
+// or a `Result<Bindings, ReadingRefusal>`) is a reserved refinement.
 ```
 
 - An **atomic or literal** query is two cautious-membership checks (`q` entailed → `Yes`; contrary
-  entailed → `No`; else `Unknown`). Through the native cautious door (§2.4) this is **one solve, no
-  enumeration** — cheap.
-- A **conjunction** is model-scoped. `Yes` is still a cautious check (all conjuncts in `⋂`), cheap;
-  but `No` (every member strongly refutes) and the `Unknown` boundary are *not* expressible over
-  `⋂`/`⋃`, so they cost either an enumeration of `W` (linear in `|W|`, which can be exponential) or a
-  solver-side satisfiability check that no member is refutation-free. This asymmetry — atomic answers
-  cheap, conjunctive answers potentially enumeration-bound — is stated because it is exactly the cost
-  surprise a prose contract would hide. The refutation-free satisfiability optimization is a named
-  seam, not a v1 promise.
+  entailed → `No`; else `Unknown`) — *in principle* one solve, no enumeration, through the native
+  cautious door (§2.4). **In v1 the agent's reading does not yet take that door:**
+  `AgentReading::answer` solves once and **materialises the whole world view** (`Θ(|W|)`), then reads the
+  atomic case off it. Routing `answer`'s `Yes`/`No` through `Agent::cautious`/`brave` and materialising
+  only for the compound boundary below is a **named seam** — its sound `No ⟺ contrary ∈ ⋂` shortcut lands
+  with the native cautious door at the adapter, under a property test — not a v1 cost. A `Snapshot::answer`
+  over already-materialised data is the cheap read (no solve).
+- A **conjunction or disjunction** is model-scoped on the boundary its shape does *not* project. One
+  side is a cheap cautious check: a conjunction is `Yes` iff every conjunct is in `⋂` (all cautiously
+  true), a disjunction is `No` iff every disjunct's contrary is in `⋂` (all cautiously false). The
+  *other* side — a conjunction's `No`, a disjunction's `Yes` — together with the `Unknown` boundary are
+  *not* expressible over `⋂`/`⋃` (they can hold through *different* literals per member, which is the
+  errata's whole point), so they cost an enumeration of `W` (linear in `|W|`, which can be exponential),
+  or, later, a solver-side satisfiability check that no member escapes the answer. This asymmetry — the
+  atomic case cheap *once the native door is taken*, the compound case enumeration-bound — is stated
+  because it is exactly the cost surprise a prose contract would hide. Both the native atomic routing and
+  the satisfiability check are named seams, not v1 promises; v1's agent reading materialises.
 
 **Laws** (checked as properties, §4): a query and its contrary are never both `Yes`; `answer` is
-never `No` on a query nothing refutes (the absence-is-not-falsity law); on a singleton world view
+never `No` on a *non-empty* query nothing refutes (the absence-is-not-falsity law) — the one exception is
+the **empty disjunction** `Query::any([])`, the lattice bottom (⊥), which reads `No` by definition,
+refuting nothing yet false in every member; a disjunction whose members each mention some disjunct is
+`Yes` even when no single disjunct is cautiously entailed (the errata law); on a singleton world view
 `answer` agrees with membership-and-contrary in the one model.
 
 ### 2.3 `WorldView` — non-empty by construction
@@ -188,21 +242,18 @@ a value meaning "invalid" inside the space of valid world views would be a senti
 `solve.md` §5.3 forbids.)
 
 ```rust
-impl<'a> WorldView<'a> {   // the LIVE handle — engine-driving reads are `&mut self -> Result<_, Fault>`
+impl<'a> WorldView<'a> {   // the LIVE handle — the run material; `members` is `&mut self`, the rest `&self`
     pub fn of(models: Models<'a>) -> WorldView<'a>;   // the construction door — from a resolved `Consistent(Models)` (solve.md §5.2)
-    // --- primitives (the exposed surface of §1.1) ---
-    pub fn cautious(&mut self) -> Result<Consequences, Fault>;    // ⋂ — one solve (§2.4)
-    pub fn brave(&mut self) -> Result<Consequences, Fault>;       // ⋃ — one solve (§2.4)
-    pub fn members(&mut self) -> impl Iterator<Item = Result<AnswerSet, Fault>> + '_;
-    pub fn is_exhausted(&self) -> bool;                           // pure — the search closed the space
+    pub fn members(&mut self) -> impl Iterator<Item = Result<AnswerSet, Fault>> + '_;  // stream (below)
+    pub fn is_exhausted(&self) -> bool;                          // pure — a REPORT (drain-dependent), not the gate; see below
     pub fn scenario(&self) -> &Scenario;                         // pure — what it ranged over
-    pub fn materialize(self) -> Result<Snapshot, Fault>;         // drain to an engine-free snapshot (eager; opt-in)
-
-    // --- derived readings (drive the engine) ---
-    pub fn answer(&mut self, q: &Query) -> Result<Answer, Fault>;              // §2.2
-    pub fn bindings(&mut self, pat: &Atom) -> Result<Bindings, Fault>;         // §2.5 (a non-pattern → Locus::Request)
-    pub fn entails(&mut self, q: &Query) -> Result<bool, Fault>;               // §2.6 (ASP-Core-2 cautious)
+    pub fn materialize(self) -> Result<Snapshot, Fault>;         // drain-then-gate to an engine-free `Snapshot` (eager; opt-in)
 }
+// The cautious/brave consequence door and the epistemic readings (`answer`/`bindings`/`entails`) are
+// deliberately NOT on the live handle — they are on the AGENT (`Agent::cautious`/`brave` inherent,
+// solve.md §6.2; `AgentReading::answer`/`bindings`/`entails`/`snapshot`, §2.7) and on the materialised
+// `Snapshot` (below). A reading is a self-contained solve, so it composes freely instead of draining
+// this handle's one live read, the `members` stream.
 
 /// The engine-free form: `WorldView::materialize` drained the world view into owned data, so every read
 /// is INFALLIBLE `&self`. Non-empty by construction and complete, like the live handle it came from.
@@ -218,8 +269,12 @@ impl Snapshot {
 }
 /// The `bindings` refusal — the program tier's `NotAPattern` (a non-denoting term) *plus* the query tier's
 /// own partition policy: an anonymous position (`p(X,_)`) is a well-formed pattern to the mgu (`_` denotes;
-/// it matches anything) but breaks the yes/no/unknown partition (its instances land in `yes` AND `no`), so
-/// it is refused HERE, not laundered into `NonDenoting`. `query.md` §3.1 keeps matching apart from policy.
+/// it matches anything) but is refused HERE, not laundered into `NonDenoting`. The reason is a policy
+/// nudge toward NAMED bindings: `_` names no binding, and a fresh named variable yields the same ground
+/// instances, so nothing is lost. (The both-sides hazard is real at the *substitution* level — a
+/// substitution `{X=a}` with `_` projected away could be cautiously-yes and cautiously-no through
+/// different `_`-fillers — but `Bindings` holds ground *instances* (§2.5), each of which lands in exactly
+/// one cell, so it is not the built instance partition that breaks.) `query.md` §3.1 keeps matching apart from policy.
 #[non_exhaustive] pub enum NotABindingPattern { NotAPattern(NotAPattern), AnonymousPosition }
 ```
 
@@ -228,22 +283,34 @@ Properties and cost:
 - **Live vs snapshot, exhaustion-gated, scenario-scoped.** A `WorldView<'a>` is the live handle —
   borrowing the agent's engine (`'a`) or owning an ephemeral one (`'static`, single-shot, solve.md §6.4);
   a `Snapshot` (from `materialize`) owns its data, engine-free. A universal reading (all members, all
-  optimal, a cautious consequence) is answerable only from a search that closed the space; on the live
-  handle a truncated search makes the accessor **return `Err`** (§3.2), and `is_exhausted` gates it; a
-  `Snapshot` is complete by construction.
+  optimal, a cautious consequence) is answerable only from a search that closed the space, and the gate
+  lives at the point the universal value is produced: **`materialize` drains and *then* gates** — it
+  returns `Err` if the search did not close (§3.2), or if the members were already streamed (a
+  partially-drained live handle cannot yield a complete snapshot) — and the agent's
+  `cautious`/`brave`/`answer` solve to
+  exhaustion before reading. A `Snapshot` is complete by construction. `is_exhausted` on the live handle
+  is a **report, not the gate**: it is drain-dependent — reading the run's terminal conclusion, it is
+  `false` on a fresh, not-yet-drained consistent view and becomes `true` only after the stream drains to
+  its end — so it answers "is this *known* complete now?", while `materialize` (not a prior `is_exhausted`
+  check) is what makes a universal reading refuse honestly.
 - **Lazy where possible.** Because a world view can have very high cardinality (exponentially many
-  answer sets), `cautious`/`brave` go through the **native door** (§2.4) — one solve, *no*
-  enumeration — and `members` **streams** (each item a `Result`, so a mid-stream engine fault surfaces
-  at the item, not as a clean end). Materializing the whole member set is **opt-in, never forced**;
-  genuine lazy/incremental *machinery* beyond streaming is the specification's §7.8 reserved seam.
-- **Receiver, fallibility, and exclusion.** The live `WorldView<'a>` drives the engine, so its reads
-  take **`&mut self` and return `Result<_, Fault>`** — matching `solve.md`'s `Solved` (compile-time
-  serialisation by the borrow checker, no interior mutability), and giving engine faults, the exhaustion
-  refusal, and a non-pattern each a typed home (`Fault`, with `Locus` as appropriate). Holding a `members`
-  stream (a `&mut` borrow) therefore *cannot* overlap another read — the borrow checker forbids it at
-  compile time, so there is no runtime re-entrancy case to refuse. The **`Snapshot`** (from `materialize`)
-  needs no engine; its reads are infallible `&self`. The fallibility axis lives here — engine-driving vs
-  engine-free — kept off the ownership/lifetime axis.
+  answer sets), the agent's `cautious`/`brave` go through the **native door** (§2.4) — one solve, *no*
+  enumeration — where the backend declares native consequences, and fold an enumerated world view
+  otherwise (capability-routed, §4.2); and `members` **streams** (each item a `Result`, so a mid-stream
+  engine fault surfaces at the item, not as a clean end). Materializing the whole member set is **opt-in,
+  never forced**; genuine lazy/incremental *machinery* beyond streaming is the specification's §7.8
+  reserved seam.
+- **Receiver, fallibility, and exclusion.** The live `WorldView<'a>` drives the engine only through its
+  `members` stream (**`&mut self`**, each item a `Result<_, Fault>`) — matching `solve.md`'s `Solved`
+  (compile-time serialisation by the borrow checker, no interior mutability). The epistemic readings that
+  drive the engine are the **agent's** (`&mut self -> Result<_, Fault>`, §2.7), giving engine faults, the
+  exhaustion refusal, and a non-pattern each a typed home (`Fault`, with `Locus` as appropriate): each
+  solves once, so a reading is a self-contained call and the `&mut self` borrow is the "no reasoning while
+  mutating" lock (solve.md §6.1). Because a reading does not borrow a live `WorldView`, there is no
+  live-handle re-entrancy to refuse — holding a `members` stream is a `&mut` borrow that cannot overlap
+  another use of the same handle, the borrow checker forbidding it at compile time. The **`Snapshot`**
+  (from `materialize`) needs no engine; its reads are infallible `&self`. The fallibility axis lives here
+  — engine-driving vs engine-free — kept off the ownership/lifetime axis.
 - **Under an optimization objective the world view is the set of *optimal* answer sets** — those tied
   at the proven optimum (`solve.md` §5.2); with no objective it is all stable models (the degenerate
   case). A query therefore ranges over *the answer sets the program denotes*, uniformly, so the
@@ -259,17 +326,23 @@ computed in, so a value that has travelled still says which question it answers.
 answer sets and carry their own type for that reason.
 
 ```rust
-impl<'a> WorldView<'a> {   // live — fallible; a `Snapshot`'s `cautious`/`brave` are the infallible mirror (§2.3)
-    pub fn cautious(&mut self) -> Result<Consequences, Fault>;   // ⋂
-    pub fn brave(&mut self)    -> Result<Consequences, Fault>;   // ⋃
+impl<B: Backend> Agent<B> {   // the native door lives on the agent — it owns the engine (solve.md §6.2)
+    pub fn cautious(&mut self) -> Result<Consequences, Fault>;   // ⋂ over the whole program — native (one solve) or derived fold, capability-routed
+    pub fn brave(&mut self)    -> Result<Consequences, Fault>;   // ⋃ over the whole program
+    pub fn cautious_assuming(&mut self, s: &Scenario) -> Result<Consequences, Fault>;  // ⋂ over the scenario's models (needs `assumptions`; precondition + cost: solve.md §6.2)
+    pub fn brave_assuming(&mut self, s: &Scenario)    -> Result<Consequences, Fault>;  // ⋃ over the scenario's models
 }
+// a `Snapshot`'s `cautious`/`brave` are the infallible mirror over its materialised members (§2.3);
+// `snapshot_assuming(&Scenario)` (§2.2, §2.7) yields a scenario-scoped `Snapshot`, so every reading has a scoped form.
 ```
 
-**Two doors, and the free differential.** The **native door** has the solver compute `⋂`/`⋃`
-directly (one solve, no enumeration); the **derived door** folds an enumerated world view. The two
-**must agree**, and their agreement is a standing differential the tier gets for free — the solver
-solves through a foreign engine, and an independent check on consequence computation is otherwise hard
-to come by. Cost: native is one solve; derived is `Θ(|W|)` in members folded, and is why the native
+**Two doors, and the free differential.** The **native door** — `Agent::cautious`/`brave` when the
+backend declares `native_consequences: Native` — has the solver compute `⋂`/`⋃` directly (one solve, no
+enumeration); the **derived door** folds an enumerated world view (the agent's `cautious`/`brave` under
+`DerivedByEnumeration`, or a `Snapshot`'s infallible `cautious`/`brave` over its materialised members).
+The two **must agree**, and their agreement is a standing differential the tier gets for free — the
+solver solves through a foreign engine, and an independent check on consequence computation is otherwise
+hard to come by. Cost: native is one solve; derived is `Θ(|W|)` in members folded, and is why the native
 door exists.
 
 **Under an optimization objective both doors must range over the *optimal* answer sets** (§2.3;
@@ -296,12 +369,17 @@ impl Bindings {
 A conjunction inside a pattern is evaluated **within each answer set** exactly as §2.2 defines it —
 the model quantifier scopes the whole query, never `⋂`/`⋃`.
 
-**The `unknown` listing is the brave domain, and says so.** `yes` and `no` are read off the cautious
-consequences — finite, exact. `unknown` is *everything the program does not settle*, and this tier
-holds answer sets rather than the program that produced them, so it cannot enumerate that domain; a
-listing therefore shows the **brave** domain (the open instances *some* answer set mentions) and
-closes with the sentence that says so — or it reads as exhaustive and teaches the very misreading it
-exists to prevent. Cost: `yes`/`no` are cautious-set reads; `unknown` is bounded by the brave domain.
+**The `unknown` listing is the brave domain of the pattern's own sign, and says so.** `yes` and `no` are
+read off the cautious consequences — finite, exact. `unknown` is *everything the program does not
+settle*, and this tier holds answer sets rather than the program that produced them, so it cannot
+enumerate that domain; a listing therefore shows the **brave** domain **restricted to the pattern's own
+sign** — the instances of the pattern present in *some* answer set — and closes with the sentence that
+says so, or it reads as exhaustive and teaches the very misreading it exists to prevent. An instance
+whose *contrary* alone is bravely present (its `answer` is `Unknown`, but only `-g` is ever mentioned) is
+**not** listed here; it appears under the **contrary pattern**'s `unknown`. (Whether "mentions" should
+instead span mention-by-contrary is a spec-owner question, §3.2; the surface as built takes the pattern's
+own sign.) Cost: on a `Snapshot`, `yes`/`no` are cautious-set reads and `unknown` is bounded by the brave
+domain; the **agent**'s `bindings` materialises the world view first (`Θ(|W|)`, §2.2).
 
 ### 2.6 The ASP-Core-2 cautious query — a dialect-scoped derivation
 
@@ -312,10 +390,11 @@ this surface — and it is a *different* question from the three-valued default,
 **own** operation, not a rename of `Answer`:
 
 ```rust
-impl<'a> WorldView<'a> {   // live — fallible; a `Snapshot`'s `entails` is the infallible mirror (§2.3)
+impl<B: Backend> AgentReading for Agent<B> {   // solves once, then reads (fallible); §2.7
     /// The ASP-Core-2 standard's query answer: cautious, two-valued (witness 20, grammar §6.1).
-    pub fn entails(&mut self, q: &Query) -> Result<bool, Fault>;
+    fn entails(&mut self, q: &Query) -> Result<bool, Fault>;
 }
+// a `Snapshot`'s `entails` is the infallible mirror over its materialised data (§2.3)
 ```
 
 The exact relation to `Answer`, stated because it is non-trivial: the standard's *entailed* is
@@ -328,7 +407,9 @@ never a two-way collapse that would send `Unknown` to the wrong side (a mis-lowe
 §4 counts as failure). It is a **dialect-scoped** operation: `entails` is the ASP-Core-2 dialect's
 reading; where a dialect's query semantics diverges from the clingo-world default beyond this
 projection, that is a per-dialect choice, named rather than silently unified (§1.1's
-default-and-expose). Cost: one cautious check — a single solve through the native door.
+default-and-expose). Cost: on a `Snapshot`, one cautious membership read; on the **agent**, `entails`
+materialises the world view first (`Θ(|W|)`, §2.2), the single-solve native-cautious-door path being the
+same seam `answer` names.
 
 **The non-ground query is answered by substitution.** The ASP-Core-2 query admits variables
 (`q(X)?`, grammar §6.1), and the standard answers a non-ground query by *substitution* — the set of
@@ -344,17 +425,35 @@ for a non-ground one — and the query surface is silent on neither.
 The query surface carries the two centerpiece faces of `solve.md` §3 through the reading side: a
 declarative macro form (a `query!` / `ask!`-style spelling of the goal, through the one grammar,
 expanding by the macro law to the same programmatic calls) and the composable programmatic form
-(`answer`, `bindings`, `cautious`, `brave`, `entails`, and `determination` to obtain the world view). A query's goal is authored the
+(`answer`, `bindings`, `entails`, `cautious`, `brave`, and `snapshot`). A query's goal is authored the
 same way a program's atoms are; a run-time patient name, a generated goal, or an LLM's question enter
 through the programmatic form.
 
-The `WorldView` these readings range over is obtained from a resolved `Determination`'s `Consistent`
-branch (`solve.md` §5.2), and it is the same *reading* whether a `Program` is asked directly (single-shot)
-or an `Agent` is asked within its reasoning loop (`solve.md` §6): the epistemic questions and their
-answers are identical either way. The forms differ only in whether they hold an engine — a live
-`WorldView<'_>` (borrowing the agent's engine, or owning an ephemeral one single-shot) with fallible
-reads, versus an engine-free `Snapshot` after `materialize` with infallible reads (`solve.md` §6.4) — not
-in what they answer.
+**The readings hang on the agent, through the `AgentReading` facade.** `answer`, `bindings`, `entails`,
+and `snapshot` are a **query-side extension trait `AgentReading`, impl'd for `solve.md`'s `Agent<B>`** and
+re-exported in the prelude, so `agent.answer(q)?` reads inherent while `themelios-solve` keeps no
+dependency on `themelios-query` (the dependency is one-directional — query depends on solve, the tier
+direction, §2.1's `pub use themelios_solve::Consequences`; the reverse would cycle, and `WorldView::of`
+keeps the construction side acyclic too, §2.3). `cautious`/`brave` are the agent's own (`solve.md` §6.2), the `Consequences`
+type being the solve tier's. Each of these **solves once**, then reads — an owned answer, freely composed
+— rather than borrowing and draining a live `WorldView`; that is why the readings are not on the live
+handle (§2.2, §2.3). A `Snapshot` (from `materialize`) mirrors them infallibly over materialised data,
+for a reading that must outlive its engine or cross a service boundary.
+
+**Under a scenario, the same surface repeats with the `_assuming` suffix** — the epistemic sibling of
+`solve_assuming`, so a reading under a hypothesis is as first-class as a solve under one. The
+scenario-scoped consequence doors are the agent's `cautious_assuming`/`brave_assuming` (their precondition
+and cost stated once, at `solve.md` §6.2), and `snapshot_assuming(&Scenario)` (§2.2) yields a
+scenario-scoped `Snapshot` whose infallible readings all range over that scenario's models — so every
+reading has a scoped form without doubling the fallible agent surface, and `ConsequenceRequest`'s scenario
+field (`solve.md` §4.1) is produced by the surface rather than merely consumed by a backend.
+
+The `WorldView` the stream/materialise path ranges over is obtained from a resolved `Determination`'s
+`Consistent` branch (`solve.md` §5.2), and the *reading* is the same whether a `Program` is asked directly
+(single-shot) or an `Agent` is asked within its reasoning loop (`solve.md` §6): the epistemic questions
+and their answers are identical either way. The forms differ only in whether they hold an engine — the
+agent's fallible readings and the live `WorldView<'_>`'s `members` stream drive one, versus an
+engine-free `Snapshot`'s infallible reads after `materialize` (`solve.md` §6.4) — not in what they answer.
 
 ---
 
@@ -403,9 +502,11 @@ rediscovered, and all three are now consequences of the one §2.2 definition:
   entailed, not merely because the query itself is not; a query nothing speaks to is `Unknown`. (This
   *is* §2.2; it is restated here because it is the correction the prior art paid for.)
 - **`yes` and `no` are exact; `unknown` is not enumerable here** (§2.5) — the listing shows the brave
-  domain and says so.
-- **The accessors gate on exhaustion** (§2.3) — a universal claim is answerable only from a closed
-  search and a stream that has not already drained.
+  domain of the pattern's own sign and says so.
+- **The universal readings gate on exhaustion** (§2.3) — a universal claim is answerable only from a
+  closed search: `materialize` drains *then* gates and the agent's `cautious`/`brave`/`answer` solve to
+  exhaustion before reading, while `is_exhausted` merely *reports* known-completeness (drain-dependent) and
+  is not itself the gate.
 
 `themelios-query` computes these facts once, here, for every consumer, and never re-litigates the
 model quantifier per tool.
@@ -480,3 +581,28 @@ it.
    through a query-owned `NotABindingPattern { NotAPattern, AnonymousPosition }`: an anonymous position is
    a well-formed pattern to the mgu but breaks the yes/no/unknown partition, so it is refused in the query
    tier's own type rather than laundered into the program tier's `NonDenoting` (§2.3, §2.5).
+6. **Agent-facade reconciliation** (2026-09-25). The reading surface is aligned to the built agent-facade
+   shape (`solve.md` §6.2, revision 6). The epistemic readings are **not** on the live `WorldView`:
+   `answer`/`bindings`/`entails`/`snapshot` are a query-side extension trait `AgentReading` impl'd for
+   `solve.md`'s `Agent<B>` and re-exported in the prelude, and `cautious`/`brave` are the agent's own;
+   each **solves once**, then reads, rather than borrowing and draining a live handle (§2.2–§2.7). The
+   live `WorldView<'a>` keeps only the run material — `of`/`members`/`is_exhausted`/`scenario`/
+   `materialize` — and a materialised `Snapshot` mirrors every reading infallibly (§2.3). `is_exhausted`
+   is recast as a drain-dependent **report**, not the gate; the universal-reading gate is `materialize`
+   (drain-then-gate) and the agent's solve-to-exhaustion (§2.3, §3.2). The anonymous-position refusal's
+   rationale is corrected — it is a policy nudge toward named bindings, the both-sides hazard being a
+   *substitution*-level fact rather than the built ground-instance partition (§2.3). `unknown` is
+   clarified as the brave domain **of the pattern's own sign**, an instance whose contrary alone is bravely
+   present being listed under the contrary pattern (whether "mentions" should span mention-by-contrary is
+   left a spec-owner question, §2.5, §3.2). §2.2's absence-is-not-falsity law is given its
+   **empty-disjunction** exception (`Query::any([])` is ⊥ and reads `No`). Several surfaces are aligned to
+   the built code: `NotAQuery`'s two arms are stated (`NotGround` — a pattern, ask its bindings — vs
+   `NotAPattern`, §2.1); the agent's readings are shown to **materialise the world view** (`Θ(|W|)`) with
+   the native atomic-routing shortcut a named seam (§2.2/§2.3/§2.5/§2.6); the agent-side `bindings`
+   signature is stated with the `NotABindingPattern`→`Fault` flattening named as a departure (§2.2);
+   `cautious`/`brave` are capability-routed (native one solve, or the derived fold, §2.3); and
+   `materialize`'s already-streamed refusal is stated (§2.3). **Scenario-scoped readings are added as
+   first-class surface**: `cautious_assuming`/`brave_assuming` on the agent and
+   `snapshot_assuming(&Scenario)` for the scoped `Snapshot`, mirroring the unscoped surface the way
+   `solve_assuming` mirrors `solve` (§2.4, §2.7) — so `ConsequenceRequest`'s scenario field is produced by
+   the surface, not merely consumed by a backend.

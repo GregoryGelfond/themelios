@@ -1,7 +1,7 @@
 # themelios-solve — design of record
 
 2026-09-03. Draft, pre-implementation. This is the normative design for the **solve tier** —
-`themelios-solve` and the adapter and reference crates that realise it — the fourth tier over the
+`themelios-solve` and the adapter crates that realise it — the fourth tier over the
 shared base (§12.1 of the specification). Its sibling `themelios-query` has its own design
 (`query.md`); the two are built as one stage, the way `analysis.md` accompanies `program.md`. This
 document stands with `specification.md` §9/§11/§12 and the built tiers' designs (`base.md`,
@@ -11,8 +11,8 @@ roster or clause it says so in place (§16).
 The keystone, stated once so the rest can be read against it: **the solve tier is the *abstract
 solver* — the codegen/target contract over the `Program` value, whose operations are the questions a
 logician asks of that value and whose answers are typed models.** The concrete engine behind the
-contract (clingo now, a native engine later) is a configuration of the installation, never a thing
-the program author sees.
+contract (clingo and clingcon now, our own engine later) is a configuration of the installation, never
+a thing the program author sees.
 
 The register of this document matches its built siblings (`program.md`, `analysis.md`): every
 load-bearing surface is stated as a Rust signature with its refusal and its cost model. The
@@ -37,13 +37,14 @@ is the pass layer, and **the solve tier is the codegen/target**. A target, in th
 below the seam is the *ground* program, the machine-IR analog, and it is a named capability over the
 contract (§10.4), not the tier's centre.
 
-So `themelios-solve`'s core is a **behavioral contract** (§4), engine-free, that the clingo adapter
-(§11), the reference solver (§12), and a future native engine each implement. The abstraction is the
-deliverable; the programmer's ergonomics, the mission properties, and the eventual native engine are
-all consequences of getting that one object right. The contract is co-designed so that a native
-engine of ours slots in behind it with no change above the seam — and so that reasoning about *our*
-solver, once it exists, is reasoning about a legible mathematical object rather than about clingo's
-operational machinery.
+So `themelios-solve`'s core is a **behavioral contract** (§4), engine-free, that the clingo and
+clingcon adapters (§11) and the in-house engine **zetesis** (§12) each implement — and for zetesis,
+`themelios-solve` is the first-class *programmatic* API a programmer drives the engine through, not a
+CLI or a bespoke per-engine interface. The abstraction is the deliverable; the programmer's ergonomics,
+the mission properties, and the in-house engine are all consequences of getting that one object right.
+The contract is co-designed so that our own engine slots in behind it with no change above the seam —
+and so that reasoning about *our* solver is reasoning about a legible mathematical object rather than
+about clingo's operational machinery.
 
 ### 1.2 The API is the logician's questions
 
@@ -94,9 +95,8 @@ The solve stage adds these workspace members, evolving specification §12.2:
 |---|---|---|
 | `themelios-solve` | forbid | The backend **contract**, the outcome vocabulary and MVC models, the agent and its driving surface, the fault taxonomy, the extension-surface traits (`@`-functions, propagators, extraction), the bridge seam, and the conformance suite. Engine-free. |
 | `themelios-query` | forbid | The epistemic reading — three-valued `Answer`, `WorldView`, cautious/brave, bindings — over the program tier's patterns and the solve tier's outcomes. Engine-free. Its own design (`query.md`). |
-| `themelios-reference` | forbid, `publish = false` | The naive pure-Rust reference solver: the small-case oracle, the second implementor of the contract, and the native-backend demonstration (§12). |
-| `themelios-potassco-sys` | allow (bindings only) | Vendored, pinned bindgen output over libclingo's C API. Regeneration is out-of-band. Feature-gated; never in a default build. |
-| `themelios-potassco` | allow (the TCB) | The mechanism-only kernel over the bindings plus the safe adapter implementing the contract against clingo. Named for the engine *family* it adapts; clingo the base. |
+| `themelios-potassco-sys` | allow (bindings only) | Vendored, pinned bindgen output over the libclingo and libclingcon C APIs. Regeneration is out-of-band. Feature-gated; never in a default build. |
+| `themelios-potassco` | allow (the TCB) | The mechanism-only kernel over the bindings plus the safe adapters implementing the contract against clingo **and clingcon** — both first-class Potassco backends. Named for the engine *family* it adapts. |
 | `themelios-macros` | forbid | Extended, at this stage, with the solve-adjacent macros (`scenario!`, `query!`, `#[external]`, `#[derive(Extract)]`, `#[derive(Facts)]`) as syntax-tier and constructor clients. |
 | `themelios` | forbid | The facade: curated re-exports and prelude, adapters behind default features (disable them and the stack is FFI-free), and the witness examples executed on every change. |
 
@@ -239,29 +239,32 @@ pub trait Backend {
     fn ground_program(&self) -> Option<&GroundProgram>;   // the committed observer (§10.4)
 
     /// REQUIRED iff `capabilities().optimization`. The proven optimum, improving trajectory iff asked (§5.3).
-    fn optimize(&mut self, req: &OptimizeRequest) -> Result<Optimized<'_>, Fault>;
+    fn optimize(&mut self, req: &OptimizeRequest) -> Result<Optimized<'_>, Fault> { Err(Fault::unsupported()) }
 
     /// REQUIRED iff `capabilities().assumptions`. Solve under a scenario; the core derives blame
     /// (`Refutation`, §5.4) over this — there is no separate backend blame method.
-    fn solve_assuming(&mut self, s: &Scenario, req: &SolveRequest) -> Result<Solved<'_>, Fault>;
+    fn solve_assuming(&mut self, s: &Scenario, req: &SolveRequest) -> Result<Solved<'_>, Fault> { Err(Fault::unsupported()) }
 
-    // --- REQUIRED iff capabilities().multi_shot ---
-    fn ground(&mut self, parts: &[Part], opts: &GroundOptions) -> Result<(), Fault>;
-    fn assign_external(&mut self, ext: Symbol, v: TruthValue) -> Result<(), Fault>;
+    // --- REQUIRED iff capabilities().multi_shot (provided defaults that refuse) ---
+    fn ground(&mut self, parts: &[Part], opts: &GroundOptions) -> Result<(), Fault> { Err(Fault::unsupported()) }
+    fn assign_external(&mut self, ext: Symbol, v: TruthValue) -> Result<(), Fault> { Err(Fault::unsupported()) }
     /// Clear the engine's accumulated program so the agent can REBUILD it (the rebuild-class retraction
     /// path, §6.2); `lower` then reloads the amended program. Only a multi-shot backend needs it: on a
     /// single-shot backend `lower` REPLACES the program (nothing accumulates), so a rebuild is one `lower`
     /// and `reset` is not called. Distinct from `assign_external` (a toggle) and `ground` (an addition).
-    fn reset(&mut self) -> Result<(), Fault>;
+    fn reset(&mut self) -> Result<(), Fault> { Err(Fault::unsupported()) }
 
     // --- REQUIRED iff the matching capability bit (functions / propagators); extension reg. (§7–§9) ---
-    fn register_function(&mut self, f: Box<dyn Function>) -> Result<(), Fault>;
-    fn register_propagator(&mut self, p: Box<dyn Propagator>) -> Result<(), Fault>;
+    fn register_function(&mut self, f: Box<dyn Function>) -> Result<(), Fault> { Err(Fault::unsupported()) }
+    fn register_propagator(&mut self, p: Box<dyn Propagator>) -> Result<(), Fault> { Err(Fault::unsupported()) }
 
     /// OPTIONAL — override iff `capabilities().native_consequences == Native`. Absent, the core derives
-    /// cautious/brave by enumeration over `solve` (§4.2); the request surface says which path runs. The
-    /// `ConsequenceRequest` carries the assumptions it ranges over, so a scenario-scoped world view's
-    /// cautious/brave range over that scenario's models (query.md §2.4), never the unscoped program.
+    /// cautious/brave by enumeration over `solve` (unscoped) or `solve_assuming` (scoped) (§4.2); the
+    /// request surface says which path runs. What the backend owes: a native door honours the
+    /// `ConsequenceRequest`'s scenario, ranging over the models `solve_assuming(scenario)` denotes; an
+    /// unscoped request carries the empty scenario. The agent surface produces a non-empty request through
+    /// `Agent::cautious_assuming`/`brave_assuming` (§6.2 — the normative home of the scoped doors'
+    /// precondition and cost).
     fn consequences_native(&mut self, mode: Mode, req: &ConsequenceRequest)
         -> Result<Consequences, Fault> { Err(Fault::unsupported()) }  // provided default
 }
@@ -286,13 +289,26 @@ pub struct Capabilities {
 A request beyond declared capability receives a **typed refusal** (`Fault`, §5.4), never a silent
 degrade. Cost note: `capabilities()` is `O(1)` and pure — it is read *before* a request is paid for.
 
-**Required versus provided — why the core stays lean.** The required surface is `capabilities`,
-`solve`, `lower`, `ground_program`, and the capability-gated `optimize` / `solve_assuming`
-/ `ground` / `assign_external` / `reset` / `register_*`; `interrupt` and `consequences_native` are the
-*provided* methods a capable engine overrides. (`interrupt` returns `Option` and defaults to `None`, so a
-non-cancelling backend inherits it; the conformance suite checks `cancellation ⇒ interrupt().is_some()`
-so a declared-cancelling backend cannot forget the override. `reset` is the tear-down the multi-shot
-rebuild path needs given `lower` accumulates, §6.2, and is not called on single-shot backends.) The **core** provides, over that surface and *not* on the trait,
+**The `enumeration` bit carries a soundness obligation, not merely a hint.** A backend that declares
+`enumeration: false` (it decides consistency but does not enumerate the answer sets) must **never**
+conclude `Conclusion::Exhausted` with models unseen — `Target` is the closed set's word for "stopped at
+the witness." Every universal reading trusts `Exhausted`: `Solved::all_answer_sets` (§5.2), the derived
+cautious/brave fold (§4.2), and query.md's `Snapshot` readings all treat an `Exhausted` search as the
+whole space. A consistency-only backend that concluded `Exhausted` after one witness would make each of
+them silently wrong, so §13.1's conformance suite checks the bit against this obligation; the exhaustion
+gate then carries the reading — a universal reading refuses without a closed search (§5.2).
+
+**Required versus provided — why the core stays lean.** The **trait-required** surface (no default) is
+`capabilities`, `solve`, `lower`, and `ground_program`. Every **capability-gated** method — `optimize` /
+`solve_assuming` / `ground` / `assign_external` / `reset` / `register_*`, alongside `interrupt` and
+`consequences_native` — is a **provided default that refuses** (`Err(Fault::unsupported())`, or `None` for
+`interrupt`), so a minimal backend implements only the four and a declared-absent capability refuses with
+no line written. The type cannot force a *declared* capability's method to actually do the work
+— a provided method needs no override — so that obligation is enforced by §13.1's **positive-capability
+check**: a bit set `true` whose method still refuses is the capability lie the conformance suite exists to
+catch, and `cancellation ⇒ interrupt().is_some()` likewise. (`interrupt` returns `Option` and defaults to
+`None`, so a non-cancelling backend inherits it; `reset` is the tear-down the multi-shot rebuild path needs
+given `lower` accumulates, §6.2, and is not called on single-shot backends.) The **core** provides, over that surface and *not* on the trait,
 the two derived readings a backend author does not write: cautious/brave **consequences by
 enumeration** when a backend lacks `consequences_native` (§4.2), and **blame** (`Refutation`, §5.4)
 over `solve_assuming`. No smaller required set exposes consistency, enumeration, optimization, theory,
@@ -312,7 +328,8 @@ path ran.
 
 The contract does not assume the engine is foreign: a native backend built from foundation crates
 implements the same trait, and the contract's shapes must not force conversions a shared-representation
-backend would never need — the reference solver (§12) is the standing check on this.
+backend would never need — **zetesis** (§12), which shares the program tier's `Symbol`, is the standing
+check on this.
 
 ### 4.3 One door per boundary
 
@@ -375,8 +392,8 @@ impl<'a> Solved<'a> {
 
     /// Lazy stream; each item a Result, so a mid-stream engine fault surfaces at `?`, not as a clean
     /// end. Iterated by `&mut` so the terminal `conclusion` is readable after drain — the stateful-drain
-    /// reason `Solved` reads by `&mut` where a `WorldView`'s engine reads are `&self` under interior
-    /// mutability (query.md §2.3). Cost: O(1) resident.
+    /// reason `Solved` reads by `&mut`, as a `WorldView`'s `members` stream does (query.md §2.3), with no
+    /// interior mutability. Cost: O(1) resident.
     pub fn answer_sets(&mut self) -> impl Iterator<Item = Result<AnswerSet, Fault>> + '_;
 
     /// A COMPLETE collection — available ONLY when the search closed the space; refuses otherwise
@@ -387,18 +404,42 @@ impl<'a> Solved<'a> {
     pub fn conclusion(&self) -> Option<Conclusion>;   // readable once the search resolves
 }
 
+/// A backend constructs the `Solved` that `Backend::solve` (§4.1) returns through `Solved::running`,
+/// handing the core its own lazy enumeration as a `Run` — the backend-facing streaming protocol, the seam
+/// a native engine (§12) implements. Obligations: **fused** (once `next_answer_set` yields `None` or a
+/// fault it stays ended); a **terminal `Conclusion` once the stream ends**; a completeness drain stops at
+/// the first fault. The **core owns classification** — it resolves `Consistent` iff the run WITNESSED a
+/// model — so a backend supplies only enumeration plus a terminal conclusion and **cannot forge
+/// `Consistent`** (§5.1). No `Send` bound (a run may hold a raw engine handle whose control is
+/// single-threaded), so the `Solved`/`Models`/live-`WorldView` handles built over it are `!Send` and
+/// `Snapshot` is the `Send` form (§6.1). Cost: `O(1)`.
+pub trait Run {
+    fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>>;   // stream; None ends it
+    fn conclusion(&self) -> Option<Conclusion>;                          // the terminal state, once ended
+}
+impl<'a> Solved<'a> {
+    pub fn running(run: Box<dyn Run + 'a>, scenario: Scenario) -> Solved<'a>;  // the backend construction door
+}
+
 /// The `Consistent` payload (§5.1): read the answer sets, or open the live `WorldView` the query tier
-/// reads. From a RETAINED agent the world view is a BORROWING handle `WorldView<'a>` over the live engine —
-/// lazy, its engine-driving reads fallible (the native cautious/brave door is one solve, `members`
-/// streams; query.md §2.3–§2.4) — so it borrows for its lifetime and does NOT outlive that borrow. An
-/// owned, engine-free `Snapshot` (to cross a service boundary) is `WorldView::materialize` (query.md §2.3).
-/// The single-shot bare form owns its ephemeral engine instead (a live `WorldView<'static>`, §6.4).
-pub struct Models<'a> { /* … the live-engine-access handle: borrows the engine for `'a`; owns it when `'a = 'static` */ }
+/// reads. From a RETAINED agent the world view is a BORROWING handle `WorldView<'a>` over the live engine
+/// — lazy, its one engine-driving read the fallible `members` stream (query.md §2.3) — so it borrows for
+/// its lifetime and does NOT outlive that borrow. The cautious/brave native door and the epistemic
+/// readings (`answer`/`bindings`/`entails`) live on the AGENT (§6.2) and on the materialised `Snapshot`,
+/// NOT on the live handle (query.md §2.3–§2.6), so a reading is a fresh solve rather than a drain of this
+/// stream. An owned, engine-free `Snapshot` (to cross a service boundary, and the home of the infallible
+/// readings) is `WorldView::materialize` (query.md §2.3). The single-shot bare form owns its ephemeral
+/// engine instead (a live `WorldView<'static>`, §6.4).
+pub struct Models<'a> { /* the live-run-access handle: a two-form value — Owned by the consuming resolver `into_determination`, Borrowed by the inspecting `determination(&mut self)`; the lifetime is the access, `'static` when the run owns an ephemeral engine */ }
 // The `Models<'a> → WorldView<'a>` transition lives on the QUERY side (query.md §2.7): a `WorldView` is
 // constructed from a resolved `Consistent(Models)` via `themelios_query::WorldView::of(models)`, so
 // `themelios-solve` does not depend on `themelios-query`. `Models` exposes the live-run material a world
-// view drives — the answer-set stream, `is_exhausted`, `scenario`, and the engine for the native door —
-// and carries no `world_view()` method of its own.
+// view drives — the `members` stream, the exhaustion-gated `all_members` (the gate `WorldView::materialize`
+// goes through, query.md §2.3), `is_exhausted`, and `scenario` — no engine and no backend access, and no
+// `world_view()` method of its own. `Solved` and `Models` are **`!Send`** because the `Run` trait object
+// they hold carries no `Send` bound (a run may hold a raw engine handle whose control is single-threaded);
+// the owned, engine-free `Snapshot` (query.md §2.3) is the `Send` form, which is what `materialize` is for —
+// §6.1's service posture crosses a boundary through a `Snapshot`, not a live handle.
 
 /// A PROVEN optimum — no public constructor; it exists only because the solver proved it.
 pub struct Optimum { /* levels, in the objectives' own terms */ }
@@ -584,8 +625,11 @@ value** — the authority to drive the engine; dropping it is revocation, and th
 or global mutable state. Asking a question borrows the agent (`&mut self`), so the borrow checker *is*
 the "no mutation while reasoning" lock, and the reasoning state machine (initial → grounded → prepared →
 solved) is expressed in ownership and borrowing rather than runtime checks — an out-of-order call does
-not compile. Thread posture is explicit per backend, and cancellation-from-another-thread is a declared
-capability whose handle (`Interrupt`) is `Send`. Because the agent *owns* its knowledge rather than
+not compile. Thread posture is explicit per backend: the live run handles (`Solved`/`Models`/`WorldView`)
+are `!Send` — the `Run` trait object they hold carries no `Send` bound, since a run may hold a raw engine
+handle whose control is single-threaded (§5.2) — and the engine-free `Snapshot` is the `Send` form that
+crosses a service boundary; cancellation-from-another-thread is a declared capability whose handle
+(`Interrupt`) is `Send`. Because the agent *owns* its knowledge rather than
 borrowing a `Program` off a stack frame, it is embeddable behind a service boundary or an editor host
 without ceremony — the LSP/pythia posture (specification §1.2, §9.4). Cost: agent construction is one
 engine handle; a question's cost is the engine's, streamed (§5.2).
@@ -628,8 +672,32 @@ impl<B: Backend> Agent<B> {
     pub fn optimize(&mut self, req: &OptimizeRequest) -> Result<Optimized<'_>, Fault>;
     pub fn solve_assuming(&mut self, s: &Scenario) -> Result<Solved<'_>, Fault>;
     pub fn interrupt(&self) -> Option<Interrupt>;                         // a cancellation handle — Some iff the backend cancels (§6.3)
+
+    // --- consequences (native door or derived fold, capability-routed §4.2), on the agent because it
+    //     owns the engine — so the reading is a fresh solve, not a drain of a live world view (§5.2).
+    //     The unscoped pair ranges over the whole program; the `_assuming` pair ranges over a scenario's
+    //     models — the epistemic sibling of `solve_assuming`. THE NORMATIVE HOME of the scoped doors'
+    //     precondition and cost (§4.1 and query.md §2.4 cite this): both routes REQUIRE
+    //     `capabilities().assumptions` and otherwise refuse `Fault::unsupported()` (Locus::Request) — the
+    //     derived route enumerates over `solve_assuming`, and the native route ranges over the same model
+    //     set `solve_assuming(scenario)` denotes, so the native-vs-derived agreement (query.md §2.4) stays
+    //     checkable. Cost (each): one solve native, `Θ(|W|)` derived. ---
+    pub fn cautious(&mut self) -> Result<Consequences, Fault>;                        // ⋂ over the whole program — one solve (query.md §2.4)
+    pub fn brave(&mut self)    -> Result<Consequences, Fault>;                        // ⋃ over the whole program
+    pub fn cautious_assuming(&mut self, s: &Scenario) -> Result<Consequences, Fault>; // ⋂ over the scenario's models (needs `assumptions`)
+    pub fn brave_assuming(&mut self, s: &Scenario)    -> Result<Consequences, Fault>; // ⋃ over the scenario's models (needs `assumptions`)
 }
 ```
+
+The **query-typed readings** — `answer`, `bindings`, `entails`, `snapshot` — are the reading tier's, and
+hang on the agent through a query-side extension trait (`AgentReading`, query.md §2.7) re-exported in the
+prelude, so `agent.answer(q)?` reads inherent while `themelios-solve` keeps no dependency on
+`themelios-query`. They, and the `cautious`/`brave` door above, live on the agent (or on a materialised
+`Snapshot`) rather than on the live `WorldView`, so a reading is a self-contained solve that composes
+freely, never a drain that consumes the handle it is read from (query.md §2.3). Under a scenario the same
+readings ride a scenario-scoped snapshot — `snapshot_assuming(&Scenario)` (query.md §2.7), whose infallible
+readings range over the scenario's models — so the `_assuming` surface mirrors the unscoped one, the way
+`solve_assuming` mirrors `solve`.
 
 **Assertion is monotone and clean; retraction is the sharp edge, made honest by owning the knowledge
 base.** `assert` adds one statement — any `Statement` (`program.md` §4.2): a rule, a fact, a
@@ -736,9 +804,8 @@ p.solve()?          // the owned run handle: stream, inspect, resolve
 These are **exactly the agent's questions, asked once.** The engine-ownership principle, stated per
 handle so a builder can implement it: **each bare handle owns the ephemeral agent it drove and drops it
 when the handle drops.** So a returned answer-set stream or `WorldView` stays *lazy* — it retains the
-engine to pull the next member or to re-enter the solver for a conjunctive query — and §5.2's
-constant-resident guarantee and query.md §2.3's opt-in materialisation hold for the bare form exactly as
-for the agent. The agent's forms (§6.2) borrow against the agent you retain; the bare forms *own* it.
+engine to pull the next member — and §5.2's constant-resident guarantee and query.md §2.3's opt-in
+materialisation hold for the bare form exactly as for the agent. The agent's forms (§6.2) borrow against the agent you retain; the bare forms *own* it.
 That is the only difference; the answers are the same. Concretely the reading resolves to a
 `Determination`: from a retained agent, `agent.determination() -> Result<Determination<'_>, Fault>`,
 whose `Consistent` world view **borrows** the agent (§5.2's consuming resolver threads the borrow); from
@@ -753,9 +820,15 @@ p.determination()   and   p.into_agent().determination()   read the same determi
 ```
 
 so the *questions* are the shared spine and the loop is only what multi-shot adds. This is why the tier
-keeps no separate one-shot API in step with the multi-shot one: there is one question vocabulary, hosted
-bare or in the loop. Cost: identical to the agent's; the ephemeral engine lives for the returned handle's
-lifetime, not merely the call's.
+keeps no separate one-shot API in step with the multi-shot one: the **run questions** — `solve` /
+`determination` / `optimize` — are one vocabulary, hosted bare (`Reason`) or in the loop. The **epistemic
+readings** (`answer` / `bindings` / `entails` / `cautious` / `brave`) are the one asymmetry, and it is
+named rather than hidden: a reading needs an *owner* for the engine (§5.2), so it lives on the agent
+(`AgentReading`, query.md §2.7) and on a materialised `Snapshot`, and a bare `Program` reaches it by
+reifying (`into_agent`) or by materialising a `Determination`'s world view — not through `Reason`
+directly. The keystone (the API is the logician's questions) holds; the bare/loop *symmetry* is the run
+questions'. Cost: identical to the agent's; the ephemeral engine lives for the returned handle's lifetime,
+not merely the call's.
 
 ---
 
@@ -856,11 +929,14 @@ concrete bar the propagator surface and the theory-assignment component are held
 ### 8.3 Engine-portable, and the platform it makes
 
 Because the trait is part of the **contract**, not a clingo-specific hook, a theory written once runs
-on *any* backend that implements the contract — clingo now, a native engine later. This turns the
-propagator surface into a **theory-extension platform**: difference logic, linear/real arithmetic, and
-**a full in-house CP theory — the clingcon alternative** — are Rust **satellites** built on it (their
-own repos; themelios ships the *surface*, not the theories), best-of-breed and freed from the Potassco
-C libraries (which drop to differential oracles, §11.2). The CP satellite's stated ambition is a
+on *any* backend that implements the contract — clingo/clingcon now, a native engine later. This turns
+the propagator surface into a **theory-extension platform**: difference logic, linear/real arithmetic,
+and **a full in-house CP theory — the *portable alternative* to the linked clingcon backend (§11)** —
+are Rust **satellites** built on it (their own repos; themelios ships the *surface*, not the theories),
+best-of-breed and written in Rust on the platform rather than against the Potassco C libraries. The
+in-house CP theory and the linked clingcon backend **coexist**: clingcon (§11.1) is a first-class native
+backend a deployment links for its mature theory, and the Rust CP satellite is the engine-portable
+alternative that runs behind *any* conforming backend. The CP satellite's stated ambition is a
 **full clingcon alternative that *exceeds* clingcon-5's constraint set**: because we own the propagator
 surface and the theory, we do not inherit the clingo-integration friction that led clingcon-5 to drop
 constraint types clingcon-3 carried, so there is no reason to ship the reduced set (§14). The platform
@@ -999,25 +1075,36 @@ erased.
 
 ## 11. The Potassco adapter
 
-### 11.1 clingo-only, and why
+### 11.1 clingo and clingcon
 
-`themelios-potassco` wires **clingo** (5.8.2, the pinned authority) and nothing else: **libclingcon is
-not bound.** The crate is named for the engine *family*, not `themelios-clingo`, for
-**forward-compatibility**: should a future Potassco C library (a clingcon-successor with a stable ABI)
-ever warrant binding, it is a feature of this crate under the same honest name, not a new crate each.
-That is the whole of the family-name's warrant — it binds exactly one Potassco library today (clingo),
-and our own CP path is a Rust theory on the propagator platform (§8), a satellite, *not* a linked C
-library, so the family name promises room, not a present second binding. clingo-only keeps the shipped
-trusted computing base one library smaller, and the `clingcon` capability a deployment might once have
-paid for is gone with no loss — a theory-free program needs no CP theory.
+`themelios-potassco` wires **clingo** (5.8.2, the pinned authority) **and clingcon**, each a first-class
+native backend behind the contract. The crate is named for the engine *family*, not `themelios-clingo`,
+because it binds more than one Potassco C library and keeps room for another: should a further Potassco
+library with a stable ABI ever warrant binding, it is a feature of this crate under the same honest name,
+not a new crate each. **clingcon ⊇ clingo** — it is clingo extended with an integer constraint theory —
+so a theory-free program runs identically on either, while a program with `&sum`/`&dom`/global
+constraints reads its per-model constraint assignments back through `TheoryAssignments` (§5.4) from the
+clingcon backend. The interchange seam between the two engines (and to any further backend, the in-house
+engine of §12 included) is the `Backend` contract itself (§4): the adapter for each engine is one
+implementation of it, so no adapter reaches around another.
 
-### 11.2 clingcon-the-binary as an external oracle
+Our own **in-house CP theory** on the propagator platform (§8.3) is **not** clingcon's replacement but
+its **portable, Rust-native alternative** — written once, it runs behind *any* conforming backend, where
+the linked clingcon backend is the mature C engine a deployment links directly. The two coexist by
+design: linking clingcon costs one more C library in the trusted computing base, paid only by a
+deployment that enables it, and bought back by a battle-tested constraint theory available immediately,
+ahead of the satellite.
 
-Correctness of our Rust CP theory is proved the way the syntax/program/analysis tiers prove
-themselves — against an **external binary oracle** invoked out-of-band (the clingo binary via pixi,
-never linked). The **clingcon binary** plays the identical role one theory up: it is the differential
-authority that keeps our CP theory's answer sets and constraint assignments honest, vendored for tests
-only, never in the shipped stack.
+### 11.2 The clingo and clingcon binaries as external oracles
+
+Correctness is proved the way the syntax/program/analysis tiers prove themselves — against **external
+binary oracles** invoked out-of-band (via pixi, never linked into the shipped stack). The **clingo
+binary** is the grounding/solving authority over the corpus (§13.2); the **clingcon binary** plays the
+identical role for the constraint theory — the differential authority that keeps *both* the linked
+clingcon backend and our own Rust CP theory (§8.3) honest on answer sets and constraint assignments.
+These out-of-band *binaries* are distinct from the *linked* libclingo/libclingcon of §11.1: the linked
+library is the shipped backend, the binary is the vendored-for-tests oracle it (and the satellite) is
+differenced against, so a divergence is caught rather than trusted.
 
 ### 11.3 The trusted computing base
 
@@ -1031,18 +1118,26 @@ and is the security audit's object, not this design's.
 
 ---
 
-## 12. The reference solver
+## 12. Native backends and the fragment path
 
-`themelios-reference` is the naive, pure-Rust, `publish = false` solver: the independent oracle for
-small cases, the **second implementor** that proves the contract is not clingo-shaped, and the
-demonstration that a native backend built from foundation crates is a first-class implementor
-(specification §9.1). It is also the **seed of the fragment-backend path**: because `themelios-analysis`
-verdicts are sound in the direction that matters (tight ⇒ no unfounded-set check, HCF ⇒ no non-HCF
-tester, Horn ⇒ no search, stratified ⇒ facts-only domains), a native backend can *declare its fragment*
-through `Capabilities` (§4.1) and grow it up the lattice over time, routing the rest to the clingo
-backend, with the differential run on the overlap. The reference solver's simplicity is deliberate (a
-fast oracle you cannot trust defeats its purpose); the ambitious native engine is a separate project
-(§14) that inherits the contract and this seed.
+There is no naive in-house reference solver: clingo and clingcon (§11) are the external backends, and the
+**in-house engine is zetesis** — a real, mature, pure-Rust answer-set solver (candidate-generation +
+Ferraris-reduct checking, deliberately *not* CDNL), a co-designed sibling project — so the properties this
+design leans on are stated on its author's word rather than resolvable from this repository — and already
+a consumer of the base/syntax/program/analysis tiers. `themelios-solve` is designed to be **zetesis's
+first-class programmatic API** — the ergonomic Rust surface a programmer drives it through — and zetesis
+is a further backend behind the same `Backend` contract (§4), integrated through an adapter that
+implements the contract over its solving session (§14). Because zetesis reaches the same contract from a
+*radically different* architecture, it is the **second implementor** that proves the contract is not
+clingo-shaped, and — sharing the program tier's `Symbol` — the standing check (§4.2) that the contract's
+shapes force no conversion a shared-representation backend would never need.
+
+The contract also opens a **fragment-backend path** a native engine can walk: because
+`themelios-analysis` verdicts are sound in the direction that matters (tight ⇒ no unfounded-set check,
+HCF ⇒ no non-HCF tester, Horn ⇒ no search, stratified ⇒ facts-only domains), a backend can *declare its
+fragment* through `Capabilities` (§4.1) and grow it up the lattice over time, routing what it does not
+yet cover to another backend, with the differential run on the overlap. The `Capabilities` declaration
+already expresses this; the ambitious native engine (§14) inherits the contract and this path.
 
 ---
 
@@ -1053,16 +1148,22 @@ fast oracle you cannot trust defeats its purpose); the ambitious native engine i
 Executable, shipped with the contract, run by every adapter: outcome correctness on a corpus of small
 programs with independently known answer sets; capability honesty (a declared-unsupported request must
 refuse); the named pathologies (§5.3) attempted and structurally impossible; fault loci landing where
-they belong; and **the ground-program observer produced faithfully** where declared (§10.4). The
-reference solver is the second implementor and the independent oracle for small cases; the clingo
-differential covers the large corpus.
+they belong; and **the ground-program observer produced faithfully** where declared (§10.4). The suite's
+skeleton is exercisable **engine-free over a stub backend** before any adapter — that run is the core's
+own check (it streams answer sets through the real contract), not an adapter's authority. The
+**clingo and clingcon adapters** run it (clingcon adds the constraint-theory cases), differenced against
+the out-of-band binaries (§13.2). The **second, architecture-independent implementor** that proves the
+contract is not clingo-shaped is **zetesis** as it adopts the contract (§12) — a real engine on a
+radically different architecture, stronger corroboration than a naive built-in oracle would give.
 
 ### 13.2 Differentials and oracles
 
-The reference-versus-clingo differential over the small-program corpus; the clingo binary as the
-grounding/solving authority over the large corpus; the **clingcon binary** as the external oracle for
-the CP theory (§11.2); the bridge differential with its worst-case cost tripwires (§10.1). Every
-instrument documents what it proves *and what it cannot* (specification §10.2).
+The clingo binary as the grounding/solving authority over the corpus; the **clingcon binary** as the
+external oracle for the constraint theory — differencing *both* the linked clingcon backend and the
+in-house CP satellite (§11.2); the native-versus-derived consequence differential the tier gets for free
+(query.md §2.4); and the bridge differential with its worst-case cost tripwires (§10.1). An adapter that
+shares the program tier's `Symbol` (zetesis, §12) adds a further cross-implementation differential when
+it lands. Every instrument documents what it proves *and what it cannot* (specification §10.2).
 
 ### 13.3 The mission bar
 
@@ -1091,13 +1192,15 @@ Two roster points this tier discharges specifically:
   comparator for `solve-extension` or `theory-uniformity`) — so it gets new examples that establish
   the bar rather than exceed one: a worked `@`-function (`ground-extension`, witness 13) and a worked
   propagator (`solve-extension`, witness 14 — the difference-logic witness).
-- **`theory-uniformity` (witness 15) is discharged by a worked CP witness *in themelios*.** With the
-  clingcon adapter superseded (§11.1, §16), theory-uniformity is demonstrated by a worked CP
-  propagator — `alldifferent` + `&sum`, real global-constraint CP — whose constraint assignments read
-  back through `TheoryAssignments` (§5.4) as typed data, with the agent-driving and outcome-reading
-  code identical to first-solve but for the propagator registration. This is the §9.5 contingency's
-  "demonstrated through the propagator surface," made permanent; the full best-of-breed CP theory is
-  the satellite (§8.3, §14), of which this witness is the in-themelios floor.
+- **`theory-uniformity` (witness 15) is discharged two ways.** With the clingcon adapter restored as a
+  first-class backend (§11.1, §16), theory-uniformity is witnessed by the **linked clingcon backend** —
+  a `&sum`/`&dom` program whose per-model constraint assignments read back through `TheoryAssignments`
+  (§5.4) — *and* by a worked **CP propagator** on the in-house platform — `alldifferent` + `&sum`, real
+  global-constraint CP — whose assignments read back through the same typed component, with the
+  agent-driving and outcome-reading code identical to first-solve but for the propagator registration.
+  The two agreeing on that typed component *is* the uniformity, and the clingcon binary keeps both honest
+  (§11.2). The full best-of-breed CP theory is the satellite (§8.3, §14), of which the propagator witness
+  is the in-themelios floor.
 
 The examples **span the tiers** (authoring exercises program+macros, driving exercises solve, reading
 exercises query), making the crate-home split visible in the learning surface.
@@ -1110,9 +1213,10 @@ exercises query), making the crate-home split visible in the learning surface.
 mission-critical quality bar governs the pace, not a ship date. When the stage is done, the complete
 tier ships: the contract, the outcome vocabulary and models, the agent and full multi-shot (the
 reasoning loop), all four centerpieces and extraction, the bridge and its ground-program-IR capability,
-the potassco (clingo)
-adapter, the reference solver, the facade, and the example set (reactive-tier witnesses included). The
-query tier ships with it (`query.md`).
+the potassco **clingo and clingcon** adapters, the facade, and the example set (reactive-tier witnesses
+included). The query tier ships with it (`query.md`). The in-house engine **zetesis** is a further
+backend behind the contract, integrated as it and `themelios-solve` line up (below); it is not a member
+crate of this tier.
 
 The **reserved seams** are only the genuinely-separate:
 
@@ -1122,18 +1226,21 @@ The **reserved seams** are only the genuinely-separate:
   the difference-logic witness, and the CP theory-uniformity witness of §13.4 — not the satellites);
 - **multi-threaded propagation** (the engine-level parallel-propagation problem, specification §9.6 —
   distinct from the intra-propagator parallelism of §8.4, which ships);
-- the **native grounder and solver** — a separate engine that implements this contract and grows the
-  fragment-backend seed of §12. This is **not hypothetical**: a clingo-free native answer-set engine on a
-  candidate-generation + Ferraris-reduct-checking architecture (deliberately *not* CDNL) — **zetesis**,
-  co-designed as an estate member — is being built to this contract, so the native-engine seam has a real
-  anchor (§10.4's "the anchor exists" test), not a hypothetical one. The contract's
-  **architecture-neutrality is argued, not asserted**, and the argument stands on its own: the
-  `Determination`/`Conclusion` split (§5.1) separates the logical question from the search question, so
-  no engine's operational vocabulary can leak into the surface. That a native engine on a *radically
-  different* (non-CDNL) architecture is being built to the very same contract bears that neutrality out —
-  corroboration, not the proof, which is §5.1. Such an engine slots in behind `Backend` as a further
-  backend when its adapter is built; being one-shot, it declares `multi_shot: false` and refuses the
-  reasoning loop's mechanisms (§4.2) until, if ever, it grows them;
+- the **native grounder and solver** — a separate engine that implements this contract and can walk the
+  fragment-backend path of §12. This is **not hypothetical**: **zetesis** — a clingo-free answer-set
+  engine on a candidate-generation + Ferraris-reduct-checking architecture (deliberately *not* CDNL),
+  a co-designed sibling project — is a real, mature engine, and `themelios-solve` is designed to be its
+  first-class *programmatic* API (§12). Its integration is an **adapter implementing `Backend` over its
+  solving session**, near-term rather than hypothetical, gated on two things lining up: a public zetesis
+  door from a themelios `Parse`/`Program` value (render-then-parse is forbidden, §10.2), and
+  `themelios-solve` **landing on `main`** — the pinnable rev zetesis pins, an event earlier than the
+  whole tier being *done* (§15), so the gate is not circular. The contract's **architecture-neutrality is argued, not
+  asserted**: the `Determination`/`Conclusion` split (§5.1) separates the logical question from the search
+  question, so no engine's operational vocabulary can leak into the surface — and that an engine on a
+  *radically different* (non-CDNL) architecture reaches the very same contract bears that neutrality out
+  (corroboration, not the proof, which is §5.1). zetesis slots in behind `Backend` as a further backend
+  when its adapter is built; being one-shot today, it declares `multi_shot: false` (with `assumptions` and
+  `externals` absent) and refuses the reasoning loop's mechanisms (§4.2) until, if ever, it grows them;
 - the **normalised, cross-backend statistics schema.** v1 *does* ship statistics — the clingo adapter
   exposes clingo's own, engine-scoped and provenance-marked, behind the **`Statistics` trait whose v1
   shape §5.4 states**, so a clingo-backed user keeps a capability the comparator has (§15 criterion 2).
@@ -1158,9 +1265,16 @@ Each is named with its reason; none is a silent gap.
 
 The tier is done when all of the following hold:
 
-1. **The contract is real and doubly implemented.** The potassco (clingo) adapter and the reference
-   solver both pass the conformance suite; the pathologies are unconstructible; faults land at their
-   loci; capability honesty holds.
+1. **The contract is real; v1 ships on the Potassco adapters, with the independent-implementor proof a
+   named post-v1 obligation.** *Done* for v1 requires: the potassco **clingo and clingcon** adapters both
+   pass the conformance suite; the pathologies are unconstructible; faults land at their loci; capability
+   honesty holds. clingo and clingcon share Potassco machinery, so — by the specification's own reading
+   (§9.5) — they are **not** the solver-agnostic seam's second *independent* engine; that engine is
+   **zetesis** (§12), on a non-CDNL architecture, and its passing the conformance suite is the standing
+   proof the contract is not clingo-shaped. Because zetesis's integration is gated on `themelios-solve`
+   landing (§14), that proof is a **post-v1 obligation carried with its residual risk** — the risk that the
+   contract is subtly clingo-shaped until a truly independent engine exercises it — not a v1 done-condition.
+   So this criterion is satisfiable as written, and the independent proof is named, not silently dropped.
 2. **The two APIs exceed the evidenced comparators in capability and ergonomics** — a clean
    declarative macro face and a clean composable programmatic face, both first-class, coherent end to
    end, held to the Rust-exemplar bar and the comparator against clingo's Python API (specification
@@ -1179,13 +1293,16 @@ The tier is done when all of the following hold:
    against the definitely-planned arm's-length products — each its own repository on the keryx/morphe
    pattern — built in the order they stress the surface, from the primary register outward: **(1)
    elenctic**, the reading/query half (`query.md` §4), built first and the near-term priority (it
-   retires the standing Python project); **(2) the full in-house clingcon alternative**, the CP theory
-   on the propagator platform, which exercises the deepest seam and against which the design is
-   pressure-tested up front (§8, the worked CP witness §13.4); **(3) xclingo**, the explanation half,
-   over the ground-program-IR capability (§10.4). A **theory-driven service consumer** (the pythia-class
-   boundary) rides on these. Each is a first-consumer checkpoint that closes before the surface it drives
-   is called done and then continues as a product; elenctic and xclingo, on the question and provenance
-   layers, may drive additive surface revisions afterward, the way keryx/morphe drove the program/syntax
+   retires the standing Python project); **(2) the full in-house CP theory** — the *portable alternative*
+   to the linked clingcon backend, coexisting with it (§8.3, §11.1) — on the propagator platform, which
+   exercises the deepest seam and against which the design is pressure-tested up front (§8, the worked CP
+   witness §13.4); **(3) xclingo**, the explanation half, over the ground-program-IR capability (§10.4).
+   Alongside these, **zetesis** is a first-consumer of a different kind: as `themelios-solve`'s in-house
+   engine adopts the contract, it **audits the solve/query API** as a real independent engine — the
+   keryx/morphe/elenctic first-consumer checkpoint, aimed at the `Backend` seam. A **theory-driven service
+   consumer** (the pythia-class boundary) rides on these. Each is a first-consumer checkpoint that closes
+   before the surface it drives is called done and then continues as a product; elenctic, xclingo, and
+   zetesis may drive additive surface revisions afterward, the way keryx/morphe drove the program/syntax
    regularity pass. The standard is absolute: *if a client cannot be built cleanly on the abstractions,
    the design is short.*
 6. **The bridge is fast and faithful** — the differential against the engine and the worst-case
@@ -1198,22 +1315,32 @@ The tier is done when all of the following hold:
 
 **Amendments to the specification, recorded here:**
 
-- **Crate roster (§12.2).** The four adapter crates collapse to `themelios-potassco(-sys)` (§11.1);
-  the query surface splits into the `themelios-query` sibling (`query.md`).
-- **The clingcon adapter (§9.5, §4, §2 item 5, §12.2).** The specification's clingcon adapter is
-  **permanently superseded** — not descoped under §9.5's temporary contingency, but replaced — by the
-  in-house CP theory on the propagator platform (§8.3), with the clingcon binary retained as an
-  external oracle (§11.2). This is a *stronger* act than §9.5's descope-with-resumption, taken for a
-  smaller TCB and a best-of-breed Rust theory; it is recorded here (answering §4's "absent without the
-  contingency invoked is a failure" — the absence is a considered supersession on the record, not a
-  silent descope). Specification §2 item 5 ("clingo and clingcon are one experience") is
-  **reinterpreted**: clingcon is no longer a backend, so the uniformity is now "*any* theory via the
-  propagator surface presents its assignments as typed data, uniformly" (§5.4). Witness 15
-  (`theory-uniformity`) is discharged by the worked CP witness of §13.4. **Revised §4 form** (a §2
-  amendment owes its §4 restatement): clingcon's absence from v1 is *conformant by this recorded
-  supersession* — not a §9.5 contingency, and not the silent descope §4 counts as failure — and the
-  §2-item-5 uniformity failure now reads against the theory-typed-data form above, not against a
-  missing clingcon backend.
+- **Crate roster (§12.2).** The four adapter crates collapse to `themelios-potassco(-sys)`, which binds
+  **clingo and clingcon** (§11.1); the query surface splits into the `themelios-query` sibling
+  (`query.md`). There is **no reference-solver crate** — the in-house engine is zetesis, a separate sibling
+  project behind the contract, not a member of this tier (§12).
+- **The reference solver (specification §1.1, §2 item 4, §9.1, §9.5, §10, §11 build-order item 6, §12.2,
+  §12.5) — REMOVED.** The specification's naive pure-Rust reference solver is removed as scope creep. It
+  filled several roles across the specification, each now re-homed or carried forward: the
+  solver-agnostic seam's **second independent implementor** (§9.5, §10) and the **native-backend seed**
+  (§1.1, §12.5) are **zetesis** (§12), which — on a radically different architecture — is the independent
+  implementor a private in-house solver could never be as convincingly; the **small-case oracle** (§2 item
+  4, §9.1) is the clingo/clingcon binaries (§11.2) plus the engine-free stub the conformance suite runs
+  against; the **build-order item** (§11 item 6) and the **crate-roster entry** (§12.2) are struck. The one
+  clause this *weakens* rather than re-homes is §9.5's "the seam's second engine is the reference solver":
+  the second *independent* engine is now zetesis, a **post-v1 obligation** (§15 criterion 1) gated on the
+  tier landing (§14), so v1 ships with the two Potassco adapters and the independent proof carried forward
+  with its residual risk. This is a considered supersession on the record, not a silent descope.
+- **The clingcon adapter (§9.5, §4, §2 item 5, §12.2) — RESTORED.** An earlier revision permanently
+  superseded the specification's clingcon adapter with the in-house CP theory; **that supersession is
+  reversed.** clingcon is **restored as a first-class native backend** in `themelios-potassco` (§11.1),
+  realigning with the specification: the §9.5 clingcon adapter ships, specification §2 item 5 ("clingo and
+  clingcon are one experience") is honoured directly (a theory-free program runs identically on either;
+  clingcon ⊇ clingo), and witness 15 (`theory-uniformity`) is discharged by that linked backend *and* by
+  the in-house CP propagator (§13.4). The in-house CP theory (§8.3) is **not** clingcon's replacement but
+  its **portable, engine-agnostic alternative on the propagator platform** — the two coexist (§11.1). This
+  restoration costs one more C library in a deployment that enables it (§11.1) and settles §4's "absent
+  without the contingency invoked is a failure" the plainest way: clingcon is present, not absent.
 - **The ground-program observer (§9.6, §13).** Promoted from a reserved seam to a **committed
   capability** (§10.4), with the two-part argument that defeats §9.6's rejection (an xclingo anchor
   now forces it; it is engine-free data, not added unsafe TCB — the cost is an adapter obligation).
@@ -1233,12 +1360,11 @@ The tier is done when all of the following hold:
   reserved seam (§14), a later typed view that consumes the trait — an additive drop-in when a second
   engine is live and the divergent measurement models can be co-analysed.
 
-**Trust architecture.** `themelios-solve`, `themelios-query`, and `themelios-reference` are
-`forbid(unsafe_code)`, FFI-free by dependency closure. `themelios-potassco-sys` carries the vendored
-bindgen output; `themelios-potassco` is the sole `allow(unsafe_code)` TCB, mechanism-only over the
-bindings plus the safe adapter (§11.3). The structural trust check asserts forbid-in-pure-crates,
-allow-only-in-the-named-TCB, and FFI-free closures for the pure crates. With the potassco feature
-disabled the stack is FFI-free.
+**Trust architecture.** `themelios-solve` and `themelios-query` are `forbid(unsafe_code)`, FFI-free by
+dependency closure. `themelios-potassco-sys` carries the vendored bindgen output; `themelios-potassco` is
+the sole `allow(unsafe_code)` TCB, mechanism-only over the bindings plus the safe adapters for clingo and
+clingcon (§11.3). The structural trust check asserts forbid-in-pure-crates, allow-only-in-the-named-TCB,
+and FFI-free closures for the pure crates. With the potassco feature disabled the stack is FFI-free.
 
 **Dependency policy.** `themelios-solve` and `-query` take nothing beyond the lower tiers and the
 proc-macro toolchain (for the solve-adjacent macros, which live in `themelios-macros`); intra-propagator
@@ -1314,3 +1440,40 @@ necessity where it is declared.
    §10.5 symbol correspondence is corrected — a `Symbol` carries the engine's number width, but creating
    the engine's symbol handle is an interning write under the single discipline, not a free
    correspondence. The §3.1 block-macro name is corrected to `program!`.
+6. **Clingcon un-supersession, reference-solver removal, and the agent-facade reconciliation**
+   (2026-09-25). Three accumulated changes reconciled in one pass. **(a)** The clingcon adapter's
+   permanent supersession (revision 2, §16) is **reversed**: clingcon is restored as a first-class native
+   backend bound by `themelios-potassco` alongside clingo (§1.1, §2.1, §11.1); the in-house CP theory is
+   recast as its *portable alternative* rather than its replacement — the two coexist (§8.3); the clingo
+   and clingcon binaries are the out-of-band differential oracles (§11.2, §13.2); and witness 15 is
+   discharged by both the linked clingcon backend and the CP propagator (§13.4). Specification §2 item 5
+   is honoured directly again, not reinterpreted (§16). **(b)** The naive in-house **reference solver is
+   removed**: there is no `themelios-reference` crate, and §12 is repurposed to *native backends and the
+   fragment path* — the in-house engine is **zetesis**, a real non-CDNL pure-Rust answer-set engine behind
+   the same contract, for which `themelios-solve` is the first-class *programmatic* API; it is the
+   architecture-independent second implementor and the §4.2 standing check (§1.1, §12, §13.1, §14).
+   Acceptance criterion 1 is reframed to be satisfiable as written: v1 ships on the two Potassco adapters,
+   with the architecture-independent proof (zetesis passing conformance) a **named post-v1 obligation**
+   carried with its residual risk and gated on the tier landing, not a done-condition (§14, §15); §16
+   records the reference-solver removal against every specification clause it supersedes (§1.1, §2 item 4,
+   §9.1, §9.5, §10, §11 item 6, §12.2, §12.5). Criterion 5 adds zetesis as an API-auditing first consumer
+   (§15). The trust architecture's engine-free crates are `themelios-solve` and `themelios-query` only
+   (§16). **(c)** The agent-facade drift is reconciled with `query.md`: the cautious/brave consequence door
+   and the epistemic readings live on the **agent** (and on a materialised `Snapshot`), not on the live
+   `WorldView`, so a reading is a self-contained solve rather than a drain of a live handle (§5.2, §6.2;
+   query.md §2). **(d)** Several surfaces are brought into line with the built code and made honest: the
+   capability-gated `Backend` methods are provided defaults that refuse, the "required under the bit"
+   obligation enforced by the conformance suite's positive-capability check (§4.1); the `enumeration` bit's
+   soundness obligation is stated (§4.1); scenario-scoped readings are first-class surface —
+   `cautious_assuming`/`brave_assuming` and `snapshot_assuming`, mirroring the unscoped pair the way
+   `solve_assuming` mirrors `solve` (§4.1, §6.2, query.md §2.4/§2.7); the live run handles are `!Send` and `Snapshot` the `Send` form
+   (§5.2, §6.1); the epistemic readings' bare/loop asymmetry is named (§6.4); zetesis is marked a private
+   sibling project (§12); and a residual reference-crate claim in the opening sentence is struck. The
+   scoped consequence doors carry their precondition (they require `assumptions`, deriving over
+   `solve_assuming`) and cost, and `snapshot_assuming` its signature/refusal/cost (§4.1, §6.2, query.md
+   §2.2); the §4.1 trait sketch draws each gated method's refusing body; and the `!Send` reason is the
+   `Run` object's absent `Send` bound, not the borrow (§5.2, §6.1). The backend-facing **`Run` protocol**
+   and its **`Solved::running`** construction door — how a backend (or a native engine) supplies the
+   enumeration the core classifies over — are now stated in §5.2, and the scoped-door contract is given a
+   single normative home (§6.2 for the agent doors, query.md §2.2 for `snapshot_assuming`), the other
+   mentions reduced to citations.
