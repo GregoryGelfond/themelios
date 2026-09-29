@@ -8,7 +8,7 @@
 //! and, beyond them, methods required exactly when the matching capability
 //! bit is declared, each provided with a default that refuses, so an
 //! undeclared capability is a typed refusal at the seam, never a compile
-//! burden and never a silent degrade (§4.2).
+//! burden and never a silent degrade (§4.1).
 //!
 //! The capability declaration (§4.1) is a closed set of bits and enums a
 //! backend answers for itself, read before a request is paid for: a request
@@ -77,11 +77,7 @@ pub trait Backend {
     fn capabilities(&self) -> Capabilities;
 
     /// Required. Consistency and enumeration: the handle resolves the
-    /// trichotomy and streams the answer sets lazily (§5.2). A request
-    /// carrying a time budget the backend does not declare enforcing
-    /// (`capabilities().budgets.time`) is refused at the request surface,
-    /// never solved without its budget — the silent degrade §4.1 forbids;
-    /// enforcement is a declared capability (§6.3).
+    /// trichotomy and streams the answer sets lazily (§5.2).
     fn solve(&mut self, request: &SolveRequest) -> Result<Solved<'_>, Fault>;
 
     /// Required. The bridge (§10): consume a program through a door. On a
@@ -132,7 +128,10 @@ pub trait Backend {
     }
 
     /// Required under `capabilities().multi_shot`. Assign an external atom its
-    /// truth value (§6.2); refuses otherwise.
+    /// truth value (§6.2). An atom that is not external — every atom, where the
+    /// backend declares no externals — is refused at the request surface, not
+    /// with [`Fault::unsupported`]: the method is there, the atom is not one it
+    /// assigns. Without `multi_shot`, the default refuses as unsupported.
     fn assign_external(&mut self, _external: Symbol, _value: TruthValue) -> Result<(), Fault> {
         Err(Fault::unsupported())
     }
@@ -217,7 +216,8 @@ pub struct Capabilities {
     /// Which theories the backend evaluates.
     pub theories: TheorySupport,
     /// Whether the backend honours external atoms, assigned through
-    /// `assign_external`.
+    /// `assign_external` — so it presumes `multi_shot`, which provides that
+    /// method.
     pub externals: bool,
     /// Whether the backend evaluates `@`-functions — `register_function`
     /// (§7).
@@ -285,8 +285,11 @@ pub struct BudgetSupport {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct SolveRequest {
     /// The time budget, when the ask carries one (§6.3): enforcement is a
-    /// declared capability, and a hit budget resolves as what it is,
-    /// `Conclusion::Budget`, never as a clean end.
+    /// declared capability (`Capabilities::budgets`), and a hit budget resolves
+    /// as what it is, `Conclusion::Budget`, never as a clean end. A backend that
+    /// does not declare enforcing one refuses a request carrying one at the
+    /// request surface — `solve` and `solve_assuming` alike — never solving
+    /// without it: the silent degrade §4.1 forbids.
     pub time: Option<Duration>,
 }
 
