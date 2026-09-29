@@ -72,8 +72,11 @@ impl std::fmt::Display for Answer {
 /// A conjunction ([`all`](Query::all)) and a disjunction ([`any`](Query::any))
 /// compose queries and are total.
 ///
-/// Owned plain data; its nesting is the caller's own composition.
-#[derive(Clone, PartialEq, Eq, Debug)]
+/// Owned plain data. Its nesting is the caller's own composition, so every walk
+/// over it — reading it against a world view, cloning, comparing, formatting,
+/// dropping — is iterative: a query nested however deep is handled on a small
+/// stack, never overflowing it (the depth discipline, docs/design/program.md
+/// §13).
 pub struct Query {
     shape: Shape,
 }
@@ -81,7 +84,8 @@ pub struct Query {
 /// The closed set of a query's shapes (docs/design/query.md §2.1). A literal
 /// holds the ground symbol the atom denotes — the value an answer set contains
 /// — so reading a query against a member is membership, never re-evaluation.
-#[derive(Clone, PartialEq, Eq, Debug)]
+/// It derives nothing: every walk over a query is the query's own iterative
+/// one, so no derived, recursive walk is left to reach.
 enum Shape {
     /// A ground literal, held as the symbol it denotes.
     Literal(Symbol),
@@ -133,9 +137,7 @@ impl Query {
     /// The conjunction (∧) of `parts` (docs/design/query.md §2.1, §2.2):
     /// evaluated within each member of a world view as the weakest of its
     /// parts over `false < unknown < true`. Total; the empty conjunction is the
-    /// query true everywhere. O(parts). The nesting is read recursively, so a
-    /// pathologically deep composition can exhaust the stack; the iterative treatment
-    /// deep structures get elsewhere in the stack is reserved for `Query`.
+    /// query true everywhere. O(parts).
     pub fn all(parts: impl IntoIterator<Item = Query>) -> Query {
         Query {
             shape: Shape::Conjunction(parts.into_iter().collect()),
@@ -145,8 +147,7 @@ impl Query {
     /// The disjunction (∨) of `parts` (docs/design/query.md §2.1, §2.2):
     /// evaluated within each member of a world view as the strongest of its
     /// parts over `false < unknown < true`. Total; the empty disjunction is the
-    /// query false everywhere. O(parts). Deeply nested composition carries the same
-    /// stack caveat as [`all`](Query::all).
+    /// query false everywhere. O(parts).
     pub fn any(parts: impl IntoIterator<Item = Query>) -> Query {
         Query {
             shape: Shape::Disjunction(parts.into_iter().collect()),
@@ -335,29 +336,199 @@ impl Query {
     /// disjunction the strongest. Evaluated WITHIN the member — never over ⋂/⋃ — so
     /// a compound that holds through different literals in different members reads
     /// correctly. The empty conjunction is `True`, the empty disjunction `False`.
-    /// Cost: `O(query size × member lookup)`.
+    /// Iterative: each open compound is a frame on a heap work list — its
+    /// connective, the parts not yet read, and the truth folded so far — so no
+    /// depth reaches the stack. Cost: `O(query size × member lookup)` time,
+    /// `O(depth)` frames.
     fn truth_in(&self, member: &AnswerSet) -> Truth {
-        match &self.shape {
-            Shape::Literal(symbol) => {
-                if member.contains(symbol) {
-                    Truth::True
-                } else if member.contains(&contrary(symbol)) {
-                    Truth::False
+        /// An open compound: whether it meets (∧) or joins (∨), the parts not yet
+        /// read, and the truth folded from those read.
+        struct Frame<'q> {
+            meet: bool,
+            rest: std::slice::Iter<'q, Query>,
+            so_far: Truth,
+        }
+        let mut open: Vec<Frame<'_>> = Vec::new();
+        let mut next = self;
+        loop {
+            // Descend to a truth: a literal's, or an empty compound's identity.
+            let mut truth = loop {
+                let (meet, parts) = match &next.shape {
+                    Shape::Literal(symbol) => break literal_truth(symbol, member),
+                    Shape::Conjunction(parts) => (true, parts),
+                    Shape::Disjunction(parts) => (false, parts),
+                };
+                let identity = if meet { Truth::True } else { Truth::False };
+                let mut rest = parts.iter();
+                match rest.next() {
+                    Some(first) => {
+                        open.push(Frame {
+                            meet,
+                            rest,
+                            so_far: identity,
+                        });
+                        next = first;
+                    }
+                    None => break identity,
+                }
+            };
+            // Ascend: fold the truth into the innermost open compound, and descend
+            // into its next part while one remains; a compound read to its end folds
+            // its own truth into the one enclosing it.
+            loop {
+                let Some(frame) = open.last_mut() else {
+                    return truth;
+                };
+                frame.so_far = if frame.meet {
+                    frame.so_far.min(truth)
                 } else {
-                    Truth::Unknown
+                    frame.so_far.max(truth)
+                };
+                if let Some(part) = frame.rest.next() {
+                    next = part;
+                    break;
+                }
+                truth = frame.so_far;
+                open.pop();
+            }
+        }
+    }
+}
+
+/// A literal's truth within a member (docs/design/query.md §2.2): `True` if the
+/// member holds it, `False` if the member holds its contrary, `Unknown` otherwise —
+/// absence is not falsity. `O(member lookup + arity)`.
+fn literal_truth(symbol: &Symbol, member: &AnswerSet) -> Truth {
+    if member.contains(symbol) {
+        Truth::True
+    } else if member.contains(&contrary(symbol)) {
+        Truth::False
+    } else {
+        Truth::Unknown
+    }
+}
+
+// ---- The walks over a query, iterative (the depth discipline, program.md §13) ----
+
+impl Clone for Query {
+    fn clone(&self) -> Query {
+        // A post-order deep copy: visit each part, then rebuild each compound from
+        // the stack of finished copies, so a deep query copies without recursion.
+        enum Step<'q> {
+            Enter(&'q Query),
+            Conjoin(usize),
+            Disjoin(usize),
+        }
+        let mut work = vec![Step::Enter(self)];
+        let mut done: Vec<Query> = Vec::new();
+        while let Some(step) = work.pop() {
+            match step {
+                Step::Enter(query) => match &query.shape {
+                    Shape::Literal(symbol) => done.push(Query {
+                        shape: Shape::Literal(symbol.clone()),
+                    }),
+                    Shape::Conjunction(parts) => {
+                        work.push(Step::Conjoin(parts.len()));
+                        work.extend(parts.iter().rev().map(Step::Enter));
+                    }
+                    Shape::Disjunction(parts) => {
+                        work.push(Step::Disjoin(parts.len()));
+                        work.extend(parts.iter().rev().map(Step::Enter));
+                    }
+                },
+                Step::Conjoin(arity) => {
+                    let parts = done.split_off(done.len() - arity);
+                    done.push(Query {
+                        shape: Shape::Conjunction(parts),
+                    });
+                }
+                Step::Disjoin(arity) => {
+                    let parts = done.split_off(done.len() - arity);
+                    done.push(Query {
+                        shape: Shape::Disjunction(parts),
+                    });
                 }
             }
-            Shape::Conjunction(parts) => parts
-                .iter()
-                .map(|part| part.truth_in(member))
-                .min()
-                .unwrap_or(Truth::True),
-            Shape::Disjunction(parts) => parts
-                .iter()
-                .map(|part| part.truth_in(member))
-                .max()
-                .unwrap_or(Truth::False),
         }
+        done.pop().expect("the walk leaves exactly the root's copy")
+    }
+}
+
+impl Drop for Query {
+    fn drop(&mut self) {
+        // Dismantled iteratively: every nested part moves onto a work list and drops
+        // there without parts of its own, so a deep query drops without recursion.
+        let mut parts = Vec::new();
+        take_parts(self, &mut parts);
+        while let Some(mut part) = parts.pop() {
+            take_parts(&mut part, &mut parts);
+        }
+    }
+}
+
+/// Move a query's immediate parts onto `out`, leaving it without any.
+fn take_parts(query: &mut Query, out: &mut Vec<Query>) {
+    if let Shape::Conjunction(parts) | Shape::Disjunction(parts) = &mut query.shape {
+        out.append(parts);
+    }
+}
+
+impl PartialEq for Query {
+    fn eq(&self, other: &Query) -> bool {
+        // Structural equality over a work list of pairs, answering at the first
+        // mismatch.
+        let mut pairs = vec![(self, other)];
+        while let Some((left, right)) = pairs.pop() {
+            match (&left.shape, &right.shape) {
+                (Shape::Literal(left), Shape::Literal(right)) if left == right => {}
+                (Shape::Conjunction(left), Shape::Conjunction(right))
+                | (Shape::Disjunction(left), Shape::Disjunction(right))
+                    if left.len() == right.len() =>
+                {
+                    pairs.extend(left.iter().zip(right));
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
+impl Eq for Query {}
+
+impl std::fmt::Debug for Query {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The derived shape, printed from a work list of actions, so a deep query
+        // formats without recursion.
+        enum Act<'q> {
+            Node(&'q Query),
+            Text(&'static str),
+        }
+        let mut work = vec![Act::Node(self)];
+        while let Some(act) = work.pop() {
+            match act {
+                Act::Text(text) => f.write_str(text)?,
+                Act::Node(query) => {
+                    let (open, parts) = match &query.shape {
+                        Shape::Literal(symbol) => {
+                            write!(f, "Query {{ shape: Literal({symbol:?}) }}")?;
+                            continue;
+                        }
+                        Shape::Conjunction(parts) => ("Query { shape: Conjunction([", parts),
+                        Shape::Disjunction(parts) => ("Query { shape: Disjunction([", parts),
+                    };
+                    f.write_str(open)?;
+                    work.push(Act::Text("]) }"));
+                    for (index, part) in parts.iter().enumerate().rev() {
+                        work.push(Act::Node(part));
+                        if index > 0 {
+                            work.push(Act::Text(", "));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1802,6 +1973,159 @@ mod bindings {
                     arg,
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod query_walks {
+    //! The mirror differential for the walks over a query (the depth discipline of
+    //! docs/design/program.md §13): each walk over a query — its truth within a member,
+    //! its clone, its equality, its `Debug` view — agrees with the naive recursive walk
+    //! of a derived twin over generated queries, the twin mirroring the query's own
+    //! shape so its derived `Debug` is the one a query's reproduces.
+    use super::*;
+    use proptest::prelude::*;
+    use themelios_program::symbol::{Name, Sign};
+
+    /// The derived, recursive mirror of a query: the same type, field, and variant
+    /// names, so its derived `Debug` is the derived shape.
+    mod twin {
+        use themelios_program::symbol::Symbol;
+
+        #[derive(Clone, PartialEq, Eq, Debug)]
+        pub(super) struct Query {
+            pub(super) shape: Shape,
+        }
+
+        #[derive(Clone, PartialEq, Eq, Debug)]
+        pub(super) enum Shape {
+            Literal(Symbol),
+            Conjunction(Vec<Query>),
+            Disjunction(Vec<Query>),
+        }
+    }
+
+    /// The twin of `query`, read off its shape — recursively, since a generated query
+    /// is shallow.
+    fn twin_of(query: &Query) -> twin::Query {
+        twin::Query {
+            shape: match &query.shape {
+                Shape::Literal(symbol) => twin::Shape::Literal(symbol.clone()),
+                Shape::Conjunction(parts) => {
+                    twin::Shape::Conjunction(parts.iter().map(twin_of).collect())
+                }
+                Shape::Disjunction(parts) => {
+                    twin::Shape::Disjunction(parts.iter().map(twin_of).collect())
+                }
+            },
+        }
+    }
+
+    /// The truth of the twin within `member`, written the obvious recursive way: a
+    /// literal present, refuted, or neither; a conjunction the weakest part, a
+    /// disjunction the strongest.
+    fn twin_truth(query: &twin::Query, member: &AnswerSet) -> Truth {
+        match &query.shape {
+            twin::Shape::Literal(symbol) => {
+                if member.contains(symbol) {
+                    Truth::True
+                } else if member.contains(&contrary(symbol)) {
+                    Truth::False
+                } else {
+                    Truth::Unknown
+                }
+            }
+            twin::Shape::Conjunction(parts) => parts
+                .iter()
+                .map(|part| twin_truth(part, member))
+                .min()
+                .unwrap_or(Truth::True),
+            twin::Shape::Disjunction(parts) => parts
+                .iter()
+                .map(|part| twin_truth(part, member))
+                .max()
+                .unwrap_or(Truth::False),
+        }
+    }
+
+    /// The alphabet the generated queries and members range over.
+    const ATOMS: [&str; 3] = ["a", "b", "c"];
+
+    /// The ground constant `name` under `sign`.
+    fn signed(name: &str, positive: bool) -> Symbol {
+        Symbol::function(
+            Name::new(name).expect("a valid identifier"),
+            [],
+            if positive {
+                Sign::Positive
+            } else {
+                Sign::Negative
+            },
+        )
+    }
+
+    /// A literal over the alphabet, under either sign.
+    fn literal() -> impl Strategy<Value = Query> {
+        (0..ATOMS.len(), any::<bool>()).prop_map(|(atom, positive)| {
+            Query::of(Atom {
+                sign: if positive {
+                    Sign::Positive
+                } else {
+                    Sign::Negative
+                },
+                name: Name::new(ATOMS[atom]).expect("a valid identifier"),
+                arguments: Arguments::Single(vec![]),
+            })
+            .expect("a ground literal is a query")
+        })
+    }
+
+    /// Queries a few levels deep and wide, conjunctions and disjunctions both, the
+    /// empty ones included.
+    fn query() -> impl Strategy<Value = Query> {
+        literal().prop_recursive(4, 24, 3, |inner| {
+            prop_oneof![
+                prop::collection::vec(inner.clone(), 0..3).prop_map(Query::all),
+                prop::collection::vec(inner, 0..3).prop_map(Query::any),
+            ]
+        })
+    }
+
+    /// A consistent member over the alphabet: each atom absent, or present under one
+    /// sign.
+    fn member() -> impl Strategy<Value = AnswerSet> {
+        prop::collection::vec(prop::option::of(any::<bool>()), ATOMS.len()).prop_map(|signs| {
+            signs
+                .into_iter()
+                .zip(ATOMS)
+                .filter_map(|(sign, name)| sign.map(|positive| signed(name, positive)))
+                .collect()
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn the_truth_within_a_member_is_the_twin_s(query in query(), member in member()) {
+            prop_assert!(query.truth_in(&member) == twin_truth(&twin_of(&query), &member));
+        }
+
+        #[test]
+        fn a_clone_mirrors_its_original(query in query()) {
+            prop_assert_eq!(twin_of(&query.clone()), twin_of(&query));
+        }
+
+        #[test]
+        fn equality_is_the_twin_s(left in query(), right in query(), same in any::<bool>()) {
+            // Half the pairs are a query and its clone, so the equal case is drawn as
+            // often as the unequal.
+            let right = if same { left.clone() } else { right };
+            prop_assert_eq!(left == right, twin_of(&left) == twin_of(&right));
+        }
+
+        #[test]
+        fn the_debug_view_is_the_derived_shape(query in query()) {
+            prop_assert_eq!(format!("{query:?}"), format!("{:?}", twin_of(&query)));
         }
     }
 }
