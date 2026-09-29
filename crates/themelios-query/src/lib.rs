@@ -705,6 +705,18 @@ pub(crate) fn matched_in(pattern: &Atom, set: &AnswerSet) -> Result<Vec<Symbol>,
     Ok(out)
 }
 
+/// The engine-free snapshot a resolved question's world view materialises into
+/// (docs/design/query.md §2.3), or the refusal: an inconsistent program has no world
+/// view — `inconsistent` is the refusal's message — and an inconclusive search, or
+/// one that witnessed models without closing the space, carries why it stopped.
+fn materialised(determination: Determination<'_>, inconsistent: &str) -> Result<Snapshot, Fault> {
+    match determination {
+        Determination::Consistent(models) => WorldView::of(models).materialize(),
+        Determination::Inconsistent(_) => Err(Fault::request(inconsistent)),
+        Determination::Inconclusive(partial) => Err(partial.into()),
+    }
+}
+
 /// The query readings an [`Agent`] answers over its own knowledge base (docs/design/
 /// query.md §2.2, §2.5, §2.6; solve.md §6.2) — the reading half of the agent's
 /// surface, held in the query tier so the solve tier need not depend on it. An
@@ -716,7 +728,9 @@ pub(crate) fn matched_in(pattern: &Atom, set: &AnswerSet) -> Result<Vec<Symbol>,
 /// question asked rather than the engine's control-flow (solve.md §6.2). Each solves
 /// ONCE and materialises the world view; to ask
 /// many questions of one search, take a [`snapshot`](AgentReading::snapshot) and read
-/// it (its reads are infallible and re-solve nothing). A reading over a program with
+/// it (its reads are infallible and re-solve nothing). Under a scenario, every reading
+/// has its scoped form through [`snapshot_assuming`](AgentReading::snapshot_assuming),
+/// whose snapshot ranges over the scenario's models. A reading over a program with
 /// no decided world view — inconsistent, or a search that did not close — **refuses
 /// with a [`Fault`]** rather than inventing an answer, mirroring the agent's own
 /// consequence door (solve.md §6.2): the reading needs a decided program and says so.
@@ -727,6 +741,17 @@ pub trait AgentReading {
     /// program with no answer set, or a search that did not close — there is no world
     /// view to snapshot — carrying why at the [`Fault`]'s locus.
     fn snapshot(&mut self) -> Result<Snapshot, Fault>;
+
+    /// A scenario-scoped [`Snapshot`] (docs/design/query.md §2.2, §2.7): solve once
+    /// under `scenario` — the agent's `solve_assuming` — and materialise, so every
+    /// reading off it ranges over the scenario's models: the scoped form of every
+    /// reading, as `solve_assuming` is of `solve`. **Refuses** over a backend that
+    /// does not declare `assumptions` — a scenario needs `solve_assuming` —
+    /// with [`Fault::unsupported`] at the request locus, and otherwise as
+    /// [`snapshot`](AgentReading::snapshot) does: no answer set under the scenario,
+    /// or a search that did not close. Cost: one `solve_assuming`, then `Θ(|W|)` to
+    /// materialise.
+    fn snapshot_assuming(&mut self, scenario: &Scenario) -> Result<Snapshot, Fault>;
 
     /// The three-valued [`Answer`] to a ground `query` over the agent's world view
     /// (docs/design/query.md §2.2): solve, materialise, and read. Refuses as
@@ -748,13 +773,19 @@ pub trait AgentReading {
 
 impl<B: Backend> AgentReading for Agent<B> {
     fn snapshot(&mut self) -> Result<Snapshot, Fault> {
-        match self.determination()? {
-            Determination::Consistent(models) => WorldView::of(models).materialize(),
-            Determination::Inconsistent(_) => Err(Fault::request(
-                "no world view: the program has no answer set",
-            )),
-            Determination::Inconclusive(partial) => Err(partial.into()),
-        }
+        materialised(
+            self.determination()?,
+            "no world view: the program has no answer set",
+        )
+    }
+
+    fn snapshot_assuming(&mut self, scenario: &Scenario) -> Result<Snapshot, Fault> {
+        // Under a scenario the program may well have answer sets — just none the
+        // scenario admits — so the refusal says which.
+        materialised(
+            self.solve_assuming(scenario)?.into_determination(),
+            "no world view: the program has no answer set under the scenario",
+        )
     }
 
     fn answer(&mut self, query: &Query) -> Result<Answer, Fault> {

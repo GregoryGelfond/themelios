@@ -85,6 +85,85 @@ impl Backend for Fixed {
     }
 }
 
+/// Whether `set` holds every assumption of `scenario` as fixed — the answer sets
+/// `solve_assuming(scenario)` ranges over keep an atom fixed to hold and omit one
+/// fixed not to.
+fn admits(scenario: &Scenario, set: &AnswerSet) -> bool {
+    scenario
+        .assumptions()
+        .all(|assumption| set.contains(assumption.atom()) == assumption.holds())
+}
+
+/// A backend that honours assumptions: `solve` answers with `sets`, and
+/// `solve_assuming` with the members a scenario admits — its search ending
+/// `terminal` either way — so a scoped reading differs from the unscoped one.
+pub struct Hypothetical {
+    sets: Vec<AnswerSet>,
+    terminal: Conclusion,
+}
+
+impl Backend for Hypothetical {
+    fn capabilities(&self) -> Capabilities {
+        // Non-exhaustive, so declared by assignment: a struct expression is not
+        // admitted outside the crate that defines it.
+        let mut capabilities = Capabilities::default();
+        capabilities.assumptions = true;
+        capabilities
+    }
+
+    fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
+        Ok(Solved::running(
+            Box::new(Enumeration {
+                sets: self.sets.clone().into_iter(),
+                terminal: self.terminal,
+                ended: false,
+            }),
+            Scenario::default(),
+        ))
+    }
+
+    fn solve_assuming(
+        &mut self,
+        scenario: &Scenario,
+        _request: &SolveRequest,
+    ) -> Result<Solved<'_>, Fault> {
+        let admitted: Vec<AnswerSet> = self
+            .sets
+            .iter()
+            .filter(|set| admits(scenario, set))
+            .cloned()
+            .collect();
+        Ok(Solved::running(
+            Box::new(Enumeration {
+                sets: admitted.into_iter(),
+                terminal: self.terminal,
+                ended: false,
+            }),
+            scenario.clone(),
+        ))
+    }
+
+    fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
+        Ok(())
+    }
+
+    fn ground_program(&self) -> Option<&GroundProgram> {
+        None
+    }
+}
+
+/// Build an agent over a backend that honours assumptions over `sets`, its search
+/// ending `terminal`, and hand it to `f` — the scenario-scoped sibling of
+/// [`with_agent`].
+pub fn with_hypothetical_agent<R>(
+    sets: Vec<AnswerSet>,
+    terminal: Conclusion,
+    f: impl FnOnce(&mut Agent<Hypothetical>) -> R,
+) -> R {
+    let mut agent = Agent::new(Program::empty(), Hypothetical { sets, terminal });
+    f(&mut agent)
+}
+
 /// Build a consistent world view over `sets`, whose search ended with `terminal`,
 /// and hand it to `f`. The agent lives for the call, so the world view — which
 /// borrows it — is valid throughout `f`, without a self-referential return.
