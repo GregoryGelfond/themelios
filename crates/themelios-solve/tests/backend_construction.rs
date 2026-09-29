@@ -1,10 +1,10 @@
 //! A backend outside `themelios-solve` builds the `Solved` its `solve` returns
 //! by wrapping its own enumeration in a `Run` and handing it to `Solved::running`
-//! (docs/design/solve.md §5.2) — the construction door the reference solver and
-//! the clingo adapter build their answers through. This test lives in `tests/`, a
-//! separate compilation unit, so it also proves the door and the run protocol are
-//! genuinely public: reachable by a backend author who is not inside this crate,
-//! which a `pub(crate)` protocol would not be.
+//! (docs/design/solve.md §5.2) — the construction door every backend, a native
+//! engine or the clingo adapter, builds its answers through. This test lives in
+//! `tests/`, a separate compilation unit, so it also proves the door and the run
+//! protocol are genuinely public: reachable by a backend author who is not inside
+//! this crate, which a `pub(crate)` protocol would not be.
 use themelios_program::program::Program;
 use themelios_program::symbol::{Name, Sign, Symbol};
 use themelios_solve::agent::{Agent, Scenario};
@@ -50,7 +50,7 @@ impl Run for Enumeration {
 }
 
 /// The smallest out-of-crate backend: it answers every question with a fixed,
-/// exhausted enumeration, standing in for the reference solver.
+/// exhausted enumeration, standing in for a real engine.
 struct Fixed {
     sets: Vec<AnswerSet>,
 }

@@ -1,6 +1,7 @@
 //! The themelios solve tier — the abstract-solver contract over the `Program`
-//! IR (design of record: `docs/design/solve.md`). Engine-free; the potassco
-//! adapter and the reference solver implement the `Backend` contract.
+//! IR (design of record: `docs/design/solve.md`). Engine-free: an engine enters
+//! as a backend implementing the `Backend` contract, held to it by the
+//! conformance suite.
 #![forbid(unsafe_code)]
 
 pub mod contract; // §4 — the Backend trait, Capabilities, the fault/locus vocabulary
