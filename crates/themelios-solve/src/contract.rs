@@ -57,7 +57,7 @@ use crate::outcome::{Consequences, Optimized, Solved};
 /// encodes that obligation as a provided default that refuses: a backend that
 /// declares the bit overrides the method, and one that does not inherits the
 /// typed refusal — a request beyond the declaration is a [`Fault`] at the
-/// request surface, never a silent degrade (§4.2) — with no method to write
+/// request surface, never a silent degrade (§4.1) — with no method to write
 /// for a capability it lacks. The remaining methods are provided outright and
 /// overridden by a capable engine: [`interrupt`], `None` unless the backend
 /// cancels; [`consequences_native`], refusing unless the backend has the
@@ -77,7 +77,11 @@ pub trait Backend {
     fn capabilities(&self) -> Capabilities;
 
     /// Required. Consistency and enumeration: the handle resolves the
-    /// trichotomy and streams the answer sets lazily (§5.2).
+    /// trichotomy and streams the answer sets lazily (§5.2). A request
+    /// carrying a time budget the backend does not declare enforcing
+    /// (`capabilities().budgets.time`) is refused at the request surface,
+    /// never solved without its budget — the silent degrade §4.1 forbids;
+    /// enforcement is a declared capability (§6.3).
     fn solve(&mut self, request: &SolveRequest) -> Result<Solved<'_>, Fault>;
 
     /// Required. The bridge (§10): consume a program through a door. On a
