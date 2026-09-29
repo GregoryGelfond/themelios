@@ -3,10 +3,10 @@
 //! which assumptions are responsible for a scenario's inconsistency — raw
 //! assumptions, not a named scenario — and travels as plain data; an
 //! unsatisfiability answers the blame question as an option, `Some` only for
-//! an assumption-scoped solve; and consequences are their own typed set, not
-//! an answer set, carrying the mode that produced them. The payloads are the
-//! engine's to build, so their value laws are pinned in the defining crate;
-//! here the surface's shape is.
+//! an assumption-scoped solve once the core derives it; and consequences are
+//! their own typed set, not an answer set, carrying the mode that produced
+//! them. The payloads are the core's to build, so their value laws are pinned
+//! in the defining crate; here the surface's shape is.
 
 use std::fmt::Debug;
 
@@ -101,7 +101,7 @@ fn an_unsatisfiability_travels_as_owned_plain_data() {
 #[test]
 fn an_unsatisfiability_answers_blame_as_an_optional_refutation() {
     // `Some` only for an assumption-scoped solve (§5.4); the payload is the
-    // engine's to build, so the law here is the question's shape.
+    // core's to build, so the law here is the question's shape.
     let _: fn(&Unsat) -> Option<Refutation> = Unsat::blame;
 }
 
