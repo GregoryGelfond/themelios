@@ -15,7 +15,6 @@
 //! vocabulary.
 
 use std::collections::BTreeSet;
-use std::marker::PhantomData;
 
 use crate::agent::{Assumption, Scenario};
 use crate::contract::{Fault, Mode};
@@ -126,10 +125,11 @@ impl Partial {
 
 /// The streaming/terminal-state protocol a backend's `solve` drives (docs/design/
 /// solve.md §5.2): the enumeration a backend wraps into the [`Solved`] it returns,
-/// built through [`Solved::running`]. A run holds only its own enumeration state
-/// and, where an engine is involved, a raw handle into it — never a Rust borrow of
-/// the backend — so the live handle, not the borrow checker, serialises engine
-/// access.
+/// built through [`Solved::running`]. A run holds its own enumeration state and
+/// whatever it reads of its engine — a raw handle, or a borrow for `'a`. The core
+/// reaches the engine only through this protocol, and `Backend::solve` returns the
+/// handle as `Solved<'_>`, borrowing the backend, so the borrow checker, not the
+/// live handle, serialises engine access (§6.1).
 /// A `Solved`/`Models` built over a run is `!Send`: a run may hold a raw engine
 /// handle whose control is single-threaded, and the protocol does not require a run
 /// to be `Send`, so the live handle stays on one thread by construction — a
@@ -177,12 +177,12 @@ pub(crate) enum DrainState {
 /// The live run behind a [`Solved`] or [`Models`] (docs/design/solve.md §5.2):
 /// the backend's in-flight enumeration with a one-model `lookahead`, the
 /// scenario it ranges over, and the drain state. It holds the run alone — no
-/// engine and no backend access — so a reading that needs a fresh solve, a
-/// consequence door or an epistemic reading, is the agent's (§6.2), never a
-/// drain of this stream. The handle carries the borrow of the engine the run
-/// reads from: a retained agent's, for the question that opened it, so the
-/// borrow checker is the lock against a second question while it lives (§6.1)
-/// — or `'static` over an ephemeral engine (§6.4).
+/// engine and no backend access — so a reading that needs a fresh solve — a
+/// consequence door, an epistemic reading — is the agent's (§6.2), never a
+/// drain of this stream. Its lifetime is the run's: the borrow `Backend::solve`
+/// takes of the backend — through an agent, the agent's, for the question that
+/// opened it, so the borrow checker is the lock against a second question while
+/// it lives (§6.1) — or `'static` when the run owns an ephemeral engine (§6.4).
 pub(crate) struct LiveRun<'a> {
     current: Option<Box<dyn Run + 'a>>,
     scenario: Scenario,
@@ -196,11 +196,6 @@ pub(crate) struct LiveRun<'a> {
     // survives an inspecting read (the borrowing resolver) keeps reporting the
     // fault rather than forgetting it once its pending item is taken.
     faulted: Option<Fault>,
-    // The borrow of the engine the run reads from — a retained agent's for the
-    // question that opened the run (§6.2), `'static` over an ephemeral engine
-    // (§6.4). The handle holds no engine itself (§5.2); the marker carries the
-    // borrow, so a run's raw handle into its engine cannot outlive it.
-    _engine: PhantomData<&'a mut ()>,
 }
 
 /// The trichotomy a live run reads off, before each arm is wrapped with its
@@ -349,7 +344,7 @@ impl<'a> Determination<'a> {
     pub(crate) fn of_live_ref<'b>(live: &'b mut LiveRun<'a>) -> Determination<'b> {
         match live.classify() {
             Class::Consistent => Determination::Consistent(Models::borrowed(live)),
-            // No blame yet, as the consuming resolver.
+            // No blame yet, as in the consuming resolver.
             Class::Inconsistent => Determination::Inconsistent(Unsat { blame: None }),
             Class::Inconclusive(conclusion) => {
                 Determination::Inconclusive(Partial::truncated(conclusion))
@@ -535,7 +530,6 @@ impl<'a> Solved<'a> {
                 drain: DrainState::Fresh,
                 witnessed: false,
                 faulted: None,
-                _engine: PhantomData,
             },
         }
     }
@@ -689,9 +683,11 @@ impl RunAccess for LiveRun<'_> {
     }
 }
 
-/// The `Consistent` payload (docs/design/solve.md §5.2): the live-engine-access
-/// handle the query tier reads. It OWNS the live run — a bare program's ephemeral
-/// engine (§6.4) — or BORROWS it from a retained `Solved`. It exposes the raw
+/// The `Consistent` payload (docs/design/solve.md §5.2): the live-run-access
+/// handle the query tier reads — no engine and no backend access. It OWNS the live
+/// run, from the consuming resolver `into_determination` (`'static` when the run
+/// owns a bare program's ephemeral engine, §6.4), or BORROWS it, from the
+/// inspecting `determination(&mut self)`. It exposes the raw
 /// material a world view drives (the member stream, `is_exhausted`, the
 /// `scenario`); the `Models<'a> → WorldView<'a>` transition lives on the query
 /// side (query.md §2.7), so this carries no world view of its own. Reached only
@@ -767,10 +763,10 @@ impl<'a> Models<'a> {
 // ---- Assumption blame (§5.4) ----
 
 /// The `Inconsistent` payload (docs/design/solve.md §5.1): the program has no
-/// answer set. It is the home of assumption blame (§5.4) — which of a
-/// scenario's assumptions are responsible — a question out of scope for a
-/// plain solve, which is not the same as answering it "none". Non-exhaustive:
-/// a payload that may grow.
+/// answer set — under a scenario, none the scenario admits. It is the home of
+/// assumption blame (§5.4): which of a scenario's assumptions are responsible;
+/// for a plain solve the question is out of scope, which is not the same as
+/// answering it "none". Non-exhaustive: a payload that may grow.
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Unsat {
@@ -780,9 +776,9 @@ pub struct Unsat {
 impl Unsat {
     /// Which assumptions are responsible (docs/design/solve.md §5.4) — the
     /// reading an assumption-scoped solve owes. Its derivation over
-    /// `solve_assuming` is not yet realised, so today every resolution, scoped
-    /// or not, answers `None`. `None` never says that no assumption is to
-    /// blame: that reading is [`Refutation::NotThese`]. Total; O(k) in the
+    /// `solve_assuming` is not yet realised, so every resolution, scoped or
+    /// not, answers `None` meanwhile. `None` never says that no assumption is
+    /// to blame: that reading is [`Refutation::NotThese`]. Total; O(k) in the
     /// assumptions named, which are cloned out.
     pub fn blame(&self) -> Option<Refutation> {
         self.blame.clone()
@@ -1116,7 +1112,7 @@ mod tests {
         answer_set(&[symbol])
     }
 
-    /// A live run over `run`, ranging over the empty scenario, engine reserved.
+    /// A live run over `run`, ranging over the empty scenario.
     fn live_with(run: Box<dyn Run>) -> LiveRun<'static> {
         LiveRun {
             current: Some(run),
@@ -1125,7 +1121,6 @@ mod tests {
             drain: DrainState::Fresh,
             witnessed: false,
             faulted: None,
-            _engine: PhantomData,
         }
     }
 

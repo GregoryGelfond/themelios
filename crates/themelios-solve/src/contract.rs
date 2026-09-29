@@ -110,8 +110,9 @@ pub trait Backend {
     }
 
     /// Required under `capabilities().assumptions`. Solve under a scenario
-    /// (§6.3); the core derives blame (§5.4) over this, so there is no
-    /// separate blame method. Refuses otherwise.
+    /// (§6.3). Blame (§5.4) is the core's reading over this, not the
+    /// backend's — its derivation not yet realised — so there is no separate
+    /// blame method. Refuses otherwise.
     fn solve_assuming(
         &mut self,
         _scenario: &Scenario,
