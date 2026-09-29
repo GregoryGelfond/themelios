@@ -9,12 +9,15 @@
 use std::collections::HashSet;
 
 use themelios_base::diagnostic::Label;
+use themelios_base::span::{ByteOffset, Location};
 use themelios_program::program::Part;
 use themelios_program::raise::raise_str;
-use themelios_program::{Dialect, Name, Origin, Program, Sign, Symbol};
-use themelios_solve::agent::{Interrupt, Scenario};
+use themelios_program::{Dialect, Name, Origin, Program, Sign, SourceId, Symbol};
+use themelios_solve::agent::{Assumption, Interrupt, Scenario};
 use themelios_solve::bridge::{Door, GroundProgram};
-use themelios_solve::conformance::{self, Breach, Capability, Check, ConformanceReport, Verdict};
+use themelios_solve::conformance::{
+    self, Breach, Capability, Check, ConformanceReport, Skip, Verdict,
+};
 use themelios_solve::contract::{
     Backend, Capabilities, ConsequenceRequest, ConsequenceSupport, Fault, GroundOptions, Locus,
     Mode, SolveRequest, TruthValue,
@@ -56,6 +59,21 @@ const POSITIVE_LOOP: &str = "a :- b. b :- a.";
 /// The head cycle, whose shifted disjunction admits no model.
 const HEAD_CYCLE: &str = "a ; b. a :- b. b :- a.";
 
+/// The positive loop constrained to hold `a`: no answer set, though its
+/// completion admits `{a, b}`.
+const CONSTRAINED_LOOP: &str = "a :- b. b :- a. :- not a.";
+
+/// The external program: its `a` is the one external atom in the table.
+const EXTERNAL: &str = "#external a. b :- a.";
+
+/// The rule the multi-shot probe lowers over the fact `a.`, with no reset
+/// between them.
+const RULE: &str = "b :- a.";
+
+/// A fact, then a fact over a variable nothing binds: no grounder can
+/// instantiate the second statement.
+const UNSAFE: &str = "a. p(X).";
+
 /// How the stub answers a program.
 enum Answers {
     /// These answer sets, known independently of any engine.
@@ -96,29 +114,43 @@ fn table() -> Vec<(&'static str, Program, Answers)> {
         ),
         (POSITIVE_LOOP, known(vec![set([])])),
         (HEAD_CYCLE, known(vec![set([constant("a"), constant("b")])])),
+        (CONSTRAINED_LOOP, known(vec![])),
+        (RULE, known(vec![set([])])),
         (
             "{ a }. #minimize { 1 : a }.",
             known(vec![set([]), set([constant("a")])]),
         ),
-        ("#external a. b :- a.", Answers::External),
-        ("p(X).", Answers::Unsafe),
+        (EXTERNAL, Answers::External),
+        (UNSAFE, Answers::Unsafe),
     ]
     .into_iter()
     .map(|(source, answers)| (source, program(source), answers))
     .collect()
 }
 
-/// The refusal of a program no grounder can instantiate: a program fault at the
-/// location of its statement.
-fn located_refusal(program: &Program) -> Fault {
-    let location = program
+/// Where each statement of `program` was parsed.
+fn parsed_locations(program: &Program) -> impl Iterator<Item = Location> + '_ {
+    program
         .statements()
         .flat_map(|node| node.provenance().origins())
-        .find_map(|origin| match origin {
+        .filter_map(|origin| match origin {
             Origin::Parsed(location) => Some(*location),
             _ => None,
         })
-        .expect("a raised statement is located");
+}
+
+/// The offset, within the unsafe program's text, of its atom over a variable
+/// nothing binds.
+fn unsafe_offset() -> ByteOffset {
+    let at = UNSAFE
+        .find("p(X)")
+        .expect("the unsafe program holds its unsafe atom");
+    ByteOffset::new(u32::try_from(at).expect("a short text"))
+}
+
+/// A program fault at `location`, as a backend refusing the unsafe program
+/// raises it.
+fn refusal_at(location: Location) -> Fault {
     Fault::program(
         "a variable nothing binds",
         Label {
@@ -128,13 +160,53 @@ fn located_refusal(program: &Program) -> Fault {
     )
 }
 
+/// The refusal of the program no grounder can instantiate: a program fault at
+/// the location of its unsafe statement.
+fn located_refusal(program: &Program) -> Fault {
+    let location = parsed_locations(program)
+        .find(|location| location.span.contains(unsafe_offset()))
+        .expect("the unsafe statement is located");
+    refusal_at(location)
+}
+
+/// The same refusal at the program's other statement, the leading fact — as an
+/// adapter mapping its engine's error to the wrong statement raises it.
+fn mislocated_refusal(program: &Program) -> Fault {
+    let location = parsed_locations(program)
+        .find(|location| !location.span.contains(unsafe_offset()))
+        .expect("the leading fact is located");
+    refusal_at(location)
+}
+
+/// The same refusal at the unsafe statement's offsets in a source the program
+/// is not — as an adapter reporting every location in its own text raises it.
+fn refusal_in_another_source(program: &Program) -> Fault {
+    let Location { span, .. } = parsed_locations(program)
+        .find(|location| location.span.contains(unsafe_offset()))
+        .expect("the unsafe statement is located");
+    refusal_at(Location {
+        source: SourceId::new(ANOTHER_SOURCE),
+        span,
+    })
+}
+
+/// A source id no suite program is raised under.
+const ANOTHER_SOURCE: u32 = 4242;
+
+/// The scenario fixing `a` to hold (`true`) or not to (`false`).
+fn fixing_a(holds: bool) -> Scenario {
+    let assumption = Assumption::new(constant("a"), holds).expect("a constant is an atom");
+    [assumption].into_iter().collect()
+}
+
 // ---- The stub ----
 
 /// A scripted enumeration: the answer sets, then the search's end, concluded as
-/// `terminal`.
+/// `terminal` — unless it `concludes` nothing, its search left open.
 struct Enumeration {
     sets: std::vec::IntoIter<AnswerSet>,
     terminal: Conclusion,
+    concludes: bool,
     ended: bool,
 }
 
@@ -148,17 +220,29 @@ impl Run for Enumeration {
     }
 
     fn conclusion(&self) -> Option<Conclusion> {
-        self.ended.then_some(self.terminal)
+        (self.ended && self.concludes).then_some(self.terminal)
     }
 }
+
+/// Past this many models, an endless run fails the test outright: the suite
+/// reads at most one model past a program's answer sets, so a read this far is
+/// the suite holding on — the hang its bound exists to prevent — stopped
+/// before it can fill memory.
+const ENDLESS_TRIPWIRE: usize = 1024;
 
 /// A search that yields the same model forever — the missing blocking clause.
 struct Endless {
     model: AnswerSet,
+    yielded: usize,
 }
 
 impl Run for Endless {
     fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+        self.yielded += 1;
+        assert!(
+            self.yielded <= ENDLESS_TRIPWIRE,
+            "the suite read {ENDLESS_TRIPWIRE} models of a run that never ends: its bound failed"
+        );
         Some(Ok(self.model.clone()))
     }
 
@@ -167,11 +251,11 @@ impl Run for Endless {
     }
 }
 
-/// A search whose engine dies after its first model: the model, then an engine
-/// fault, then the end, concluded as cut short.
+/// A search that faults: its first model, where it has one, then the fault,
+/// then the end, concluded as cut short.
 struct Faulting {
     first: Option<AnswerSet>,
-    faulted: bool,
+    fault: Option<Fault>,
 }
 
 impl Run for Faulting {
@@ -179,16 +263,45 @@ impl Run for Faulting {
         if let Some(first) = self.first.take() {
             return Some(Ok(first));
         }
-        if self.faulted {
-            return None;
-        }
-        self.faulted = true;
-        Some(Err(Fault::engine("the stub's engine died mid-search")))
+        self.fault.take().map(Err)
     }
 
     fn conclusion(&self) -> Option<Conclusion> {
-        self.faulted.then_some(Conclusion::Interrupted)
+        (self.first.is_none() && self.fault.is_none()).then_some(Conclusion::Interrupted)
     }
+}
+
+/// A search that, having ended, yields its first model once more — a stream
+/// that is not fused.
+struct Unfused {
+    sets: std::vec::IntoIter<AnswerSet>,
+    again: Option<AnswerSet>,
+    ended: bool,
+}
+
+impl Run for Unfused {
+    fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+        if self.ended {
+            return self.again.take().map(Ok);
+        }
+        let next = self.sets.next().map(Ok);
+        self.ended = next.is_none();
+        next
+    }
+
+    fn conclusion(&self) -> Option<Conclusion> {
+        self.ended.then_some(Conclusion::Exhausted)
+    }
+}
+
+/// When the stub grounds — and so refuses — the program no grounder can
+/// instantiate: at lowering, at the solve, or at the first model its search
+/// would yield, as a lazily grounding engine does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GroundsAt {
+    Lowering,
+    TheSolve,
+    TheFirstModel,
 }
 
 /// How a stub departs from the contract — one departure at a time, so each
@@ -207,6 +320,15 @@ enum Flaw {
     NeverEnds,
     /// Yields its first model, then faults at the engine.
     FaultsMidStream,
+    /// Faults at the engine before the first model of a program that has one.
+    FaultsBeforeAModel,
+    /// Yields its first model once more after its stream ended.
+    YieldsPastItsEnd,
+    /// Ends the stream of a program that has answer sets without concluding
+    /// its search.
+    LeavesItsSearchOpen,
+    /// Ranges a plain solve's models over a scenario fixing `a`.
+    RangesAPlainSolveOverAScenario,
     /// Yields the empty set for a program with no answer set.
     ReadsInconsistencyAsConsistency,
     /// Stops at its budget over a program with no answer set.
@@ -217,12 +339,16 @@ enum Flaw {
     /// Yields, as the first model of a program that has answer sets, a set that
     /// is none of them.
     YieldsAStranger,
-    /// Reads the positive loop by completion, with its unsupported model.
+    /// Reads the positive loops by completion, with their unsupported model.
     SolvesByCompletion,
     /// Reads the head cycle by shifting its disjunction, with no model.
     ShiftsTheHeadCycle,
     /// Refuses to lower every program.
     RefusesEveryProgram,
+    /// Refuses to lower the external program.
+    RefusesTheExternalProgram,
+    /// Refuses to lower the rule the multi-shot probe lowers over a fact.
+    RefusesTheRule,
     /// Refuses every unscoped solve.
     RefusesTheSolve,
     /// Exposes an empty ground program for every program.
@@ -231,6 +357,12 @@ enum Flaw {
     RefusesTheUnsafeProgramOffItsLocus,
     /// Accepts the program no grounder can instantiate.
     AcceptsTheUnsafeProgram,
+    /// Refuses the program no grounder can instantiate at the location of its
+    /// other statement.
+    LocatesTheFaultElsewhere,
+    /// Refuses the program no grounder can instantiate at its unsafe
+    /// statement's offsets, in another source.
+    LocatesTheFaultInAnotherSource,
     /// Answers `solve_assuming` without declaring `assumptions`.
     AnswersUndeclaredAssumptions,
     /// Refuses `solve_assuming`, undeclared, at the engine locus.
@@ -250,6 +382,12 @@ enum Flaw {
     /// Declares `assumptions` and reads each scenario's consistency rightly, yet
     /// witnesses a satisfiable one with the unscoped program's first model.
     WitnessesOutsideTheScenario,
+    /// Declares `assumptions`, yet drops an assumption on an atom no answer set
+    /// holds — in `solve_assuming` and, declaring the native door, there too.
+    DropsAnUnderivableAssumption,
+    /// Declares `assumptions`, yet a plain solve keeps the last scoped solve's
+    /// scenario.
+    LeaksTheScenario,
     /// Declares the native door, yet answers the brave consequences for the
     /// cautious.
     MisanswersTheNativeCautious,
@@ -259,11 +397,18 @@ enum Flaw {
     /// Declares the native door and `assumptions`, yet refuses a request
     /// carrying a scenario.
     RefusesTheNativeScenario,
-    /// Declares the native door and `assumptions`, yet its door ranges over the
-    /// whole program whatever the scenario.
+    /// Declares the native door and `assumptions`, yet where a scenario admits
+    /// some model, its door ranges over the whole program.
     IgnoresTheNativeScenario,
+    /// Declares the native door and `assumptions`, yet answers under a scenario
+    /// that admits no model.
+    AnswersAnUnsatisfiableScenario,
     /// Declares multi-shot solving, yet refuses `reset`.
     RefusesTheReset,
+    /// Declares multi-shot solving, yet its `lower` replaces what it keeps.
+    ReplacesWhatItLowers,
+    /// Declares multi-shot solving, yet its `reset` keeps what was lowered.
+    ResetsNothing,
     /// Answers `reset` without declaring multi-shot solving.
     AnswersAnUndeclaredReset,
     /// Answers `ground` without declaring multi-shot solving.
@@ -287,6 +432,11 @@ enum Flaw {
     OffersAnUndeclaredInterrupt,
     /// Answers a timed solve without declaring a time budget.
     AnswersAnUndeclaredTimedSolve,
+    /// Answers a timed `solve_assuming` without declaring a time budget.
+    AnswersAnUndeclaredTimedScopedSolve,
+    /// Declares a time budget, yet a timed solve yields a set that is no answer
+    /// set.
+    MisanswersATimedSolve,
     /// Registers an `@`-function without declaring `functions`.
     AnswersUndeclaredFunctions,
     /// Registers a propagator without declaring `propagators`.
@@ -307,6 +457,12 @@ struct Stub {
     a_holds: bool,
     /// The empty ground program a flawed stub exposes.
     nothing: GroundProgram,
+    /// When the stub grounds the program no grounder can instantiate.
+    grounds_at: GroundsAt,
+    /// That program's refusal, lowered but not yet grounded.
+    pending_refusal: Option<Fault>,
+    /// The last scoped solve's scenario, which a leaking stub keeps.
+    leaked: Scenario,
 }
 
 impl Stub {
@@ -319,7 +475,17 @@ impl Stub {
             loaded: Vec::new(),
             a_holds: false,
             nothing: GroundProgram::default(),
+            grounds_at: GroundsAt::Lowering,
+            pending_refusal: None,
+            leaked: Scenario::default(),
         }
+    }
+
+    /// This stub, grounding the program no grounder can instantiate at
+    /// `stage`.
+    fn grounding_at(mut self, stage: GroundsAt) -> Stub {
+        self.grounds_at = stage;
+        self
     }
 
     /// The source of the one program loaded, if one alone is.
@@ -330,17 +496,33 @@ impl Stub {
         }
     }
 
-    /// The answer sets of the program loaded.
+    /// The answer sets of what is loaded: one program, or the one accumulation
+    /// the suite lowers — the fact `a.`, then the rule over it.
     fn answer_sets(&self) -> Result<Vec<AnswerSet>, Fault> {
-        let [index] = self.loaded[..] else {
-            return Err(Fault::engine(if self.loaded.is_empty() {
-                "no program is loaded"
-            } else {
-                "several programs have accumulated"
-            }));
+        let (source, mut sets) = match self.loaded[..] {
+            [index] => (self.table[index].0, self.known(index)),
+            [fact, rule] if self.table[fact].0 == "a." && self.table[rule].0 == RULE => {
+                ("a. b :- a.", vec![set([constant("a"), constant("b")])])
+            }
+            [] => return Err(Fault::engine("no program is loaded")),
+            _ => return Err(Fault::engine("several programs have accumulated")),
         };
-        let (source, _, answers) = &self.table[index];
-        let mut sets = match answers {
+        match self.flaw {
+            Flaw::DropsAnAnswerSet if sets.len() > 1 => {
+                sets.pop();
+            }
+            Flaw::SolvesByCompletion if source == POSITIVE_LOOP || source == CONSTRAINED_LOOP => {
+                sets.push(set([constant("a"), constant("b")]));
+            }
+            Flaw::ShiftsTheHeadCycle if source == HEAD_CYCLE => sets.clear(),
+            _ => {}
+        }
+        Ok(sets)
+    }
+
+    /// The answer sets of the table's program at `index`.
+    fn known(&self, index: usize) -> Vec<AnswerSet> {
+        match &self.table[index].2 {
             Answers::Known(sets) => sets.clone(),
             Answers::External => vec![if self.a_holds {
                 set([constant("a"), constant("b")])
@@ -348,18 +530,7 @@ impl Stub {
                 set([])
             }],
             Answers::Unsafe => Vec::new(),
-        };
-        match self.flaw {
-            Flaw::DropsAnAnswerSet if sets.len() > 1 => {
-                sets.pop();
-            }
-            Flaw::SolvesByCompletion if *source == POSITIVE_LOOP => {
-                sets.push(set([constant("a"), constant("b")]));
-            }
-            Flaw::ShiftsTheHeadCycle if *source == HEAD_CYCLE => sets.clear(),
-            _ => {}
         }
-        Ok(sets)
     }
 
     /// The handle over `sets`, ranging over `scenario`: every set when the stub
@@ -375,6 +546,7 @@ impl Stub {
             return Solved::running(
                 Box::new(Endless {
                     model: sets.swap_remove(0),
+                    yielded: 0,
                 }),
                 scenario,
             );
@@ -383,11 +555,33 @@ impl Stub {
             return Solved::running(
                 Box::new(Faulting {
                     first: Some(sets.swap_remove(0)),
-                    faulted: false,
+                    fault: Some(Fault::engine("the stub's engine died mid-search")),
                 }),
                 scenario,
             );
         }
+        if self.flaw == Flaw::FaultsBeforeAModel && !sets.is_empty() {
+            return Solved::running(
+                Box::new(Faulting {
+                    first: None,
+                    fault: Some(Fault::engine(
+                        "the stub's engine died before its first model",
+                    )),
+                }),
+                scenario,
+            );
+        }
+        if self.flaw == Flaw::YieldsPastItsEnd && !sets.is_empty() {
+            return Solved::running(
+                Box::new(Unfused {
+                    again: sets.first().cloned(),
+                    sets: sets.into_iter(),
+                    ended: false,
+                }),
+                scenario,
+            );
+        }
+        let concludes = sets.is_empty() || self.flaw != Flaw::LeavesItsSearchOpen;
         let terminal = if sets.is_empty() && self.flaw == Flaw::LeavesTheSearchUndecided {
             Conclusion::Budget
         } else if !sets.is_empty() && self.flaw == Flaw::LeavesTheSpaceOpen {
@@ -406,6 +600,7 @@ impl Stub {
             Box::new(Enumeration {
                 sets: sets.into_iter(),
                 terminal,
+                concludes,
                 ended: false,
             }),
             scenario,
@@ -435,8 +630,34 @@ impl Backend for Stub {
         if self.flaw == Flaw::RefusesTheSolve {
             return Err(Fault::engine("the stub refuses to solve"));
         }
-        let sets = self.answer_sets()?;
-        Ok(self.enumerate(sets, Scenario::default()))
+        if let Some(refusal) = self.pending_refusal.clone() {
+            match self.grounds_at {
+                GroundsAt::TheSolve => return Err(refusal),
+                GroundsAt::TheFirstModel => {
+                    return Ok(Solved::running(
+                        Box::new(Faulting {
+                            first: None,
+                            fault: Some(refusal),
+                        }),
+                        Scenario::default(),
+                    ));
+                }
+                GroundsAt::Lowering => {}
+            }
+        }
+        if request.time.is_some() && self.flaw == Flaw::MisanswersATimedSolve {
+            return Ok(self.enumerate(vec![set([constant("stranger")])], Scenario::default()));
+        }
+        let mut sets = self.answer_sets()?;
+        if self.flaw == Flaw::LeaksTheScenario {
+            sets.retain(|set| admits(&self.leaked, set));
+        }
+        let ranged = if self.flaw == Flaw::RangesAPlainSolveOverAScenario {
+            fixing_a(true)
+        } else {
+            Scenario::default()
+        };
+        Ok(self.enumerate(sets, ranged))
     }
 
     fn lower(&mut self, door: Door<'_>) -> Result<(), Fault> {
@@ -451,20 +672,35 @@ impl Backend for Stub {
             .iter()
             .position(|(_, program, _)| program == lowered)
             .ok_or_else(|| Fault::engine("the program is outside the stub's table"))?;
+        if self.flaw == Flaw::RefusesTheExternalProgram && self.table[index].0 == EXTERNAL {
+            return Err(Fault::engine("the stub declares no external atom"));
+        }
+        if self.flaw == Flaw::RefusesTheRule && self.table[index].0 == RULE {
+            return Err(Fault::engine("the stub lowers no rule over a fact"));
+        }
+        let mut pending = None;
         if matches!(self.table[index].2, Answers::Unsafe) {
             match self.flaw {
                 Flaw::AcceptsTheUnsafeProgram => {}
                 Flaw::RefusesTheUnsafeProgramOffItsLocus => {
                     return Err(Fault::engine("a variable nothing binds"));
                 }
-                _ => return Err(located_refusal(lowered)),
+                Flaw::LocatesTheFaultElsewhere => return Err(mislocated_refusal(lowered)),
+                Flaw::LocatesTheFaultInAnotherSource => {
+                    return Err(refusal_in_another_source(lowered));
+                }
+                _ if self.grounds_at == GroundsAt::Lowering => {
+                    return Err(located_refusal(lowered));
+                }
+                _ => pending = Some(located_refusal(lowered)),
             }
         }
-        if self.capabilities.multi_shot {
+        if self.capabilities.multi_shot && self.flaw != Flaw::ReplacesWhatItLowers {
             self.loaded.push(index);
         } else {
             self.loaded = vec![index];
         }
+        self.pending_refusal = pending;
         Ok(())
     }
 
@@ -484,7 +720,7 @@ impl Backend for Stub {
     fn solve_assuming(
         &mut self,
         scenario: &Scenario,
-        _request: &SolveRequest,
+        request: &SolveRequest,
     ) -> Result<Solved<'_>, Fault> {
         let answers = match self.flaw {
             Flaw::AnswersUndeclaredAssumptions => true,
@@ -497,7 +733,27 @@ impl Backend for Stub {
             }
             return Err(Fault::unsupported());
         }
+        if request.time.is_some()
+            && !self.capabilities.budgets.time
+            && self.flaw != Flaw::AnswersAnUndeclaredTimedScopedSolve
+        {
+            return Err(Fault::unsupported());
+        }
+        let request_scenario = scenario;
         let all = self.answer_sets()?;
+        if self.flaw == Flaw::LeaksTheScenario {
+            self.leaked = scenario.clone();
+        }
+        let honoured: Scenario = if self.flaw == Flaw::DropsAnUnderivableAssumption {
+            scenario
+                .assumptions()
+                .filter(|assumption| all.iter().any(|set| set.contains(assumption.atom())))
+                .cloned()
+                .collect()
+        } else {
+            scenario.clone()
+        };
+        let scenario = &honoured;
         let admitted: Vec<AnswerSet> = match self.flaw {
             Flaw::LosesTheScenariosModels => Vec::new(),
             Flaw::IgnoresTheScenario => all,
@@ -528,7 +784,7 @@ impl Backend for Stub {
         let ranged = if self.flaw == Flaw::MisplacesTheScenario {
             Scenario::default()
         } else {
-            scenario.clone()
+            request_scenario.clone()
         };
         Ok(self.enumerate(admitted, ranged))
     }
@@ -554,8 +810,7 @@ impl Backend for Stub {
             _ => {}
         }
         // The external program's `a` is the one external atom in the table.
-        let external_a =
-            self.loaded_source() == Some("#external a. b :- a.") && external == constant("a");
+        let external_a = self.loaded_source() == Some(EXTERNAL) && external == constant("a");
         if external_a {
             self.a_holds = value == TruthValue::True && self.flaw != Flaw::IgnoresTheAssignment;
             Ok(())
@@ -569,9 +824,11 @@ impl Backend for Stub {
     fn reset(&mut self) -> Result<(), Fault> {
         match (self.capabilities.multi_shot, self.flaw) {
             (true, Flaw::RefusesTheReset) => Err(Fault::engine("the stub cannot reset")),
+            (true, Flaw::ResetsNothing) => Ok(()),
             (false, Flaw::AnswersAnUndeclaredReset) | (true, _) => {
                 self.loaded.clear();
                 self.a_holds = false;
+                self.pending_refusal = None;
                 Ok(())
             }
             (false, _) => Err(Fault::unsupported()),
@@ -608,12 +865,31 @@ impl Backend for Stub {
             return Err(Fault::request("the stub's door ranges over no scenario"));
         }
         let scoped = self.flaw != Flaw::IgnoresTheNativeScenario;
-        let sets: Vec<AnswerSet> = self
-            .answer_sets()?
-            .into_iter()
-            .filter(|set| !scoped || admits(&request.scenario, set))
+        let all = self.answer_sets()?;
+        let honoured: Scenario = if self.flaw == Flaw::DropsAnUnderivableAssumption {
+            request
+                .scenario
+                .assumptions()
+                .filter(|assumption| all.iter().any(|set| set.contains(assumption.atom())))
+                .cloned()
+                .collect()
+        } else {
+            request.scenario.clone()
+        };
+        let admitted: Vec<AnswerSet> = all
+            .iter()
+            .filter(|set| admits(&honoured, set))
+            .cloned()
             .collect();
-        if sets.is_empty() && self.flaw != Flaw::AnswersTheConsequencesOfNoModel {
+        let sets = if scoped || admitted.is_empty() {
+            admitted
+        } else {
+            all
+        };
+        let scoped_request = request.scenario.assumptions().next().is_some();
+        let answers_anyway = self.flaw == Flaw::AnswersTheConsequencesOfNoModel
+            || (scoped_request && self.flaw == Flaw::AnswersAnUnsatisfiableScenario);
+        if sets.is_empty() && !answers_anyway {
             return Err(Fault::request(
                 "no consequences: the program has no answer set",
             ));
@@ -719,9 +995,12 @@ fn failures(report: &ConformanceReport) -> HashSet<(Check, Breach)> {
 /// fails, each with how.
 type Expectation = (Flaw, Capabilities, Vec<(Check, Breach)>);
 
-/// Whether the report's verdict on `check` is a skip.
-fn skipped(report: &ConformanceReport, check: Check) -> bool {
-    matches!(report.verdict(check), Some(Verdict::Skipped(_)))
+/// The reason the report skipped `check`, if it did.
+fn skip(report: &ConformanceReport, check: Check) -> Option<&Skip> {
+    match report.verdict(check) {
+        Some(Verdict::Skipped(skip)) => Some(skip),
+        _ => None,
+    }
 }
 
 // ---- A conforming backend conforms ----
@@ -771,10 +1050,32 @@ fn every_capability_declared_alone_conforms() {
     for capability in REALISABLE {
         let report = report(only(capability), Flaw::Faithful);
         assert!(report.is_conformant(), "{capability}: {report}");
+    }
+}
+
+#[test]
+fn every_capability_declared_alone_passes_its_own_check() {
+    for capability in REALISABLE {
+        let report = report(only(capability), Flaw::Faithful);
         assert_eq!(
             report.verdict(Check::Capability(capability)),
             Some(&Verdict::Passed),
             "{capability}: {report}",
+        );
+    }
+}
+
+#[test]
+fn a_backend_grounding_lazily_still_locates_its_refusal() {
+    // An engine that grounds as it searches refuses the program no grounder
+    // can instantiate at the solve, or at the first model, not at lowering.
+    for grounding in [GroundsAt::TheSolve, GroundsAt::TheFirstModel] {
+        let report =
+            conformance::run(&mut Stub::new(enumerating(), Flaw::Faithful).grounding_at(grounding));
+        assert_eq!(
+            report.verdict(Check::ProgramFaultIsLocated),
+            Some(&Verdict::Passed),
+            "{grounding:?}: {report}",
         );
     }
 }
@@ -793,8 +1094,9 @@ fn the_structural_pathologies_are_attempted() {
 #[test]
 fn the_cancellation_check_is_skipped_while_no_search_can_be_cancelled() {
     let report = report(realising(), Flaw::Faithful);
-    assert!(
-        skipped(&report, Check::CancellationIsNotExhaustion),
+    assert_eq!(
+        skip(&report, Check::CancellationIsNotExhaustion),
+        Some(&Skip::Reserved),
         "{report}"
     );
 }
@@ -802,14 +1104,19 @@ fn the_cancellation_check_is_skipped_while_no_search_can_be_cancelled() {
 #[test]
 fn an_unexposed_ground_program_skips_its_faithfulness() {
     let report = report(enumerating(), Flaw::Faithful);
-    assert!(skipped(&report, Check::GroundProgramIsFaithful), "{report}");
+    assert_eq!(
+        skip(&report, Check::GroundProgramIsFaithful),
+        Some(&Skip::NoGroundProgram),
+        "{report}"
+    );
 }
 
 #[test]
 fn the_non_external_refusal_binds_only_a_multi_shot_backend() {
     let report = report(enumerating(), Flaw::Faithful);
-    assert!(
-        skipped(&report, Check::NonExternalAssignmentRefuses),
+    assert_eq!(
+        skip(&report, Check::NonExternalAssignmentRefuses),
+        Some(&Skip::Undeclared(Capability::MultiShot)),
         "{report}"
     );
 }
@@ -817,10 +1124,38 @@ fn the_non_external_refusal_binds_only_a_multi_shot_backend() {
 #[test]
 fn an_undeclared_externals_bit_binds_nothing() {
     let report = report(only(Capability::MultiShot), Flaw::Faithful);
-    assert!(
-        skipped(&report, Check::Capability(Capability::Externals)),
+    assert_eq!(
+        skip(&report, Check::Capability(Capability::Externals)),
+        Some(&Skip::Undeclared(Capability::Externals)),
         "{report}"
     );
+}
+
+#[test]
+fn a_stream_cut_short_leaves_exhaustion_undriven() {
+    // A stream that runs past its bound, or faults, has concluded nothing the
+    // exhaustion check could judge; outcome correctness fails it instead.
+    for flaw in [Flaw::NeverEnds, Flaw::FaultsMidStream] {
+        let report = report(enumerating(), flaw);
+        assert!(
+            matches!(
+                skip(&report, Check::ExhaustionIsEarned),
+                Some(Skip::Undriven(_))
+            ),
+            "{flaw:?}: {report}"
+        );
+    }
+}
+
+#[test]
+fn an_undriven_check_carries_the_backend_s_refusal() {
+    // A refused program fails outcome correctness; the checks it leaves
+    // undriven are skipped with the refusal, the backend's fault and all.
+    let report = report(enumerating(), Flaw::RefusesEveryProgram);
+    let Some(Skip::Undriven(failure)) = skip(&report, Check::ExhaustionIsEarned) else {
+        panic!("the refused program leaves exhaustion undriven: {report}");
+    };
+    assert_eq!(failure.fault().map(Fault::locus), Some(Locus::Engine));
 }
 
 // ---- A broken backend fails exactly the checks that name its break ----
@@ -850,9 +1185,51 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
         ),
         (Flaw::NeverEnds, enumerating(), vec![(Outcome, Misanswered)]),
         (
+            Flaw::NeverEnds,
+            realising(),
+            vec![
+                (Outcome, Misanswered),
+                (Declared(C::Assumptions), Misanswered),
+                (Declared(C::MultiShot), Misanswered),
+                (Declared(C::Externals), Misanswered),
+            ],
+        ),
+        (
             Flaw::FaultsMidStream,
             enumerating(),
             vec![(Outcome, Refused)],
+        ),
+        (
+            // Every probe that reads a stream finds it faulting; the budget's
+            // probe finds no solve that reads the fact, so it is undriven.
+            Flaw::FaultsMidStream,
+            realising(),
+            vec![
+                (Outcome, Refused),
+                (Declared(C::Assumptions), Refused),
+                (Declared(C::MultiShot), Refused),
+                (Declared(C::Externals), Refused),
+            ],
+        ),
+        (
+            Flaw::FaultsBeforeAModel,
+            enumerating(),
+            vec![(Outcome, Refused)],
+        ),
+        (
+            Flaw::YieldsPastItsEnd,
+            enumerating(),
+            vec![(Outcome, Misanswered)],
+        ),
+        (
+            Flaw::LeavesItsSearchOpen,
+            deciding(),
+            vec![(Outcome, Misanswered)],
+        ),
+        (
+            Flaw::RangesAPlainSolveOverAScenario,
+            enumerating(),
+            vec![(Outcome, Misanswered)],
         ),
         (
             Flaw::ReadsInconsistencyAsConsistency,
@@ -880,6 +1257,11 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             vec![(Outcome, Misanswered)],
         ),
         (
+            Flaw::SolvesByCompletion,
+            deciding(),
+            vec![(Outcome, Misanswered)],
+        ),
+        (
             Flaw::ShiftsTheHeadCycle,
             enumerating(),
             vec![(Outcome, Misanswered), (Earned, Misanswered)],
@@ -888,6 +1270,16 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             Flaw::RefusesEveryProgram,
             enumerating(),
             vec![(Outcome, Refused), (Located, Mislocated)],
+        ),
+        (
+            Flaw::RefusesTheExternalProgram,
+            realising(),
+            vec![(Declared(C::Externals), Refused)],
+        ),
+        (
+            Flaw::RefusesTheRule,
+            realising(),
+            vec![(Declared(C::MultiShot), Refused)],
         ),
         (
             Flaw::RefusesTheSolve,
@@ -908,6 +1300,16 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             Flaw::AcceptsTheUnsafeProgram,
             enumerating(),
             vec![(Located, Accepted)],
+        ),
+        (
+            Flaw::LocatesTheFaultElsewhere,
+            enumerating(),
+            vec![(Located, Mislocated)],
+        ),
+        (
+            Flaw::LocatesTheFaultInAnotherSource,
+            enumerating(),
+            vec![(Located, Mislocated)],
         ),
         (
             Flaw::AnswersUndeclaredAssumptions,
@@ -960,6 +1362,19 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             vec![(Declared(C::Assumptions), Misanswered)],
         ),
         (
+            Flaw::DropsAnUnderivableAssumption,
+            realising(),
+            vec![
+                (Declared(C::Assumptions), Misanswered),
+                (Declared(C::NativeConsequences), Misanswered),
+            ],
+        ),
+        (
+            Flaw::LeaksTheScenario,
+            deciding_under_assumptions(),
+            vec![(Declared(C::Assumptions), Misanswered)],
+        ),
+        (
             Flaw::MisanswersTheNativeCautious,
             realising(),
             vec![(Declared(C::NativeConsequences), Misanswered)],
@@ -967,6 +1382,11 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
         (
             Flaw::AnswersTheConsequencesOfNoModel,
             realising(),
+            vec![(Declared(C::NativeConsequences), Misanswered)],
+        ),
+        (
+            Flaw::AnswersTheConsequencesOfNoModel,
+            only(Capability::NativeConsequences),
             vec![(Declared(C::NativeConsequences), Misanswered)],
         ),
         (
@@ -980,9 +1400,31 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             vec![(Declared(C::NativeConsequences), Misanswered)],
         ),
         (
+            Flaw::AnswersAnUnsatisfiableScenario,
+            realising(),
+            vec![(Declared(C::NativeConsequences), Misanswered)],
+        ),
+        (
             Flaw::RefusesTheReset,
             realising(),
             vec![(Outcome, Refused), (Declared(C::MultiShot), Refused)],
+        ),
+        (
+            Flaw::ReplacesWhatItLowers,
+            realising(),
+            vec![(Declared(C::MultiShot), Misanswered)],
+        ),
+        (
+            // Every program after the first piles onto it, so every check that
+            // reloads fails with outcome correctness.
+            Flaw::ResetsNothing,
+            realising(),
+            vec![
+                (Outcome, Refused),
+                (Declared(C::NativeConsequences), Refused),
+                (Declared(C::Assumptions), Refused),
+                (Declared(C::Externals), Refused),
+            ],
         ),
         (
             Flaw::AnswersAnUndeclaredReset,
@@ -1035,6 +1477,16 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             vec![(Declared(C::TimeBudget), Accepted)],
         ),
         (
+            Flaw::AnswersAnUndeclaredTimedScopedSolve,
+            only(Capability::Assumptions),
+            vec![(Declared(C::TimeBudget), Accepted)],
+        ),
+        (
+            Flaw::MisanswersATimedSolve,
+            only(Capability::TimeBudget),
+            vec![(Declared(C::TimeBudget), Misanswered)],
+        ),
+        (
             Flaw::AnswersUndeclaredFunctions,
             enumerating(),
             vec![(Declared(C::Functions), Accepted)],
@@ -1045,11 +1497,17 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             vec![(Declared(C::Propagators), Accepted)],
         ),
     ];
-    for (flaw, declared, expected) in table {
-        let report = report(declared, flaw);
-        let expected: HashSet<(Check, Breach)> = expected.into_iter().collect();
-        assert_eq!(failures(&report), expected, "{flaw:?}: {report}");
-    }
+    let mismatched: Vec<String> = table
+        .into_iter()
+        .filter_map(|(flaw, declared, expected)| {
+            let report = report(declared, flaw);
+            let expected: HashSet<(Check, Breach)> = expected.into_iter().collect();
+            let failed = failures(&report);
+            (failed != expected)
+                .then(|| format!("{flaw:?}: expected {expected:?}, failed {failed:?}\n{report}"))
+        })
+        .collect();
+    assert!(mismatched.is_empty(), "{}", mismatched.join("\n"));
 }
 
 #[test]
@@ -1075,12 +1533,18 @@ fn a_failure_names_the_corpus_program_it_broke_on() {
 
 #[test]
 fn a_faulted_stream_s_failure_carries_the_fault() {
-    let report = report(enumerating(), Flaw::FaultsMidStream);
-    let Some(Verdict::Failed(failure)) = report.verdict(Check::OutcomeCorrectness) else {
-        panic!("the faulted stream fails its outcome: {report}");
-    };
-    assert_eq!(failure.breach(), Breach::Refused);
-    assert_eq!(failure.fault().map(Fault::locus), Some(Locus::Engine));
+    // Whether the engine dies before the first model or after it.
+    for flaw in [Flaw::FaultsBeforeAModel, Flaw::FaultsMidStream] {
+        let report = report(enumerating(), flaw);
+        let Some(Verdict::Failed(failure)) = report.verdict(Check::OutcomeCorrectness) else {
+            panic!("{flaw:?}: the faulted stream fails its outcome: {report}");
+        };
+        assert_eq!(
+            failure.fault().map(Fault::locus),
+            Some(Locus::Engine),
+            "{flaw:?}"
+        );
+    }
 }
 
 #[test]

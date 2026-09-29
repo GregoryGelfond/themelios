@@ -4,24 +4,27 @@
 //! engine, each capability as declared, and the pathologies the vocabulary
 //! forbids (§5.3) — and returns a [`ConformanceReport`]: typed data, one
 //! [`Verdict`] per [`Check`], a failure carrying how the backend broke the
-//! obligation, the corpus program it broke it on, and the backend's own fault —
-//! never prose a consumer parses (§1.3).
+//! obligation, the corpus program it broke it on, and the backend's own fault,
+//! a skip carrying why the check did not bind — never prose a consumer parses
+//! (§1.3).
 //!
 //! The suite checks what the compiler cannot. **Outcome correctness:** each
 //! corpus program's determination is its known one, and — where the backend
 //! enumerates — its answer sets are exactly its known ones, its search closing
-//! the space. The corpus holds the programs a shortcut semantics gets wrong: a
-//! positive loop, which completion reads with an unsupported model, and a head
-//! cycle, which shifting the disjunction reads with none. **The `enumeration`
+//! the space; every stream ends for good once it ends, its search concluded.
+//! The corpus holds the programs a shortcut semantics gets wrong: a positive
+//! loop, which completion reads with an unsupported model, the same loop
+//! constrained to hold, which completion reads as consistent, and a head cycle,
+//! which shifting the disjunction reads with no model. **The `enumeration`
 //! bit's soundness obligation** (§4.1): a search concluded as closing the space
 //! yielded every answer set there is. **Capability honesty, in both directions**
 //! (§4.1, §4.2): a declared capability's method answers, and answers rightly — a
 //! provided method needs no override, so a declared bit whose method still
 //! refuses is a lie the type cannot see — and an undeclared one's refuses at the
 //! request locus, never degrading silently. **Fault loci:** a program the backend
-//! cannot ground is refused at the program locus, which carries the statement's
-//! source location (§5.4); assigning an atom that is not external is refused at
-//! the request locus, never the silent no-op an engine may give. **The ground
+//! cannot ground is refused at the program locus, located at the statement that
+//! cannot be grounded (§5.4); assigning an atom that is not external is refused
+//! at the request locus, never the silent no-op an engine may give. **The ground
 //! program's provenance,** where the backend exposes one (§10.4): every ground
 //! rule attributed to a statement of the program it grounds, and a fact never
 //! grounded to nothing.
@@ -37,16 +40,21 @@
 //! the interrupt handle is reserved, so no search can yet be cancelled through
 //! it.
 //!
-//! Every stream the suite reads is bounded by the answer sets its program has, so
-//! a run that yields past them — one that never ends — fails the check at that
-//! bound rather than holding the suite. A check the suite cannot drive over a
-//! backend — its program refused, say — is skipped, with the reason; the check
-//! whose obligation the refusal breaks fails.
+//! Every stream the suite reads, it reads to one model past its program's
+//! answer sets, so a run that never ends is caught at that bound rather than
+//! holding the suite: outcome correctness fails it there, as does a capability's
+//! probe. A check that cannot be driven over a backend — its program refused,
+//! its stream faulted or run past its bound — is skipped with the failure that
+//! stopped it, and the check that owns that failure fails. A capability's own
+//! probe program refused fails that capability's check, though: only a backend
+//! with the capability need carry it, so no other check would.
 
 use std::collections::BTreeSet;
 use std::fmt;
 use std::time::Duration;
 
+use themelios_base::diagnostic::ToDiagnostic;
+use themelios_base::span::{ByteOffset, Location};
 use themelios_program::raise::{raise_source, raise_str};
 use themelios_program::{Dialect, Name, Origin, Program, Sign, Source, SourceId, Symbol};
 
@@ -305,10 +313,8 @@ pub enum Verdict {
     Passed,
     /// The backend breaks the obligation, as the failure says.
     Failed(Failure),
-    /// The obligation does not bind the backend — it rests on a capability the
-    /// backend does not declare, or the suite could not drive it over this
-    /// backend; the message says which.
-    Skipped(String),
+    /// The obligation does not bind the backend, for the reason the skip gives.
+    Skipped(Skip),
 }
 
 impl fmt::Display for Verdict {
@@ -317,7 +323,41 @@ impl fmt::Display for Verdict {
         match self {
             Verdict::Passed => f.write_str("passed"),
             Verdict::Failed(failure) => write!(f, "failed — {failure}"),
-            Verdict::Skipped(why) => write!(f, "skipped — {why}"),
+            Verdict::Skipped(skip) => write!(f, "skipped — {skip}"),
+        }
+    }
+}
+
+/// Why a check did not bind a backend (docs/design/solve.md §13.1) — typed, so
+/// a consumer can accept one kind of skip and refuse another (a check the
+/// backend's own refusal left undriven, say), with the sentence a person reads
+/// as its `Display`. Non-exhaustive: a reason the suite comes to give is a new
+/// variant, not a migration.
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Skip {
+    /// The obligation rests on a capability the backend does not declare.
+    Undeclared(Capability),
+    /// The obligation rests on a ground program the backend does not expose.
+    NoGroundProgram,
+    /// The contract reserves what the check needs — the interrupt handle — so
+    /// no backend can yet be driven through it.
+    Reserved,
+    /// The backend refused, faulted, or ran on at a step before the obligation,
+    /// as the failure says — a failure the check that owns that step reports.
+    Undriven(Failure),
+}
+
+impl fmt::Display for Skip {
+    /// The reason, as a phrase.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Skip::Undeclared(capability) => write!(f, "the backend does not declare {capability}"),
+            Skip::NoGroundProgram => f.write_str("the backend exposes no ground program"),
+            Skip::Reserved => f.write_str(
+                "the contract reserves the interrupt handle, so no search can yet be cancelled through it",
+            ),
+            Skip::Undriven(failure) => write!(f, "could not be driven: {failure}"),
         }
     }
 }
@@ -476,16 +516,34 @@ const FACT: &str = "a.";
 /// smallest program a scenario fixing `a` narrows.
 const EVEN_LOOP: &str = "a :- not b. b :- not a.";
 
-/// A choice under an objective: `solve` reads its answer sets `{}` and `{a}`
-/// whatever the objective (§5.2); `optimize` proves `{}` optimal.
+/// A choice under an objective, whose proven optimum is `{}` — the program the
+/// optimization probe asks `optimize` about.
 const OPTIMIZATION: &str = "{ a }. #minimize { 1 : a }.";
+
+/// The positive loop over `a` and `b`: one answer set, `{}` — completion also
+/// admits the unsupported `{a, b}`.
+const POSITIVE_LOOP: &str = "a :- b. b :- a.";
+
+/// The positive loop constrained to hold `a`: no answer set, though completion
+/// admits `{a, b}`.
+const CONSTRAINED_LOOP: &str = "a :- b. b :- a. :- not a.";
+
+/// The rule the multi-shot probe lowers over the fact `a.`, with no reset
+/// between them: together, `{a, b}`.
+const RULE: &str = "b :- a.";
 
 /// An external atom and a rule over it: `{a, b}` while `a` is assigned true,
 /// `{}` while it is assigned false.
 const EXTERNAL: &str = "#external a. b :- a.";
 
-/// A fact over a variable nothing binds: no grounder can instantiate it.
-const UNSAFE: &str = "p(X).";
+/// A fact, then a fact over a variable nothing binds: no grounder can
+/// instantiate the second statement, so a refusal is located at it, not at the
+/// program's start.
+const UNSAFE: &str = "a. p(X).";
+
+/// The source id the unsafe program is raised under: one no corpus program has
+/// (theirs count up from zero), so a location in any of them is not its own.
+const UNSAFE_SOURCE: SourceId = SourceId::new(u32::MAX);
 
 /// The corpus: small programs whose answer sets are known independently of any
 /// engine, each raised under its own source id.
@@ -523,7 +581,9 @@ fn corpus() -> Vec<Case> {
             vec![answer_set([p(1), p(2), q(1), q(2)])],
         ),
         // Completion admits the unsupported {a, b}; the stable reading is {}.
-        ("a positive loop", "a :- b. b :- a.", vec![answer_set([])]),
+        ("a positive loop", POSITIVE_LOOP, vec![answer_set([])]),
+        // Completion admits {a, b}; the stable reading has no answer set.
+        ("a constrained positive loop", CONSTRAINED_LOOP, vec![]),
         // Shifting the disjunction leaves no answer set; the stable reading is
         // {a, b}.
         (
@@ -549,53 +609,85 @@ fn corpus() -> Vec<Case> {
 
 // ---- Driving a backend ----
 
-/// Why a per-case check stopped short of holding on a case.
-enum Stop {
+/// Why a per-case check fell short of holding on a case.
+enum Shortfall {
     /// The backend broke the obligation.
     Broke(Failure),
-    /// The check could not be driven over the case, as the refusal to drive it
-    /// says — a failure of no obligation this check holds.
+    /// The check could not be driven over the case, as the failure to drive it
+    /// says — a breach of no obligation this check holds.
     Undriven(Failure),
 }
 
 /// The verdict of a per-case check over the corpus: the first case it finds
 /// broken, named; otherwise skipped with the first case it could not drive, if
 /// any; otherwise passed.
-fn over_corpus(corpus: &[Case], mut check: impl FnMut(&Case) -> Result<(), Stop>) -> Verdict {
+fn over_corpus(corpus: &[Case], mut check: impl FnMut(&Case) -> Result<(), Shortfall>) -> Verdict {
     let mut undrivable = None;
     for case in corpus {
         match check(case) {
             Ok(()) => {}
-            Err(Stop::Broke(failure)) => return Verdict::Failed(failure.on(case.name)),
-            Err(Stop::Undriven(why)) => {
-                undrivable.get_or_insert_with(|| format!("{}: {why}", case.name));
+            Err(Shortfall::Broke(failure)) => return Verdict::Failed(failure.on(case.name)),
+            Err(Shortfall::Undriven(failure)) => {
+                undrivable.get_or_insert_with(|| failure.on(case.name));
             }
         }
     }
-    undrivable.map_or(Verdict::Passed, Verdict::Skipped)
+    undrivable.map_or(Verdict::Passed, |failure| {
+        Verdict::Skipped(Skip::Undriven(failure))
+    })
 }
 
-/// Load `program` — raised from `source` — as the whole of what the backend
-/// reasons over (§6.2): on a multi-shot backend, whose `lower` accumulates, a
-/// `reset` first. The refusal names the step refused.
-fn load(backend: &mut dyn Backend, program: &Program, source: &str) -> Result<(), Failure> {
+/// Clear what a multi-shot backend has accumulated, so the next program is the
+/// whole of what it reasons over (§6.2) — `lower` accumulates there. The
+/// refusal names the step.
+fn reset_to_load(backend: &mut dyn Backend) -> Result<(), Failure> {
     if backend.capabilities().multi_shot {
         backend.reset().map_err(|fault| {
             Failure::new(Breach::Refused, "the reset before loading was refused").with_fault(fault)
         })?;
     }
-    backend.lower(Door::Program(program)).map_err(|fault| {
-        Failure::new(
-            Breach::Refused,
-            format!("the program `{source}` was refused"),
-        )
-        .with_fault(fault)
-    })
+    Ok(())
+}
+
+/// Lower `program`, raised from `source`, as one more program the backend
+/// reasons over; the refusal names the program.
+fn lower_program(
+    backend: &mut dyn Backend,
+    program: &Program,
+    source: &str,
+) -> Result<(), Failure> {
+    backend
+        .lower(Door::Program(program))
+        .map_err(|fault| Failure::new(Breach::Refused, refused_program(source)).with_fault(fault))
+}
+
+/// The refusal of the program `source`, as a phrase.
+fn refused_program(source: &str) -> String {
+    if source.is_empty() {
+        "the empty program was refused".to_owned()
+    } else {
+        format!("the program `{source}` was refused")
+    }
+}
+
+/// Load `program` — raised from `source` — as the whole of what the backend
+/// reasons over: the reset a multi-shot backend needs, then the program.
+fn load(backend: &mut dyn Backend, program: &Program, source: &str) -> Result<(), Failure> {
+    reset_to_load(backend)?;
+    lower_program(backend, program, source)
 }
 
 /// Load the program `source` denotes, as [`load`] does.
 fn load_source(backend: &mut dyn Backend, source: &str) -> Result<(), Failure> {
     load(backend, &program_of(source), source)
+}
+
+/// Load a capability's own probe program: a refused reset leaves the method
+/// unprobed, but the program refused is the capability's own refusal — only a
+/// backend with the capability need carry it, so no other check would see it.
+fn load_own(backend: &mut dyn Backend, source: &str) -> Result<(), Response> {
+    reset_to_load(backend).map_err(Response::Unprobed)?;
+    lower_program(backend, &program_of(source), source).map_err(Response::ProgramRefused)
 }
 
 /// Solve the loaded program, the refusal as a failure.
@@ -644,31 +736,41 @@ fn consistency(consistent: bool) -> &'static str {
 
 // ---- The checks ----
 
-/// Each corpus program's determination is its known one; where the backend
-/// declares `enumeration`, its answer sets are exactly its known ones and its
-/// search closes the space, and where it does not, every model it yields is one
-/// of them. A refusal to load or solve a corpus program breaks this obligation.
+/// Each corpus program's determination is its known one, read over no
+/// scenario; where the backend declares `enumeration`, its answer sets are
+/// exactly its known ones and its search closes the space, and where it does
+/// not, every model it yields is one of them; and the stream, once ended, stays
+/// ended, its search concluded — the live handle re-reads a spent run. A
+/// refusal to load or solve a corpus program breaks this obligation.
 fn outcome_correctness(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
     let enumerates = backend.capabilities().enumeration;
     over_corpus(corpus, |case| {
-        load(backend, &case.program, case.source).map_err(Stop::Broke)?;
-        let mut solved = solve(backend).map_err(Stop::Broke)?;
+        load(backend, &case.program, case.source).map_err(Shortfall::Broke)?;
+        let mut solved = solve(backend).map_err(Shortfall::Broke)?;
         let consistent = match solved.determination() {
-            Determination::Consistent(_) => true,
+            Determination::Consistent(models) => {
+                if models.scenario().assumptions().next().is_some() {
+                    return Err(Shortfall::Broke(Failure::new(
+                        Breach::Misanswered,
+                        "ranged a plain solve's models over a scenario",
+                    )));
+                }
+                true
+            }
             Determination::Inconsistent(_) => false,
             Determination::Inconclusive(partial) => {
                 let undecided = Failure::new(
                     Breach::Refused,
                     format!("the search stopped undecided: {}", partial.conclusion()),
                 );
-                return Err(Stop::Broke(match partial.cause() {
+                return Err(Shortfall::Broke(match partial.cause() {
                     Some(cause) => undecided.with_fault(cause.clone()),
                     None => undecided,
                 }));
             }
         };
         if consistent != case.is_consistent() {
-            return Err(Stop::Broke(Failure::new(
+            return Err(Shortfall::Broke(Failure::new(
                 Breach::Misanswered,
                 format!(
                     "read {} where the program is {}",
@@ -677,20 +779,28 @@ fn outcome_correctness(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
                 ),
             )));
         }
-        let known = case.answer_sets.len();
-        let Pulled { mut sets, ended } =
-            pull(&mut solved, known).map_err(|fault| Stop::Broke(faulted(fault)))?;
+        let Pulled { mut sets, ended } = pull(&mut solved, case.answer_sets.len())
+            .map_err(|fault| Shortfall::Broke(faulted(fault)))?;
         if !ended {
-            return Err(Stop::Broke(Failure::new(
+            return Err(Shortfall::Broke(past_the_bound()));
+        }
+        if solved.answer_sets().next().is_some() {
+            return Err(Shortfall::Broke(Failure::new(
                 Breach::Misanswered,
-                format!("yielded more than its {known} answer sets"),
+                "yielded an answer set after its stream ended",
+            )));
+        }
+        if solved.conclusion().is_none() {
+            return Err(Shortfall::Broke(Failure::new(
+                Breach::Misanswered,
+                "ended its stream with its search still open",
             )));
         }
         if sets
             .iter()
             .any(|set| case.answer_sets.binary_search(set).is_err())
         {
-            return Err(Stop::Broke(Failure::new(
+            return Err(Shortfall::Broke(Failure::new(
                 Breach::Misanswered,
                 "yielded a set that is not one of its answer sets",
             )));
@@ -698,16 +808,13 @@ fn outcome_correctness(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
         if enumerates {
             sets.sort();
             if sets != case.answer_sets {
-                return Err(Stop::Broke(Failure::new(
+                return Err(Shortfall::Broke(Failure::new(
                     Breach::Misanswered,
-                    format!(
-                        "enumerated {} sets, not its {known} answer sets",
-                        sets.len()
-                    ),
+                    "enumerated sets other than exactly its answer sets",
                 )));
             }
             if solved.conclusion() != Some(Conclusion::Exhausted) {
-                return Err(Stop::Broke(Failure::new(
+                return Err(Shortfall::Broke(Failure::new(
                     Breach::Misanswered,
                     "ended its search without closing the space",
                 )));
@@ -717,27 +824,47 @@ fn outcome_correctness(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
     })
 }
 
+/// `n` answer sets, as a phrase.
+fn counted(n: usize) -> String {
+    if n == 1 {
+        "one answer set".to_owned()
+    } else {
+        format!("{n} answer sets")
+    }
+}
+
+/// A stream read past its program's answer sets, as a failure.
+fn past_the_bound() -> Failure {
+    Failure::new(
+        Breach::Misanswered,
+        "yielded more answer sets than the program has",
+    )
+}
+
 /// A search concluded as closing the space yielded every answer set there is —
 /// the `enumeration` bit's soundness obligation (§4.1). A backend that stops at
 /// a witness, or anywhere short, must say so; every universal reading trusts an
-/// `Exhausted` conclusion.
+/// `Exhausted` conclusion. A stream that faults, or runs past its bound, has
+/// concluded nothing to judge: the case is undriven, and outcome correctness
+/// fails it.
 fn exhaustion_is_earned(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
     over_corpus(corpus, |case| {
-        load(backend, &case.program, case.source).map_err(Stop::Undriven)?;
-        let mut solved = solve(backend).map_err(Stop::Undriven)?;
-        // A stream that faults, or runs past the bound, has concluded nothing.
-        let Ok(Pulled { mut sets, ended }) = pull(&mut solved, case.answer_sets.len()) else {
-            return Ok(());
-        };
-        if ended && solved.conclusion() == Some(Conclusion::Exhausted) {
+        load(backend, &case.program, case.source).map_err(Shortfall::Undriven)?;
+        let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
+        let Pulled { mut sets, ended } = pull(&mut solved, case.answer_sets.len())
+            .map_err(|fault| Shortfall::Undriven(faulted(fault)))?;
+        if !ended {
+            return Err(Shortfall::Undriven(past_the_bound()));
+        }
+        if solved.conclusion() == Some(Conclusion::Exhausted) {
             sets.sort();
             if sets != case.answer_sets {
-                return Err(Stop::Broke(Failure::new(
+                return Err(Shortfall::Broke(Failure::new(
                     Breach::Misanswered,
                     format!(
-                        "concluded that the search closed the space having yielded {} sets, not its {} answer sets",
-                        sets.len(),
-                        case.answer_sets.len(),
+                        "concluded that the search closed the space having yielded {} where the program has {}",
+                        counted(sets.len()),
+                        counted(case.answer_sets.len()),
                     ),
                 )));
             }
@@ -753,11 +880,11 @@ fn exhaustion_is_earned(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
 /// every corpus program.
 fn inconsistency_is_exhausted(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
     over_corpus(corpus, |case| {
-        load(backend, &case.program, case.source).map_err(Stop::Undriven)?;
-        let mut solved = solve(backend).map_err(Stop::Undriven)?;
+        load(backend, &case.program, case.source).map_err(Shortfall::Undriven)?;
+        let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
         let inconsistent = matches!(solved.determination(), Determination::Inconsistent(_));
         if inconsistent && solved.conclusion() != Some(Conclusion::Exhausted) {
-            return Err(Stop::Broke(Failure::new(
+            return Err(Shortfall::Broke(Failure::new(
                 Breach::Misanswered,
                 "read inconsistent over a search that did not close the space",
             )));
@@ -774,12 +901,12 @@ fn truncation_cannot_pose_as_complete(backend: &mut dyn Backend, corpus: &[Case]
         if !case.is_consistent() {
             return Ok(());
         }
-        load(backend, &case.program, case.source).map_err(Stop::Undriven)?;
-        let mut solved = solve(backend).map_err(Stop::Undriven)?;
+        load(backend, &case.program, case.source).map_err(Shortfall::Undriven)?;
+        let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
         drop(solved.answer_sets().next());
         // The gate refuses a touched handle at once, draining nothing.
         if solved.all_answer_sets().is_ok() {
-            return Err(Stop::Broke(Failure::new(
+            return Err(Shortfall::Broke(Failure::new(
                 Breach::Misanswered,
                 "a touched stream yielded a complete collection",
             )));
@@ -791,14 +918,11 @@ fn truncation_cannot_pose_as_complete(backend: &mut dyn Backend, corpus: &[Case]
 /// A cancelled search never concludes as closing the space. Not yet drivable:
 /// the interrupt handle is reserved, so no search can be cancelled through it.
 fn cancellation_is_not_exhaustion(backend: &dyn Backend) -> Verdict {
-    Verdict::Skipped(
-        if backend.capabilities().cancellation {
-            "the interrupt handle is reserved, so no search can yet be cancelled through it"
-        } else {
-            "the backend does not declare cancellation"
-        }
-        .to_owned(),
-    )
+    Verdict::Skipped(if backend.capabilities().cancellation {
+        Skip::Reserved
+    } else {
+        Skip::Undeclared(Capability::Cancellation)
+    })
 }
 
 /// Where the backend exposes its ground program, every ground rule is
@@ -810,13 +934,15 @@ fn cancellation_is_not_exhaustion(backend: &dyn Backend) -> Verdict {
 fn ground_program_is_faithful(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
     let mut exposed = false;
     let verdict = over_corpus(corpus, |case| {
-        load(backend, &case.program, case.source).map_err(Stop::Undriven)?;
+        load(backend, &case.program, case.source).map_err(Shortfall::Undriven)?;
         {
             // Read the stream out, bounded, so an engine that grounds as it
             // searches has grounded before its ground program is read.
-            let mut solved = solve(backend).map_err(Stop::Undriven)?;
-            if pull(&mut solved, case.answer_sets.len()).is_err() {
-                return Ok(());
+            let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
+            match pull(&mut solved, case.answer_sets.len()) {
+                Ok(Pulled { ended: true, .. }) => {}
+                Ok(_) => return Err(Shortfall::Undriven(past_the_bound())),
+                Err(fault) => return Err(Shortfall::Undriven(faulted(fault))),
             }
         }
         let Some(ground) = backend.ground_program() else {
@@ -829,13 +955,13 @@ fn ground_program_is_faithful(backend: &mut dyn Backend, corpus: &[Case]) -> Ver
             .flat_map(|node| node.provenance().origins())
             .collect();
         if ground.rules().any(|rule| !origins.contains(rule.origin())) {
-            return Err(Stop::Broke(Failure::new(
+            return Err(Shortfall::Broke(Failure::new(
                 Breach::Misanswered,
                 "a ground rule is attributed to no statement of the program",
             )));
         }
         if case.source == FACT && ground.rules().next().is_none() {
-            return Err(Stop::Broke(Failure::new(
+            return Err(Shortfall::Broke(Failure::new(
                 Breach::Misanswered,
                 "grounded a fact to no rule",
             )));
@@ -843,30 +969,30 @@ fn ground_program_is_faithful(backend: &mut dyn Backend, corpus: &[Case]) -> Ver
         Ok(())
     });
     if verdict == Verdict::Passed && !exposed {
-        return Verdict::Skipped("the backend exposes no ground program".to_owned());
+        return Verdict::Skipped(Skip::NoGroundProgram);
     }
     verdict
 }
 
-/// A program the backend cannot ground — a variable nothing binds — is refused
-/// at the program locus (§5.4), whether at lowering, at the solve, or at the
-/// stream's first item; a program fault is located by construction, so the
-/// refusal carries the statement's source location.
+/// A program the backend cannot ground — a fact over a variable nothing binds,
+/// after a fact it can — is refused at the program locus (§5.4), whether at
+/// lowering, at the solve, or at the stream's first item, and located at the
+/// statement that cannot be grounded: the refusal's location lies within that
+/// statement's.
 fn program_fault_is_located(backend: &mut dyn Backend) -> Verdict {
-    if backend.capabilities().multi_shot
-        && let Err(fault) = backend.reset()
-    {
-        return Verdict::Skipped(format!("the reset before loading was refused: {fault}"));
+    let program = program_under(UNSAFE_SOURCE, UNSAFE);
+    if let Err(failure) = reset_to_load(backend) {
+        return Verdict::Skipped(Skip::Undriven(failure));
     }
-    if let Err(fault) = backend.lower(Door::Program(&program_of(UNSAFE))) {
-        return located(fault);
+    if let Err(fault) = backend.lower(Door::Program(&program)) {
+        return located(fault, &program);
     }
     let mut solved = match backend.solve(&SolveRequest::default()) {
         Ok(solved) => solved,
-        Err(fault) => return located(fault),
+        Err(fault) => return located(fault, &program),
     };
     match solved.answer_sets().next() {
-        Some(Err(fault)) => located(fault),
+        Some(Err(fault)) => located(fault, &program),
         _ => Verdict::Failed(Failure::new(
             Breach::Accepted,
             format!("the program `{UNSAFE}`, whose variable nothing binds, was accepted"),
@@ -874,13 +1000,11 @@ fn program_fault_is_located(backend: &mut dyn Backend) -> Verdict {
     }
 }
 
-/// The verdict on a refusal of a program that cannot be grounded: passed at
-/// the program locus, where the fault carries its statement's location.
-fn located(fault: Fault) -> Verdict {
-    if fault.locus() == Locus::Program && fault.located().is_some() {
-        Verdict::Passed
-    } else {
-        Verdict::Failed(
+/// The verdict on a refusal of the program that cannot be grounded: passed at
+/// the program locus, located within its unsafe statement.
+fn located(fault: Fault, program: &Program) -> Verdict {
+    if fault.locus() != Locus::Program {
+        return Verdict::Failed(
             Failure::new(
                 Breach::Mislocated,
                 format!(
@@ -889,8 +1013,44 @@ fn located(fault: Fault) -> Verdict {
                 ),
             )
             .with_fault(fault),
+        );
+    }
+    let statement = unsafe_statement(program);
+    let within = fault.located().is_some_and(|refusal| {
+        let at = refusal.to_diagnostic().primary().location;
+        at.source == statement.source && statement.span.contains_span(at.span)
+    });
+    if within {
+        Verdict::Passed
+    } else {
+        Verdict::Failed(
+            Failure::new(
+                Breach::Mislocated,
+                "a program that cannot be grounded was refused at a location outside the statement that cannot be",
+            )
+            .with_fault(fault),
         )
     }
+}
+
+/// Where the unsafe program's second statement — the fact over a variable
+/// nothing binds — was parsed. The suite raised the program from its fixed
+/// text, every statement parsed, so the expects discharge invariants.
+fn unsafe_statement(program: &Program) -> Location {
+    let at = UNSAFE
+        .find("p(X)")
+        .expect("the unsafe program holds its unsafe fact");
+    let at = ByteOffset::new(
+        u32::try_from(at).expect("a suite program is far within the coordinate limit"),
+    );
+    program
+        .statements()
+        .flat_map(|node| node.provenance().origins())
+        .find_map(|origin| match origin {
+            Origin::Parsed(location) if location.span.contains(at) => Some(*location),
+            _ => None,
+        })
+        .expect("a raised statement is located where it was parsed")
 }
 
 /// Assigning a truth value to an atom that is not external refuses at the
@@ -900,13 +1060,10 @@ fn located(fault: Fault) -> Verdict {
 /// `assign_external` is required.
 fn non_external_assignment_refuses(backend: &mut dyn Backend) -> Verdict {
     if !backend.capabilities().multi_shot {
-        return Verdict::Skipped(
-            "the backend does not declare multi-shot solving, which assigning an external needs"
-                .to_owned(),
-        );
+        return Verdict::Skipped(Skip::Undeclared(Capability::MultiShot));
     }
     if let Err(failure) = load_source(backend, FACT) {
-        return Verdict::Skipped(failure.to_string());
+        return Verdict::Skipped(Skip::Undriven(failure));
     }
     match backend.assign_external(constant("a"), TruthValue::True) {
         Ok(()) => Verdict::Failed(Failure::new(
@@ -942,10 +1099,29 @@ enum Response {
     Answered,
     /// It refused, with this fault.
     Refused(Fault),
-    /// It answered, but wrongly: the phrase says how.
-    Misanswered(String),
-    /// The probe could not reach the method.
+    /// It answered, then the stream the probe read faulted, with this fault.
+    Faulted(Fault),
+    /// It answered, but wrongly: how, and the corpus program it answered
+    /// wrongly on, where there is one.
+    Misanswered {
+        case: Option<&'static str>,
+        how: String,
+    },
+    /// The capability's own probe program was refused — one only a backend
+    /// with the capability need carry, so no other check sees the refusal.
+    ProgramRefused(Failure),
+    /// A step before the method — a reset, a corpus program whose refusal
+    /// outcome correctness fails, a plain solve — was refused, so the probe
+    /// could not reach it.
     Unprobed(Failure),
+}
+
+/// A wrong answer on no one corpus program, as a response.
+fn misanswered(how: &str) -> Response {
+    Response::Misanswered {
+        case: None,
+        how: how.to_owned(),
+    }
 }
 
 /// The response a method's result makes: answered, or refused with its fault.
@@ -1017,10 +1193,7 @@ fn capability_is_honest(
 ) -> Verdict {
     let declared = is_declared(capability, &backend.capabilities());
     if capability == Capability::Externals && !declared {
-        return Verdict::Skipped(
-            "the backend does not declare externals, and no contract method refuses on that bit alone"
-                .to_owned(),
-        );
+        return Verdict::Skipped(Skip::Undeclared(Capability::Externals));
     }
     let response = match capability {
         Capability::Optimization => probe_optimization(backend),
@@ -1033,7 +1206,7 @@ fn capability_is_honest(
             Some(_) => Response::Answered,
             None => Response::Refused(Fault::unsupported()),
         },
-        Capability::TimeBudget => probe_time_budget(backend),
+        Capability::TimeBudget => probe_time_budget(backend, declared),
         Capability::Functions => respond(backend.register_function(Box::new(Echo))),
         Capability::Propagators => respond(backend.register_propagator(Box::new(Inert))),
     };
@@ -1043,18 +1216,29 @@ fn capability_is_honest(
 /// The verdict on a probe's response to a capability declared, or not.
 fn judge(method: &str, declared: bool, response: Response) -> Verdict {
     match (declared, response) {
-        (_, Response::Unprobed(failure)) => {
-            Verdict::Skipped(format!("{method} could not be probed: {failure}"))
+        (_, Response::Unprobed(failure)) | (false, Response::ProgramRefused(failure)) => {
+            Verdict::Skipped(Skip::Undriven(failure))
         }
         (true, Response::Answered) => Verdict::Passed,
         (true, Response::Refused(fault)) => Verdict::Failed(
             Failure::new(Breach::Refused, format!("declared, yet {method} refused"))
                 .with_fault(fault),
         ),
-        (true, Response::Misanswered(why)) => Verdict::Failed(Failure::new(
-            Breach::Misanswered,
-            format!("declared, yet {method} {why}"),
-        )),
+        (true, Response::Faulted(fault)) => Verdict::Failed(
+            Failure::new(
+                Breach::Refused,
+                format!("declared, yet the stream faulted while probing {method}"),
+            )
+            .with_fault(fault),
+        ),
+        (true, Response::Misanswered { case, how }) => Verdict::Failed(Failure {
+            case,
+            ..Failure::new(Breach::Misanswered, format!("declared, yet {method} {how}"))
+        }),
+        (true, Response::ProgramRefused(failure)) => Verdict::Failed(Failure {
+            detail: format!("declared, yet {}", failure.detail),
+            ..failure
+        }),
         (false, response) if refuses_at_the_request(&response) => Verdict::Passed,
         (false, Response::Refused(fault)) => Verdict::Failed(
             Failure::new(
@@ -1066,19 +1250,21 @@ fn judge(method: &str, declared: bool, response: Response) -> Verdict {
             )
             .with_fault(fault),
         ),
-        (false, Response::Answered | Response::Misanswered(_)) => Verdict::Failed(Failure::new(
-            Breach::Accepted,
-            format!(
-                "undeclared, yet {method} answered: a request beyond the declaration must refuse"
-            ),
-        )),
+        (false, Response::Answered | Response::Faulted(_) | Response::Misanswered { .. }) => {
+            Verdict::Failed(Failure::new(
+                Breach::Accepted,
+                format!(
+                    "undeclared, yet {method} answered: a request beyond the declaration must refuse"
+                ),
+            ))
+        }
     }
 }
 
 /// Optimization's probe: the optimum of a choice under an objective.
 fn probe_optimization(backend: &mut dyn Backend) -> Response {
-    if let Err(failure) = load_source(backend, OPTIMIZATION) {
-        return Response::Unprobed(failure);
+    if let Err(response) = load_own(backend, OPTIMIZATION) {
+        return response;
     }
     respond(backend.optimize(&OptimizeRequest::default()))
 }
@@ -1101,10 +1287,10 @@ fn probe_native_consequences(backend: &mut dyn Backend, corpus: &[Case]) -> Resp
             match backend.consequences_native(mode, &ConsequenceRequest::default()) {
                 Err(fault) => return Response::Refused(fault),
                 Ok(found) if found != Consequences::fold(mode, case.answer_sets.iter()) => {
-                    return Response::Misanswered(format!(
-                        "gave consequences of {} that are not its answer sets'",
-                        case.name,
-                    ));
+                    return Response::Misanswered {
+                        case: Some(case.name),
+                        how: "gave consequences other than those of its answer sets".to_owned(),
+                    };
                 }
                 Ok(_) => {}
             }
@@ -1119,10 +1305,10 @@ fn probe_native_consequences(backend: &mut dyn Backend, corpus: &[Case]) -> Resp
                 .consequences_native(mode, &ConsequenceRequest::default())
                 .is_ok()
             {
-                return Response::Misanswered(format!(
-                    "answered consequences of {}, which has no answer set",
-                    case.name,
-                ));
+                return Response::Misanswered {
+                    case: Some(case.name),
+                    how: "answered consequences of a program with no answer set".to_owned(),
+                };
             }
         }
     }
@@ -1135,7 +1321,9 @@ fn probe_native_consequences(backend: &mut dyn Backend, corpus: &[Case]) -> Resp
 /// The native door under a scenario: the even loop's consequences under a
 /// scenario fixing `a` to hold, then not to, are those of the one answer set
 /// each admits — a door that dropped the scenario would answer the whole
-/// program's.
+/// program's — and under a scenario that admits no model it refuses, as over a
+/// program with none: the positive loop under `a` fixed to hold (an atom no
+/// answer set holds), and the fact `a.` under `a` fixed not to.
 fn probe_scoped_native_consequences(backend: &mut dyn Backend) -> Response {
     if let Err(failure) = load_source(backend, EVEN_LOOP) {
         return Response::Unprobed(failure);
@@ -1149,12 +1337,24 @@ fn probe_scoped_native_consequences(backend: &mut dyn Backend) -> Response {
             match backend.consequences_native(mode, &request) {
                 Err(fault) => return Response::Refused(fault),
                 Ok(found) if found != Consequences::fold(mode, admitted.iter()) => {
-                    return Response::Misanswered(
-                        "gave consequences under a scenario that are not its admitted models'"
-                            .to_owned(),
+                    return misanswered(
+                        "gave consequences under a scenario other than those of the models it admits",
                     );
                 }
                 Ok(_) => {}
+            }
+        }
+    }
+    for (source, holds) in [(POSITIVE_LOOP, true), (FACT, false)] {
+        if let Err(failure) = load_source(backend, source) {
+            return Response::Unprobed(failure);
+        }
+        let request = ConsequenceRequest {
+            scenario: fixing_a(holds),
+        };
+        for mode in [Mode::Cautious, Mode::Brave] {
+            if backend.consequences_native(mode, &request).is_ok() {
+                return misanswered("answered consequences under a scenario that admits no model");
             }
         }
     }
@@ -1163,8 +1363,8 @@ fn probe_scoped_native_consequences(backend: &mut dyn Backend) -> Response {
 
 /// The scenario fixing `a` to hold (`true`) or not to (`false`) — over the even
 /// loop, it admits exactly `{a}`, or exactly `{b}`; over the fact `a.`, fixing
-/// `a` not to hold admits nothing. A suite constant is an atom, so the expect
-/// discharges an invariant.
+/// `a` not to hold admits nothing, as fixing it to hold does over the positive
+/// loop. A suite constant is an atom, so the expect discharges an invariant.
 fn fixing_a(holds: bool) -> Scenario {
     let assumption = Assumption::new(constant("a"), holds).expect("a suite constant is an atom");
     [assumption].into_iter().collect()
@@ -1172,8 +1372,12 @@ fn fixing_a(holds: bool) -> Scenario {
 
 /// Assumptions' probe: the even loop under a scenario fixing `a` to hold, then
 /// not to — each read as consistent, its models ranging over the scenario asked
-/// and each the one answer set it admits — and the fact `a.` under `a` fixed not
-/// to hold, which admits no model and reads inconsistent.
+/// and each the one answer set it admits; then two scenarios that admit no
+/// model, each read inconsistent — the positive loop under `a` fixed to hold,
+/// an atom no answer set holds (an assumption encoded as a fact, or dropped for
+/// want of the atom, reads it consistent), and the fact `a.` under `a` fixed
+/// not to; and last a plain solve of the fact, which reads its one answer set
+/// over no scenario — a scenario kept past its solve would empty it.
 fn probe_assumptions(backend: &mut dyn Backend) -> Response {
     let enumerates = backend.capabilities().enumeration;
     if let Err(failure) = load_source(backend, EVEN_LOOP) {
@@ -1181,7 +1385,7 @@ fn probe_assumptions(backend: &mut dyn Backend) -> Response {
     }
     for (holds, admitted) in [(true, "a"), (false, "b")] {
         let scenario = fixing_a(holds);
-        let admitted = answer_set([constant(admitted)]);
+        let admitted = [answer_set([constant(admitted)])];
         let mut solved = match backend.solve_assuming(&scenario, &SolveRequest::default()) {
             Ok(solved) => solved,
             Err(fault) => return Response::Refused(fault),
@@ -1189,72 +1393,100 @@ fn probe_assumptions(backend: &mut dyn Backend) -> Response {
         match solved.determination() {
             Determination::Consistent(models) if *models.scenario() == scenario => {}
             Determination::Consistent(_) => {
-                return Response::Misanswered(
-                    "ranged its models over a scenario other than the one asked".to_owned(),
-                );
+                return misanswered("ranged its models over a scenario other than the one asked");
             }
-            _ => {
-                return Response::Misanswered(
-                    "did not read a satisfiable scenario as consistent".to_owned(),
-                );
-            }
+            _ => return misanswered("did not read a satisfiable scenario as consistent"),
         }
-        let admits_only_its_model = match pull(&mut solved, 1) {
-            Ok(Pulled { sets, ended }) => {
-                ended && sets.iter().all(|set| *set == admitted) && (!enumerates || sets.len() == 1)
-            }
+        match pull(&mut solved, admitted.len()) {
+            Ok(Pulled { sets, ended: true })
+                if sets.iter().all(|set| admitted.contains(set))
+                    && (!enumerates || sets == admitted) => {}
+            Ok(_) => return misanswered("yielded models other than the one the scenario admits"),
+            Err(fault) => return Response::Faulted(fault),
+        }
+    }
+    for (source, holds) in [(POSITIVE_LOOP, true), (FACT, false)] {
+        if let Err(failure) = load_source(backend, source) {
+            return Response::Unprobed(failure);
+        }
+        let mut solved = match backend.solve_assuming(&fixing_a(holds), &SolveRequest::default()) {
+            Ok(solved) => solved,
             Err(fault) => return Response::Refused(fault),
         };
-        if !admits_only_its_model {
-            return Response::Misanswered(
-                "yielded models other than the one the scenario admits".to_owned(),
-            );
+        if !matches!(solved.determination(), Determination::Inconsistent(_)) {
+            return misanswered("did not read an unsatisfiable scenario as inconsistent");
         }
     }
-    if let Err(failure) = load_source(backend, FACT) {
-        return Response::Unprobed(failure);
-    }
-    let mut solved = match backend.solve_assuming(&fixing_a(false), &SolveRequest::default()) {
+    let fact = [answer_set([constant("a")])];
+    let mut solved = match solve(backend) {
         Ok(solved) => solved,
-        Err(fault) => return Response::Refused(fault),
+        Err(failure) => return Response::Unprobed(failure),
     };
-    if !matches!(solved.determination(), Determination::Inconsistent(_)) {
-        return Response::Misanswered(
-            "did not read an unsatisfiable scenario as inconsistent".to_owned(),
-        );
+    let unscoped = matches!(
+        solved.determination(),
+        Determination::Consistent(models) if models.scenario().assumptions().next().is_none()
+    );
+    match pull(&mut solved, fact.len()) {
+        Ok(Pulled { sets, ended: true }) if unscoped && sets == fact => Response::Answered,
+        Ok(_) => {
+            misanswered("kept a scenario past its solve: a plain solve after it misread the fact")
+        }
+        Err(fault) => Response::Faulted(fault),
     }
-    Response::Answered
 }
 
-/// Multi-shot's probe. Declared: `reset` and `ground` of no part answer — the
-/// assignment of an external is the externals probe's, and of a non-external
-/// its own check. Undeclared: all three multi-shot methods refuse at the
-/// request locus; the first that does not is the response.
+/// Multi-shot's probe. Declared: `lower` accumulates — the fact `a.`, then the
+/// rule `b :- a.` lowered with no reset between, read `{a, b}` — and `ground` of
+/// no part answers; that a reset clears what accumulated, every corpus load
+/// holds. The assignment of an external is the externals probe's, and of a
+/// non-external its own check. Undeclared: all three multi-shot methods refuse
+/// at the request locus; the first that does not is the response.
 fn probe_multi_shot(backend: &mut dyn Backend, declared: bool) -> Response {
-    if declared {
-        if let Err(fault) = backend.reset() {
-            return Response::Refused(fault);
-        }
-        return respond(backend.ground(&[], &GroundOptions::default()));
+    if !declared {
+        let reset = respond(backend.reset());
+        let ground = respond(backend.ground(&[], &GroundOptions::default()));
+        let assign = respond(backend.assign_external(constant("a"), TruthValue::True));
+        return [ground, assign].into_iter().fold(reset, |kept, next| {
+            if refuses_at_the_request(&kept) {
+                next
+            } else {
+                kept
+            }
+        });
     }
-    let reset = respond(backend.reset());
-    let ground = respond(backend.ground(&[], &GroundOptions::default()));
-    let assign = respond(backend.assign_external(constant("a"), TruthValue::True));
-    [ground, assign].into_iter().fold(reset, |kept, next| {
-        if refuses_at_the_request(&kept) {
-            next
-        } else {
-            kept
+    if let Err(fault) = backend.reset() {
+        return Response::Refused(fault);
+    }
+    if let Err(failure) = lower_program(backend, &program_of(FACT), FACT) {
+        return Response::Unprobed(failure);
+    }
+    if let Err(failure) = lower_program(backend, &program_of(RULE), RULE) {
+        return Response::ProgramRefused(failure);
+    }
+    let together = [answer_set([constant("a"), constant("b")])];
+    let mut solved = match solve(backend) {
+        Ok(solved) => solved,
+        Err(failure) => return Response::Unprobed(failure),
+    };
+    match pull(&mut solved, together.len()) {
+        Ok(Pulled { sets, ended: true }) if sets == together => {}
+        Ok(_) => {
+            return misanswered(
+                "did not keep the program across lowerings: the fact and the rule over it read other than {a, b}",
+            );
         }
-    })
+        Err(fault) => return Response::Faulted(fault),
+    }
+    drop(solved);
+    respond(backend.ground(&[], &GroundOptions::default()))
 }
 
 /// The externals probe: over an external atom and a rule on it, assigning the
 /// atom true reads `{a, b}` and assigning it false reads `{}` — the assignment
 /// answered, and honoured in the answer sets.
 fn probe_externals(backend: &mut dyn Backend) -> Response {
-    if let Err(failure) = load_source(backend, EXTERNAL) {
-        return Response::Unprobed(failure);
+    if let Err(response) = load_own(backend, EXTERNAL) {
+        return response;
     }
     for (value, expected) in [
         (TruthValue::True, answer_set([constant("a"), constant("b")])),
@@ -1263,18 +1495,19 @@ fn probe_externals(backend: &mut dyn Backend) -> Response {
         if let Err(fault) = backend.assign_external(constant("a"), value) {
             return Response::Refused(fault);
         }
-        let mut solved = match backend.solve(&SolveRequest::default()) {
+        let expected = [expected];
+        let mut solved = match solve(backend) {
             Ok(solved) => solved,
-            Err(fault) => return Response::Refused(fault),
+            Err(failure) => return Response::Unprobed(failure),
         };
-        match pull(&mut solved, 1) {
-            Ok(Pulled { sets, ended: true }) if sets == [expected] => {}
+        match pull(&mut solved, expected.len()) {
+            Ok(Pulled { sets, ended: true }) if sets == expected => {}
             Ok(_) => {
-                return Response::Misanswered(
-                    "answered, then read answer sets other than the assignment gives".to_owned(),
+                return misanswered(
+                    "answered, then read answer sets other than the assignment gives",
                 );
             }
-            Err(fault) => return Response::Refused(fault),
+            Err(fault) => return Response::Faulted(fault),
         }
     }
     Response::Answered
@@ -1284,14 +1517,68 @@ fn probe_externals(backend: &mut dyn Backend) -> Response {
 /// answers, never concluding at the budget.
 const PROBE_BUDGET: Duration = Duration::from_mins(1);
 
-/// The time budget's probe: a small program solved under a budget.
-fn probe_time_budget(backend: &mut dyn Backend) -> Response {
+/// The time budget's probe: over the fact `a.`, each solve the backend serves —
+/// `solve`, and `solve_assuming` (assuming nothing) where the backend declares
+/// `assumptions`, since it takes the same request — asked under a budget, where
+/// the same solve unbudgeted reads the fact; where it does not, another check
+/// owns what went wrong. Declared: each answers, reading the fact's one answer
+/// set. Undeclared: each refuses at the request locus. The first that does not
+/// is the response.
+fn probe_time_budget(backend: &mut dyn Backend, declared: bool) -> Response {
     if let Err(failure) = load_source(backend, FACT) {
         return Response::Unprobed(failure);
     }
-    respond(backend.solve(&SolveRequest {
+    let unbudgeted = SolveRequest::default();
+    let budgeted = SolveRequest {
         time: Some(PROBE_BUDGET),
-    }))
+    };
+    let mut responses = Vec::new();
+    if matches!(
+        read_the_fact(backend.solve(&unbudgeted)),
+        Response::Answered
+    ) {
+        responses.push(read_the_fact(backend.solve(&budgeted)));
+    }
+    let nothing = Scenario::default();
+    if backend.capabilities().assumptions
+        && matches!(
+            read_the_fact(backend.solve_assuming(&nothing, &unbudgeted)),
+            Response::Answered
+        )
+    {
+        responses.push(read_the_fact(backend.solve_assuming(&nothing, &budgeted)));
+    }
+    let holds = |response: &Response| {
+        if declared {
+            matches!(response, Response::Answered)
+        } else {
+            refuses_at_the_request(response)
+        }
+    };
+    match responses.iter().position(|response| !holds(response)) {
+        Some(breach) => responses.swap_remove(breach),
+        None => responses.pop().unwrap_or_else(|| {
+            Response::Unprobed(Failure::new(
+                Breach::Refused,
+                "no solve read the fact without a budget",
+            ))
+        }),
+    }
+}
+
+/// How a solve of the fact met the probe: refused, or answered — rightly only
+/// when it reads the fact's one answer set.
+fn read_the_fact(solved: Result<Solved<'_>, Fault>) -> Response {
+    let mut solved = match solved {
+        Ok(solved) => solved,
+        Err(fault) => return Response::Refused(fault),
+    };
+    let fact = [answer_set([constant("a")])];
+    match pull(&mut solved, fact.len()) {
+        Ok(Pulled { sets, ended: true }) if sets == fact => Response::Answered,
+        Ok(_) => misanswered("read answer sets other than the fact's"),
+        Err(fault) => Response::Faulted(fault),
+    }
 }
 
 /// The `@`-function the suite registers to probe `functions`: it answers its
@@ -1316,24 +1603,12 @@ mod tests {
     use crate::bridge::{GroundProgram, GroundRule};
     use crate::outcome::Run;
 
-    /// The checks that are not a capability's.
-    const OBLIGATIONS: [Check; 8] = [
-        Check::OutcomeCorrectness,
-        Check::ExhaustionIsEarned,
-        Check::InconsistencyIsExhausted,
-        Check::TruncationCannotPoseAsComplete,
-        Check::CancellationIsNotExhaustion,
-        Check::GroundProgramIsFaithful,
-        Check::ProgramFaultIsLocated,
-        Check::NonExternalAssignmentRefuses,
-    ];
-
     #[test]
     fn every_suite_program_raises_without_a_diagnostic() {
         let sources = corpus()
             .iter()
             .map(|case| case.source)
-            .chain([FACT, EVEN_LOOP, OPTIMIZATION, EXTERNAL, UNSAFE])
+            .chain([FACT, EVEN_LOOP, OPTIMIZATION, EXTERNAL, RULE, UNSAFE])
             .collect::<Vec<_>>();
         for source in sources {
             let raised = raise_str(source, Dialect::Clingo).expect("a suite program raises");
@@ -1386,7 +1661,7 @@ mod tests {
     fn a_skipped_check_breaks_no_conformance() {
         let report = report_of(vec![(
             Check::CancellationIsNotExhaustion,
-            Verdict::Skipped("why".to_owned()),
+            Verdict::Skipped(Skip::Reserved),
         )]);
         assert!(report.is_conformant());
     }
@@ -1439,7 +1714,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_carries_its_case_and_fault_as_data() {
+    fn a_failure_exposes_its_parts_as_data() {
         let failure = Failure::new(Breach::Refused, "the solve was refused")
             .with_fault(Fault::engine("gone"))
             .on("a fact");
@@ -1450,17 +1725,46 @@ mod tests {
 
     #[test]
     fn every_check_renders_a_distinct_obligation() {
-        let checks = OBLIGATIONS
-            .into_iter()
-            .chain(CAPABILITIES.map(Check::Capability));
-        let rendered: BTreeSet<String> = checks.map(|check| check.to_string()).collect();
-        assert_eq!(rendered.len(), OBLIGATIONS.len() + CAPABILITIES.len());
+        // The checks a run reports, whatever their verdicts.
+        let report = run(&mut grounding(Grounds::Faithfully));
+        let rendered: BTreeSet<String> = report
+            .entries()
+            .map(|(check, _)| check.to_string())
+            .collect();
+        assert_eq!(rendered.len(), report.entries().count());
     }
 
     #[test]
     fn a_skipped_verdict_renders_its_reason() {
-        let skipped = Verdict::Skipped("no ground program".to_owned());
-        assert_eq!(skipped.to_string(), "skipped — no ground program");
+        let skipped = Verdict::Skipped(Skip::NoGroundProgram);
+        assert_eq!(
+            skipped.to_string(),
+            "skipped — the backend exposes no ground program"
+        );
+    }
+
+    #[test]
+    fn every_skip_renders_a_distinct_reason() {
+        let skips = [
+            Skip::Undeclared(Capability::Cancellation),
+            Skip::NoGroundProgram,
+            Skip::Reserved,
+            Skip::Undriven(Failure::new(Breach::Refused, "the solve was refused")),
+        ];
+        let reasons: BTreeSet<String> = skips.iter().map(ToString::to_string).collect();
+        assert_eq!(reasons.len(), skips.len());
+    }
+
+    #[test]
+    fn an_undriven_skip_renders_the_failure_that_stopped_it() {
+        let skip = Skip::Undriven(
+            Failure::new(Breach::Refused, "the solve was refused")
+                .with_fault(Fault::engine("gone")),
+        );
+        assert_eq!(
+            skip.to_string(),
+            "could not be driven: the solve was refused: gone"
+        );
     }
 
     #[test]
