@@ -218,8 +218,10 @@ impl<B: Backend> Agent<B> {
     /// assumptions fixed for the span of this one question and discharged
     /// after it — a hypothesis, as distinct from a retraction (§6.2), which
     /// amends the knowledge base. Refuses at the request locus over a backend
-    /// that does not declare `assumptions` (§4.2).
+    /// that does not declare `assumptions` (§4.2) — read from the declaration
+    /// before the question is paid for, so a refused scenario lowers nothing.
     pub fn solve_assuming(&mut self, scenario: &Scenario) -> Result<Solved<'_>, Fault> {
+        self.require_assumptions()?;
         self.bring_level()?;
         self.backend
             .solve_assuming(scenario, &SolveRequest::default())
@@ -242,49 +244,103 @@ impl<B: Backend> Agent<B> {
     /// not `∅`) and over a search that did not close. Cost: one solve for the
     /// native door, `Θ(|W|)` for the derived.
     pub fn cautious(&mut self) -> Result<Consequences, Fault> {
-        self.consequences(Mode::Cautious)
+        self.consequences(Mode::Cautious, None)
     }
 
     /// The brave consequences (`⋃`, "what can hold") of the knowledge base
     /// (docs/design/solve.md §5.2; query.md §2.4): the atoms true in SOME answer
     /// set. Routed and gated as the cautious reading is.
     pub fn brave(&mut self) -> Result<Consequences, Fault> {
-        self.consequences(Mode::Brave)
+        self.consequences(Mode::Brave, None)
+    }
+
+    /// The cautious consequences under a scenario (docs/design/solve.md §6.2;
+    /// query.md §2.4): the atoms true in every answer set the scenario admits —
+    /// the models [`solve_assuming`](Agent::solve_assuming) denotes — so "under
+    /// these assumptions, what must hold?" is one question, the epistemic sibling
+    /// of a solve under a hypothesis. Routed as [`cautious`](Agent::cautious) is —
+    /// the engine's own door over a request carrying the scenario, otherwise the
+    /// core's fold over the scenario's enumerated models — and refused as it is,
+    /// over the scenario's world view. Refuses at the request locus over a
+    /// backend that does not declare `assumptions`, on either route, before the
+    /// question is paid for. Cost: one solve for the native door, `Θ(|W|)` for
+    /// the derived.
+    pub fn cautious_assuming(&mut self, scenario: &Scenario) -> Result<Consequences, Fault> {
+        self.consequences(Mode::Cautious, Some(scenario))
+    }
+
+    /// The brave consequences under a scenario (docs/design/solve.md §6.2;
+    /// query.md §2.4): the atoms true in SOME answer set the scenario admits.
+    /// Routed and gated as the scoped cautious reading is.
+    pub fn brave_assuming(&mut self, scenario: &Scenario) -> Result<Consequences, Fault> {
+        self.consequences(Mode::Brave, Some(scenario))
     }
 
     /// The consequences in `mode` — the shared body of the cautious and brave
-    /// readings. The native door computes them in one solve; the derived door
-    /// folds the enumerated CONSISTENT world view. The consistency gate is
-    /// load-bearing: folding zero members returns an empty set for both modes, and
-    /// an empty cautious set would say the program forces nothing — of a program
-    /// that has no model, where `⋂` is undefined — so it refuses (query.md §2.3).
-    /// Both doors range over the unscoped program (the agent holds no
-    /// persistent scenario, §6.3), so the native and derived results agree (the
-    /// free differential, query.md §2.4). Both range over ALL stable models today;
-    /// under an optimization objective they must instead range over the optimal
-    /// set (solve.md §5.2), the obligation that joins when optimization lands.
-    fn consequences(&mut self, mode: Mode) -> Result<Consequences, Fault> {
+    /// readings, unscoped or over a scenario's models. The native door computes
+    /// them in one solve, over a request carrying the scenario; the derived door
+    /// folds the enumerated CONSISTENT world view — `solve`'s, or
+    /// `solve_assuming`'s under a scenario — so the two doors range over the same
+    /// models and agree (the free differential, query.md §2.4). The consistency
+    /// gate is load-bearing: folding zero members returns an empty set for both
+    /// modes, and an empty cautious set would say the program forces nothing — of
+    /// a program that has no model, where `⋂` is undefined — so it refuses
+    /// (query.md §2.3). Both range over ALL stable models today; under an
+    /// optimization objective they must instead range over the optimal set
+    /// (solve.md §5.2), the obligation that joins when optimization lands.
+    fn consequences(
+        &mut self,
+        mode: Mode,
+        scenario: Option<&Scenario>,
+    ) -> Result<Consequences, Fault> {
+        if scenario.is_some() {
+            self.require_assumptions()?;
+        }
         self.bring_level()?;
         match self.backend.capabilities().native_consequences {
-            ConsequenceSupport::Native => self
-                .backend
-                .consequences_native(mode, &ConsequenceRequest::default()),
+            ConsequenceSupport::Native => {
+                let request = ConsequenceRequest {
+                    scenario: scenario.cloned().unwrap_or_default(),
+                };
+                self.backend.consequences_native(mode, &request)
+            }
             ConsequenceSupport::DerivedByEnumeration => {
-                match self
-                    .backend
-                    .solve(&SolveRequest::default())?
-                    .into_determination()
-                {
+                let solved = match scenario {
+                    None => self.backend.solve(&SolveRequest::default())?,
+                    Some(scenario) => self
+                        .backend
+                        .solve_assuming(scenario, &SolveRequest::default())?,
+                };
+                match solved.into_determination() {
                     Determination::Consistent(mut models) => {
                         let members = models.all_members()?;
                         Ok(Consequences::fold(mode, members.iter()))
                     }
-                    Determination::Inconsistent(_) => Err(Fault::request(
-                        "no consequences: the program has no answer set",
-                    )),
+                    // Under a scenario the program may well have answer sets — just
+                    // none the scenario admits — so the refusal says which.
+                    Determination::Inconsistent(_) => Err(Fault::request(match scenario {
+                        None => "no consequences: the program has no answer set",
+                        Some(_) => {
+                            "no consequences: the program has no answer set under the scenario"
+                        }
+                    })),
                     Determination::Inconclusive(partial) => Err(partial.into()),
                 }
             }
+        }
+    }
+
+    /// The gate every scenario-scoped question passes (docs/design/solve.md §4.2,
+    /// §6.2): a scenario needs `solve_assuming`, so a backend that does not
+    /// declare `assumptions` refuses at the request locus. The declaration is
+    /// read, not the method trusted — a native consequence door handed a scenario
+    /// it cannot honour would otherwise answer the unscoped question in its place,
+    /// a silent degrade — and it is read before the question is paid for. O(1).
+    fn require_assumptions(&self) -> Result<(), Fault> {
+        if self.backend.capabilities().assumptions {
+            Ok(())
+        } else {
+            Err(Fault::unsupported())
         }
     }
 
@@ -1267,5 +1323,441 @@ mod ask_laws {
             panic!("a consistent, scenario-scoped determination");
         };
         assert_eq!(*models.scenario(), scenario);
+    }
+
+    // ---- The scenario-scoped readings (§6.2) ----
+
+    /// The assumption fixing the constant `name` to hold (`true`) or not.
+    fn assume(name: &str, holds: bool) -> Assumption {
+        Assumption::new(constant(name), holds).expect("a constant is an atom")
+    }
+
+    /// The answer sets of `sets` a scenario admits — the models
+    /// `solve_assuming(scenario)` denotes: an assumption fixed to hold keeps the
+    /// answer sets holding its atom, one fixed not to hold keeps those without it.
+    fn admitted(sets: &[AnswerSet], scenario: &Scenario) -> Vec<AnswerSet> {
+        sets.iter()
+            .filter(|set| {
+                scenario
+                    .assumptions()
+                    .all(|assumption| set.contains(assumption.atom()) == assumption.holds())
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// A backend that honours assumptions — its `solve_assuming` keeps only the
+    /// answer sets a scenario admits, so a scoped reading differs from the
+    /// unscoped one — and declares the consequence path `support`: under
+    /// `Native`, its own door ranges over the scenario a request carries,
+    /// computed independently of the core fold. A `truncated` scenario-scoped
+    /// search leaves the space open (a budget hit) rather than closing it; the
+    /// unscoped `solve` always closes it.
+    struct Hypothetical {
+        sets: Vec<AnswerSet>,
+        support: ConsequenceSupport,
+        truncated: bool,
+    }
+
+    impl Backend for Hypothetical {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                enumeration: true,
+                assumptions: true,
+                native_consequences: self.support,
+                ..Capabilities::default()
+            }
+        }
+
+        fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
+            Ok(solved_over(self.sets.clone(), Scenario::default()))
+        }
+
+        fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
+            Ok(())
+        }
+
+        fn ground_program(&self) -> Option<&GroundProgram> {
+            None
+        }
+
+        fn solve_assuming(
+            &mut self,
+            scenario: &Scenario,
+            _request: &SolveRequest,
+        ) -> Result<Solved<'_>, Fault> {
+            let sets = admitted(&self.sets, scenario);
+            if self.truncated {
+                return Ok(Solved::running(
+                    Box::new(Truncated {
+                        sets: sets.into_iter(),
+                        ended: false,
+                    }),
+                    scenario.clone(),
+                ));
+            }
+            Ok(solved_over(sets, scenario.clone()))
+        }
+
+        fn consequences_native(
+            &mut self,
+            mode: Mode,
+            request: &ConsequenceRequest,
+        ) -> Result<Consequences, Fault> {
+            let sets = admitted(&self.sets, &request.scenario);
+            if sets.is_empty() {
+                // The refusal the derived door gives, so the two agree in word too.
+                return Err(Fault::request(
+                    if request.scenario.assumptions().next().is_none() {
+                        "no consequences: the program has no answer set"
+                    } else {
+                        "no consequences: the program has no answer set under the scenario"
+                    },
+                ));
+            }
+            let symbols = match mode {
+                Mode::Cautious => intersect(&sets),
+                Mode::Brave => union(&sets),
+            };
+            Ok(Consequences { symbols, mode })
+        }
+    }
+
+    /// An agent over a backend honouring assumptions over `sets`, reading its
+    /// consequences through `support`, its search closing the space.
+    fn agent_assuming(sets: Vec<AnswerSet>, support: ConsequenceSupport) -> Agent<Hypothetical> {
+        Agent::new(
+            Program::empty(),
+            Hypothetical {
+                sets,
+                support,
+                truncated: false,
+            },
+        )
+    }
+
+    /// The fixture world view: `a` holds in two of its three models, and the
+    /// third, `{d}`, is the one a scenario fixing `a` excludes.
+    fn three_models() -> Vec<AnswerSet> {
+        vec![
+            answer_set(&["a", "b"]),
+            answer_set(&["a", "c"]),
+            answer_set(&["d"]),
+        ]
+    }
+
+    /// The scenario fixing `a` to hold: it admits the two models holding `a`.
+    fn assuming_a() -> Scenario {
+        [assume("a", true)].into_iter().collect()
+    }
+
+    /// The consequences in `mode` that are exactly the named constants.
+    fn consequences_of(mode: Mode, names: &[&str]) -> Consequences {
+        Consequences {
+            symbols: names.iter().copied().map(constant).collect(),
+            mode,
+        }
+    }
+
+    /// A backend that does NOT declare `assumptions` yet answers
+    /// `solve_assuming` anyway — a declaration the method contradicts — so a
+    /// scoped question refused over it is refused by the declaration, not by the
+    /// method's default.
+    struct Undeclared {
+        sets: Vec<AnswerSet>,
+    }
+
+    impl Backend for Undeclared {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                enumeration: true,
+                ..Capabilities::default()
+            }
+        }
+
+        fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
+            Ok(solved_over(self.sets.clone(), Scenario::default()))
+        }
+
+        fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
+            Ok(())
+        }
+
+        fn ground_program(&self) -> Option<&GroundProgram> {
+            None
+        }
+
+        fn solve_assuming(
+            &mut self,
+            scenario: &Scenario,
+            _request: &SolveRequest,
+        ) -> Result<Solved<'_>, Fault> {
+            Ok(solved_over(
+                admitted(&self.sets, scenario),
+                scenario.clone(),
+            ))
+        }
+    }
+
+    /// A backend that declares no `assumptions`, reads its consequences through
+    /// `support`, and whose lowering faults — so a question refused with its
+    /// capability fault, not this one, was refused before the knowledge base was
+    /// lowered, on either consequence route.
+    struct Unlowerable {
+        support: ConsequenceSupport,
+    }
+
+    impl Backend for Unlowerable {
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                native_consequences: self.support,
+                ..Capabilities::default()
+            }
+        }
+
+        fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
+            Err(Fault::engine("an unlowered program was solved"))
+        }
+
+        fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
+            Err(Fault::engine("the lowering was paid for"))
+        }
+
+        fn ground_program(&self) -> Option<&GroundProgram> {
+            None
+        }
+    }
+
+    #[test]
+    fn cautious_assuming_ranges_over_the_scenario_s_models() {
+        // Under `a` the models are {a,b} and {a,c}, whose ⋂ is {a}. Unscoped, the
+        // model {d} empties the ⋂ — so a reading that dropped its scenario would
+        // answer ∅ and be caught.
+        let mut agent = agent_assuming(three_models(), ConsequenceSupport::DerivedByEnumeration);
+        assert_eq!(
+            agent.cautious_assuming(&assuming_a()),
+            Ok(consequences_of(Mode::Cautious, &["a"])),
+        );
+    }
+
+    #[test]
+    fn brave_assuming_ranges_over_the_scenario_s_models() {
+        // Under `a` the models are {a,b} and {a,c}, whose ⋃ is {a,b,c}: the
+        // excluded model's d is not a brave consequence of the scenario.
+        let mut agent = agent_assuming(three_models(), ConsequenceSupport::DerivedByEnumeration);
+        assert_eq!(
+            agent.brave_assuming(&assuming_a()),
+            Ok(consequences_of(Mode::Brave, &["a", "b", "c"])),
+        );
+    }
+
+    #[test]
+    fn the_scoped_native_door_and_the_scoped_derived_fold_agree() {
+        // The free differential under a scenario (query.md §2.4): the backend's own
+        // door over the request's scenario, and the core's fold over the models
+        // `solve_assuming` enumerates, give the same answer. The fixture's unscoped
+        // ⋂ is ∅ and its scoped ⋂ is {a}, so a native request that lost its
+        // scenario would disagree with the fold.
+        let scenario = assuming_a();
+        let mut agent = agent_assuming(three_models(), ConsequenceSupport::Native);
+        let enumerated = match agent
+            .solve_assuming(&scenario)
+            .map(Solved::into_determination)
+        {
+            Ok(Determination::Consistent(mut models)) => {
+                models.all_members().expect("an exhausted search")
+            }
+            _ => panic!("the scenario admits a model"),
+        };
+        assert_eq!(
+            agent.cautious_assuming(&scenario),
+            Ok(Consequences::fold(Mode::Cautious, enumerated.iter())),
+            "the scoped native cautious door and the scoped fold disagree",
+        );
+        assert_eq!(
+            agent.brave_assuming(&scenario),
+            Ok(Consequences::fold(Mode::Brave, enumerated.iter())),
+            "the scoped native brave door and the scoped fold disagree",
+        );
+    }
+
+    #[test]
+    fn the_scoped_native_door_refuses_a_backend_without_assumptions() {
+        // The native door would answer — it ignores the request's scenario — so
+        // only the declaration stops a scoped request from being answered as an
+        // unscoped one, the silent degrade §4.2 forbids.
+        let mut agent = Agent::new(
+            Program::empty(),
+            Dual {
+                sets: three_models(),
+            },
+        );
+        assert_eq!(
+            agent.cautious_assuming(&assuming_a()),
+            Err(Fault::unsupported())
+        );
+        assert_eq!(
+            agent.brave_assuming(&assuming_a()),
+            Err(Fault::unsupported())
+        );
+    }
+
+    #[test]
+    fn the_scoped_derived_door_refuses_a_backend_without_assumptions() {
+        // The backend answers `solve_assuming` although it does not declare the
+        // capability: the declaration, read first, governs.
+        let mut agent = Agent::new(
+            Program::empty(),
+            Undeclared {
+                sets: three_models(),
+            },
+        );
+        assert_eq!(
+            agent.cautious_assuming(&assuming_a()),
+            Err(Fault::unsupported())
+        );
+        assert_eq!(
+            agent.brave_assuming(&assuming_a()),
+            Err(Fault::unsupported())
+        );
+    }
+
+    #[test]
+    fn solve_assuming_is_refused_though_the_undeclared_method_would_answer() {
+        // The backend's `solve_assuming` answers; its declaration does not name
+        // `assumptions`. The declaration governs.
+        let mut agent = Agent::new(
+            Program::empty(),
+            Undeclared {
+                sets: three_models(),
+            },
+        );
+        assert_eq!(
+            agent.solve_assuming(&assuming_a()).err(),
+            Some(Fault::unsupported())
+        );
+    }
+
+    #[test]
+    fn a_scoped_question_without_assumptions_refuses_before_lowering() {
+        // The capability is read before the question is paid for (§4.1): each
+        // scoped question refuses with the capability fault, not the fault the
+        // lowering would have raised — on the native consequence route as on the
+        // derived.
+        for support in [
+            ConsequenceSupport::Native,
+            ConsequenceSupport::DerivedByEnumeration,
+        ] {
+            let mut agent = Agent::new(Program::empty(), Unlowerable { support });
+            assert_eq!(
+                agent.solve_assuming(&assuming_a()).err(),
+                Some(Fault::unsupported())
+            );
+            assert_eq!(
+                agent.cautious_assuming(&assuming_a()),
+                Err(Fault::unsupported())
+            );
+            assert_eq!(
+                agent.brave_assuming(&assuming_a()),
+                Err(Fault::unsupported())
+            );
+        }
+    }
+
+    #[test]
+    fn a_scoped_reading_under_the_empty_scenario_still_needs_assumptions() {
+        // The empty scenario fixes nothing, yet it is still a scenario: the scoped
+        // doors require `assumptions` with no exception for it (§6.2). The native
+        // door here would answer, so only the declaration refuses.
+        let mut agent = Agent::new(
+            Program::empty(),
+            Dual {
+                sets: three_models(),
+            },
+        );
+        assert_eq!(
+            agent.cautious_assuming(&Scenario::default()),
+            Err(Fault::unsupported())
+        );
+        assert_eq!(
+            agent.brave_assuming(&Scenario::default()),
+            Err(Fault::unsupported())
+        );
+    }
+
+    #[test]
+    fn solve_assuming_under_the_empty_scenario_still_needs_assumptions() {
+        // As for the scoped doors (§6.2): the method here would answer, so only
+        // the declaration refuses.
+        let mut agent = Agent::new(
+            Program::empty(),
+            Undeclared {
+                sets: three_models(),
+            },
+        );
+        assert_eq!(
+            agent.solve_assuming(&Scenario::default()).err(),
+            Some(Fault::unsupported())
+        );
+    }
+
+    #[test]
+    fn a_scoped_reading_with_no_model_under_the_scenario_refuses() {
+        // No model holds both `a` and `d`: ⋂/⋃ over the scenario's empty world view
+        // is undefined, not ∅. The refusal names the scenario, since the program
+        // itself has answer sets — only none the scenario admits.
+        let impossible: Scenario = [assume("a", true), assume("d", true)].into_iter().collect();
+        let mut agent = agent_assuming(three_models(), ConsequenceSupport::DerivedByEnumeration);
+        let refusal = agent
+            .cautious_assuming(&impossible)
+            .expect_err("no model under the scenario");
+        assert_eq!(refusal.locus(), crate::contract::Locus::Request);
+        assert!(refusal.to_string().contains("scenario"), "{refusal}");
+        assert_eq!(
+            agent
+                .brave_assuming(&impossible)
+                .map_err(|fault| fault.locus()),
+            Err(crate::contract::Locus::Request)
+        );
+    }
+
+    #[test]
+    fn the_scoped_native_door_refuses_a_scenario_with_no_model() {
+        // The native door owes the derived door's refusal over a scenario that
+        // admits no model, so the two agree there too (query.md §2.4). The stub
+        // honours that contract; the agent forwards its verdict.
+        let impossible: Scenario = [assume("a", true), assume("d", true)].into_iter().collect();
+        let mut agent = agent_assuming(three_models(), ConsequenceSupport::Native);
+        assert!(agent.cautious_assuming(&impossible).is_err());
+        assert!(agent.brave_assuming(&impossible).is_err());
+    }
+
+    #[test]
+    fn a_scoped_reading_of_a_truncated_search_refuses() {
+        // A scenario's search that did not close the space cannot give complete
+        // ⋂/⋃: the scoped route passes the same completeness gate as the unscoped
+        // one, and the refusal names the budget the search hit.
+        let mut agent = Agent::new(
+            Program::empty(),
+            Hypothetical {
+                sets: three_models(),
+                support: ConsequenceSupport::DerivedByEnumeration,
+                truncated: true,
+            },
+        );
+        let refusal = agent
+            .cautious_assuming(&assuming_a())
+            .expect_err("an unexhausted scoped world view refuses");
+        assert!(refusal.to_string().contains("budget"), "{refusal}");
+    }
+
+    #[test]
+    fn the_empty_scenario_s_scoped_reading_is_the_unscoped_reading() {
+        // The empty scenario fixes nothing, so it admits every model (§6.3).
+        let mut agent = agent_assuming(three_models(), ConsequenceSupport::DerivedByEnumeration);
+        let unscoped = agent.cautious();
+        assert_eq!(agent.cautious_assuming(&Scenario::default()), unscoped);
+        let unscoped = agent.brave();
+        assert_eq!(agent.brave_assuming(&Scenario::default()), unscoped);
     }
 }

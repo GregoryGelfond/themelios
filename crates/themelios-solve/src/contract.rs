@@ -156,14 +156,17 @@ pub trait Backend {
 
     /// Optional: overridden exactly when `capabilities().native_consequences`
     /// is `Native`. The engine's own cautious or brave door, in one solve,
-    /// over the scenario the request ranges over (§4.2; docs/design/query.md
-    /// §2.4). Absent, the core derives the consequences by enumeration over
-    /// `solve`, and the request surface says which path runs. Refuses by
-    /// default.
+    /// ranging over the models `solve_assuming(request.scenario)` denotes — the
+    /// empty scenario being the unscoped program (§4.2; docs/design/query.md
+    /// §2.4). Only a backend that declares `assumptions` is handed a non-empty
+    /// scenario: the agent reads that declaration first (§6.2). Absent, the core
+    /// derives the consequences by enumeration — over `solve`, or under a
+    /// scenario over `solve_assuming` — and the request surface says which path
+    /// runs. Refuses by default.
     ///
-    /// Like the derived door, an implementation refuses — a [`Fault`] — over a
-    /// program with no answer set: `⋂`/`⋃` over the empty world view is
-    /// undefined, not `∅`. It refuses likewise over a search that did not close
+    /// Like the derived door, an implementation refuses — a [`Fault`] — where
+    /// the request's scenario admits no answer set: `⋂`/`⋃` over the empty world
+    /// view is undefined, not `∅`. It refuses likewise over a search that did not close
     /// the space — a native cautious solve that stopped early has converged on a
     /// *super*set of `⋂`, an over-approximation, not the consequences. So the
     /// native and derived doors give the same answer, the free differential of
@@ -203,7 +206,8 @@ pub struct Capabilities {
     /// Whether the backend proves optima — `optimize` (§5.3).
     pub optimization: bool,
     /// Which path a consequence request takes: the engine's own door, or
-    /// derivation by enumeration over `solve` (§4.2).
+    /// derivation by enumeration over `solve` — `solve_assuming`, under a
+    /// scenario (§4.2).
     pub native_consequences: ConsequenceSupport,
     /// Which theories the backend evaluates.
     pub theories: TheorySupport,
@@ -231,7 +235,8 @@ pub struct Capabilities {
 
 /// Which path a consequence request takes (docs/design/solve.md §4.2): the
 /// engine's own cautious/brave door, in one solve, or the core's derivation by
-/// enumeration over `solve` — a different computational beast, folding every
+/// enumeration over `solve` (`solve_assuming`, under a scenario) — a different
+/// computational beast, folding every
 /// model — so a cost divergence of that size is legible before the request is
 /// paid for, never disclosed only in the receipt. The absent native door is
 /// `Default`: a backend that declares none is served by enumeration.
@@ -239,7 +244,8 @@ pub struct Capabilities {
 pub enum ConsequenceSupport {
     /// The engine computes cautious and brave consequences itself.
     Native,
-    /// The core folds the models `solve` enumerates.
+    /// The core folds the models `solve` — under a scenario, `solve_assuming`
+    /// — enumerates.
     #[default]
     DerivedByEnumeration,
 }
@@ -291,9 +297,9 @@ pub struct OptimizeRequest {
 }
 
 /// A cautious or brave consequence request (docs/design/solve.md §5.2): the
-/// scenario the consequences range over, so a scenario-scoped world view's
-/// cautious and brave range over that scenario's models, never the unscoped
-/// program (docs/design/query.md §2.4). Empty — the unscoped program, under
+/// scenario the consequences range over, so the agent's scoped consequence
+/// doors (§6.2) range over that scenario's models, never the unscoped program
+/// (docs/design/query.md §2.4). Empty — the unscoped program, under
 /// no assumption — is `Default`. The mode is the method's own parameter, not
 /// carried here a second time.
 #[non_exhaustive]
