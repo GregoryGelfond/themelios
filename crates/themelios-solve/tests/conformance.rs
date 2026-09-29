@@ -1,24 +1,28 @@
 //! The conformance suite over engine-free stub backends (docs/design/solve.md
 //! §13.1): a backend answering the suite's corpus from a table of its known
 //! answer sets — streamed through the real `Backend`/`Run`/`Solved::running`
-//! door — meets every obligation, and a backend broken in one way fails the
-//! check that names that way, so the suite has teeth. The authoritative runs are
-//! a real engine's; these run the suite's own machinery through the contract.
+//! door — meets every obligation, and a backend broken in one way fails exactly
+//! the checks that name that way, each with its typed breach, so the suite has
+//! teeth. The authoritative runs are a real engine's; these run the suite's own
+//! machinery through the contract.
 
+use std::collections::HashSet;
+
+use themelios_base::diagnostic::Label;
 use themelios_program::program::Part;
 use themelios_program::raise::raise_str;
-use themelios_program::{Dialect, Name, Program, Sign, Symbol};
+use themelios_program::{Dialect, Name, Origin, Program, Sign, Symbol};
 use themelios_solve::agent::{Interrupt, Scenario};
 use themelios_solve::bridge::{Door, GroundProgram};
-use themelios_solve::conformance::{self, Capability, Check, ConformanceReport, Verdict};
+use themelios_solve::conformance::{self, Breach, Capability, Check, ConformanceReport, Verdict};
 use themelios_solve::contract::{
-    Backend, Capabilities, ConsequenceRequest, ConsequenceSupport, Fault, GroundOptions, Mode,
-    SolveRequest, TruthValue,
+    Backend, Capabilities, ConsequenceRequest, ConsequenceSupport, Fault, GroundOptions, Locus,
+    Mode, SolveRequest, TruthValue,
 };
 use themelios_solve::extend::{Function, Propagator};
 use themelios_solve::outcome::{AnswerSet, Conclusion, Consequences, Run, Solved};
 
-// ---- The table a stub answers the corpus from ----
+// ---- The table a stub answers the suite from ----
 
 /// The ground atom `name` under `sign`, applied to `arguments`.
 fn atom(name: &str, arguments: impl IntoIterator<Item = Symbol>, sign: Sign) -> Symbol {
@@ -46,34 +50,82 @@ fn program(source: &str) -> Program {
         .into_program()
 }
 
-/// The suite's corpus with each program's answer sets, known independently of
-/// any engine — the table a stub reads its answers from.
-fn table() -> Vec<(Program, Vec<AnswerSet>)> {
+/// The positive loop, whose completion admits an unsupported model.
+const POSITIVE_LOOP: &str = "a :- b. b :- a.";
+
+/// The head cycle, whose shifted disjunction admits no model.
+const HEAD_CYCLE: &str = "a ; b. a :- b. b :- a.";
+
+/// How the stub answers a program.
+enum Answers {
+    /// These answer sets, known independently of any engine.
+    Known(Vec<AnswerSet>),
+    /// `{a, b}` while the external `a` is assigned true, `{}` otherwise.
+    External,
+    /// None: no grounder can instantiate the program, so lowering it is refused.
+    Unsafe,
+}
+
+/// Every program the suite loads, with its answers — the corpus and the
+/// capability probes' programs, known independently of any engine.
+fn table() -> Vec<(&'static str, Program, Answers)> {
     let p = |n| atom("p", [Symbol::number(n)], Sign::Positive);
     let q = |n| atom("q", [Symbol::number(n)], Sign::Positive);
+    let known = |sets: Vec<AnswerSet>| Answers::Known(sets);
     vec![
-        (program(""), vec![set([])]),
-        (program("a."), vec![set([constant("a")])]),
+        ("", known(vec![set([])])),
+        ("a.", known(vec![set([constant("a")])])),
         (
-            program("a :- not b. b :- not a."),
-            vec![set([constant("a")]), set([constant("b")])],
+            "a :- not b. b :- not a.",
+            known(vec![set([constant("a")]), set([constant("b")])]),
         ),
-        (program("a :- not a."), vec![]),
-        (program("a. :- a."), vec![]),
+        ("a :- not a.", known(vec![])),
+        ("a. :- a.", known(vec![])),
         (
-            program("-a. b :- -a."),
-            vec![set([atom("a", [], Sign::Negative), constant("b")])],
+            "-a. b :- -a.",
+            known(vec![set([atom("a", [], Sign::Negative), constant("b")])]),
         ),
         (
-            program("a ; b."),
-            vec![set([constant("a")]), set([constant("b")])],
+            "a ; b.",
+            known(vec![set([constant("a")]), set([constant("b")])]),
         ),
-        (program("{ a }."), vec![set([]), set([constant("a")])]),
+        ("{ a }.", known(vec![set([]), set([constant("a")])])),
         (
-            program("p(1..2). q(X) :- p(X)."),
-            vec![set([p(1), p(2), q(1), q(2)])],
+            "p(1..2). q(X) :- p(X).",
+            known(vec![set([p(1), p(2), q(1), q(2)])]),
         ),
+        (POSITIVE_LOOP, known(vec![set([])])),
+        (HEAD_CYCLE, known(vec![set([constant("a"), constant("b")])])),
+        (
+            "{ a }. #minimize { 1 : a }.",
+            known(vec![set([]), set([constant("a")])]),
+        ),
+        ("#external a. b :- a.", Answers::External),
+        ("p(X).", Answers::Unsafe),
     ]
+    .into_iter()
+    .map(|(source, answers)| (source, program(source), answers))
+    .collect()
+}
+
+/// The refusal of a program no grounder can instantiate: a program fault at the
+/// location of its statement.
+fn located_refusal(program: &Program) -> Fault {
+    let location = program
+        .statements()
+        .flat_map(|node| node.provenance().origins())
+        .find_map(|origin| match origin {
+            Origin::Parsed(location) => Some(*location),
+            _ => None,
+        })
+        .expect("a raised statement is located");
+    Fault::program(
+        "a variable nothing binds",
+        Label {
+            location,
+            message: None,
+        },
+    )
 }
 
 // ---- The stub ----
@@ -100,9 +152,48 @@ impl Run for Enumeration {
     }
 }
 
-/// How a stub departs from the contract — one departure at a time, so a failed
-/// check is the departure's.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// A search that yields the same model forever — the missing blocking clause.
+struct Endless {
+    model: AnswerSet,
+}
+
+impl Run for Endless {
+    fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+        Some(Ok(self.model.clone()))
+    }
+
+    fn conclusion(&self) -> Option<Conclusion> {
+        None
+    }
+}
+
+/// A search whose engine dies after its first model: the model, then an engine
+/// fault, then the end, concluded as cut short.
+struct Faulting {
+    first: Option<AnswerSet>,
+    faulted: bool,
+}
+
+impl Run for Faulting {
+    fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+        if let Some(first) = self.first.take() {
+            return Some(Ok(first));
+        }
+        if self.faulted {
+            return None;
+        }
+        self.faulted = true;
+        Some(Err(Fault::engine("the stub's engine died mid-search")))
+    }
+
+    fn conclusion(&self) -> Option<Conclusion> {
+        self.faulted.then_some(Conclusion::Interrupted)
+    }
+}
+
+/// How a stub departs from the contract — one departure at a time, so each
+/// failed check is the departure's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Flaw {
     /// None: the stub conforms.
     Faithful,
@@ -112,69 +203,110 @@ enum Flaw {
     /// Without declaring enumeration, concludes that the search closed the space
     /// at its first witness.
     ClaimsExhaustionAtItsWitness,
-    /// Answers `solve_assuming` without declaring `assumptions`.
-    AnswersUndeclaredAssumptions,
-    /// Declares `assumptions` yet refuses `solve_assuming`.
-    RefusesDeclaredAssumptions,
-    /// Declares `cancellation` yet answers no interrupt handle.
-    WithholdsTheInterruptHandle,
-    /// Declares the native consequence door yet answers the brave consequences
-    /// for the cautious.
-    MisanswersTheNativeCautious,
-    /// Declares the native consequence door and `assumptions`, yet its door
-    /// ranges over the whole program whatever scenario the request carries.
-    IgnoresTheNativeScenario,
-    /// Declares multi-shot solving yet accepts assigning an atom that is not
-    /// external — the silent no-op.
-    AcceptsANonExternal,
+    /// Yields its model forever, never ending the search.
+    NeverEnds,
+    /// Yields its first model, then faults at the engine.
+    FaultsMidStream,
+    /// Yields the empty set for a program with no answer set.
+    ReadsInconsistencyAsConsistency,
+    /// Stops at its budget over a program with no answer set.
+    LeavesTheSearchUndecided,
+    /// Yields every answer set of a program that has one, yet concludes at its
+    /// target, as a model limit would — never that the space closed.
+    LeavesTheSpaceOpen,
+    /// Yields, as the first model of a program that has answer sets, a set that
+    /// is none of them.
+    YieldsAStranger,
+    /// Reads the positive loop by completion, with its unsupported model.
+    SolvesByCompletion,
+    /// Reads the head cycle by shifting its disjunction, with no model.
+    ShiftsTheHeadCycle,
     /// Refuses to lower every program.
     RefusesEveryProgram,
     /// Refuses every unscoped solve.
     RefusesTheSolve,
-    /// Yields the empty set for a program with no answer set, so the search
-    /// reads consistent.
-    ReadsInconsistencyAsConsistency,
-    /// Stops at its budget over a program with no answer set, so the search
-    /// reads undecided.
-    LeavesTheSearchUndecided,
-    /// Without declaring enumeration, yields as its witness a set that is no
-    /// answer set.
-    YieldsAStranger,
-    /// Refuses `solve_assuming`, undeclared, at the engine locus rather than the
-    /// request's.
+    /// Exposes an empty ground program for every program.
+    ExposesAnEmptyGroundProgram,
+    /// Refuses the program no grounder can instantiate at the engine locus.
+    RefusesTheUnsafeProgramOffItsLocus,
+    /// Accepts the program no grounder can instantiate.
+    AcceptsTheUnsafeProgram,
+    /// Answers `solve_assuming` without declaring `assumptions`.
+    AnswersUndeclaredAssumptions,
+    /// Refuses `solve_assuming`, undeclared, at the engine locus.
     RefusesUndeclaredAssumptionsAtTheEngine,
-    /// Declares the native door yet answers the consequences of a program with
-    /// no answer set.
-    AnswersTheConsequencesOfNoModel,
-    /// Declares the native door and `assumptions`, yet refuses any request
-    /// carrying a scenario.
-    RefusesTheNativeScenario,
+    /// Declares `assumptions`, yet refuses `solve_assuming`.
+    RefusesDeclaredAssumptions,
     /// Declares `assumptions`, yet ranges a scoped solve's models over the empty
-    /// scenario rather than the one asked.
+    /// scenario.
     MisplacesTheScenario,
     /// Declares `assumptions`, yet a scoped solve yields no model.
     LosesTheScenariosModels,
-    /// Declares `assumptions`, yet a scoped solve yields every model, whatever
-    /// the scenario.
+    /// Declares `assumptions`, yet a scoped solve yields the unscoped models.
     IgnoresTheScenario,
+    /// Declares `assumptions`, yet a scenario that admits no model reads as the
+    /// unscoped program's first.
+    ReadsAnyScenarioAsSatisfiable,
+    /// Declares `assumptions` and reads each scenario's consistency rightly, yet
+    /// witnesses a satisfiable one with the unscoped program's first model.
+    WitnessesOutsideTheScenario,
+    /// Declares the native door, yet answers the brave consequences for the
+    /// cautious.
+    MisanswersTheNativeCautious,
+    /// Declares the native door, yet answers the consequences of a program with
+    /// no answer set.
+    AnswersTheConsequencesOfNoModel,
+    /// Declares the native door and `assumptions`, yet refuses a request
+    /// carrying a scenario.
+    RefusesTheNativeScenario,
+    /// Declares the native door and `assumptions`, yet its door ranges over the
+    /// whole program whatever the scenario.
+    IgnoresTheNativeScenario,
     /// Declares multi-shot solving, yet refuses `reset`.
     RefusesTheReset,
     /// Answers `reset` without declaring multi-shot solving.
     AnswersAnUndeclaredReset,
-    /// Declares multi-shot solving, yet refuses an assignment as unsupported.
+    /// Answers `ground` without declaring multi-shot solving.
+    AnswersAnUndeclaredGround,
+    /// Declares multi-shot solving, yet accepts assigning an atom that is not
+    /// external.
+    AcceptsANonExternal,
+    /// Declares multi-shot solving, yet refuses every assignment as unsupported.
     RefusesAssignmentAsUnsupported,
-    /// Declares multi-shot solving, yet refuses assigning an atom that is not
-    /// external at the engine locus rather than the request's.
+    /// Declares multi-shot solving, yet refuses every assignment at the engine.
     RefusesAssignmentAtTheEngine,
+    /// Declares externals, yet refuses every assignment at the request locus —
+    /// the external atom's among them.
+    AssignsNoExternal,
+    /// Declares externals, and answers an assignment, yet holds the external
+    /// false whatever it is assigned.
+    IgnoresTheAssignment,
+    /// Declares `cancellation`, yet answers no interrupt handle.
+    WithholdsTheInterruptHandle,
+    /// Answers an interrupt handle without declaring `cancellation`.
+    OffersAnUndeclaredInterrupt,
+    /// Answers a timed solve without declaring a time budget.
+    AnswersAnUndeclaredTimedSolve,
+    /// Registers an `@`-function without declaring `functions`.
+    AnswersUndeclaredFunctions,
+    /// Registers a propagator without declaring `propagators`.
+    AnswersUndeclaredPropagators,
 }
 
-/// A backend answering the corpus from its table, honouring exactly what it
+/// A backend answering the suite from its table, honouring exactly what it
 /// declares unless its flaw says otherwise.
 struct Stub {
     capabilities: Capabilities,
     flaw: Flaw,
-    table: Vec<(Program, Vec<AnswerSet>)>,
-    loaded: Option<usize>,
+    table: Vec<(&'static str, Program, Answers)>,
+    /// The programs lowered since the last reset: at most one on a single-shot
+    /// stub, whose `lower` replaces; any number on a multi-shot one, whose
+    /// `lower` accumulates — so a suite that skipped the reset would be caught.
+    loaded: Vec<usize>,
+    /// Whether the external atom `a` is assigned true.
+    a_holds: bool,
+    /// The empty ground program a flawed stub exposes.
+    nothing: GroundProgram,
 }
 
 impl Stub {
@@ -184,18 +316,48 @@ impl Stub {
             capabilities,
             flaw,
             table: table(),
-            loaded: None,
+            loaded: Vec::new(),
+            a_holds: false,
+            nothing: GroundProgram::default(),
         }
     }
 
-    /// The answer sets of the program last lowered.
+    /// The source of the one program loaded, if one alone is.
+    fn loaded_source(&self) -> Option<&'static str> {
+        match self.loaded[..] {
+            [index] => Some(self.table[index].0),
+            _ => None,
+        }
+    }
+
+    /// The answer sets of the program loaded.
     fn answer_sets(&self) -> Result<Vec<AnswerSet>, Fault> {
-        let index = self
-            .loaded
-            .ok_or_else(|| Fault::engine("no program is loaded"))?;
-        let mut sets = self.table[index].1.clone();
-        if self.flaw == Flaw::DropsAnAnswerSet && sets.len() > 1 {
-            sets.pop();
+        let [index] = self.loaded[..] else {
+            return Err(Fault::engine(if self.loaded.is_empty() {
+                "no program is loaded"
+            } else {
+                "several programs have accumulated"
+            }));
+        };
+        let (source, _, answers) = &self.table[index];
+        let mut sets = match answers {
+            Answers::Known(sets) => sets.clone(),
+            Answers::External => vec![if self.a_holds {
+                set([constant("a"), constant("b")])
+            } else {
+                set([])
+            }],
+            Answers::Unsafe => Vec::new(),
+        };
+        match self.flaw {
+            Flaw::DropsAnAnswerSet if sets.len() > 1 => {
+                sets.pop();
+            }
+            Flaw::SolvesByCompletion if *source == POSITIVE_LOOP => {
+                sets.push(set([constant("a"), constant("b")]));
+            }
+            Flaw::ShiftsTheHeadCycle if *source == HEAD_CYCLE => sets.clear(),
+            _ => {}
         }
         Ok(sets)
     }
@@ -206,11 +368,30 @@ impl Stub {
         if sets.is_empty() && self.flaw == Flaw::ReadsInconsistencyAsConsistency {
             sets.push(set([]));
         }
-        if self.flaw == Flaw::YieldsAStranger {
+        if self.flaw == Flaw::YieldsAStranger && !sets.is_empty() {
             sets.insert(0, set([constant("stranger")]));
+        }
+        if self.flaw == Flaw::NeverEnds && !sets.is_empty() {
+            return Solved::running(
+                Box::new(Endless {
+                    model: sets.swap_remove(0),
+                }),
+                scenario,
+            );
+        }
+        if self.flaw == Flaw::FaultsMidStream && !sets.is_empty() {
+            return Solved::running(
+                Box::new(Faulting {
+                    first: Some(sets.swap_remove(0)),
+                    faulted: false,
+                }),
+                scenario,
+            );
         }
         let terminal = if sets.is_empty() && self.flaw == Flaw::LeavesTheSearchUndecided {
             Conclusion::Budget
+        } else if !sets.is_empty() && self.flaw == Flaw::LeavesTheSpaceOpen {
+            Conclusion::Target
         } else if self.capabilities.enumeration || sets.is_empty() {
             Conclusion::Exhausted
         } else {
@@ -245,7 +426,10 @@ impl Backend for Stub {
     }
 
     fn solve(&mut self, request: &SolveRequest) -> Result<Solved<'_>, Fault> {
-        if request.time.is_some() && !self.capabilities.budgets.time {
+        if request.time.is_some()
+            && !self.capabilities.budgets.time
+            && self.flaw != Flaw::AnswersAnUndeclaredTimedSolve
+        {
             return Err(Fault::unsupported());
         }
         if self.flaw == Flaw::RefusesTheSolve {
@@ -265,19 +449,36 @@ impl Backend for Stub {
         let index = self
             .table
             .iter()
-            .position(|(program, _)| program == lowered)
+            .position(|(_, program, _)| program == lowered)
             .ok_or_else(|| Fault::engine("the program is outside the stub's table"))?;
-        self.loaded = Some(index);
+        if matches!(self.table[index].2, Answers::Unsafe) {
+            match self.flaw {
+                Flaw::AcceptsTheUnsafeProgram => {}
+                Flaw::RefusesTheUnsafeProgramOffItsLocus => {
+                    return Err(Fault::engine("a variable nothing binds"));
+                }
+                _ => return Err(located_refusal(lowered)),
+            }
+        }
+        if self.capabilities.multi_shot {
+            self.loaded.push(index);
+        } else {
+            self.loaded = vec![index];
+        }
         Ok(())
     }
 
     fn ground_program(&self) -> Option<&GroundProgram> {
-        None
+        (self.flaw == Flaw::ExposesAnEmptyGroundProgram).then_some(&self.nothing)
     }
 
     fn interrupt(&self) -> Option<Interrupt> {
-        (self.capabilities.cancellation && self.flaw != Flaw::WithholdsTheInterruptHandle)
-            .then_some(Interrupt)
+        let offered = match self.flaw {
+            Flaw::WithholdsTheInterruptHandle => false,
+            Flaw::OffersAnUndeclaredInterrupt => true,
+            _ => self.capabilities.cancellation,
+        };
+        offered.then_some(Interrupt)
     }
 
     fn solve_assuming(
@@ -300,6 +501,25 @@ impl Backend for Stub {
         let admitted: Vec<AnswerSet> = match self.flaw {
             Flaw::LosesTheScenariosModels => Vec::new(),
             Flaw::IgnoresTheScenario => all,
+            Flaw::WitnessesOutsideTheScenario => {
+                if all.iter().any(|set| admits(scenario, set)) {
+                    all.into_iter().take(1).collect()
+                } else {
+                    Vec::new()
+                }
+            }
+            Flaw::ReadsAnyScenarioAsSatisfiable => {
+                let admitted: Vec<AnswerSet> = all
+                    .iter()
+                    .filter(|set| admits(scenario, set))
+                    .cloned()
+                    .collect();
+                if admitted.is_empty() {
+                    all.into_iter().take(1).collect()
+                } else {
+                    admitted
+                }
+            }
             _ => all
                 .into_iter()
                 .filter(|set| admits(scenario, set))
@@ -314,23 +534,35 @@ impl Backend for Stub {
     }
 
     fn ground(&mut self, _parts: &[Part], _options: &GroundOptions) -> Result<(), Fault> {
-        if self.capabilities.multi_shot {
+        if self.capabilities.multi_shot || self.flaw == Flaw::AnswersAnUndeclaredGround {
             Ok(())
         } else {
             Err(Fault::unsupported())
         }
     }
 
-    fn assign_external(&mut self, _external: Symbol, _value: TruthValue) -> Result<(), Fault> {
+    fn assign_external(&mut self, external: Symbol, value: TruthValue) -> Result<(), Fault> {
         if !self.capabilities.multi_shot {
             return Err(Fault::unsupported());
         }
         match self.flaw {
-            Flaw::AcceptsANonExternal => Ok(()),
-            Flaw::RefusesAssignmentAsUnsupported => Err(Fault::unsupported()),
-            Flaw::RefusesAssignmentAtTheEngine => Err(Fault::engine("the stub cannot assign")),
-            // The corpus declares no external atom, so every assignment is refused.
-            _ => Err(Fault::request("the atom is not external")),
+            Flaw::RefusesAssignmentAsUnsupported => return Err(Fault::unsupported()),
+            Flaw::RefusesAssignmentAtTheEngine => {
+                return Err(Fault::engine("the stub cannot assign"));
+            }
+            Flaw::AssignsNoExternal => return Err(Fault::request("the stub assigns nothing")),
+            _ => {}
+        }
+        // The external program's `a` is the one external atom in the table.
+        let external_a =
+            self.loaded_source() == Some("#external a. b :- a.") && external == constant("a");
+        if external_a {
+            self.a_holds = value == TruthValue::True && self.flaw != Flaw::IgnoresTheAssignment;
+            Ok(())
+        } else if self.flaw == Flaw::AcceptsANonExternal {
+            Ok(())
+        } else {
+            Err(Fault::request("the atom is not external"))
         }
     }
 
@@ -338,7 +570,8 @@ impl Backend for Stub {
         match (self.capabilities.multi_shot, self.flaw) {
             (true, Flaw::RefusesTheReset) => Err(Fault::engine("the stub cannot reset")),
             (false, Flaw::AnswersAnUndeclaredReset) | (true, _) => {
-                self.loaded = None;
+                self.loaded.clear();
+                self.a_holds = false;
                 Ok(())
             }
             (false, _) => Err(Fault::unsupported()),
@@ -346,7 +579,7 @@ impl Backend for Stub {
     }
 
     fn register_function(&mut self, _function: Box<dyn Function>) -> Result<(), Fault> {
-        if self.capabilities.functions {
+        if self.capabilities.functions || self.flaw == Flaw::AnswersUndeclaredFunctions {
             Ok(())
         } else {
             Err(Fault::unsupported())
@@ -354,7 +587,7 @@ impl Backend for Stub {
     }
 
     fn register_propagator(&mut self, _propagator: Box<dyn Propagator>) -> Result<(), Fault> {
-        if self.capabilities.propagators {
+        if self.capabilities.propagators || self.flaw == Flaw::AnswersUndeclaredPropagators {
             Ok(())
         } else {
             Err(Fault::unsupported())
@@ -407,17 +640,62 @@ fn deciding() -> Capabilities {
     Capabilities::default()
 }
 
+/// The declaration of a backend that decides consistency without enumerating,
+/// and honours assumptions.
+fn deciding_under_assumptions() -> Capabilities {
+    let mut capabilities = deciding();
+    capabilities.assumptions = true;
+    capabilities
+}
+
+/// The declaration of an enumerating backend realising `capability` alone —
+/// with the multi-shot solving an external's assignment needs.
+fn only(capability: Capability) -> Capabilities {
+    let mut capabilities = enumerating();
+    match capability {
+        Capability::NativeConsequences => {
+            capabilities.native_consequences = ConsequenceSupport::Native;
+        }
+        Capability::Assumptions => capabilities.assumptions = true,
+        Capability::MultiShot => capabilities.multi_shot = true,
+        Capability::Externals => {
+            capabilities.multi_shot = true;
+            capabilities.externals = true;
+        }
+        Capability::Cancellation => capabilities.cancellation = true,
+        Capability::TimeBudget => capabilities.budgets.time = true,
+        Capability::Functions => capabilities.functions = true,
+        Capability::Propagators => capabilities.propagators = true,
+        _ => {}
+    }
+    capabilities
+}
+
+/// Every capability a stub outside the crate can realise: all but optimization,
+/// whose outcome has no public constructor.
+const REALISABLE: [Capability; 8] = [
+    Capability::NativeConsequences,
+    Capability::Assumptions,
+    Capability::MultiShot,
+    Capability::Externals,
+    Capability::Cancellation,
+    Capability::TimeBudget,
+    Capability::Functions,
+    Capability::Propagators,
+];
+
 /// The declaration of a backend realising every capability a stub outside the
-/// crate can: all but optimization, whose outcome has no public constructor.
+/// crate can.
 fn realising() -> Capabilities {
     let mut capabilities = enumerating();
     capabilities.native_consequences = ConsequenceSupport::Native;
     capabilities.assumptions = true;
     capabilities.multi_shot = true;
+    capabilities.externals = true;
     capabilities.cancellation = true;
+    capabilities.budgets.time = true;
     capabilities.functions = true;
     capabilities.propagators = true;
-    capabilities.budgets.time = true;
     capabilities
 }
 
@@ -426,19 +704,20 @@ fn report(capabilities: Capabilities, flaw: Flaw) -> ConformanceReport {
     conformance::run(&mut Stub::new(capabilities, flaw))
 }
 
-/// Whether the report's verdict on `check` is a failure.
-fn failed(report: &ConformanceReport, check: Check) -> bool {
-    matches!(report.verdict(check), Some(Verdict::Failed(_)))
+/// The checks the report failed, each with how the backend broke it.
+fn failures(report: &ConformanceReport) -> HashSet<(Check, Breach)> {
+    report
+        .entries()
+        .filter_map(|(check, verdict)| match verdict {
+            Verdict::Failed(failure) => Some((check, failure.breach())),
+            _ => None,
+        })
+        .collect()
 }
 
-/// The reason the report gives for failing `check` — or the empty string, which
-/// no failure's reason is, where it did not fail.
-fn failure(report: &ConformanceReport, check: Check) -> String {
-    match report.verdict(check) {
-        Some(Verdict::Failed(why)) => why.clone(),
-        _ => String::new(),
-    }
-}
+/// A flaw, the declaration a stub carrying it runs under, and every check it
+/// fails, each with how.
+type Expectation = (Flaw, Capabilities, Vec<(Check, Breach)>);
 
 /// Whether the report's verdict on `check` is a skip.
 fn skipped(report: &ConformanceReport, check: Check) -> bool {
@@ -454,6 +733,20 @@ fn an_enumerating_backend_conforms() {
 }
 
 #[test]
+fn a_backend_that_stops_at_its_witness_conforms() {
+    // Without declaring enumeration, the stub yields one witness and concludes
+    // that it met its target — never that the space closed.
+    let report = report(deciding(), Flaw::Faithful);
+    assert!(report.is_conformant(), "{report}");
+}
+
+#[test]
+fn a_deciding_backend_honouring_assumptions_conforms() {
+    let report = report(deciding_under_assumptions(), Flaw::Faithful);
+    assert!(report.is_conformant(), "{report}");
+}
+
+#[test]
 fn a_backend_realising_every_capability_it_declares_conforms() {
     let report = report(realising(), Flaw::Faithful);
     assert!(report.is_conformant(), "{report}");
@@ -462,15 +755,7 @@ fn a_backend_realising_every_capability_it_declares_conforms() {
 #[test]
 fn every_declared_capability_is_probed_rather_than_skipped() {
     let report = report(realising(), Flaw::Faithful);
-    for capability in [
-        Capability::NativeConsequences,
-        Capability::Assumptions,
-        Capability::MultiShot,
-        Capability::Functions,
-        Capability::Propagators,
-        Capability::Cancellation,
-        Capability::TimeBudget,
-    ] {
+    for capability in REALISABLE {
         assert_eq!(
             report.verdict(Check::Capability(capability)),
             Some(&Verdict::Passed),
@@ -480,21 +765,18 @@ fn every_declared_capability_is_probed_rather_than_skipped() {
 }
 
 #[test]
-fn a_backend_that_stops_at_its_witness_conforms() {
-    // Without declaring enumeration, the stub yields one witness and concludes
-    // that it met its target — never that the space closed.
-    let report = report(deciding(), Flaw::Faithful);
-    assert!(report.is_conformant(), "{report}");
-}
-
-#[test]
-fn a_native_door_without_assumptions_conforms() {
-    // The door is never handed a scenario, so it is held to the unscoped
-    // consequences alone.
-    let mut capabilities = enumerating();
-    capabilities.native_consequences = ConsequenceSupport::Native;
-    let report = report(capabilities, Flaw::Faithful);
-    assert!(report.is_conformant(), "{report}");
+fn every_capability_declared_alone_conforms() {
+    // Declaring one bit at a time holds the suite to reading each bit as that
+    // capability's own, and no other's.
+    for capability in REALISABLE {
+        let report = report(only(capability), Flaw::Faithful);
+        assert!(report.is_conformant(), "{capability}: {report}");
+        assert_eq!(
+            report.verdict(Check::Capability(capability)),
+            Some(&Verdict::Passed),
+            "{capability}: {report}",
+        );
+    }
 }
 
 #[test]
@@ -509,7 +791,7 @@ fn the_structural_pathologies_are_attempted() {
 }
 
 #[test]
-fn a_cancelled_search_is_skipped_while_no_search_can_be_cancelled() {
+fn the_cancellation_check_is_skipped_while_no_search_can_be_cancelled() {
     let report = report(realising(), Flaw::Faithful);
     assert!(
         skipped(&report, Check::CancellationIsNotExhaustion),
@@ -532,89 +814,282 @@ fn the_non_external_refusal_binds_only_a_multi_shot_backend() {
     );
 }
 
-// ---- A broken backend fails the check that names its break ----
+#[test]
+fn an_undeclared_externals_bit_binds_nothing() {
+    let report = report(only(Capability::MultiShot), Flaw::Faithful);
+    assert!(
+        skipped(&report, Check::Capability(Capability::Externals)),
+        "{report}"
+    );
+}
+
+// ---- A broken backend fails exactly the checks that name its break ----
+
+// One table: each flaw beside the declaration it runs under and the exact
+// checks it fails; splitting it would scatter the one universal the law states.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn each_flaw_fails_exactly_the_checks_that_name_it() {
+    use Breach::{Accepted, Misanswered, Mislocated, Refused};
+    use Capability as C;
+    use Check::{
+        Capability as Declared, ExhaustionIsEarned as Earned, GroundProgramIsFaithful as Ground,
+        NonExternalAssignmentRefuses as NonExternal, OutcomeCorrectness as Outcome,
+        ProgramFaultIsLocated as Located,
+    };
+    let table: Vec<Expectation> = vec![
+        (
+            Flaw::DropsAnAnswerSet,
+            enumerating(),
+            vec![(Outcome, Misanswered), (Earned, Misanswered)],
+        ),
+        (
+            Flaw::ClaimsExhaustionAtItsWitness,
+            deciding(),
+            vec![(Earned, Misanswered)],
+        ),
+        (Flaw::NeverEnds, enumerating(), vec![(Outcome, Misanswered)]),
+        (
+            Flaw::FaultsMidStream,
+            enumerating(),
+            vec![(Outcome, Refused)],
+        ),
+        (
+            Flaw::ReadsInconsistencyAsConsistency,
+            enumerating(),
+            vec![(Outcome, Misanswered)],
+        ),
+        (
+            Flaw::LeavesTheSearchUndecided,
+            enumerating(),
+            vec![(Outcome, Refused)],
+        ),
+        (
+            Flaw::LeavesTheSpaceOpen,
+            enumerating(),
+            vec![(Outcome, Misanswered)],
+        ),
+        (
+            Flaw::YieldsAStranger,
+            deciding(),
+            vec![(Outcome, Misanswered)],
+        ),
+        (
+            Flaw::SolvesByCompletion,
+            enumerating(),
+            vec![(Outcome, Misanswered)],
+        ),
+        (
+            Flaw::ShiftsTheHeadCycle,
+            enumerating(),
+            vec![(Outcome, Misanswered), (Earned, Misanswered)],
+        ),
+        (
+            Flaw::RefusesEveryProgram,
+            enumerating(),
+            vec![(Outcome, Refused), (Located, Mislocated)],
+        ),
+        (
+            Flaw::RefusesTheSolve,
+            enumerating(),
+            vec![(Outcome, Refused)],
+        ),
+        (
+            Flaw::ExposesAnEmptyGroundProgram,
+            enumerating(),
+            vec![(Ground, Misanswered)],
+        ),
+        (
+            Flaw::RefusesTheUnsafeProgramOffItsLocus,
+            enumerating(),
+            vec![(Located, Mislocated)],
+        ),
+        (
+            Flaw::AcceptsTheUnsafeProgram,
+            enumerating(),
+            vec![(Located, Accepted)],
+        ),
+        (
+            Flaw::AnswersUndeclaredAssumptions,
+            enumerating(),
+            vec![(Declared(C::Assumptions), Accepted)],
+        ),
+        (
+            Flaw::RefusesUndeclaredAssumptionsAtTheEngine,
+            enumerating(),
+            vec![(Declared(C::Assumptions), Mislocated)],
+        ),
+        (
+            Flaw::RefusesDeclaredAssumptions,
+            realising(),
+            vec![(Declared(C::Assumptions), Refused)],
+        ),
+        (
+            Flaw::MisplacesTheScenario,
+            realising(),
+            vec![(Declared(C::Assumptions), Misanswered)],
+        ),
+        (
+            Flaw::LosesTheScenariosModels,
+            realising(),
+            vec![(Declared(C::Assumptions), Misanswered)],
+        ),
+        (
+            Flaw::IgnoresTheScenario,
+            realising(),
+            vec![(Declared(C::Assumptions), Misanswered)],
+        ),
+        (
+            Flaw::IgnoresTheScenario,
+            deciding_under_assumptions(),
+            vec![(Declared(C::Assumptions), Misanswered)],
+        ),
+        (
+            Flaw::ReadsAnyScenarioAsSatisfiable,
+            realising(),
+            vec![(Declared(C::Assumptions), Misanswered)],
+        ),
+        (
+            Flaw::WitnessesOutsideTheScenario,
+            realising(),
+            vec![(Declared(C::Assumptions), Misanswered)],
+        ),
+        (
+            Flaw::WitnessesOutsideTheScenario,
+            deciding_under_assumptions(),
+            vec![(Declared(C::Assumptions), Misanswered)],
+        ),
+        (
+            Flaw::MisanswersTheNativeCautious,
+            realising(),
+            vec![(Declared(C::NativeConsequences), Misanswered)],
+        ),
+        (
+            Flaw::AnswersTheConsequencesOfNoModel,
+            realising(),
+            vec![(Declared(C::NativeConsequences), Misanswered)],
+        ),
+        (
+            Flaw::RefusesTheNativeScenario,
+            realising(),
+            vec![(Declared(C::NativeConsequences), Refused)],
+        ),
+        (
+            Flaw::IgnoresTheNativeScenario,
+            realising(),
+            vec![(Declared(C::NativeConsequences), Misanswered)],
+        ),
+        (
+            Flaw::RefusesTheReset,
+            realising(),
+            vec![(Outcome, Refused), (Declared(C::MultiShot), Refused)],
+        ),
+        (
+            Flaw::AnswersAnUndeclaredReset,
+            enumerating(),
+            vec![(Declared(C::MultiShot), Accepted)],
+        ),
+        (
+            Flaw::AnswersAnUndeclaredGround,
+            enumerating(),
+            vec![(Declared(C::MultiShot), Accepted)],
+        ),
+        (
+            Flaw::AcceptsANonExternal,
+            realising(),
+            vec![(NonExternal, Accepted)],
+        ),
+        (
+            Flaw::RefusesAssignmentAsUnsupported,
+            realising(),
+            vec![(NonExternal, Refused), (Declared(C::Externals), Refused)],
+        ),
+        (
+            Flaw::RefusesAssignmentAtTheEngine,
+            realising(),
+            vec![(NonExternal, Mislocated), (Declared(C::Externals), Refused)],
+        ),
+        (
+            Flaw::AssignsNoExternal,
+            realising(),
+            vec![(Declared(C::Externals), Refused)],
+        ),
+        (
+            Flaw::IgnoresTheAssignment,
+            realising(),
+            vec![(Declared(C::Externals), Misanswered)],
+        ),
+        (
+            Flaw::WithholdsTheInterruptHandle,
+            realising(),
+            vec![(Declared(C::Cancellation), Refused)],
+        ),
+        (
+            Flaw::OffersAnUndeclaredInterrupt,
+            enumerating(),
+            vec![(Declared(C::Cancellation), Accepted)],
+        ),
+        (
+            Flaw::AnswersAnUndeclaredTimedSolve,
+            enumerating(),
+            vec![(Declared(C::TimeBudget), Accepted)],
+        ),
+        (
+            Flaw::AnswersUndeclaredFunctions,
+            enumerating(),
+            vec![(Declared(C::Functions), Accepted)],
+        ),
+        (
+            Flaw::AnswersUndeclaredPropagators,
+            enumerating(),
+            vec![(Declared(C::Propagators), Accepted)],
+        ),
+    ];
+    for (flaw, declared, expected) in table {
+        let report = report(declared, flaw);
+        let expected: HashSet<(Check, Breach)> = expected.into_iter().collect();
+        assert_eq!(failures(&report), expected, "{flaw:?}: {report}");
+    }
+}
 
 #[test]
-fn a_dropped_answer_set_fails_outcome_correctness() {
+fn a_run_that_never_ends_fails_rather_than_holding_the_suite() {
+    let report = report(enumerating(), Flaw::NeverEnds);
+    assert!(
+        matches!(
+            report.verdict(Check::OutcomeCorrectness),
+            Some(Verdict::Failed(failure)) if failure.breach() == Breach::Misanswered
+        ),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_failure_names_the_corpus_program_it_broke_on() {
     let report = report(enumerating(), Flaw::DropsAnAnswerSet);
-    assert!(failed(&report, Check::OutcomeCorrectness), "{report}");
+    let Some(Verdict::Failed(failure)) = report.verdict(Check::OutcomeCorrectness) else {
+        panic!("the dropped answer set fails its outcome: {report}");
+    };
+    assert_eq!(failure.case(), Some("an even loop"));
 }
 
 #[test]
-fn exhaustion_claimed_at_a_witness_fails_its_obligation() {
-    let report = report(deciding(), Flaw::ClaimsExhaustionAtItsWitness);
-    assert!(failed(&report, Check::ExhaustionIsEarned), "{report}");
+fn a_faulted_stream_s_failure_carries_the_fault() {
+    let report = report(enumerating(), Flaw::FaultsMidStream);
+    let Some(Verdict::Failed(failure)) = report.verdict(Check::OutcomeCorrectness) else {
+        panic!("the faulted stream fails its outcome: {report}");
+    };
+    assert_eq!(failure.breach(), Breach::Refused);
+    assert_eq!(failure.fault().map(Fault::locus), Some(Locus::Engine));
 }
 
 #[test]
-fn answering_an_undeclared_capability_fails_its_honesty() {
-    let report = report(enumerating(), Flaw::AnswersUndeclaredAssumptions);
-    assert!(
-        failed(&report, Check::Capability(Capability::Assumptions)),
-        "{report}"
-    );
-}
-
-#[test]
-fn refusing_a_declared_capability_fails_its_honesty() {
-    let report = report(realising(), Flaw::RefusesDeclaredAssumptions);
-    assert!(
-        failed(&report, Check::Capability(Capability::Assumptions)),
-        "{report}"
-    );
-}
-
-#[test]
-fn a_withheld_interrupt_handle_fails_the_cancellation_honesty() {
-    let report = report(realising(), Flaw::WithholdsTheInterruptHandle);
-    assert!(
-        failed(&report, Check::Capability(Capability::Cancellation)),
-        "{report}"
-    );
-}
-
-#[test]
-fn a_misanswered_native_consequence_fails_its_honesty() {
-    let report = report(realising(), Flaw::MisanswersTheNativeCautious);
-    assert!(
-        failed(&report, Check::Capability(Capability::NativeConsequences)),
-        "{report}"
-    );
-}
-
-#[test]
-fn a_native_door_ignoring_its_scenario_fails_its_honesty() {
-    let report = report(realising(), Flaw::IgnoresTheNativeScenario);
-    assert!(
-        failed(&report, Check::Capability(Capability::NativeConsequences)),
-        "{report}"
-    );
-}
-
-#[test]
-fn an_accepted_non_external_assignment_fails_its_refusal() {
-    let report = report(realising(), Flaw::AcceptsANonExternal);
-    assert!(
-        failed(&report, Check::NonExternalAssignmentRefuses),
-        "{report}"
-    );
-}
-
-#[test]
-fn a_flaw_fails_only_the_checks_that_name_it() {
-    // Refusing a declared capability breaks that capability's honesty and
-    // nothing else: the corpus and the other declarations still conform.
-    let report = report(realising(), Flaw::RefusesDeclaredAssumptions);
-    let broken: Vec<Check> = report
-        .entries()
-        .filter(|(_, verdict)| matches!(verdict, Verdict::Failed(_)))
-        .map(|(check, _)| check)
-        .collect();
-    assert_eq!(
-        broken,
-        [Check::Capability(Capability::Assumptions)],
-        "{report}"
-    );
+fn a_refused_obligation_carries_the_backend_s_fault() {
+    let report = report(enumerating(), Flaw::RefusesTheSolve);
+    let Some(Verdict::Failed(failure)) = report.verdict(Check::OutcomeCorrectness) else {
+        panic!("the refused solve fails its outcome: {report}");
+    };
+    assert_eq!(failure.fault().map(Fault::locus), Some(Locus::Engine));
 }
 
 // ---- The pathologies the vocabulary makes unconstructible ----
@@ -624,151 +1099,4 @@ fn an_enumeration_has_no_improving_trajectory() {
     // The improving trajectory is `Optimized`'s alone (docs/design/solve.md
     // §5.3): asking a `Solved` for one does not compile.
     trybuild::TestCases::new().compile_fail("tests/ui/solved_trajectory.rs");
-}
-
-// ---- Every verdict path names what broke ----
-
-#[test]
-fn a_refused_program_fails_outcome_correctness() {
-    let report = report(enumerating(), Flaw::RefusesEveryProgram);
-    assert!(
-        failure(&report, Check::OutcomeCorrectness).contains("was refused"),
-        "{report}"
-    );
-}
-
-#[test]
-fn a_probe_whose_program_is_refused_fails_as_unprobed() {
-    let report = report(realising(), Flaw::RefusesEveryProgram);
-    let why = failure(&report, Check::Capability(Capability::Assumptions));
-    assert!(why.contains("could not be probed"), "{report}");
-}
-
-#[test]
-fn a_refused_solve_fails_outcome_correctness() {
-    let report = report(enumerating(), Flaw::RefusesTheSolve);
-    assert!(
-        failure(&report, Check::OutcomeCorrectness).contains("solve was refused"),
-        "{report}"
-    );
-}
-
-#[test]
-fn an_inconsistent_program_read_as_consistent_fails_outcome_correctness() {
-    let report = report(enumerating(), Flaw::ReadsInconsistencyAsConsistency);
-    assert!(
-        failure(&report, Check::OutcomeCorrectness)
-            .contains("read consistent where the program is inconsistent"),
-        "{report}"
-    );
-}
-
-#[test]
-fn an_undecided_search_fails_outcome_correctness() {
-    let report = report(enumerating(), Flaw::LeavesTheSearchUndecided);
-    assert!(
-        failure(&report, Check::OutcomeCorrectness).contains("budget"),
-        "{report}"
-    );
-}
-
-#[test]
-fn a_witness_that_is_no_answer_set_fails_outcome_correctness() {
-    let report = report(deciding(), Flaw::YieldsAStranger);
-    assert!(
-        failure(&report, Check::OutcomeCorrectness).contains("not one of its answer sets"),
-        "{report}"
-    );
-}
-
-#[test]
-fn an_undeclared_capability_refused_off_the_request_locus_fails_its_honesty() {
-    let report = report(enumerating(), Flaw::RefusesUndeclaredAssumptionsAtTheEngine);
-    assert!(
-        failure(&report, Check::Capability(Capability::Assumptions)).contains("engine locus"),
-        "{report}"
-    );
-}
-
-#[test]
-fn native_consequences_of_a_program_without_models_fail_its_honesty() {
-    let report = report(realising(), Flaw::AnswersTheConsequencesOfNoModel);
-    assert!(
-        failure(&report, Check::Capability(Capability::NativeConsequences))
-            .contains("no answer set"),
-        "{report}"
-    );
-}
-
-#[test]
-fn a_native_door_refusing_a_scenario_fails_its_honesty() {
-    let report = report(realising(), Flaw::RefusesTheNativeScenario);
-    assert!(
-        failed(&report, Check::Capability(Capability::NativeConsequences)),
-        "{report}"
-    );
-}
-
-#[test]
-fn a_scoped_solve_ranging_over_another_scenario_fails_its_honesty() {
-    let report = report(realising(), Flaw::MisplacesTheScenario);
-    assert!(
-        failure(&report, Check::Capability(Capability::Assumptions)).contains("other than"),
-        "{report}"
-    );
-}
-
-#[test]
-fn a_scoped_solve_that_loses_its_models_fails_its_honesty() {
-    let report = report(realising(), Flaw::LosesTheScenariosModels);
-    assert!(
-        failure(&report, Check::Capability(Capability::Assumptions)).contains("as consistent"),
-        "{report}"
-    );
-}
-
-#[test]
-fn a_scoped_solve_ignoring_its_scenario_fails_its_honesty() {
-    let report = report(realising(), Flaw::IgnoresTheScenario);
-    assert!(
-        failure(&report, Check::Capability(Capability::Assumptions))
-            .contains("not the ones the scenario admits"),
-        "{report}"
-    );
-}
-
-#[test]
-fn a_refused_reset_fails_the_multi_shot_honesty() {
-    let report = report(realising(), Flaw::RefusesTheReset);
-    assert!(
-        failed(&report, Check::Capability(Capability::MultiShot)),
-        "{report}"
-    );
-}
-
-#[test]
-fn an_answered_undeclared_reset_fails_the_multi_shot_honesty() {
-    let report = report(enumerating(), Flaw::AnswersAnUndeclaredReset);
-    assert!(
-        failed(&report, Check::Capability(Capability::MultiShot)),
-        "{report}"
-    );
-}
-
-#[test]
-fn a_non_external_refused_as_unsupported_fails_its_refusal() {
-    let report = report(realising(), Flaw::RefusesAssignmentAsUnsupported);
-    assert!(
-        failure(&report, Check::NonExternalAssignmentRefuses).contains("as unsupported"),
-        "{report}"
-    );
-}
-
-#[test]
-fn a_non_external_refused_off_the_request_locus_fails_its_refusal() {
-    let report = report(realising(), Flaw::RefusesAssignmentAtTheEngine);
-    assert!(
-        failure(&report, Check::NonExternalAssignmentRefuses).contains("engine locus"),
-        "{report}"
-    );
 }

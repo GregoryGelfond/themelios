@@ -1,8 +1,9 @@
 //! The exhaustion gate at the public surface (docs/design/solve.md §5.3): the
 //! completeness refusal is a public, `Error`-implementing value a consumer can
-//! hold and chain. The gate's end-to-end behaviour over a search — a complete
-//! collection only from a closed space — is exercised by the conformance suite
-//! over every backend it runs; here the refusal's public contract is pinned.
+//! hold and chain. The gate's behaviour over a search — a complete collection
+//! only from a closed space — is pinned by the outcome module's own tests, and
+//! the conformance suite attempts its touched-stream half over every backend it
+//! runs; here the refusal's public contract is pinned.
 
 use themelios_solve::outcome::NotExhausted;
 
