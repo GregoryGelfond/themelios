@@ -1,0 +1,5 @@
+error[E0599]: no method named `trajectory` found for mutable reference `&mut Solved<'_>` in the current scope
+ --> tests/ui/solved_trajectory.rs:5:20
+  |
+5 |     let _ = solved.trajectory();
+  |                    ^^^^^^^^^^ method not found in `&mut Solved<'_>`
