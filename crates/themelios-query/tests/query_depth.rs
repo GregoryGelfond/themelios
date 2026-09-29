@@ -6,10 +6,12 @@
 //! overflow aborts the process rather than unwinding a catchable panic, so the
 //! reading's no-panic promise rests on it.
 //!
-//! The stated stack is 256 KiB. A recursive walk needs at least one frame per level —
-//! tens of bytes at the very least — so 200,000 levels need megabytes, and a recursive
-//! walk of this depth overflows the stated stack many times over; the iterative walks
-//! need only their heap-allocated work lists.
+//! The stated stack is 256 KiB, the program tier's calibrated pole (its
+//! `tests/depth_proof.rs`): a naive recursive walk overflows it at about 1,500 frames,
+//! so 200,000 levels are two orders past it, while the iterative walks need only their
+//! heap-allocated work lists. Every level holds its deeper part second, after an empty
+//! sibling, so the walks run at depth through a later part and through an empty
+//! compound — never down a first part alone.
 
 mod common;
 
@@ -52,16 +54,17 @@ fn lit(name: &str) -> Query {
     .expect("a ground literal is a query")
 }
 
-/// A query nested `depth` levels around the literal `a`, each level a one-part
-/// compound, conjunction and disjunction alternating — built iteratively, so the
-/// construction itself does not recurse.
+/// A query nested `depth` levels around the literal `a`, conjunction and disjunction
+/// alternating, each level holding the empty compound of its own connective first — its
+/// identity, so the query's truth is the literal's — and the deeper level second. Built
+/// iteratively, so the construction itself does not recurse.
 fn deep_query(depth: usize) -> Query {
     let mut query = lit("a");
     for level in 0..depth {
         query = if level % 2 == 0 {
-            Query::all([query])
+            Query::all([Query::all([]), query])
         } else {
-            Query::any([query])
+            Query::any([Query::any([]), query])
         };
     }
     query
@@ -87,8 +90,10 @@ fn every_walk_over_a_deep_query_survives_the_stated_stack() {
         let clone_is_equal = deep == same; // PartialEq
         assert!(clone_is_equal);
         let rendered = format!("{deep:?}"); // Debug
-        // Every level printed: the conjunctions are the even levels, half of them.
-        assert_eq!(rendered.matches("Conjunction([").count(), DEPTH / 2);
+        // Every compound printed: each level holds two of its connective's, the
+        // levels alternating between the two connectives.
+        assert_eq!(rendered.matches("Conjunction([").count(), DEPTH);
+        assert_eq!(rendered.matches("Disjunction([").count(), DEPTH);
         drop(deep); // Drop
         drop(same);
     });

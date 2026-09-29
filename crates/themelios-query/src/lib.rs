@@ -295,7 +295,7 @@ enum Truth {
 /// function symbol with the sign flipped (docs/design/query.md §2.2). A query
 /// literal is always a function symbol (built by [`Query::of`]), so the contrary
 /// is always defined; any other symbol is returned unchanged (unreachable through
-/// a query). `O(arity)`.
+/// a query). `O(the symbol's size)` — the arguments are copied.
 fn contrary(symbol: &Symbol) -> Symbol {
     match symbol {
         Symbol::Function {
@@ -397,7 +397,8 @@ impl Query {
 
 /// A literal's truth within a member (docs/design/query.md §2.2): `True` if the
 /// member holds it, `False` if the member holds its contrary, `Unknown` otherwise —
-/// absence is not falsity. `O(member lookup + arity)`.
+/// absence is not falsity. `O(member lookup + the literal's size)` — the contrary is
+/// built by copying the literal's arguments.
 fn literal_truth(symbol: &Symbol, member: &AnswerSet) -> Truth {
     if member.contains(symbol) {
         Truth::True
@@ -485,7 +486,9 @@ impl PartialEq for Query {
                 | (Shape::Disjunction(left), Shape::Disjunction(right))
                     if left.len() == right.len() =>
                 {
-                    pairs.extend(left.iter().zip(right));
+                    // Pushed in reverse, so the parts are compared left to right —
+                    // the order a derived comparison short-circuits in.
+                    pairs.extend(left.iter().zip(right).rev());
                 }
                 _ => return false,
             }
@@ -499,7 +502,8 @@ impl Eq for Query {}
 impl std::fmt::Debug for Query {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // The derived shape, printed from a work list of actions, so a deep query
-        // formats without recursion.
+        // formats without recursion. Compact under `{:#?}` as under `{:?}`: the
+        // pretty form of a deep query would grow with the square of its depth.
         enum Act<'q> {
             Node(&'q Query),
             Text(&'static str),
@@ -785,7 +789,8 @@ impl Snapshot {
 /// a number, string, tuple, `#inf`, or `#sup` has no signature and never
 /// matches, so it lifts to `None`. The arguments become `Symbolic` terms — the
 /// value each already is — so the mgu reads them without re-evaluation, and the
-/// sign is carried through unchanged. `O(arity)`.
+/// sign is carried through unchanged. `O(the symbol's size)` — each argument is
+/// copied.
 ///
 /// The building block of `matches_in` and `matched_in`; the bindings partition
 /// (§2.5) reaches it through the latter.
@@ -2104,6 +2109,60 @@ mod query_walks {
         })
     }
 
+    /// `query` with one node changed: the node at pre-order position `target` of the
+    /// nodes visited — a literal's sign flipped, or a compound's connective swapped, a
+    /// part dropped, or a part appended, as `how` picks. Every change leaves a
+    /// structurally different query, so equality against the original must fail at the
+    /// changed node, however deep it lies. Recursive: a generated query is shallow.
+    fn perturbed(query: &Query, target: &mut usize, how: u8) -> Query {
+        let here = *target == 0;
+        *target = target.wrapping_sub(1);
+        match &query.shape {
+            Shape::Literal(symbol) if here => Query {
+                shape: Shape::Literal(contrary(symbol)),
+            },
+            Shape::Literal(symbol) => Query {
+                shape: Shape::Literal(symbol.clone()),
+            },
+            Shape::Conjunction(parts) | Shape::Disjunction(parts) => {
+                let conjunction = matches!(query.shape, Shape::Conjunction(_));
+                let mut parts: Vec<Query> = parts
+                    .iter()
+                    .map(|part| perturbed(part, target, how))
+                    .collect();
+                let mut swap = false;
+                if here {
+                    match how % 3 {
+                        0 => swap = true,
+                        1 if !parts.is_empty() => {
+                            parts.pop();
+                        }
+                        _ => parts.push(Query {
+                            shape: Shape::Literal(signed(ATOMS[0], true)),
+                        }),
+                    }
+                }
+                Query {
+                    shape: if conjunction == swap {
+                        Shape::Disjunction(parts)
+                    } else {
+                        Shape::Conjunction(parts)
+                    },
+                }
+            }
+        }
+    }
+
+    /// The number of nodes in `query`, the positions `perturbed` can target.
+    fn nodes(query: &Query) -> usize {
+        match &query.shape {
+            Shape::Literal(_) => 1,
+            Shape::Conjunction(parts) | Shape::Disjunction(parts) => {
+                1 + parts.iter().map(nodes).sum::<usize>()
+            }
+        }
+    }
+
     proptest! {
         #[test]
         fn the_truth_within_a_member_is_the_twin_s(query in query(), member in member()) {
@@ -2116,10 +2175,22 @@ mod query_walks {
         }
 
         #[test]
-        fn equality_is_the_twin_s(left in query(), right in query(), same in any::<bool>()) {
-            // Half the pairs are a query and its clone, so the equal case is drawn as
-            // often as the unequal.
-            let right = if same { left.clone() } else { right };
+        fn equality_is_the_twin_s(
+            left in query(),
+            other in query(),
+            pairing in 0u8..3,
+            position in any::<usize>(),
+            how in any::<u8>(),
+        ) {
+            // A third of the pairs are independent (unequal, most often at the root), a
+            // third a query and its clone (equal), and a third a near miss — the clone
+            // changed at one node anywhere in the tree — so a walk that stops short of a
+            // deep difference is drawn as often as the rest.
+            let right = match pairing {
+                0 => other,
+                1 => left.clone(),
+                _ => perturbed(&left, &mut (position % nodes(&left)), how),
+            };
             prop_assert_eq!(left == right, twin_of(&left) == twin_of(&right));
         }
 
