@@ -292,7 +292,7 @@ degrade. Cost note: `capabilities()` is `O(1)` and pure — it is read *before* 
 **The `enumeration` bit carries a soundness obligation, not merely a hint.** A backend that declares
 `enumeration: false` (it decides consistency but does not enumerate the answer sets) must **never**
 conclude `Conclusion::Exhausted` with models unseen — `Target` is the closed set's word for "stopped at
-the witness." Every universal reading trusts `Exhausted`: `Solved::all_answer_sets` (§5.2), the derived
+the witness." Every universal reading trusts `Exhausted`: `Solved::all_models` (§5.2), the derived
 cautious/brave fold (§4.2), and query.md's `Snapshot` readings all treat an `Exhausted` search as the
 whole space. A consistency-only backend that concluded `Exhausted` after one witness would make each of
 them silently wrong, so §13.1's conformance suite checks the bit against this obligation; the exhaustion
@@ -323,8 +323,9 @@ when an engine lacks them natively. The derived-versus-native distinction is leg
 surface, before the request is paid for** — `Capabilities::native_consequences` says which path a
 request will take — because deriving consequences can cost enumeration, a different computational
 beast (`Θ(|W|)` models folded) than one solve, and a cost divergence of that size disclosed only in
-the receipt is the surprise this design exists to forbid. The outcome's provenance then records which
-path ran.
+the receipt is the surprise this design exists to forbid. The declaration is also the record of which
+path a request took: an outcome that carries the path itself (specification §9.1) is deferred until a
+consumer reads it (§16).
 
 The contract does not assume the engine is foreign: a native backend built from foundation crates
 implements the same trait, and the contract's shapes must not force conversions a shared-representation
@@ -363,6 +364,18 @@ pub enum Conclusion { Exhausted, Target, Budget, Interrupted }
 /// An answer set is a set of ground symbols — re-exported from the program tier (program.md §11.3),
 /// so the solve, query, and program tiers speak one answer-set vocabulary.
 pub use themelios_program::AnswerSet;   // = BTreeSet<Symbol>
+
+/// One model of the program — the unit every stream yields and every complete collection holds: its
+/// answer set, and the theory assignment a backend evaluating theory atoms supplies with it (§5.4) —
+/// empty for a backend that evaluates none. The readings read the answer set; the assignment rides
+/// beside it, never laundered into atoms.
+#[non_exhaustive]
+pub struct Model { /* atoms: AnswerSet + theory: TheoryAssignments */ }
+impl Model {
+    pub fn of(atoms: AnswerSet) -> Model;             // the backend's construction door: no assignment
+    pub fn atoms(&self) -> &AnswerSet;
+    pub fn assignment(&self) -> &TheoryAssignments;   // empty unless the backend evaluates a theory
+}
 ```
 
 The two names owe their §1.4 reason, stated here: engines' own result vocabularies conflate the
@@ -371,6 +384,15 @@ these names separate what the engines confuse, and Rust's own `Result` foreclose
 alternative. The names are argued, not inherited: a clearer pair discovered at design time supersedes
 them by satisfying §1.4 in its turn. The `Determination` variants are closed; their *payloads* are
 `#[non_exhaustive]`.
+
+An `Inconclusive` search's `Partial` says what the search established: the conclusion it reached short
+of the space — `Target`, `Budget`, or `Interrupted`, which names cancellation alone — or, for a search an
+engine fault stopped, no conclusion at all and the fault as its cause (`Partial::conclusion` is then
+`None`, `Partial::cause` the fault). A fault is not a way a search concludes, so the closed `Conclusion`
+gains no word for it. `Model` owes its §1.4 reason too: an answer set is the atoms alone; a model is what
+one enumeration step yields — the atoms and, where a theory is evaluated, the assignment that satisfied
+it — so the stream's unit is the model, and a backend that evaluates no theory yields models whose
+assignment is empty.
 
 ### 5.2 Answer sets, optima, consequences
 
@@ -394,34 +416,35 @@ impl<'a> Solved<'a> {
     /// end. Iterated by `&mut` so the terminal `conclusion` is readable after drain — the stateful-drain
     /// reason `Solved` reads by `&mut`, as a `WorldView`'s `members` stream does (query.md §2.3), with no
     /// interior mutability. Cost: O(1) resident.
-    pub fn answer_sets(&mut self) -> impl Iterator<Item = Result<AnswerSet, Fault>> + '_;
+    pub fn models(&mut self) -> impl Iterator<Item = Result<Model, Fault>> + '_;
 
     /// A COMPLETE collection — available ONLY when the search closed the space; refuses otherwise
     /// (the exhaustion gate, the `WorldView::is_exhausted` analog). This is what makes "a truncated
     /// search passing as complete" unconstructible (§5.3), not merely visible via `conclusion`.
-    pub fn all_answer_sets(&mut self) -> Result<Vec<AnswerSet>, NotExhausted>;
+    pub fn all_models(&mut self) -> Result<Vec<Model>, NotExhausted>;
 
     pub fn conclusion(&self) -> Option<Conclusion>;   // readable once the search resolves
 }
 
 /// A backend constructs the `Solved` that `Backend::solve` (§4.1) returns through `Solved::running`,
 /// handing the core its own lazy enumeration as a `Run` — the backend-facing streaming protocol, the seam
-/// a native engine (§12) implements. Obligations: **fused** (once `next_answer_set` yields `None` or a
-/// fault it stays ended); a **terminal `Conclusion` once the stream ends**; a completeness drain stops at
-/// the first fault. The **core owns classification** — it resolves `Consistent` iff the run WITNESSED a
-/// model — so a backend supplies only enumeration plus a terminal conclusion and **cannot forge
+/// a native engine (§12) implements. Obligations: **fused** (once `next_model` yields `None` or a fault
+/// it stays ended); a **terminal `Conclusion` once the stream ends** — never `Exhausted` after a fault,
+/// since a faulted search did not close the space; a completeness drain stops at the first fault. The
+/// **core owns classification** — it resolves `Consistent` iff the run WITNESSED a model — so a backend
+/// supplies only enumeration plus a terminal conclusion and **cannot forge
 /// `Consistent`** (§5.1). No `Send` bound (a run may hold a raw engine handle whose control is
 /// single-threaded), so the `Solved`/`Models`/live-`WorldView` handles built over it are `!Send` and
 /// `Snapshot` is the `Send` form (§6.1). Cost: `O(1)`.
 pub trait Run {
-    fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>>;   // stream; None ends it
+    fn next_model(&mut self) -> Option<Result<Model, Fault>>;            // stream; None ends it
     fn conclusion(&self) -> Option<Conclusion>;                          // the terminal state, once ended
 }
 impl<'a> Solved<'a> {
     pub fn running(run: Box<dyn Run + 'a>, scenario: Scenario) -> Solved<'a>;  // the backend construction door
 }
 
-/// The `Consistent` payload (§5.1): read the answer sets, or open the live `WorldView` the query tier
+/// The `Consistent` payload (§5.1): read the models, or open the live `WorldView` the query tier
 /// reads. From a RETAINED agent the world view is a BORROWING handle `WorldView<'a>` over the live engine
 /// — lazy, its one engine-driving read the fallible `members` stream (query.md §2.3) — so it borrows for
 /// its lifetime and does NOT outlive that borrow. The cautious/brave native door and the epistemic
@@ -462,26 +485,37 @@ impl<'a> Optimized<'a> {
 /// it and, under an objective, whether it ranged over the OPTIMAL set or all stable models (§2.4, §5.2).
 #[non_exhaustive]
 pub struct Consequences { /* Symbol set + Mode + the optimal-vs-all marker */ }
+impl Consequences {
+    /// The fold, exposed as a primitive: ⋂ (Cautious) or ⋃ (Brave) over the given members — `None` over
+    /// none, since ⋂/⋃ over nothing is undefined, not `∅` (query.md §2.3). It certifies nothing about
+    /// completeness: the gated readings are the agent's `cautious`/`brave` (§6.2) and a `Snapshot`'s
+    /// (query.md §2.4), each folding a world view whose search closed the space.
+    pub fn fold<'m>(mode: Mode, members: impl IntoIterator<Item = &'m AnswerSet>) -> Option<Consequences>;
+}
 pub enum Mode { Cautious, Brave }
 ```
 
-- Answer sets are **owned, streamable** values — the lazy `Result`-iterator above. Cost: streaming
-  enumeration is **constant in resident set** (one answer set materialized at a time — the scaling
-  bench asserts it, §13.3); the owned no-sharing tree is the authoring form, the huge ground
+- Models are **owned, streamable** values — the lazy `Result`-iterator above. Cost: streaming
+  enumeration is **constant in resident set** (one model materialized at a time — the laziness law
+  asserts it, §13.3); the owned no-sharing tree is the authoring form, the huge ground
   instantiation lives in the engine's compact internals.
 - A **proven optimum** is typed distinct from best-found: `Optimum` has no public constructor, and
   reports its levels in the terms the objectives were written in (a maximized level shows what was
   maximized, not the negation the engine optimizes internally). "All optimal solutions" is available
-  only when the search closed the whole space, and says so. This fixes the *denotation*: the answer
-  sets a program with an objective denotes are exactly those optimal ones (with no objective, all
-  stable models — the degenerate case), so consequences and the query tier's world view range over
-  the optimal set when the program optimizes.
+  only when the search closed the whole space, and says so. Each question fixes the model set its
+  answers range over: `optimize` asks for the optimal answer sets, so its world view and consequences
+  range over the optimal set; `solve` asks for the stable models with any objective **ignored** —
+  every answer set, as if the program had none — so its enumeration, its world view, and the agent's
+  `cautious`/`brave` range over all stable models (with no objective the two sets coincide). A reading
+  that wants the optimal set asks `optimize`; an objective the question did not ask about never
+  narrows the stable models silently.
 - **Cautious and brave consequences** are typed sets carrying the semantics that produced them, so a
   value that has travelled still says which question it answers. They are not answer sets, and carry
-  their own type (`Consequences`) for that reason. **Under an optimization objective they range over
-  the *optimal* answer sets** (§5.2's denotation): the *derived* door honors this by folding the
-  optimal world view, and the **native door (`query.md` §2.4) is obligated to compute over the optimal
-  set, not all stable models** — the optimum-proven/exhausted gate applies to it — so both doors target
+  their own type (`Consequences`) for that reason. **They range over the model set of the question
+  that produced them**, and carry which — all stable models, or the optimal set (the marker above):
+  the *derived* door folds that question's world view, and the **native door (`query.md` §2.4) is
+  obligated to compute over the same set** — all stable models for the agent's `cautious`/`brave`, the
+  optimal set for an optimization's, under the optimum-proven/exhausted gate — so both doors target
   the same model set and their required agreement (`query.md` §2.4) is meaningful rather than a silent
   both-wrong. (Whether the pinned engine computes cautious-over-optimal in one solve is measurement,
   §13.2; the *obligation* is stated here.)
@@ -497,8 +531,8 @@ when — the request asked for it. The three named solver pathologies (specifica
   `OptimizeRequest` and distinct `Solved` / `Optimized` outcomes; the trajectory exists only on
   `Optimized`.
 - *a truncated search passing as a complete collection* — a "complete collection" is reachable ONLY
-  through `Solved::all_answer_sets` (§5.2), which is **exhaustion-gated and refuses without a closed
-  search** (the `WorldView::is_exhausted` analog); the streaming `answer_sets` never claims
+  through `Solved::all_models` (§5.2), which is **exhaustion-gated and refuses without a closed
+  search** (the `WorldView::is_exhausted` analog); the streaming `models` never claims
   completeness, so a truncated search cannot be laundered into "all answer sets."
 - *contradictory termination flags* — one `Conclusion`, orthogonal to `Determination`, with no second
   flag to disagree with.
@@ -527,7 +561,7 @@ pub enum Refutation {
 }
 
 /// A fault is a value with a CLOSED locus taxonomy at the seam. It OWNS its model — a message, the
-/// `Locus`, the backend-bug bit, and a `base::Location` ONLY where it has one (Program/Request faults).
+/// `Locus`, the backend-bug bit, and a `base::Location` ONLY where it has one (Program faults).
 /// An unlocated fault (Engine/Resource/Adapter) is NOT a degenerate diagnostic with a fabricated span
 /// at an "unknown source" but a different thing (base's §diagnostic): it renders through its own `Display`.
 #[non_exhaustive]
@@ -718,10 +752,11 @@ holds the program the external mechanism can only approximate.
 
 Retraction's two realisations diverge in cost by the whole program size and the loss of the engine's
 warm search, so — following §4.2, which forbids hiding a divergence of that magnitude behind a uniform
-signature — retraction is **disclosed before it is paid for and recorded after**: a statement's
+signature — retraction is **disclosed before it is paid for**: a statement's
 *retraction class* (toggle vs rebuild) is fixed at `assert`, from the backend's `externals` capability
-and whether the statement is externally guarded, and is readable from its `StatementId`; the outcome's
-provenance then records which realisation ran. A stale or duplicate handle is a typed refusal, not a
+and whether the statement is externally guarded, and is readable from its `StatementId` — the record of
+which realisation a retraction takes, an outcome carrying it deferred with §4.2's (§16). A stale or
+duplicate handle is a typed refusal, not a
 silent no-op — `retract` of an already-retracted `StatementId`, or `forget` of a spent `Observation`,
 refuses with `Locus::Request`.
 
@@ -1171,8 +1206,11 @@ No panic escapes the public surface on any input; every public operation documen
 semantics; every walk over user-reachable structure is work-list based (the depth discipline,
 specification §5.2); the trust floor is minimal and legible (unsafe confined to the potassco TCB, zero
 above it, FFI-free with the adapter disabled); leak- and race-checking harnesses at the TCB; the
-scaling-shape benches assert complexity class for the load-bearing operations (the bridge lowering
-linear in program size, §10.1; streaming enumeration constant in resident set, §5.2).
+scaling-shape benches, each beside an in-suite scaling tripwire, assert complexity class for the
+load-bearing operations (the bridge lowering linear in program size, §10.1; the query tier's matching
+scan; the agent's knowledge-ledger rebuild), and streaming enumeration's constant resident set is
+asserted by the laziness law — a bounded pull count that goes red if a stream collects before it
+yields (§5.2).
 
 ### 13.4 Examples as a deliverable, and the witness roster
 
@@ -1341,6 +1379,11 @@ The tier is done when all of the following hold:
   its **portable, engine-agnostic alternative on the propagator platform** — the two coexist (§11.1). This
   restoration costs one more C library in a deployment that enables it (§11.1) and settles §4's "absent
   without the contingency invoked is a failure" the plainest way: clingcon is present, not absent.
+- **The outcome's record of which consequence path ran (§9.1) — DEFERRED.** The specification's "the
+  outcome's provenance then records which path ran" is deferred to its first consumer: the capability
+  declaration discloses the path before the request is paid for and serves as its record meanwhile
+  (§4.2), as the retraction class does for which realisation a retraction takes (§6.2). An outcome that
+  carries either lands when a consumer reads it.
 - **The ground-program observer (§9.6, §13).** Promoted from a reserved seam to a **committed
   capability** (§10.4), with the two-part argument that defeats §9.6's rejection (an xclingo anchor
   now forces it; it is engine-free data, not added unsafe TCB — the cost is an adapter obligation).
@@ -1477,3 +1520,16 @@ necessity where it is declared.
    enumeration the core classifies over — are now stated in §5.2, and the scoped-door contract is given a
    single normative home (§6.2 for the agent doors, query.md §2.2 for `snapshot_assuming`), the other
    mentions reduced to citations.
+7. **The model unit, objective-off solve, and outcome refinements** (2026-09-29). The streamed and
+   collected unit is a `Model` — an answer set and the theory assignment a theory-evaluating backend
+   supplies with it, empty otherwise — so a theory backend populates the unit rather than reshaping it:
+   `Solved::models`/`all_models` and the backend `Run::next_model` (§5.1, §5.2). `solve` enumerates the
+   stable models with any objective ignored, and `optimize` owns the optimal set; each question's
+   consequences and world view range over its own model set (§5.2). An `Inconclusive` search stopped by
+   an engine fault reached no conclusion — `Partial::conclusion` is `None` and `Interrupted` names
+   cancellation alone (§5.1) — and a faulted run never concludes `Exhausted` (§5.2). The cautious/brave
+   fold is stated as an exposed primitive that answers nothing over no members and certifies no
+   completeness (§5.2). The outcome's record of which consequence path, or retraction realisation, ran
+   is deferred to its first consumer, the before-the-fact disclosures serving meanwhile (§4.2, §6.2,
+   §16). A located fault is a program fault (§5.4). Streaming's constant resident set is asserted by the
+   laziness law, and the matching scan and the ledger rebuild by benches beside their tripwires (§13.3).
