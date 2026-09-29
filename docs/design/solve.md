@@ -10,7 +10,7 @@ roster or clause it says so in place (§16).
 
 The keystone, stated once so the rest can be read against it: **the solve tier is the *abstract
 solver* — the codegen/target contract over the `Program` value, whose operations are the questions a
-logician asks of that value and whose answers are typed models.** The concrete engine behind the
+logician asks of that value and whose answers are typed values.** The concrete engine behind the
 contract (clingo and clingcon now, our own engine later) is a configuration of the installation, never
 a thing the program author sees.
 
@@ -66,11 +66,12 @@ solve / query) — and never shape anything around clingo's control-flow.**
 
 ### 1.3 Model–view throughout
 
-Every result the tier produces — outcomes, answer sets, optima, consequences, theory assignments,
-blame, faults — is a **typed model** (specification §1.5). Views for each consumer class are
-derivations over the model: a human-centric `Display`, and a machine-centric structured/serializable
-form for LLM agents, editor protocols, and audit. No operation's primary output is prose, and no
-consumer parses rendered prose to act. `themelios-base`'s `Diagnostic` already carries
+Every result the tier produces — outcomes, answer sets, optima, consequences, theory assignments, blame,
+faults — is a **typed value**: the *model* of specification §1.5's model–view separation, called a value
+here so that *model* keeps its logical sense, a model of the program (§5.1). Views for each consumer
+class are derivations over the value: a human-centric `Display`, and a machine-centric
+structured/serializable form for LLM agents, editor protocols, and audit. No operation's primary output
+is prose, and no consumer parses rendered prose to act. `themelios-base`'s `Diagnostic` already carries
 human/editor/machine views; the solve tier holds its faults and outcomes to the same discipline.
 
 ### 1.4 Engine-agnostic, and no user-facing solver configuration
@@ -93,7 +94,7 @@ The solve stage adds these workspace members, evolving specification §12.2:
 
 | crate | unsafe | purpose |
 |---|---|---|
-| `themelios-solve` | forbid | The backend **contract**, the outcome vocabulary and MVC models, the agent and its driving surface, the fault taxonomy, the extension-surface traits (`@`-functions, propagators, extraction), the bridge seam, and the conformance suite. Engine-free. |
+| `themelios-solve` | forbid | The backend **contract**, the outcome vocabulary and its typed values, the agent and its driving surface, the fault taxonomy, the extension-surface traits (`@`-functions, propagators, extraction), the bridge seam, and the conformance suite. Engine-free. |
 | `themelios-query` | forbid | The epistemic reading — three-valued `Answer`, `WorldView`, cautious/brave, bindings — over the program tier's patterns and the solve tier's outcomes. Engine-free. Its own design (`query.md`). |
 | `themelios-potassco-sys` | allow (bindings only) | Vendored, pinned bindgen output over the libclingo and libclingcon C APIs. Regeneration is out-of-band. Feature-gated; never in a default build. |
 | `themelios-potassco` | allow (the TCB) | The mechanism-only kernel over the bindings plus the safe adapters implementing the contract against clingo **and clingcon** — both first-class Potassco backends. Named for the engine *family* it adapts. |
@@ -220,7 +221,10 @@ pub trait Backend {
     /// REQUIRED. What this backend can do — read before a request is paid for (§4.1).
     fn capabilities(&self) -> Capabilities;
 
-    /// REQUIRED. Consistency and enumeration; the handle streams answer sets lazily (§5.2).
+    /// REQUIRED. Consistency and enumeration; the handle streams models lazily (§5.2). It enumerates the
+    /// program's stable models with any objective IGNORED — as if the program had none (§5.2) — so an
+    /// engine's default optimization never narrows what `solve` yields; `optimize` asks for the optimal
+    /// set.
     fn solve(&mut self, req: &SolveRequest) -> Result<Solved<'_>, Fault>;
 
     /// A handle to interrupt an in-flight solve from another thread — `Some` iff
@@ -241,8 +245,9 @@ pub trait Backend {
     /// REQUIRED iff `capabilities().optimization`. The proven optimum, improving trajectory iff asked (§5.3).
     fn optimize(&mut self, req: &OptimizeRequest) -> Result<Optimized<'_>, Fault> { Err(Fault::unsupported()) }
 
-    /// REQUIRED iff `capabilities().assumptions`. Solve under a scenario; the core derives blame
-    /// (`Refutation`, §5.4) over this — there is no separate backend blame method.
+    /// REQUIRED iff `capabilities().assumptions`. Solve under a scenario — the stable models the scenario
+    /// admits, any objective ignored, as `solve`; the core derives blame (`Refutation`, §5.4) over this —
+    /// there is no separate backend blame method.
     fn solve_assuming(&mut self, s: &Scenario, req: &SolveRequest) -> Result<Solved<'_>, Fault> { Err(Fault::unsupported()) }
 
     // --- REQUIRED iff capabilities().multi_shot (provided defaults that refuse) ---
@@ -261,10 +266,10 @@ pub trait Backend {
     /// OPTIONAL — override iff `capabilities().native_consequences == Native`. Absent, the core derives
     /// cautious/brave by enumeration over `solve` (unscoped) or `solve_assuming` (scoped) (§4.2); the
     /// request surface says which path runs. What the backend owes: a native door honours the
-    /// `ConsequenceRequest`'s scenario, ranging over the models `solve_assuming(scenario)` denotes; an
-    /// unscoped request carries the empty scenario. The agent surface produces a non-empty request through
-    /// `Agent::cautious_assuming`/`brave_assuming` (§6.2 — the normative home of the scoped doors'
-    /// precondition and cost).
+    /// `ConsequenceRequest`'s scenario, ranging over the models `solve_assuming(scenario)` denotes — the
+    /// stable models, any objective ignored (§5.2); an unscoped request carries the empty scenario. The
+    /// agent surface produces a non-empty request through `Agent::cautious_assuming`/`brave_assuming`
+    /// (§6.2 — the normative home of the scoped doors' precondition and cost).
     fn consequences_native(&mut self, mode: Mode, req: &ConsequenceRequest)
         -> Result<Consequences, Fault> { Err(Fault::unsupported()) }  // provided default
 }
@@ -323,9 +328,9 @@ when an engine lacks them natively. The derived-versus-native distinction is leg
 surface, before the request is paid for** — `Capabilities::native_consequences` says which path a
 request will take — because deriving consequences can cost enumeration, a different computational
 beast (`Θ(|W|)` models folded) than one solve, and a cost divergence of that size disclosed only in
-the receipt is the surprise this design exists to forbid. The declaration is also the record of which
-path a request took: an outcome that carries the path itself (specification §9.1) is deferred until a
-consumer reads it (§16).
+the receipt is the surprise this design exists to forbid. No outcome records which path ran: that
+record (specification §9.1) is deferred until a consumer reads it (§16) — the declaration discloses the
+path before the request, and nothing carries it after.
 
 The contract does not assume the engine is foreign: a native backend built from foundation crates
 implements the same trait, and the contract's shapes must not force conversions a shared-representation
@@ -342,7 +347,7 @@ terms, and it is what makes the audit's job finite.
 
 ---
 
-## 5. The outcome vocabulary (the MVC models)
+## 5. The outcome vocabulary (typed values)
 
 ### 5.1 The closed distinctions
 
@@ -361,6 +366,18 @@ pub enum Determination<'a> {
 /// The search question: how did the search end? Separate from the logical question by design.
 pub enum Conclusion { Exhausted, Target, Budget, Interrupted }
 
+/// The `Inconclusive` payload: how the search stopped short of deciding. `#[non_exhaustive]`, so it may
+/// come to carry more of what the search established; its stopping reason is one closed shape.
+#[non_exhaustive]
+pub struct Partial { /* how the search stopped */ }
+impl Partial {
+    pub fn stopped(&self) -> Stopped<'_>;
+}
+/// How an inconclusive search stopped: at a truncation it concluded — its target, its budget, or a
+/// cancellation (never `Exhausted`: an exhausted search decided) — or at an engine fault, which is no
+/// conclusion. Closed: a stopping reason is exactly one of the two.
+pub enum Stopped<'a> { Concluded(Conclusion), Faulted(&'a Fault) }
+
 /// An answer set is a set of ground symbols — re-exported from the program tier (program.md §11.3),
 /// so the solve, query, and program tiers speak one answer-set vocabulary.
 pub use themelios_program::AnswerSet;   // = BTreeSet<Symbol>
@@ -368,13 +385,17 @@ pub use themelios_program::AnswerSet;   // = BTreeSet<Symbol>
 /// One model of the program — the unit every stream yields and every complete collection holds: its
 /// answer set, and the theory assignment a backend evaluating theory atoms supplies with it (§5.4) —
 /// empty for a backend that evaluates none. The readings read the answer set; the assignment rides
-/// beside it, never laundered into atoms.
+/// beside it, never laundered into atoms. Cost: the answer set by value, and for a backend evaluating no
+/// theory an empty assignment — nothing per model beyond the answer set, so the constant-resident stream
+/// (§13.3) holds for the unit.
 #[non_exhaustive]
 pub struct Model { /* atoms: AnswerSet + theory: TheoryAssignments */ }
 impl Model {
     pub fn of(atoms: AnswerSet) -> Model;             // the backend's construction door: no assignment
     pub fn atoms(&self) -> &AnswerSet;
     pub fn assignment(&self) -> &TheoryAssignments;   // empty unless the backend evaluates a theory
+    // The assignment-bearing construction door lands with `TheoryAssignments`' own constructors, when a
+    // theory-evaluating backend is built (§11.1); until then every model's assignment is empty.
 }
 ```
 
@@ -385,19 +406,20 @@ alternative. The names are argued, not inherited: a clearer pair discovered at d
 them by satisfying §1.4 in its turn. The `Determination` variants are closed; their *payloads* are
 `#[non_exhaustive]`.
 
-An `Inconclusive` search's `Partial` says what the search established: the conclusion it reached short
-of the space — `Target`, `Budget`, or `Interrupted`, which names cancellation alone — or, for a search an
-engine fault stopped, no conclusion at all and the fault as its cause (`Partial::conclusion` is then
-`None`, `Partial::cause` the fault). A fault is not a way a search concludes, so the closed `Conclusion`
-gains no word for it. `Model` owes its §1.4 reason too: an answer set is the atoms alone; a model is what
-one enumeration step yields — the atoms and, where a theory is evaluated, the assignment that satisfied
-it — so the stream's unit is the model, and a backend that evaluates no theory yields models whose
-assignment is empty.
+An `Inconclusive` search's `Partial` says how it stopped, as one closed shape: `Concluded` at the
+truncation it reached short of the space — `Target`, `Budget`, or `Interrupted`, which names cancellation
+alone — or `Faulted` at an engine fault, which reached no conclusion. A fault is not a way a search
+concludes, so the closed `Conclusion` gains no word for it, and the stopping reason is a sum, never an
+optional conclusion beside an optional cause. `Model` owes its §1.4 reason too: an answer set is the atoms
+alone, while a stable model of a program with theory atoms comes with the assignment that satisfied them —
+the constraint-ASP literature's *constraint answer set* — and the tier names the pair for what it is, a
+model of the program: the stream's unit is the model, and a backend that evaluates no theory yields models
+whose assignment is empty.
 
 ### 5.2 Answer sets, optima, consequences
 
 ```rust
-/// `solve` returns this borrowed handle. It resolves the trichotomy, streams the answer sets, and —
+/// `solve` returns this borrowed handle. It resolves the trichotomy, streams the models, and —
 /// on a consistent search — yields the borrowing live `WorldView<'_>` the query tier reads (an
 /// owned-engine `WorldView<'static>` from a single-shot solve; an engine-free `Snapshot` via
 /// `materialize`; §6.4, query.md §2.3).
@@ -419,18 +441,22 @@ impl<'a> Solved<'a> {
     pub fn models(&mut self) -> impl Iterator<Item = Result<Model, Fault>> + '_;
 
     /// A COMPLETE collection — available ONLY when the search closed the space; refuses otherwise
-    /// (the exhaustion gate, the `WorldView::is_exhausted` analog). This is what makes "a truncated
-    /// search passing as complete" unconstructible (§5.3), not merely visible via `conclusion`.
+    /// (the exhaustion gate, the `WorldView::is_exhausted` analog), a faulted search's refusal carrying
+    /// the fault as its cause. This is what makes "a truncated search passing as complete"
+    /// unconstructible (§5.3), not merely visible via `conclusion`.
     pub fn all_models(&mut self) -> Result<Vec<Model>, NotExhausted>;
 
-    pub fn conclusion(&self) -> Option<Conclusion>;   // readable once the search resolves
+    /// How the search concluded — `Some` once it ended without a fault; `None` while it is open, and
+    /// after a fault, which reached no conclusion (the determination's `Stopped::Faulted` carries it).
+    pub fn conclusion(&self) -> Option<Conclusion>;
 }
 
 /// A backend constructs the `Solved` that `Backend::solve` (§4.1) returns through `Solved::running`,
 /// handing the core its own lazy enumeration as a `Run` — the backend-facing streaming protocol, the seam
 /// a native engine (§12) implements. Obligations: **fused** (once `next_model` yields `None` or a fault
-/// it stays ended); a **terminal `Conclusion` once the stream ends** — never `Exhausted` after a fault,
-/// since a faulted search did not close the space; a completeness drain stops at the first fault. The
+/// it stays ended); a **terminal `Conclusion` once the stream ends without a fault**, while after a fault
+/// `conclusion()` stays `None` — the search reached no conclusion, and the core records the fault as the
+/// cause; a completeness drain stops at the first fault. The
 /// **core owns classification** — it resolves `Consistent` iff the run WITNESSED a model — so a backend
 /// supplies only enumeration plus a terminal conclusion and **cannot forge
 /// `Consistent`** (§5.1). No `Send` bound (a run may hold a raw engine handle whose control is
@@ -438,7 +464,7 @@ impl<'a> Solved<'a> {
 /// `Snapshot` is the `Send` form (§6.1). Cost: `O(1)`.
 pub trait Run {
     fn next_model(&mut self) -> Option<Result<Model, Fault>>;            // stream; None ends it
-    fn conclusion(&self) -> Option<Conclusion>;                          // the terminal state, once ended
+    fn conclusion(&self) -> Option<Conclusion>;                          // once ended without a fault
 }
 impl<'a> Solved<'a> {
     pub fn running(run: Box<dyn Run + 'a>, scenario: Scenario) -> Solved<'a>;  // the backend construction door
@@ -487,9 +513,10 @@ impl<'a> Optimized<'a> {
 pub struct Consequences { /* Symbol set + Mode + the optimal-vs-all marker */ }
 impl Consequences {
     /// The fold, exposed as a primitive: ⋂ (Cautious) or ⋃ (Brave) over the given members — `None` over
-    /// none, since ⋂/⋃ over nothing is undefined, not `∅` (query.md §2.3). It certifies nothing about
-    /// completeness: the gated readings are the agent's `cautious`/`brave` (§6.2) and a `Snapshot`'s
-    /// (query.md §2.4), each folding a world view whose search closed the space.
+    /// none, since no world view is empty (query.md §2.3) and a consequence set over no models certifies
+    /// nothing. Nor does it certify completeness: the gated readings are the agent's `cautious`/`brave`
+    /// (§6.2) and a `Snapshot`'s (query.md §2.4), each folding a world view whose search closed the space
+    /// — the `Snapshot`'s discharging the `Option` on its non-emptiness.
     pub fn fold<'m>(mode: Mode, members: impl IntoIterator<Item = &'m AnswerSet>) -> Option<Consequences>;
 }
 pub enum Mode { Cautious, Brave }
@@ -518,7 +545,10 @@ pub enum Mode { Cautious, Brave }
   optimal set for an optimization's, under the optimum-proven/exhausted gate — so both doors target
   the same model set and their required agreement (`query.md` §2.4) is meaningful rather than a silent
   both-wrong. (Whether the pinned engine computes cautious-over-optimal in one solve is measurement,
-  §13.2; the *obligation* is stated here.)
+  §13.2; the *obligation* is stated here.) Until optimization is realised, every world view ranges over
+  all stable models by construction, so the marker's producer and the native door over the optimal set
+  are one seam that lands with `optimize`: the handle a world view comes from fixes its model set, so the
+  carrier grows inside the core and no backend-facing door changes.
 
 ### 5.3 The pathologies are unconstructible
 
@@ -561,9 +591,10 @@ pub enum Refutation {
 }
 
 /// A fault is a value with a CLOSED locus taxonomy at the seam. It OWNS its model — a message, the
-/// `Locus`, the backend-bug bit, and a `base::Location` ONLY where it has one (Program faults).
-/// An unlocated fault (Engine/Resource/Adapter) is NOT a degenerate diagnostic with a fabricated span
-/// at an "unknown source" but a different thing (base's §diagnostic): it renders through its own `Display`.
+/// `Locus`, the backend-bug bit, and a `base::Location` ONLY where it has one (Program faults). An
+/// unlocated fault (Request/Resource/Engine/Adapter) is NOT a degenerate diagnostic with a fabricated
+/// span at an "unknown source" but a different thing (base's §diagnostic): it renders through its own
+/// `Display`.
 #[non_exhaustive]
 pub struct Fault { /* message + Locus + Option<base::Label> + the backend-bug bit */ }
 pub enum Locus { Program, Request, Resource, Engine, Adapter }
@@ -589,9 +620,10 @@ pub struct LocatedFault<'a> { /* a &Fault whose Location is guaranteed present *
 - **Assumption blame** — when a scenario is inconsistent, which assumptions are responsible is an
   answerable, typed question (`Refutation` above), scoped by the scenario it ranged over.
 - **Faults** are values with the closed locus taxonomy above, with "is this a backend bug" a closed
-  bit; a *located* fault (Program/Request) lowers to a `themelios-base` `Diagnostic` through
+  bit; a *located* fault (Program) lowers to a `themelios-base` `Diagnostic` through
   `LocatedFault` (loci and provenance, solved once, here, for every consumer), while an unlocated one
-  (Engine/Resource/Adapter) renders through its own `Display` — a fault is not, in general, a diagnostic.
+  (Request/Resource/Engine/Adapter) renders through its own `Display` — a fault is not, in general, a
+  diagnostic.
 - **Statistics** are exposed per solve through a `Statistics` trait — engine-scoped, provenance-marked,
   typed data (v1: the clingo adapter provides clingo's own). The minimal v1 shape a consumer reads:
 
@@ -608,7 +640,7 @@ pub struct LocatedFault<'a> { /* a &Fault whose Location is guaranteed present *
   engine-scoped, so it is a consumer, not an implementor) — so it lands as an additive drop-in, touching
   neither the trait nor `Measurement`, not a breaking change to what a v1 consumer reads.
 
-Every model in this section is typed data first, with a human `Display` and a machine-consumable view
+Every value in this section is typed data first, with a human `Display` and a machine-consumable view
 as derivations (§1.3).
 
 ---
@@ -754,8 +786,8 @@ Retraction's two realisations diverge in cost by the whole program size and the 
 warm search, so — following §4.2, which forbids hiding a divergence of that magnitude behind a uniform
 signature — retraction is **disclosed before it is paid for**: a statement's
 *retraction class* (toggle vs rebuild) is fixed at `assert`, from the backend's `externals` capability
-and whether the statement is externally guarded, and is readable from its `StatementId` — the record of
-which realisation a retraction takes, an outcome carrying it deferred with §4.2's (§16). A stale or
+and whether the statement is externally guarded, and is readable from its `StatementId` — the disclosure
+of which realisation a retraction takes, an outcome recording it deferred with §4.2's (§16). A stale or
 duplicate handle is a typed refusal, not a
 silent no-op — `retract` of an already-retracted `StatementId`, or `forget` of a spent `Observation`,
 refuses with `Locus::Request`.
@@ -767,12 +799,15 @@ the loop's step boundary, never during a running search. The modification method
 capabilities their realisation uses — `multi_shot` to ground an added statement or part incrementally,
 `externals` for the external-toggle retraction path; where a backend declares neither, the agent falls
 back to re-grounding the amended `Program` — a `reset` then a `lower` on a multi-shot backend, and on a
-**single-shot** backend a plain `lower`, which *replaces* the program there (each solve is independent, so
-nothing accumulates and no `reset` is needed) — a rebuild any backend that solves at all supports. The retained
-state upholds the two-representation correspondence (owned program ↔ engine-internal state) across the
-cycle, which is also what gives a transform on the owned side a defined effect under multi-shot. Cost:
-retained state is `Θ(program size)`, not `Θ(ground size)` — the ground instantiation stays in the
-engine (§10); an external-toggle step is `O(1)` at the seam, a rebuild is one lowering (§10.1).
+**single-shot** backend a plain `lower`, which *replaces* the program there (each solve is independent,
+so nothing accumulates and no `reset` is needed) — a rebuild any backend that solves at all supports. A
+rebuild on a multi-shot backend re-establishes after its lowering the state the loop carries — the open
+truths assigned through `assign_external`, the parts instantiated through `ground` — so a `reset`
+discards nothing the agent retains. The retained state upholds the two-representation correspondence
+(owned program ↔ engine-internal state) across the cycle, which is also what gives a transform on the
+owned side a defined effect under multi-shot. Cost: retained state is `Θ(program size)`, not
+`Θ(ground size)` — the ground instantiation stays in the engine (§10); an external-toggle step is
+`O(1)` at the seam, a rebuild is one lowering (§10.1).
 
 ### 6.3 Per-operation typed options; budgets; cancellation; assumptions
 
@@ -819,7 +854,10 @@ uses both.
 **Budgets** (time at minimum, with room for model-count caps) are a typed, request-side surface;
 enforcement is a declared capability — an engine without a native time limit gets it through the
 `interrupt` primitive (§4.1): a timer thread that calls it on the cut — and `Conclusion::Budget`
-reports a hit budget as what it is. The long tail of
+reports a hit budget as what it is. The core owns that timer, so it attributes the stop: an interrupt its
+own timer issued concludes `Budget`, a caller's `Interrupt` concludes `Interrupted`, and when both fire in
+one window the stop is `Interrupted`, the caller's act; the conformance suite checks the attribution once
+cancellation is realised. The long tail of
 engine parameters, when a real consumer needs it, follows the two-tier facade pattern (typed knobs
 over a legible open form); it is YAGNI-gated, grown on demand, never a CLI-string passthrough.
 
@@ -838,7 +876,7 @@ p.solve()?          // the owned run handle: stream, inspect, resolve
 
 These are **exactly the agent's questions, asked once.** The engine-ownership principle, stated per
 handle so a builder can implement it: **each bare handle owns the ephemeral agent it drove and drops it
-when the handle drops.** So a returned answer-set stream or `WorldView` stays *lazy* — it retains the
+when the handle drops.** So a returned model stream or `WorldView` stays *lazy* — it retains the
 engine to pull the next member — and §5.2's constant-resident guarantee and query.md §2.3's opt-in
 materialisation hold for the bare form exactly as for the agent. The agent's forms (§6.2) borrow against the agent you retain; the bare forms *own* it.
 That is the only difference; the answers are the same. Concretely the reading resolves to a
@@ -1003,11 +1041,11 @@ pillar (the *extraction* witness), with documented failure behaviour on non-matc
 ```rust
 /// An answer set (or a projection) → a user-defined Rust value. The read-time inverse of Facts (§7.3).
 pub trait Extract: Sized {
-    fn extract(model: &AnswerSet) -> Result<Self, ExtractError>;
+    fn extract(answer_set: &AnswerSet) -> Result<Self, ExtractError>;
 }
 ```
 
-Extraction is the **machine-view of the answer-set model** (§1.3): the model exposes its symbols in
+Extraction is the **machine view of an answer set** (§1.3): the answer set exposes its symbols in
 canonical order, and any view — a derive-based typed extraction, a JSON rendering, an editor payload —
 is a derivation over that. It shares the conversion pillar with `@`-functions (§3.2), so the same
 `FromSymbol` that reads an `@`-function's argument reads an answer set's atom. Cost: `Θ(atoms read)`.
@@ -1181,11 +1219,13 @@ already expresses this; the ambitious native engine (§14) inherits the contract
 ### 13.1 The conformance suite
 
 Executable, shipped with the contract, run by every adapter: outcome correctness on a corpus of small
-programs with independently known answer sets; capability honesty (a declared-unsupported request must
+programs with independently known answer sets — a program under an objective among them, whose `solve`
+must yield its non-optimal models too (§5.2), and every yielded model consistent, no atom beside its
+contrary (query.md §2.3); capability honesty (a declared-unsupported request must
 refuse); the named pathologies (§5.3) attempted and structurally impossible; fault loci landing where
 they belong; and **the ground-program observer produced faithfully** where declared (§10.4). The suite's
 skeleton is exercisable **engine-free over a stub backend** before any adapter — that run is the core's
-own check (it streams answer sets through the real contract), not an adapter's authority. The
+own check (it streams models through the real contract), not an adapter's authority. The
 **clingo and clingcon adapters** run it (clingcon adds the constraint-theory cases), differenced against
 the out-of-band binaries (§13.2). The **second, architecture-independent implementor** that proves the
 contract is not clingo-shaped is **zetesis** as it adopts the contract (§12) — a real engine on a
@@ -1381,9 +1421,9 @@ The tier is done when all of the following hold:
   without the contingency invoked is a failure" the plainest way: clingcon is present, not absent.
 - **The outcome's record of which consequence path ran (§9.1) — DEFERRED.** The specification's "the
   outcome's provenance then records which path ran" is deferred to its first consumer: the capability
-  declaration discloses the path before the request is paid for and serves as its record meanwhile
-  (§4.2), as the retraction class does for which realisation a retraction takes (§6.2). An outcome that
-  carries either lands when a consumer reads it.
+  declaration discloses the path before the request is paid for (§4.2) — a disclosure, not a record: no
+  outcome carries the path — and the retraction class discloses, on the `StatementId` it rides, which
+  realisation a retraction takes (§6.2). An outcome that records either lands when a consumer reads it.
 - **The ground-program observer (§9.6, §13).** Promoted from a reserved seam to a **committed
   capability** (§10.4), with the two-part argument that defeats §9.6's rejection (an xclingo anchor
   now forces it; it is engine-free data, not added unsafe TCB — the cost is an adapter obligation).
@@ -1533,3 +1573,17 @@ necessity where it is declared.
    is deferred to its first consumer, the before-the-fact disclosures serving meanwhile (§4.2, §6.2,
    §16). A located fault is a program fault (§5.4). Streaming's constant resident set is asserted by the
    laziness law, and the matching scan and the ledger rebuild by benches beside their tripwires (§13.3).
+8. **The stopping reason, objective-off on the contract, and the model-set seam** (2026-09-29). An
+   inconclusive search's stopping reason is one closed shape, `Partial::stopped` → `Stopped::Concluded` or
+   `Stopped::Faulted`; a `Run` concludes only when its stream ends without a fault, and after a fault
+   `conclusion()` stays `None` while the core records the fault (§5.1, §5.2). `solve`, `solve_assuming`,
+   and the native consequence door owe the objective-off enumeration, and the conformance suite checks it
+   with a program under an objective, and checks every yielded model consistent (§4.1, §13.1). Until
+   optimization is realised every world view ranges over all stable models; the optimal marker's producer
+   and the native door over the optimal set are one seam that lands with `optimize`, the handle fixing the
+   set (§5.2). A rebuild re-establishes the state the loop carries after its lowering (§6.2); the core
+   attributes a timed stop, a tie going to the caller's cancellation (§6.3). The fold's `None` rests on
+   non-emptiness; located faults are program faults, stated once (§5.2, §5.4). The results are *typed
+   values*, so *model* keeps its logical sense; `Model` meets the constraint answer set, states its cost,
+   and marks its assignment-bearing door; the deferred path record is worded as a deferral (§1.3, §4.2,
+   §5, §5.1, §16).

@@ -35,7 +35,7 @@ symmetry places it beside solve rather than within it.
 
 The register is the field's — cautious and brave consequence, entailment, three-valued query,
 world views — extending `themelios-analysis`'s *structural* questions to the *semantic* ones. Its
-answers are typed models with human and machine views (`solve.md` §1.3), never prose.
+answers are typed values with human and machine views (`solve.md` §1.3), never prose.
 
 ### 1.1 Opinionated default, primitives exposed
 
@@ -90,12 +90,12 @@ pub use themelios_solve::outcome::Consequences;
 pub struct Bindings { /* yes / no / brave-unknown partitions */ }
 
 // The central input to `answer`/`entails`: a ground query — a literal, or a conjunction or disjunction
-// of literals (Gelfond–Kahl Def. 2.2.2, errata-corrected; §2.2). Construction REFUSES anything that is
-// not a ground literal, in two arms (`NotAQuery`, below): a well-formed **pattern** that is not ground
-// (its question is its bindings, §2.5) and a **non-denoting** term (an interval, a pool, or arithmetic
-// with a variable; program.md §11.2). So a `Query` that EXISTS is ground and denoting: the reads never
-// fail on query *validity*. (On the AGENT they still return `Result<_, Fault>` for engine
-// faults/exhaustion, §2.2; on a `Snapshot` they are infallible.)
+// of queries, nested to any depth (Gelfond–Kahl Def. 2.2.2, errata-corrected; §2.2). Construction
+// REFUSES anything that is not a ground literal, in two arms (`NotAQuery`, below): a well-formed
+// **pattern** that is not ground (its question is its bindings, §2.5) and a **non-denoting** term (an
+// interval, a pool, or arithmetic with a variable; program.md §11.2). So a `Query` that EXISTS is ground
+// and denoting: the reads never fail on query *validity*. (On the AGENT they still return
+// `Result<_, Fault>` for engine faults/exhaustion, §2.2; on a `Snapshot` they are infallible.)
 pub struct Query { /* literal | conjunction | disjunction — a closed set of denoting shapes */ }
 impl Query {
     pub fn of(atom: Atom) -> Result<Self, NotAQuery>;             // a literal; refuses a pattern or a non-denoting term
@@ -175,7 +175,8 @@ projection of the consequence sets.
 // `Agent<B>` and re-exported in the prelude so `agent.answer(q)?` reads inherent — where it is
 // engine-driving and FALLIBLE (each call solves once, §2.7); and on a materialised `Snapshot`, where it
 // is engine-free and INFALLIBLE. It is NOT on the live `WorldView`: a reading is a self-contained solve,
-// not a drain of that handle's `members` stream (§2.3).
+// not a drain of that handle's `members` stream (§2.3). Every reading asks `solve`'s question, so it
+// ranges over all stable models, any objective ignored (§2.3).
 pub trait AgentReading {   // impl'd for `Agent<B>` (solve.md §6); solves once, then reads
     /// The Gelfond–Kahl three-valued reading of a ground query (drives the engine, then reads; §2.7).
     fn answer(&mut self, q: &Query) -> Result<Answer, Fault>;
@@ -217,7 +218,9 @@ impl Snapshot {            // the engine-free form — the same reading over mat
   or, later, a solver-side satisfiability check that no member escapes the answer. This asymmetry — the
   atomic case cheap *once the native door is taken*, the compound case enumeration-bound — is stated
   because it is exactly the cost surprise a prose contract would hide. Both the native atomic routing and
-  the satisfiability check are named seams, not v1 promises; v1's agent reading materialises.
+  the satisfiability check are named seams, not v1 promises; v1's agent reading materialises. Within a
+  member the reading is a work-list fold over the query tree — iterative whatever the nesting depth (the
+  depth discipline, `solve.md` §13.3) — linear in the query's size, each literal two membership lookups.
 
 **Laws** (checked as properties, §4): a query and its contrary are never both `Yes`; `answer` is
 never `No` on a *non-empty* query nothing refutes (the absence-is-not-falsity law) — the one exception is
@@ -290,7 +293,9 @@ Properties and cost:
   returns `Err` if the search did not close (§3.2), if the members were already streamed (a
   partially-drained live handle cannot yield a complete snapshot), or if a member holds an atom and its
   contrary — no answer set does, so that is a backend contract violation (`Locus::Adapter`), checked
-  here because every reading's partition rests on answer-set consistency — and the agent's
+  here because every reading's partition rests on answer-set consistency (the contract half is the
+  conformance suite's, `solve.md` §13.1; the check costs one contrary lookup per strongly negated atom,
+  `O(Σ|M| log|M|)` over the members, within materialising's own order) — and the agent's
   `cautious`/`brave`/`answer` solve to
   exhaustion before reading. A `Snapshot` is complete by construction. `is_exhausted` on the live handle
   is a **report, not the gate**: it is drain-dependent — reading the run's terminal conclusion, it is
@@ -315,12 +320,12 @@ Properties and cost:
   another use of the same handle, the borrow checker forbidding it at compile time. The **`Snapshot`**
   (from `materialize`) needs no engine; its reads are infallible `&self`. The fallibility axis lives here
   — engine-driving vs engine-free — kept off the ownership/lifetime axis.
-- **Under an optimization objective the world view is the set of *optimal* answer sets** — those tied
-  at the proven optimum (`solve.md` §5.2); with no objective it is all stable models (the degenerate
-  case). A query therefore ranges over *the answer sets the program denotes*, uniformly, so the
-  all-versus-optimal distinction collapses into that denotation — which is what keeps the semantics
-  uniform whether or not the program optimizes. The exhaustion gate then requires the optimum *proven*
-  and the optimal set exhausted before such a world view is valid.
+- **A world view ranges over the model set of the question that produced it** (`solve.md` §5.2): a
+  `solve`'s — and so every `AgentReading` reading's — over all stable models, any objective ignored; an
+  `optimize`'s over the *optimal* set, those tied at the proven optimum, where the exhaustion gate requires
+  the optimum *proven* and the optimal set exhausted before the world view is valid. Until optimization is
+  realised every world view ranges over all stable models by construction; the optimal set's world view,
+  and the marker that says which set a value ranges over, land with `optimize` (`solve.md` §5.2).
 
 ### 2.4 Cautious and brave consequences
 
@@ -356,7 +361,9 @@ models for the agent's `cautious`/`brave`, whose question ignores any objective,
 an optimization's world view. The derived door does so by construction — it folds that question's world
 view — and the native door carries the matching obligation, over the optimal set under the
 optimum-proven/exhausted gate. So the required agreement is over one model set; without that obligation
-the two would either disagree or, worse, agree while both range over the wrong set.
+the two would either disagree or, worse, agree while both range over the wrong set. The optimal-set pair
+lands with `optimize` (`solve.md` §5.2): until then a `ConsequenceRequest` carries the scenario alone, and
+every door ranges over all stable models.
 
 ### 2.5 Bindings and conjunctions
 
@@ -619,3 +626,9 @@ it.
    nothing over no members; the gated readings are the doors (§2.4). The two consequence doors range over
    the question's model set — all stable models for the agent's, whose question ignores any objective
    (§2.4). A query nests to any depth (§2.2). "Mentions" is the pattern's own sign, settled (§2.5).
+8. **The question's model set, stated where it is read** (2026-09-29). A world view ranges over the model
+   set of the question that produced it — every `AgentReading` reading over all stable models, any
+   objective ignored — and the optimal set's world view and marker land with `optimize` (§2.2, §2.3,
+   §2.4). The consistency check states its contract half (the conformance suite) and its cost (§2.3). A
+   query's per-member evaluation is a work-list fold, linear in its size (§2.1, §2.2). The results are
+   typed values (`solve.md` §1.3).
