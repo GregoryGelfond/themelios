@@ -134,10 +134,10 @@ matching) are exposed so a consumer wanting a different policy — the standard'
 query (§2.6), a bespoke epistemic reading (§4) — *derives* it rather than forking.
 
 Let a **world view** `W` be a non-empty set of answer sets (§2.3), and let `q` be a ground query — a
-literal, or a conjunction or disjunction of literals. The **contrary** of a ground atom `a` is its
-strong negation `-a` (and the contrary of `-a` is `a`). Evaluate `q` **within each member** of `W`
-under the three-valued reading — a literal is *true* in a member containing it, *false* in one
-containing its contrary, *unknown* otherwise; a conjunction is the weakest (`min`) and a disjunction
+literal, or a conjunction or disjunction of queries, nested to any depth. The **contrary** of a ground
+atom `a` is its strong negation `-a` (and the contrary of `-a` is `a`). Evaluate `q` **within each
+member** of `W` under the three-valued reading — a literal is *true* in a member containing it, *false*
+in one containing its contrary, *unknown* otherwise; a conjunction is the weakest (`min`) and a disjunction
 the strongest (`max`) of its parts over `false < unknown < true` — and quantify over the members:
 
 - **`Answer::Yes`** iff `q` is **true in every member**.
@@ -230,7 +230,9 @@ refuting nothing yet false in every member; a disjunction whose members each men
 
 A **`WorldView`** is a program's *world view* in the epistemic-specifications sense; for a plain
 program (this tier's scope) that is the program's **unique** world view, which is exactly its set of
-answer sets.
+answer sets. Its members are `Model`s (`solve.md` §5.1): every reading here reads a member's answer set,
+`Model::atoms`; a theory assignment, where a backend supplies one, rides beside it and no epistemic
+reading consults it.
 
 The invariant is a **type state**, and it is the correctness keystone here: **a `WorldView` value is
 non-empty by construction.** It is obtained only from a `Consistent` outcome, so a `WorldView` you
@@ -244,7 +246,7 @@ a value meaning "invalid" inside the space of valid world views would be a senti
 ```rust
 impl<'a> WorldView<'a> {   // the LIVE handle — the run material; `members` is `&mut self`, the rest `&self`
     pub fn of(models: Models<'a>) -> WorldView<'a>;   // the construction door — from a resolved `Consistent(Models)` (solve.md §5.2)
-    pub fn members(&mut self) -> impl Iterator<Item = Result<AnswerSet, Fault>> + '_;  // stream (below)
+    pub fn members(&mut self) -> impl Iterator<Item = Result<Model, Fault>> + '_;  // stream (below)
     pub fn is_exhausted(&self) -> bool;                          // pure — a REPORT (drain-dependent), not the gate; see below
     pub fn scenario(&self) -> &Scenario;                         // pure — what it ranged over
     pub fn materialize(self) -> Result<Snapshot, Fault>;         // drain-then-gate to an engine-free `Snapshot` (eager; opt-in)
@@ -260,7 +262,7 @@ impl<'a> WorldView<'a> {   // the LIVE handle — the run material; `members` is
 impl Snapshot {
     pub fn cautious(&self) -> Consequences;
     pub fn brave(&self) -> Consequences;
-    pub fn members(&self) -> impl Iterator<Item = &AnswerSet> + '_;
+    pub fn members(&self) -> impl Iterator<Item = &Model> + '_;
     pub fn is_exhausted(&self) -> bool;                           // a snapshot is complete
     pub fn scenario(&self) -> &Scenario;
     pub fn answer(&self, q: &Query) -> Answer;                    // §2.2
@@ -285,8 +287,10 @@ Properties and cost:
   a `Snapshot` (from `materialize`) owns its data, engine-free. A universal reading (all members, all
   optimal, a cautious consequence) is answerable only from a search that closed the space, and the gate
   lives at the point the universal value is produced: **`materialize` drains and *then* gates** — it
-  returns `Err` if the search did not close (§3.2), or if the members were already streamed (a
-  partially-drained live handle cannot yield a complete snapshot) — and the agent's
+  returns `Err` if the search did not close (§3.2), if the members were already streamed (a
+  partially-drained live handle cannot yield a complete snapshot), or if a member holds an atom and its
+  contrary — no answer set does, so that is a backend contract violation (`Locus::Adapter`), checked
+  here because every reading's partition rests on answer-set consistency — and the agent's
   `cautious`/`brave`/`answer` solve to
   exhaustion before reading. A `Snapshot` is complete by construction. `is_exhausted` on the live handle
   is a **report, not the gate**: it is drain-dependent — reading the run's terminal conclusion, it is
@@ -340,17 +344,19 @@ impl<B: Backend> Agent<B> {   // the native door lives on the agent — it owns 
 backend declares `native_consequences: Native` — has the solver compute `⋂`/`⋃` directly (one solve, no
 enumeration); the **derived door** folds an enumerated world view (the agent's `cautious`/`brave` under
 `DerivedByEnumeration`, or a `Snapshot`'s infallible `cautious`/`brave` over its materialised members).
+The fold itself is an exposed primitive (`Consequences::fold`, `solve.md` §5.2): it answers nothing over
+no members and certifies no completeness, so the gated readings are these doors, not the bare fold.
 The two **must agree**, and their agreement is a standing differential the tier gets for free — the
 solver solves through a foreign engine, and an independent check on consequence computation is otherwise
 hard to come by. Cost: native is one solve; derived is `Θ(|W|)` in members folded, and is why the native
 door exists.
 
-**Under an optimization objective both doors must range over the *optimal* answer sets** (§2.3;
-`solve.md` §5.2). The derived door does so by construction — it folds the optimal world view — and the
-native door carries the matching obligation: the solver computes `⋂`/`⋃` over the *optimal* set, under
-the optimum-proven/exhausted gate. So the required agreement is over the same model set; without that
-obligation the two would either disagree or, worse, agree while both range over all stable models and
-silently violate the denotation.
+**Both doors must range over the same model set — the question's** (`solve.md` §5.2): all stable
+models for the agent's `cautious`/`brave`, whose question ignores any objective, and the *optimal* set for
+an optimization's world view. The derived door does so by construction — it folds that question's world
+view — and the native door carries the matching obligation, over the optimal set under the
+optimum-proven/exhausted gate. So the required agreement is over one model set; without that obligation
+the two would either disagree or, worse, agree while both range over the wrong set.
 
 ### 2.5 Bindings and conjunctions
 
@@ -376,10 +382,10 @@ enumerate that domain; a listing therefore shows the **brave** domain **restrict
 sign** — the instances of the pattern present in *some* answer set — and closes with the sentence that
 says so, or it reads as exhaustive and teaches the very misreading it exists to prevent. An instance
 whose *contrary* alone is bravely present (its `answer` is `Unknown`, but only `-g` is ever mentioned) is
-**not** listed here; it appears under the **contrary pattern**'s `unknown`. (Whether "mentions" should
-instead span mention-by-contrary is a spec-owner question, §3.2; the surface as built takes the pattern's
-own sign.) Cost: on a `Snapshot`, `yes`/`no` are cautious-set reads and `unknown` is bounded by the brave
-domain; the **agent**'s `bindings` materialises the world view first (`Θ(|W|)`, §2.2).
+**not** listed here; it appears under the **contrary pattern**'s `unknown` — "mentions" is the
+pattern's own sign, settled. Cost: on a `Snapshot`, `yes`/`no` are cautious-set reads and `unknown` is
+bounded by the brave domain; the **agent**'s `bindings` materialises the world view first (`Θ(|W|)`,
+§2.2).
 
 ### 2.6 The ASP-Core-2 cautious query — a dialect-scoped derivation
 
@@ -606,3 +612,10 @@ it.
    `snapshot_assuming(&Scenario)` for the scoped `Snapshot`, mirroring the unscoped surface the way
    `solve_assuming` mirrors `solve` (§2.4, §2.7) — so `ConsequenceRequest`'s scenario field is produced by
    the surface, not merely consumed by a backend.
+7. **Model members and settled readings** (2026-09-29). A world view's members are `Model`s
+   (`solve.md` §5.1), whose answer sets the readings read (§2.3). `materialize` refuses a member holding
+   an atom and its contrary — a backend contract violation, checked because every reading's partition
+   rests on answer-set consistency (§2.3). The fold is stated as an exposed primitive that answers
+   nothing over no members; the gated readings are the doors (§2.4). The two consequence doors range over
+   the question's model set — all stable models for the agent's, whose question ignores any objective
+   (§2.4). A query nests to any depth (§2.2). "Mentions" is the pattern's own sign, settled (§2.5).
