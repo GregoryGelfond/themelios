@@ -18,10 +18,11 @@ themelios-program = { path = "../themelios-program" }
 themelios-solve = { path = "../themelios-solve" }
 
 [features]
-# The in-suite scaling proofs (src/lib.rs) that hold the deep-symbol match to
-# near-linear cost. On by default so the ordinary test and coverage runs check
-# them; held out of the mutation loop with `--no-default-features`, as the program
-# tier does.
+# The whole-value proofs on very deep and large fixtures: the in-suite scaling
+# proofs (src/lib.rs) that hold the deep-symbol match to near-linear cost, and the
+# depth proof (tests/query_depth.rs) that walks a deeply nested query on a small
+# stack. On by default so the ordinary test and coverage runs check them; held out
+# of the mutation loop with `--no-default-features`, as the program tier does.
 scale-proofs = []
 default = ["scale-proofs"]
 
