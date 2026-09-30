@@ -745,10 +745,11 @@ this section states what it adds.
   thresholds (§1). A convenience that decided a policy — a `should_use(algorithm)`
   — would breach the separation and is refused as a design defect, not added.
 
-**Computational cost, consolidated.** `Analysis::of` is `O(program + edges)`: one
+**Computational cost, consolidated.** `Analysis::of` is `O(unpooled + edges)`, where
+`unpooled` is the pool-eliminated program the analysis reads (§5; program §9): one
 iterative walk builds the construct scan, the dependency edges, and the safety
 facts, and the strongly-connected-components decomposition is linear in the graph
-(§4). Every read thereafter is `O(1)` for a flag or a facet and `O(witness)` for a
+(§4). For a pool-free program `unpooled` is the program itself. Every read thereafter is `O(1)` for a flag or a facet and `O(witness)` for a
 witness. Clone is linear; equality, ordering, and hashing are structural. No walk
 recurses on the call stack (the graph decomposition is iterative, §4; the program
 walks are the program tier's iterative ones, program §13), so a pathological
@@ -763,9 +764,18 @@ because it can exceed `program`; and clingo's own grounding is likewise super-li
 such a program. An adversary at the untrusted boundary (spec §12.4) can push the
 analysis to `Θ(program²)` only by handing it a program whose graph *is* that large — the
 work equals the output, never a multiplier on top of it. The linear commitments
-elsewhere in this crate (safety, finiteness, the SCC build) are `O(program + edges)` in
+elsewhere in this crate (safety, finiteness, the SCC build) are `O(unpooled + edges)` in
 exactly this sense: linear in the graph the program defines, with no term super-linear
 in the program on top of the edges the program spells out.
+
+**Pools are the one way the graph outgrows the text by more than its edges.** The
+analysis reads the unpooled program, and a rule's pools multiply out: `unpool`'s
+cross-product is exponential in the number of pooled positions (program §9.1), so a
+rule of `k` two-way pools becomes `2^k` rules before this crate reads one. The cost is
+still linear in what it reads — `unpool` is output-linear — but what it reads can be
+exponentially larger than the text an adversary wrote. At an untrusted boundary the
+embedder therefore bounds pooled input, or runs the analysis where it can be cut off
+(`threat-model.md` §3.4, §6).
 
 ## 9. Failure semantics, consolidated
 

@@ -236,7 +236,9 @@ A **`WorldView`** is a program's *world view* in the epistemic-specifications se
 program (this tier's scope) that is the program's **unique** world view, which is exactly its set of
 answer sets. Its members are `Model`s (`solve.md` §5.1): every reading here reads a member's answer set,
 `Model::atoms`; a theory assignment, where a backend supplies one, rides beside it and no epistemic
-reading consults it.
+reading consults it. Two members may share an answer set — distinct models that agree on the shown atoms,
+or on the atoms with different assignments; the readings, reading atoms, are unaffected, and the members
+keep their multiplicity.
 
 The invariant is a **type state**, and it is the correctness keystone here: **a `WorldView` value is
 non-empty by construction.** It is obtained only from a `Consistent` outcome, so a `WorldView` you
@@ -649,3 +651,6 @@ it.
    is cited from its home, `solve.md` §5.2 (§2.2, §2.3, §2.4). The reading path's flattened refusals are
    a named departure, their typed form reserved to the first consumer that must case-split on them
    (§2.3). `materialize`'s refusals are a list (§2.3).
+11. **Members that share an answer set** (2026-09-30). Two members may share an answer set — models that
+   agree on the shown atoms, or on the atoms with different theory assignments; the readings are unaffected,
+   and the members keep their multiplicity (§2.3; `solve.md` §5.1).
