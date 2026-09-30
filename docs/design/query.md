@@ -222,12 +222,13 @@ impl Snapshot {            // the engine-free form — the same reading over mat
   member the reading is a work-list fold over the query tree — iterative whatever the nesting depth (the
   depth discipline, `solve.md` §13.3) — linear in the query's size, each literal two membership lookups.
 
-**Laws** (checked as properties, §4): a query and its contrary are never both `Yes`; `answer` is
-never `No` on a *non-empty* query nothing refutes (the absence-is-not-falsity law) — the one exception is
-the **empty disjunction** `Query::any([])`, the lattice bottom (⊥), which reads `No` by definition,
-refuting nothing yet false in every member; a disjunction whose members each mention some disjunct is
-`Yes` even when no single disjunct is cautiously entailed (the errata law); on a singleton world view
-`answer` agrees with membership-and-contrary in the one model.
+**Laws** (checked as properties, §4): a literal and its contrary are never both `Yes` — the contrary
+being a literal's alone (above); `answer` is never `No` on a *non-empty* query nothing refutes (the
+absence-is-not-falsity law) — the one exception is the **empty disjunction** `Query::any([])`, the
+lattice bottom (⊥), which reads `No` by definition, refuting nothing yet false in every member; a
+disjunction whose members each mention some disjunct is `Yes` even when no single disjunct is cautiously
+entailed (the errata law); on a singleton world view `answer` agrees with membership-and-contrary in the
+one model.
 
 ### 2.3 `WorldView` — non-empty by construction
 
@@ -295,7 +296,7 @@ Properties and cost:
   contrary — no answer set does, so that is a backend contract violation (`Locus::Adapter`), checked
   here because every reading's partition rests on answer-set consistency (the contract half is the
   conformance suite's, `solve.md` §13.1; the check costs one contrary lookup per strongly negated atom,
-  `O(Σ|M| log|M|)` over the members, within materialising's own order) — and the agent's
+  `O(Σ|M| log|M|)` over the members, a log factor over their own size) — and the agent's
   `cautious`/`brave`/`answer` solve to
   exhaustion before reading. A `Snapshot` is complete by construction. `is_exhausted` on the live handle
   is a **report, not the gate**: it is drain-dependent — reading the run's terminal conclusion, it is
@@ -351,10 +352,12 @@ enumeration); the **derived door** folds an enumerated world view (the agent's `
 `DerivedByEnumeration`, or a `Snapshot`'s infallible `cautious`/`brave` over its materialised members).
 The fold itself is an exposed primitive (`Consequences::fold`, `solve.md` §5.2): it answers nothing over
 no members and certifies no completeness, so the gated readings are these doors, not the bare fold.
-The two **must agree**, and their agreement is a standing differential the tier gets for free — the
-solver solves through a foreign engine, and an independent check on consequence computation is otherwise
-hard to come by. Cost: native is one solve; derived is `Θ(|W|)` in members folded, and is why the native
-door exists.
+The native door reports what the engine's search established and the core gates it (`solve.md` §5.2),
+so the two doors refuse alike — over no model, and over a search that did not close the space — as they
+answer alike. The two **must agree**, and their agreement is a standing differential the tier gets for
+free — the solver solves through a foreign engine, and an independent check on consequence computation is
+otherwise hard to come by. Cost: native is one solve; derived is `Θ(|W|)` in members folded, and is why
+the native door exists.
 
 **Both doors must range over the same model set — the question's** (`solve.md` §5.2): all stable
 models for the agent's `cautious`/`brave`, whose question ignores any objective, and the *optimal* set for
@@ -540,7 +543,7 @@ so is *at least one alternative epistemic reading built over the primitives* (th
 query, §2.6, is the shipped proof that the primitives suffice).
 
 **Assurance.** The native/derived consequence agreement (§2.4) as a standing differential; property
-laws over the trichotomy (§2.2 — a query and its contrary not both `Yes`; `no()` and `yes()` disjoint;
+laws over the trichotomy (§2.2 — a literal and its contrary not both `Yes`; `no()` and `yes()` disjoint;
 the conjunction-within-a-model law; the `entails == (answer == Yes)` projection law of §2.6); the
 mgu's own hardened suite inherited from the program tier; executed examples (the *three-valued-query*
 witness, both faces). No panic on any input; the non-Herbrand refusal is a typed diagnosis with a
@@ -632,3 +635,7 @@ it.
    §2.4). The consistency check states its contract half (the conformance suite) and its cost (§2.3). A
    query's per-member evaluation is a work-list fold, linear in its size (§2.1, §2.2). The results are
    typed values (`solve.md` §1.3).
+9. **A literal's law, an honest cost, and the gated native door** (2026-09-29). The contrary law is
+   stated of literals, where the contrary is defined (§2.2, §4). The consistency check's cost is stated as
+   the log factor it is (§2.3). The native door's answer is gated by the core, so the two doors refuse
+   alike (§2.4; `solve.md` §5.2).

@@ -114,7 +114,7 @@ crate**, not two crates. `themelios-solve` is organised so the auditable heart i
 
 - `contract` — the `Backend` trait and its capability, refusal, and fault vocabulary. This is the
   "one door" an audit reads; it is deliberately minimal (§4).
-- `outcome` — the models and their views (§5).
+- `outcome` — the typed values and their views (§5).
 - `agent` — the ergonomic driving surface over the contract: the `Agent` and the reasoning loop (§6).
 - `extend` — the extension-surface traits and registration (§7–§9).
 - `bridge` — the seam types the adapters implement against (§10).
@@ -186,7 +186,7 @@ The centerpieces are not silos; the design treats their seams as first-class:
   100%-idiomatic safe surface" machinery is *one* thing serving both — and the theory atoms a
   propagator watches are authored through the very macro/programmatic faces of §3.1.
 
-- **The outcome models are the meeting point.** The driving surface *produces* them, query *reads*
+- **The outcome values are the meeting point.** The driving surface *produces* them, query *reads*
   them, extraction *views* them (the machine-view of §1.3), and a propagator *contributes* the theory
   assignment component to them (§5.4). The outcome vocabulary (§5) is the hub the other centerpieces
   plug into.
@@ -267,11 +267,15 @@ pub trait Backend {
     /// cautious/brave by enumeration over `solve` (unscoped) or `solve_assuming` (scoped) (§4.2); the
     /// request surface says which path runs. What the backend owes: a native door honours the
     /// `ConsequenceRequest`'s scenario, ranging over the models `solve_assuming(scenario)` denotes — the
-    /// stable models, any objective ignored (§5.2); an unscoped request carries the empty scenario. The
-    /// agent surface produces a non-empty request through `Agent::cautious_assuming`/`brave_assuming`
-    /// (§6.2 — the normative home of the scoped doors' precondition and cost).
+    /// stable models, any objective ignored (§5.2); an unscoped request carries the empty scenario. It
+    /// reports what the engine's search established, a `NativeAnswer` (§5.2) — the set it computed over a
+    /// space it closed having seen a model, no model over a closed space, or where it stopped short — and
+    /// the core builds the `Consequences` from that answer or refuses, so the refusals are the core's, not
+    /// the backend's to remember. The agent surface produces a non-empty request through
+    /// `Agent::cautious_assuming`/`brave_assuming` (§6.2 — the normative home of the scoped doors'
+    /// precondition and cost).
     fn consequences_native(&mut self, mode: Mode, req: &ConsequenceRequest)
-        -> Result<Consequences, Fault> { Err(Fault::unsupported()) }  // provided default
+        -> Result<NativeAnswer, Fault> { Err(Fault::unsupported()) }  // provided default
 }
 
 /// A backend's declared capabilities. Closed set of bits/enums; a request beyond them is refused.
@@ -373,10 +377,15 @@ pub struct Partial { /* how the search stopped */ }
 impl Partial {
     pub fn stopped(&self) -> Stopped<'_>;
 }
-/// How an inconclusive search stopped: at a truncation it concluded — its target, its budget, or a
-/// cancellation (never `Exhausted`: an exhausted search decided) — or at an engine fault, which is no
-/// conclusion. Closed: a stopping reason is exactly one of the two.
-pub enum Stopped<'a> { Concluded(Conclusion), Faulted(&'a Fault) }
+/// How an inconclusive search stopped: at the truncation it concluded at, or at an engine fault, which
+/// is no conclusion. Closed: a stopping reason is exactly one of the two.
+pub enum Stopped<'a> { Concluded(Truncation), Faulted(&'a Fault) }
+
+/// The conclusions short of the space — its target, its budget, or a cancellation. Closed, and without
+/// `Exhausted`: an exhausted search decided, so no inconclusive search concluded there. Each is the
+/// `Conclusion` of its name (a total `From<Truncation> for Conclusion`); `Solved::conclusion` reads the
+/// four.
+pub enum Truncation { Target, Budget, Interrupted }
 
 /// An answer set is a set of ground symbols — re-exported from the program tier (program.md §11.3),
 /// so the solve, query, and program tiers speak one answer-set vocabulary.
@@ -410,7 +419,9 @@ An `Inconclusive` search's `Partial` says how it stopped, as one closed shape: `
 truncation it reached short of the space — `Target`, `Budget`, or `Interrupted`, which names cancellation
 alone — or `Faulted` at an engine fault, which reached no conclusion. A fault is not a way a search
 concludes, so the closed `Conclusion` gains no word for it, and the stopping reason is a sum, never an
-optional conclusion beside an optional cause. `Model` owes its §1.4 reason too: an answer set is the atoms
+optional conclusion beside an optional cause. `Concluded` carries a `Truncation`, the conclusions short of
+the space, so an exhausted conclusion — which decides — is unrepresentable there, not merely never
+produced. `Model` owes its §1.4 reason too: an answer set is the atoms
 alone, while a stable model of a program with theory atoms comes with the assignment that satisfied them —
 the constraint-ASP literature's *constraint answer set* — and the tier names the pair for what it is, a
 model of the program: the stream's unit is the model, and a backend that evaluates no theory yields models
@@ -508,7 +519,9 @@ impl<'a> Optimized<'a> {
 }
 
 /// Cautious (⋂) or brave (⋃) consequences — a set of ground `Symbol`s carrying the `Mode` that produced
-/// it and, under an objective, whether it ranged over the OPTIMAL set or all stable models (§2.4, §5.2).
+/// it and, under an objective, whether it ranged over the OPTIMAL set or all stable models (query.md
+/// §2.4, §5.2). Built by the fold or by the core's gate over a native door's answer (below): a backend
+/// reports, and never builds one.
 #[non_exhaustive]
 pub struct Consequences { /* Symbol set + Mode + the optimal-vs-all marker */ }
 impl Consequences {
@@ -520,6 +533,16 @@ impl Consequences {
     pub fn fold<'m>(mode: Mode, members: impl IntoIterator<Item = &'m AnswerSet>) -> Option<Consequences>;
 }
 pub enum Mode { Cautious, Brave }
+
+/// What the engine's own consequence search established (§4.1 `consequences_native`) — the raw material
+/// the core builds `Consequences` from, as a `Run` is for a solve: the backend reports, the core gates.
+/// Closed: a native search closed the space having seen a model, closed it having seen none, or stopped
+/// short of it.
+pub enum NativeAnswer {
+    Closed(BTreeSet<Symbol>),   // the engine's ⋂ or ⋃ over the space it closed, a model seen
+    NoModel,                    // the space closed with no model: the scenario admits none
+    Stopped(Truncation),        // short of the space: its set approximates the consequences, and is not them
+}
 ```
 
 - Models are **owned, streamable** values — the lazy `Result`-iterator above. Cost: streaming
@@ -547,8 +570,16 @@ pub enum Mode { Cautious, Brave }
   both-wrong. (Whether the pinned engine computes cautious-over-optimal in one solve is measurement,
   §13.2; the *obligation* is stated here.) Until optimization is realised, every world view ranges over
   all stable models by construction, so the marker's producer and the native door over the optimal set
-  are one seam that lands with `optimize`: the handle a world view comes from fixes its model set, so the
-  carrier grows inside the core and no backend-facing door changes.
+  are one seam that lands with `optimize`. The derived door's world view comes from a handle that fixes
+  its model set, so its carrier grows inside the core; the native door has no handle, so it will owe a
+  `ConsequenceRequest` field naming the set — additive, the request being `#[non_exhaustive]` — and the
+  core stamps the marker on the value it builds.
+- **The native door's answer is gated by the core**, as a solve's classification is (§5.1): a `Closed`
+  set becomes the `Consequences` in the mode asked; `NoModel` refuses as the derived door refuses an
+  inconsistent program — `⋂`/`⋃` over the empty world view is undefined, not `∅`; and `Stopped` refuses
+  as a truncated search does — a native cautious search stopped early has converged on a *super*set of
+  `⋂`, not the consequences. So a truncated native search cannot pose as complete (§5.3), a backend
+  cannot forget either refusal, and the two doors refuse alike as they answer alike (query.md §2.4).
 
 ### 5.3 The pathologies are unconstructible
 
@@ -737,7 +768,7 @@ impl<B: Backend> Agent<B> {
                                                                            //   WorldView read from Consistent (query.md §2)
     pub fn optimize(&mut self, req: &OptimizeRequest) -> Result<Optimized<'_>, Fault>;
     pub fn solve_assuming(&mut self, s: &Scenario) -> Result<Solved<'_>, Fault>;
-    pub fn interrupt(&self) -> Option<Interrupt>;                         // a cancellation handle — Some iff the backend cancels (§6.3)
+    pub fn interrupt(&self) -> Option<Interrupt>;                         // the core's handle over the backend's — Some iff it cancels (§6.3)
 
     // --- consequences (native door or derived fold, capability-routed §4.2), on the agent because it
     //     owns the engine — so the reading is a fresh solve, not a drain of a live world view (§5.2).
@@ -805,9 +836,13 @@ rebuild on a multi-shot backend re-establishes after its lowering the state the 
 truths assigned through `assign_external`, the parts instantiated through `ground` — so a `reset`
 discards nothing the agent retains. The retained state upholds the two-representation correspondence
 (owned program ↔ engine-internal state) across the cycle, which is also what gives a transform on the
-owned side a defined effect under multi-shot. Cost: retained state is `Θ(program size)`, not
-`Θ(ground size)` — the ground instantiation stays in the engine (§10); an external-toggle step is
-`O(1)` at the seam, a rebuild is one lowering (§10.1).
+owned side a defined effect under multi-shot. Cost: retained state is
+`Θ(program size + assigned externals + grounded parts)`, not `Θ(ground size)` — the ground instantiation
+stays in the engine (§10), and beyond the program the loop keeps a truth value per external it assigned
+and the parts it grounded; an external-toggle step is `O(1)` at the seam; a rebuild is a `reset`, one
+lowering (§10.1), then the replay — the grounded parts first, in the order they were grounded, then each
+assigned external's latest value, since an external is assigned only once grounded — whose re-grounding
+the engine pays again.
 
 ### 6.3 Per-operation typed options; budgets; cancellation; assumptions
 
@@ -854,10 +889,12 @@ uses both.
 **Budgets** (time at minimum, with room for model-count caps) are a typed, request-side surface;
 enforcement is a declared capability — an engine without a native time limit gets it through the
 `interrupt` primitive (§4.1): a timer thread that calls it on the cut — and `Conclusion::Budget`
-reports a hit budget as what it is. The core owns that timer, so it attributes the stop: an interrupt its
-own timer issued concludes `Budget`, a caller's `Interrupt` concludes `Interrupted`, and when both fire in
-one window the stop is `Interrupted`, the caller's act; the conformance suite checks the attribution once
-cancellation is realised. The long tail of
+reports a hit budget as what it is. The core owns that timer and the caller's handle alike — the
+`Interrupt` that `Agent::interrupt` returns is the core's own, which records its pull and forwards to the
+backend's — so it attributes the stop over the run's `Interrupted`: its timer alone concludes `Budget`, a
+pulled caller's handle concludes `Interrupted`, and when both fire in one window the stop is
+`Interrupted`, the caller's act; the conformance suite checks the attribution once cancellation is
+realised. The long tail of
 engine parameters, when a real consumer needs it, follows the two-tier facade pattern (typed knobs
 over a legible open form); it is YAGNI-gated, grown on demand, never a CLI-string passthrough.
 
@@ -1289,7 +1326,7 @@ exercises query), making the crate-home split visible in the learning surface.
 
 **The whole stack is the target.** There is no minimal "first increment" and no deadline pressure; the
 mission-critical quality bar governs the pace, not a ship date. When the stage is done, the complete
-tier ships: the contract, the outcome vocabulary and models, the agent and full multi-shot (the
+tier ships: the contract, the outcome vocabulary and values, the agent and full multi-shot (the
 reasoning loop), all four centerpieces and extraction, the bridge and its ground-program-IR capability,
 the potassco **clingo and clingcon** adapters, the facade, and the example set (reactive-tier witnesses
 included). The query tier ships with it (`query.md`). The in-house engine **zetesis** is a further
@@ -1587,3 +1624,13 @@ necessity where it is declared.
    values*, so *model* keeps its logical sense; `Model` meets the constraint answer set, states its cost,
    and marks its assignment-bearing door; the deferred path record is worded as a deferral (§1.3, §4.2,
    §5, §5.1, §16).
+9. **The native answer, the truncation, and the rebuild's cost** (2026-09-29). The native consequence
+   door reports what the engine's search established — a `NativeAnswer`: a set over a closed space, no
+   model, or a stop short of the space — and the core gates it and builds the `Consequences`, so a
+   truncated native search cannot pose as complete and a backend cannot forget either refusal; when
+   `optimize` lands the native door owes a request field naming its set (§4.1, §5.2). An inconclusive
+   search concludes at a `Truncation`, so an exhausted conclusion is unrepresentable in its stopping
+   reason (§5.1). A rebuild's cost states the replay, the grounded parts before the assigned externals
+   (§6.2). The handle `Agent::interrupt` returns is the core's, which is how the core attributes a stop
+   (§6.2, §6.3). The results are values at the three sites that still called them models, and a
+   reference resolves (§2.2, §3.2, §5.2, §14).
