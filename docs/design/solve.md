@@ -282,10 +282,11 @@ pub trait Backend {
 ///
 /// A pull with no solve in flight is a no-op — never a cancellation of the next question. An adapter over
 /// an engine whose own primitive cuts "the active call or the following one" compensates by arming its
-/// forward only while a run is open; the arming suffices only where the adapter's notion of *open* closes
-/// no later than the engine's own search, a version-scoped claim the spike suite establishes for the
-/// pinned engine (§10.5), with the race harness (§13.3) holding the concurrent close and the conformance
-/// suite the deterministic stale pull (§6.3).
+/// forward only while a run is open: armed from before the engine's search can begin until it ends, and
+/// disarmed no later than it ends, so the window coincides with the engine's active call — a pull inside
+/// it is never dropped, and one outside it never reaches the engine. That coincidence is a version-scoped
+/// claim the spike suite establishes for the pinned engine (§13.2), with the race harness (§13.3) holding
+/// the concurrent open and close and the conformance suite the deterministic stale pull (§6.3).
 ///
 /// The primitive carries no authority over a dropped engine: a pull reaches a slot the backend owns and
 /// clears on drop, shared with the handle, never a pointer into the engine — so the engine's lifetime is
@@ -307,7 +308,7 @@ pub struct Capabilities {
     pub multi_shot: bool,
     pub assumptions: bool,
     pub cancellation: bool,
-    pub budgets: BudgetSupport,
+    pub budgets: BudgetSupport,   // the budgets the backend enforces natively (the realisation rule, §6.3)
 }
 ```
 
@@ -419,6 +420,7 @@ impl Model {
     pub fn of(atoms: AnswerSet) -> Model;             // the backend's construction door: no assignment
     pub fn atoms(&self) -> &AnswerSet;
     pub fn assignment(&self) -> &TheoryAssignments;   // empty unless the backend evaluates a theory
+    pub fn is_consistent(&self) -> bool;              // no atom beside its strong negation (query.md §2.3)
     // The assignment-bearing construction door lands with `TheoryAssignments`' own constructors, when a
     // theory-evaluating backend is built (§11.1); until then every model's assignment is empty.
 }
@@ -749,18 +751,20 @@ content lives on inside the result, is the exact analogue. (`as_agent` would sig
 view and could back neither an evolving knowledge base nor a `'static`-embeddable agent.)
 
 Ownership is the capability substrate, unchanged from the tier's discipline. An agent is an **owned
-value** — the authority to drive the engine; dropping it is revocation, and there is no ambient engine or
-global mutable state. Asking a question borrows the agent (`&mut self`), so the borrow checker *is* the
-"no mutation while reasoning" lock, and the reasoning state machine (initial → grounded → prepared →
-solved) is expressed in ownership and borrowing rather than runtime checks — an out-of-order call does not
-compile. Thread posture is explicit per backend: the live run handles (`Solved`/`Models`/`WorldView`) are
-`!Send` — the `Run` trait object they hold carries no `Send` bound, since a run may hold a raw engine
-handle whose control is single-threaded (§5.2) — and the engine-free `Snapshot` is the `Send` form that
-crosses a service boundary; cancellation-from-another-thread is a declared capability whose handle
-(`Interrupt`, the core's over the backend's `Send + Sync` `Cancel`) is `Send`. Because the agent *owns*
-its knowledge rather than borrowing a `Program` off a stack frame, it is embeddable behind a service
-boundary or an editor host without ceremony — the LSP/pythia posture (specification §1.2, §9.4). Cost:
-agent construction is one engine handle; a question's cost is the engine's, streamed (§5.2).
+value** — the authority to drive the engine; dropping it is revocation, and there is no ambient engine,
+nor any global state that confers authority: the one process-wide value, a counter that brands each
+agent's ledger so that a handle from another agent is refused, grants nothing. Asking a question borrows
+the agent (`&mut self`), so the borrow checker *is* the "no mutation while reasoning" lock, and the
+reasoning state machine (initial → grounded → prepared → solved) is expressed in ownership and borrowing
+rather than runtime checks — an out-of-order call does not compile. Thread posture is explicit per
+backend: the live run handles (`Solved`/`Models`/`WorldView`) are `!Send` — the `Run` trait object they
+hold carries no `Send` bound, since a run may hold a raw engine handle whose control is single-threaded
+(§5.2) — and the engine-free `Snapshot` is the `Send` form that crosses a service boundary;
+cancellation-from-another-thread is a declared capability whose handle (`Interrupt`, the core's over the
+backend's `Send + Sync` `Cancel`) is `Send`. Because the agent *owns* its knowledge rather than borrowing
+a `Program` off a stack frame, it is embeddable behind a service boundary or an editor host without
+ceremony — the LSP/pythia posture (specification §1.2, §9.4). Cost: agent construction is one engine
+handle; a question's cost is the engine's, streamed (§5.2).
 
 *The name.* "Agent" is the Gelfond–Kahl term, adopted with its §1.4 warrant and a scope stated so it is
 not over-read: themelios provides the agent's **knowledge and reasoning**; observing and acting upon the
@@ -917,18 +921,23 @@ one question and is discharged after it (a hypothesis — *if this held, what wo
 retraction (§6.2) amends the knowledge base itself and persists (a change of mind). The reasoning loop
 uses both.
 
-**Budgets** (time at minimum, with room for model-count caps) are a typed, request-side surface;
-enforcement is a declared capability — an engine without a native time limit gets it through the
-`interrupt` primitive (§4.1): a timer thread that calls it on the cut — and `Conclusion::Budget` reports a
-hit budget as what it is. The core owns that timer and the caller's handle alike — the `Interrupt` that
-`Agent::interrupt` returns is the core's own, which records its pull and forwards to the backend's
-`Cancel` primitive (§4.1) — so it attributes the stop over the run's `Interrupted`: its timer alone
-concludes `Budget`, a pulled caller's handle concludes `Interrupted`, and when both fire in one window the
-stop is `Interrupted`, the caller's act; the conformance suite checks the attribution once cancellation is
-realised, beside the stale pull — a pull with no solve in flight, which cancels no later question (§4.1).
-The long tail of engine parameters, when a real consumer needs it, follows the two-tier facade pattern
-(typed knobs over a legible open form); it is YAGNI-gated, grown on demand, never a CLI-string
-passthrough.
+**Budgets** (time at minimum, with room for model-count caps) are a typed, request-side surface, and
+`Conclusion::Budget` reports a hit budget as what it is. How a budget is realised is fixed by the
+declaration before the request is paid for, as a retraction's class is (§6.2): where the backend declares
+`budgets.time`, it enforces the budget natively — the request carries the budget to it, and its run
+concludes `Budget` at the cut; otherwise, where it declares `cancellation`, the core enforces the budget
+with its own timer over the backend's `Cancel` (§4.1) — the request is forwarded without the budget, and
+the core attributes the stop; and a budgeted request over a backend that declares neither refuses at the
+request locus. The conformance suite's time-budget probe reads this rule. The core's timer is realised
+with cancellation; until then a budget is honoured natively or refused. The core owns that timer and the
+caller's handle alike — the `Interrupt` that `Agent::interrupt` returns is the core's own, which records
+its pull and forwards to the backend's `Cancel` primitive (§4.1) — so it attributes the stop over the
+run's `Interrupted`: its timer alone concludes `Budget`, a pulled caller's handle concludes `Interrupted`,
+and when both fire in one window the stop is `Interrupted`, the caller's act; the conformance suite checks
+the attribution once cancellation is realised, beside the stale pull — a pull with no solve in flight,
+which cancels no later question (§4.1). The long tail of engine parameters, when a real consumer needs it,
+follows the two-tier facade pattern (typed knobs over a legible open form); it is YAGNI-gated, grown on
+demand, never a CLI-string passthrough.
 
 ### 6.4 Single-shot: the questions asked of a program directly
 
@@ -1307,8 +1316,11 @@ The clingo binary as the grounding/solving authority over the corpus; the **clin
 external oracle for the constraint theory — differencing *both* the linked clingcon backend and the
 in-house CP satellite (§11.2); the native-versus-derived consequence differential the tier gets for free
 (query.md §2.4); and the bridge differential with its worst-case cost tripwires (§10.1). An adapter that
-shares the program tier's `Symbol` (zetesis, §12) adds a further cross-implementation differential when
-it lands. Every instrument documents what it proves *and what it cannot* (specification §10.2).
+shares the program tier's `Symbol` (zetesis, §12) adds a further cross-implementation differential when it
+lands. The **spike suite** (specification §5.2, §10.1) holds the design's version-scoped claims about the
+pinned engines' behaviour — the interning compensation (§10.5) and the cancellation arming's window (§4.1)
+— and an engine upgrade re-runs it, re-establishing each claim or retiring the compensation it warrants.
+Every instrument documents what it proves *and what it cannot* (specification §10.2).
 
 ### 13.3 The mission bar
 
@@ -1683,3 +1695,9 @@ necessity where it is declared.
    `O(1)`, never blocking on the solving thread; the arming compensation's premise is a version-scoped claim
    the spike suite establishes, the race harness holding the concurrent close; and a pull reaches a slot the
    backend owns and clears on drop, so the engine's lifetime stays the backend's (§4.1).
+13. **The arming window, the budget's realisation, and the spike suite** (2026-09-29). The cancellation
+   arming is bounded on both sides, its window coinciding with the engine's active call (§4.1). A budget's
+   realisation is fixed by the declaration: `budgets.time` enforces natively, `cancellation` lets the core's
+   timer enforce it, neither refuses (§4.1, §6.3). The spike suite is named among the assurance instruments,
+   with the two claims it holds (§13.2). A model states whether it is consistent (§5.1), and the one
+   process-wide value, the ledger brand, confers no authority (§6.1).
