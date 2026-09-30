@@ -21,7 +21,7 @@ use std::collections::BTreeSet;
 use crate::agent::{Assumption, Scenario};
 use crate::contract::{Fault, Mode};
 pub use themelios_program::AnswerSet;
-use themelios_program::Symbol;
+use themelios_program::{Sign, Symbol};
 
 // ---- The closed distinctions (§5.1) ----
 
@@ -216,6 +216,27 @@ impl Model {
     pub fn assignment(&self) -> &TheoryAssignments {
         &self.theory
     }
+
+    /// Whether the model is consistent: it holds no atom beside its strong
+    /// negation — the literature's consistent set of literals (docs/design/
+    /// query.md §2.3). No answer set is otherwise, so a model that is not is
+    /// a backend's contract violation: the conformance suite fails it, and a
+    /// world view refuses to materialise it. Total; one lookup per strongly
+    /// negated atom, each copying its arguments — `O(|M| log |M|)`.
+    pub fn is_consistent(&self) -> bool {
+        !self.atoms.iter().any(|symbol| match symbol {
+            Symbol::Function {
+                name,
+                arguments,
+                sign: Sign::Negative,
+            } => self.atoms.contains(&Symbol::function(
+                name.clone(),
+                arguments.iter().cloned(),
+                Sign::Positive,
+            )),
+            _ => false,
+        })
+    }
 }
 
 /// The streaming/terminal-state protocol a backend's `solve` drives (docs/design/
@@ -305,8 +326,11 @@ enum Class {
 }
 
 impl LiveRun<'_> {
-    /// Pull the next item from the run, remembering a witnessed model. The single
-    /// point every member flows through, so `witnessed` is always current.
+    /// Pull the next item from the run, remembering a witnessed model and a
+    /// fault — one the run yields, or its own breach of the terminal obligation
+    /// when it ends without concluding. The single point every member flows
+    /// through, so `witnessed` and `faulted` are always current and every reading
+    /// attributes the breach the one way.
     fn pull(&mut self) -> Option<Result<Model, Fault>> {
         let item = self.current.next_model();
         match &item {
@@ -314,7 +338,11 @@ impl LiveRun<'_> {
             Some(Err(fault)) => {
                 self.faulted.get_or_insert_with(|| fault.clone());
             }
-            None => {}
+            None => {
+                if self.faulted.is_none() && self.current.conclusion().is_none() {
+                    self.faulted = Some(unconcluded());
+                }
+            }
         }
         item
     }
@@ -379,12 +407,11 @@ impl LiveRun<'_> {
             Some(conclusion) => {
                 Truncation::of(conclusion).map_or(Class::Inconsistent, Class::Inconclusive)
             }
-            // A conforming run reports its conclusion once it ends cleanly (the
-            // `Run` terminal obligation); one that does not broke the contract,
-            // and says so — never "yes", never "no".
-            None => Class::Faulted(Fault::adapter_bug(
-                "the search ended without concluding, against the run protocol",
-            )),
+            // A run that ends without concluding broke the terminal obligation,
+            // and `pull` has recorded that as its fault, read above; the arm
+            // states the invariant, so the reading stays total — never "yes",
+            // never "no".
+            None => Class::Faulted(unconcluded()),
         }
     }
 
@@ -418,12 +445,24 @@ impl LiveRun<'_> {
             }
         }
         self.drain = DrainState::Touched;
+        // A run that ended without concluding: `pull` recorded the breach, and it
+        // is the refusal's cause, as a fault the run yielded would be.
+        if let Some(fault) = self.faulted.clone() {
+            return Err(NotExhausted::faulted(self.conclusion(), fault));
+        }
         if self.conclusion() == Some(Conclusion::Exhausted) {
             Ok(all)
         } else {
             Err(NotExhausted::not_closed(self.conclusion()))
         }
     }
+}
+
+/// The fault of a run that ended its stream without concluding: a breach of the
+/// run protocol's terminal obligation, so the adapter's (docs/design/solve.md
+/// §5.2, §5.4).
+fn unconcluded() -> Fault {
+    Fault::adapter_bug("the search ended without concluding, against the run protocol")
 }
 
 impl<'a> Determination<'a> {
@@ -1015,38 +1054,50 @@ mod tests {
         }
     }
 
+    // A completeness refusal becomes an honest fault: its cause verbatim where a
+    // fault stopped the drain, otherwise a request fault naming why, so the
+    // inconclusive reason stays visible (docs/design/solve.md §5.1).
+
     #[test]
-    fn a_completeness_refusal_becomes_an_honest_fault() {
-        // A mid-stream engine fault surfaces as its own cause — locus, message, and
-        // bug bit — not laundered into a generic request error.
+    fn a_faulted_refusal_converts_to_its_cause() {
+        // Locus, message, and bug bit — not laundered into a request error.
         let cause = Fault::engine("a distinctive underlying failure");
         assert_eq!(
             Fault::from(NotExhausted::faulted(None, cause.clone())),
-            cause,
-            "the underlying fault must surface verbatim",
+            cause
         );
-        // A truncation, a named conclusion, and an already-taken handle each name
-        // their reason as a request fault, so the inconclusive cause stays visible
-        // (docs/design/solve.md §5.1).
-        let not_closed = Fault::from(NotExhausted::not_closed(None));
-        assert_eq!(not_closed.locus(), crate::contract::Locus::Request);
-        assert!(not_closed.to_string().contains("did not close"));
-        let budgeted = Fault::from(NotExhausted::not_closed(Some(Conclusion::Budget)));
-        assert!(budgeted.to_string().contains("budget"));
-        let taken = Fault::from(NotExhausted::already_taken(None));
-        assert!(taken.to_string().contains("already taken"));
     }
 
     #[test]
-    fn an_inconclusive_reading_carries_its_cause_or_names_its_conclusion() {
-        // The engine fault that stopped the search surfaces as its own cause,
-        // verbatim; a plain truncation names the conclusion it reached, so neither
-        // reason is laundered away (docs/design/solve.md §5.1).
+    fn an_unclosed_refusal_converts_to_a_request_fault_saying_so() {
+        let not_closed = Fault::from(NotExhausted::not_closed(None));
+        assert_eq!(not_closed.locus(), crate::contract::Locus::Request);
+        assert!(not_closed.to_string().contains("did not close"));
+    }
+
+    #[test]
+    fn a_refusal_at_a_named_conclusion_names_it() {
+        let budgeted = Fault::from(NotExhausted::not_closed(Some(Conclusion::Budget)));
+        assert!(budgeted.to_string().contains("budget"), "{budgeted}");
+    }
+
+    #[test]
+    fn a_refusal_of_a_taken_handle_says_it_was_taken() {
+        let taken = Fault::from(NotExhausted::already_taken(None));
+        assert!(taken.to_string().contains("already taken"), "{taken}");
+    }
+
+    #[test]
+    fn a_faulted_partial_converts_to_its_cause() {
         let cause = Fault::engine("the engine died mid-search");
         assert_eq!(Fault::from(Partial::faulted(cause.clone())), cause);
+    }
+
+    #[test]
+    fn a_truncated_partial_converts_to_a_request_fault_naming_its_truncation() {
         let truncated = Fault::from(Partial::truncated(Truncation::Budget));
         assert_eq!(truncated.locus(), crate::contract::Locus::Request);
-        assert!(truncated.to_string().contains("budget"));
+        assert!(truncated.to_string().contains("budget"), "{truncated}");
     }
 
     #[test]
@@ -1149,6 +1200,54 @@ mod tests {
         fn conclusion(&self) -> Option<Conclusion> {
             None
         }
+    }
+
+    /// A malformed run that yields one model, then ends and never reports a
+    /// conclusion.
+    struct SilentAfterAModelRun {
+        yielded: bool,
+    }
+    impl Run for SilentAfterAModelRun {
+        fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+            if self.yielded {
+                return None;
+            }
+            self.yielded = true;
+            Some(Ok(Model::of(singleton(0))))
+        }
+        fn conclusion(&self) -> Option<Conclusion> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_run_ending_without_a_conclusion_is_one_adapter_fault_at_every_door() {
+        // Its zero-model twin resolves inconclusive at the fault; with a model
+        // witnessed, the complete collection refuses with the same fault as its
+        // cause — never a request fault that clears the bug bit.
+        let Determination::Inconclusive(partial) =
+            solved_with(Box::new(SilentRun)).into_determination()
+        else {
+            panic!("Inconclusive");
+        };
+        let Stopped::Faulted(unconcluded) = partial.stopped() else {
+            panic!("a fault, not a conclusion");
+        };
+        let mut witnessed = solved_with(Box::new(SilentAfterAModelRun { yielded: false }));
+        let refused = Fault::from(
+            witnessed
+                .all_models()
+                .expect_err("an unconcluded search refuses"),
+        );
+        assert_eq!(&refused, unconcluded);
+        assert!(refused.is_backend_bug());
+    }
+
+    #[test]
+    fn a_run_ending_without_a_conclusion_reads_no_conclusion() {
+        let mut solved = solved_with(Box::new(SilentAfterAModelRun { yielded: false }));
+        let _drain: Vec<_> = solved.models().collect();
+        assert_eq!(solved.conclusion(), None);
     }
 
     /// A malformed run that ends at once and never reports a conclusion.
@@ -1269,6 +1368,23 @@ mod tests {
     #[test]
     fn a_model_reads_back_the_answer_set_it_was_built_over() {
         assert_eq!(*Model::of(answer_set(&[1, 2])).atoms(), answer_set(&[1, 2]));
+    }
+
+    /// The strongly negated constant `-name`.
+    fn negated(name: &str) -> Symbol {
+        Symbol::function(Name::new(name).expect("an identifier"), [], Sign::Negative)
+    }
+
+    #[test]
+    fn a_model_holding_an_atom_and_its_contrary_is_inconsistent() {
+        let model = Model::of([constant("a"), negated("a")].into_iter().collect());
+        assert!(!model.is_consistent());
+    }
+
+    #[test]
+    fn a_model_holding_a_negated_atom_alone_is_consistent() {
+        let model = Model::of([negated("a"), constant("b")].into_iter().collect());
+        assert!(model.is_consistent());
     }
 
     #[test]

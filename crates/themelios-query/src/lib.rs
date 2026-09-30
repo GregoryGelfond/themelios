@@ -275,10 +275,7 @@ impl<'a> WorldView<'a> {
     /// of the scenario.
     pub fn materialize(mut self) -> Result<Snapshot, Fault> {
         let members = self.models.all_members()?;
-        if members
-            .iter()
-            .any(|member| holds_an_atom_and_its_contrary(member.atoms()))
-        {
+        if members.iter().any(|member| !member.is_consistent()) {
             return Err(Fault::adapter_bug(
                 "the backend yielded a model holding an atom and its contrary",
             ));
@@ -311,22 +308,6 @@ enum Truth {
     False,
     Unknown,
     True,
-}
-
-/// Whether `member` holds some atom and its contrary (docs/design/query.md
-/// §2.3) — which no answer set does. Each strongly negated atom's contrary is
-/// looked up, so an `m`-atom member costs `O(m log m)` lookups plus a copy of each
-/// negated atom's arguments.
-fn holds_an_atom_and_its_contrary(member: &AnswerSet) -> bool {
-    member.iter().any(|symbol| {
-        matches!(
-            symbol,
-            Symbol::Function {
-                sign: Sign::Negative,
-                ..
-            }
-        ) && member.contains(&contrary(symbol))
-    })
 }
 
 /// The contrary of a ground literal symbol — its strong negation, the same

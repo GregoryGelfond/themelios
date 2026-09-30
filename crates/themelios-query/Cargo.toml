@@ -12,7 +12,6 @@ license.workspace = true
 # §12.5). The solve tier's tests/trust.rs holds the closure over Cargo's
 # resolved graph.
 [dependencies]
-themelios-base = { path = "../themelios-base" }
 themelios-program = { path = "../themelios-program" }
 themelios-solve = { path = "../themelios-solve" }
 

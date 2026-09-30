@@ -783,9 +783,11 @@ fn solve(backend: &mut dyn Backend) -> Result<Solved<'_>, Failure> {
 }
 
 /// What a bounded read of a stream found: the answer sets of the models it
-/// yielded, and whether it ended within the bound.
+/// yielded, whether each of those models was consistent, and whether the
+/// stream ended within the bound.
 struct Pulled {
     sets: Vec<AnswerSet>,
+    consistent: bool,
     ended: bool,
 }
 
@@ -795,30 +797,23 @@ struct Pulled {
 /// refusal.
 fn pull(solved: &mut Solved<'_>, bound: usize) -> Result<Pulled, Fault> {
     let mut sets = Vec::new();
+    let mut consistent = true;
     for yielded in solved.models() {
         let model = yielded?;
         if sets.len() == bound {
-            return Ok(Pulled { sets, ended: false });
+            return Ok(Pulled {
+                sets,
+                consistent,
+                ended: false,
+            });
         }
+        consistent &= model.is_consistent();
         sets.push(model.atoms().clone());
     }
-    Ok(Pulled { sets, ended: true })
-}
-
-/// Whether `set` holds an atom beside its contrary, its strong negation — which
-/// no answer set does (query.md §2.3). One lookup per strongly negated atom.
-fn holds_a_contrary_pair(set: &AnswerSet) -> bool {
-    set.iter().any(|symbol| match symbol {
-        Symbol::Function {
-            name,
-            arguments,
-            sign: Sign::Negative,
-        } => set.contains(&Symbol::function(
-            name.clone(),
-            arguments.iter().cloned(),
-            Sign::Positive,
-        )),
-        _ => false,
+    Ok(Pulled {
+        sets,
+        consistent,
+        ended: true,
     })
 }
 
@@ -883,7 +878,11 @@ fn outcome_correctness(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
                 ),
             )));
         }
-        let Pulled { mut sets, ended } = pull(&mut solved, case.answer_sets.len())
+        let Pulled {
+            mut sets,
+            consistent,
+            ended,
+        } = pull(&mut solved, case.answer_sets.len())
             .map_err(|fault| Shortfall::Broke(faulted(fault)))?;
         if !ended {
             return Err(Shortfall::Broke(past_the_bound()));
@@ -900,7 +899,7 @@ fn outcome_correctness(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
                 "ended its stream with its search still open",
             )));
         }
-        if sets.iter().any(holds_a_contrary_pair) {
+        if !consistent {
             return Err(Shortfall::Broke(Failure::new(
                 Breach::Misanswered,
                 "yielded a model holding an atom and its contrary",
@@ -961,7 +960,7 @@ fn exhaustion_is_earned(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
     over_corpus(corpus, |case| {
         load(backend, &case.program, case.source).map_err(Shortfall::Undriven)?;
         let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
-        let Pulled { sets, ended } = pull(&mut solved, case.answer_sets.len())
+        let Pulled { sets, ended, .. } = pull(&mut solved, case.answer_sets.len())
             .map_err(|fault| Shortfall::Undriven(faulted(fault)))?;
         if !ended {
             return Err(Shortfall::Undriven(past_the_bound()));
@@ -1123,7 +1122,7 @@ fn located(fault: Fault, program: &Program) -> Verdict {
                 Breach::Mislocated,
                 format!(
                     "a program that cannot be grounded was refused at the {} locus, not the program's",
-                    locus_phrase(fault.locus()),
+                    fault.locus(),
                 ),
             )
             .with_fault(fault),
@@ -1197,7 +1196,7 @@ fn non_external_assignment_refuses(backend: &mut dyn Backend) -> Verdict {
                 Breach::Mislocated,
                 format!(
                     "assigning an atom that is not external refused at the {} locus, not the request's",
-                    locus_phrase(fault.locus()),
+                    fault.locus(),
                 ),
             )
             .with_fault(fault),
@@ -1252,17 +1251,6 @@ fn refuses_at_the_request(response: &Response) -> bool {
     matches!(response, Response::Refused(fault) if fault.locus() == Locus::Request)
 }
 
-/// A locus, as a phrase.
-fn locus_phrase(locus: Locus) -> &'static str {
-    match locus {
-        Locus::Program => "program",
-        Locus::Request => "request",
-        Locus::Resource => "resource",
-        Locus::Engine => "engine",
-        Locus::Adapter => "adapter",
-    }
-}
-
 /// One capability's declaration is honest (§4.1, §4.2): declared, its method
 /// answers rightly; undeclared, it refuses at the request locus. `externals`
 /// gates no method alone — `assign_external` is multi-shot's — so undeclared,
@@ -1312,7 +1300,7 @@ fn judge(method: &str, declared: bool, response: Response) -> Verdict {
                 Breach::Mislocated,
                 format!(
                     "undeclared, and {method} refused at the {} locus, not the request's",
-                    locus_phrase(fault.locus()),
+                    fault.locus(),
                 ),
             )
             .with_fault(fault),
@@ -1475,9 +1463,10 @@ fn probe_assumptions(backend: &mut dyn Backend) -> Response {
             _ => return misanswered("did not read a satisfiable scenario as consistent"),
         }
         match pull(&mut solved, admitted.len()) {
-            Ok(Pulled { sets, ended: true })
-                if sets.iter().all(|set| admitted.contains(set))
-                    && (!enumerates || sets == admitted) => {}
+            Ok(Pulled {
+                sets, ended: true, ..
+            }) if sets.iter().all(|set| admitted.contains(set))
+                && (!enumerates || sets == admitted) => {}
             Ok(_) => return misanswered("yielded models other than the one the scenario admits"),
             Err(fault) => return Response::Faulted(fault),
         }
@@ -1504,7 +1493,9 @@ fn probe_assumptions(backend: &mut dyn Backend) -> Response {
         Determination::Consistent(models) if models.scenario().assumptions().next().is_none()
     );
     match pull(&mut solved, fact.len()) {
-        Ok(Pulled { sets, ended: true }) if unscoped && sets == fact => Response::Answered,
+        Ok(Pulled {
+            sets, ended: true, ..
+        }) if unscoped && sets == fact => Response::Answered,
         Ok(_) => {
             misanswered("kept a scenario past its solve: a plain solve after it misread the fact")
         }
@@ -1546,7 +1537,9 @@ fn probe_multi_shot(backend: &mut dyn Backend, declared: bool) -> Response {
         Err(failure) => return Response::Unprobed(failure),
     };
     match pull(&mut solved, together.len()) {
-        Ok(Pulled { sets, ended: true }) if sets == together => {}
+        Ok(Pulled {
+            sets, ended: true, ..
+        }) if sets == together => {}
         Ok(_) => {
             return misanswered(
                 "did not keep the program across lowerings: the fact and the rule over it read other than {a, b}",
@@ -1578,7 +1571,9 @@ fn probe_externals(backend: &mut dyn Backend) -> Response {
             Err(failure) => return Response::Unprobed(failure),
         };
         match pull(&mut solved, expected.len()) {
-            Ok(Pulled { sets, ended: true }) if sets == expected => {}
+            Ok(Pulled {
+                sets, ended: true, ..
+            }) if sets == expected => {}
             Ok(_) => {
                 return misanswered(
                     "answered, then read answer sets other than the assignment gives",
@@ -1652,7 +1647,9 @@ fn read_the_fact(solved: Result<Solved<'_>, Fault>) -> Response {
     };
     let fact = [answer_set([constant("a")])];
     match pull(&mut solved, fact.len()) {
-        Ok(Pulled { sets, ended: true }) if sets == fact => Response::Answered,
+        Ok(Pulled {
+            sets, ended: true, ..
+        }) if sets == fact => Response::Answered,
         Ok(_) => misanswered("read answer sets other than the fact's"),
         Err(fault) => Response::Faulted(fault),
     }
@@ -1694,19 +1691,6 @@ mod tests {
     fn every_capability_is_probed_once() {
         let probed: BTreeSet<String> = CAPABILITIES.map(|capability| capability.to_string()).into();
         assert_eq!(probed.len(), CAPABILITIES.len());
-    }
-
-    #[test]
-    fn a_model_holding_an_atom_and_its_contrary_is_caught() {
-        let negated = atom("a", [], Sign::Negative);
-        assert!(holds_a_contrary_pair(&answer_set([
-            constant("a"),
-            negated.clone()
-        ])));
-        assert!(!holds_a_contrary_pair(&answer_set([
-            negated,
-            constant("b")
-        ])));
     }
 
     #[test]
@@ -1871,19 +1855,6 @@ mod tests {
             skip.to_string(),
             "could not be driven: the solve was refused: gone"
         );
-    }
-
-    #[test]
-    fn every_locus_has_a_distinct_phrase() {
-        let loci = [
-            Locus::Program,
-            Locus::Request,
-            Locus::Resource,
-            Locus::Engine,
-            Locus::Adapter,
-        ];
-        let phrases: BTreeSet<&str> = loci.into_iter().map(locus_phrase).collect();
-        assert_eq!(phrases.len(), loci.len());
     }
 
     #[test]
