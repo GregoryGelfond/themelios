@@ -177,7 +177,7 @@ impl std::error::Error for TheoryFault {}
 /// [`ExtractError`], are defined with it. Cost: `Θ(atoms read)`.
 pub trait Extract: Sized {
     /// The value the answer set denotes, or the error that refuses it.
-    fn extract(model: &AnswerSet) -> Result<Self, ExtractError>;
+    fn extract(answer_set: &AnswerSet) -> Result<Self, ExtractError>;
 }
 
 /// The failure of an extraction (docs/design/solve.md §9): an atom of the

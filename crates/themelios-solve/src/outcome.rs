@@ -1,5 +1,5 @@
-//! The outcome vocabulary (docs/design/solve.md §5): the models and their
-//! views — determination, conclusion, the solved and optimized outcomes,
+//! The outcome vocabulary (docs/design/solve.md §5): the typed values and
+//! their views — determination, conclusion, the solved and optimized outcomes,
 //! models, consequences, unsatisfiability with its assumption blame, theory
 //! assignments, and statistics.
 //!
@@ -12,7 +12,9 @@
 //! search is a value, what the search did establish, never an error and never
 //! "no". The answer set itself is the program tier's [`AnswerSet`],
 //! re-exported so the program, solve, and query tiers speak one answer-set
-//! vocabulary.
+//! vocabulary; a [`Model`] — the unit every stream yields — is an answer set
+//! with the theory assignment a theory-evaluating backend supplies, empty
+//! otherwise.
 
 use std::collections::BTreeSet;
 
@@ -31,8 +33,8 @@ use themelios_program::Symbol;
 /// payload is a view over the live engine (§5.2), so the trichotomy carries
 /// that borrow, `'a`.
 pub enum Determination<'a> {
-    /// The program has an answer set: read the answer sets, or open the world
-    /// view the query tier reads, through the [`Models`] (§5.2).
+    /// The program has an answer set: read the models, or open the world view
+    /// the query tier reads, through the [`Models`] (§5.2).
     Consistent(Models<'a>),
     /// The program has no answer set — under a scenario, none the scenario
     /// admits. The payload is the home of assumption blame (§5.4).
@@ -57,15 +59,15 @@ pub enum Conclusion {
     /// The search hit the request's budget (§6.3) — reported as what it is,
     /// never as a clean end.
     Budget,
-    /// The search was cut short before closing the space — cancelled through the
-    /// interrupt handle (§6.3), or, provisionally, stopped by an engine fault
-    /// (see [`Partial::cause`]).
+    /// The search was cancelled through the interrupt handle (§6.3) before it
+    /// closed the space. An engine fault is no conclusion: it stops a search as
+    /// [`Stopped::Faulted`].
     Interrupted,
 }
 
 impl std::fmt::Display for Conclusion {
     /// A human phrase — the reading a diagnostic shows, not the variant name
-    /// (docs/design/solve.md §5.4: a model has a human `Display`).
+    /// (docs/design/solve.md §1.3: every value has a human `Display`).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Conclusion::Exhausted => "the search closed the space",
@@ -76,52 +78,145 @@ impl std::fmt::Display for Conclusion {
     }
 }
 
-/// What a truncated search did establish — the `Inconclusive` payload
-/// (docs/design/solve.md §5.1). Non-exhaustive: a payload that may grow. It
-/// carries at least the [`Conclusion`] the search reached — the one thing an
-/// inconclusive outcome did settle — so whoever holds it can read why the
-/// search stopped, and the engine fault that stopped it where one did.
+/// The conclusions short of the space (docs/design/solve.md §5.1) — its
+/// target, its budget, or a cancellation. Closed, and without `Exhausted`: an
+/// exhausted search decided, so no inconclusive search concluded there. Each
+/// is the [`Conclusion`] of its name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Truncation {
+    /// The search met the target the request set, the space not closed.
+    Target,
+    /// The search hit the request's budget.
+    Budget,
+    /// The search was cancelled through the interrupt handle.
+    Interrupted,
+}
+
+impl Truncation {
+    /// The truncation `conclusion` names — `None` for `Exhausted`, which
+    /// closed the space. O(1).
+    pub(crate) fn of(conclusion: Conclusion) -> Option<Truncation> {
+        match conclusion {
+            Conclusion::Exhausted => None,
+            Conclusion::Target => Some(Truncation::Target),
+            Conclusion::Budget => Some(Truncation::Budget),
+            Conclusion::Interrupted => Some(Truncation::Interrupted),
+        }
+    }
+}
+
+impl From<Truncation> for Conclusion {
+    /// The conclusion of the same name. Total; O(1).
+    fn from(truncation: Truncation) -> Conclusion {
+        match truncation {
+            Truncation::Target => Conclusion::Target,
+            Truncation::Budget => Conclusion::Budget,
+            Truncation::Interrupted => Conclusion::Interrupted,
+        }
+    }
+}
+
+impl std::fmt::Display for Truncation {
+    /// The phrase of the conclusion of the same name.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Conclusion::from(*self).fmt(f)
+    }
+}
+
+/// The `Inconclusive` payload (docs/design/solve.md §5.1): how the search
+/// stopped short of deciding. Non-exhaustive, so it may come to carry more of
+/// what the search established; its stopping reason is one closed shape,
+/// read through [`stopped`](Partial::stopped).
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Partial {
-    pub(crate) conclusion: Conclusion,
-    pub(crate) cause: Option<Fault>,
+    reason: Reason,
+}
+
+/// The owned form of a [`Stopped`], held by a [`Partial`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Reason {
+    Concluded(Truncation),
+    Faulted(Fault),
+}
+
+/// How an inconclusive search stopped (docs/design/solve.md §5.1): at the
+/// truncation it concluded at, or at an engine fault, which is no conclusion.
+/// Closed: a stopping reason is exactly one of the two, and an exhausted
+/// conclusion — which decides — is not among them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Stopped<'a> {
+    /// The search concluded short of the space, at this truncation.
+    Concluded(Truncation),
+    /// An engine fault stopped the search before it concluded — the fault
+    /// retained, never laundered into a truncation.
+    Faulted(&'a Fault),
 }
 
 impl Partial {
-    /// A truncated (budget / target / interrupt) search with no fault.
-    pub(crate) fn truncated(conclusion: Conclusion) -> Partial {
+    /// A search that concluded short of the space, with no fault.
+    pub(crate) fn truncated(truncation: Truncation) -> Partial {
         Partial {
-            conclusion,
-            cause: None,
+            reason: Reason::Concluded(truncation),
         }
     }
 
-    /// A search stopped by an engine fault before it decided — the fault is
-    /// retained (via [`Partial::cause`]), never laundered into a plain
-    /// truncation. The reported [`Conclusion`] is provisionally `Interrupted` —
-    /// the closest of the closed set to "stopped without deciding"; no
-    /// `Conclusion` yet names an engine fault, a refinement left reserved.
+    /// A search an engine fault stopped before it decided.
     pub(crate) fn faulted(cause: Fault) -> Partial {
         Partial {
-            conclusion: Conclusion::Interrupted,
-            cause: Some(cause),
+            reason: Reason::Faulted(cause),
         }
     }
 
-    /// Why the search stopped. Total; O(1).
-    pub fn conclusion(&self) -> Conclusion {
-        self.conclusion
-    }
-
-    /// The engine fault that stopped the search, where one did — `None` for a
-    /// plain budget / target / interrupt truncation. Total; O(1).
-    pub fn cause(&self) -> Option<&Fault> {
-        self.cause.as_ref()
+    /// How the search stopped. Total; O(1).
+    pub fn stopped(&self) -> Stopped<'_> {
+        match &self.reason {
+            Reason::Concluded(truncation) => Stopped::Concluded(*truncation),
+            Reason::Faulted(fault) => Stopped::Faulted(fault),
+        }
     }
 }
 
-// ---- Answer sets, optima, consequences (§5.2) ----
+// ---- Models, optima, consequences (§5.2) ----
+
+/// One model of the program (docs/design/solve.md §5.1) — the unit every
+/// stream yields and every complete collection holds: its answer set, and the
+/// theory assignment a backend evaluating theory atoms supplies with it (§5.4)
+/// — empty for a backend that evaluates none. The readings read the answer
+/// set; the assignment rides beside it, never laundered into atoms. Cost: the
+/// answer set by value and, for a backend evaluating no theory, an empty
+/// assignment — nothing per model beyond the answer set. The
+/// assignment-bearing construction door lands with the theory assignments' own
+/// constructors, when a theory-evaluating backend is built (§11.1).
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Model {
+    atoms: AnswerSet,
+    theory: TheoryAssignments,
+}
+
+impl Model {
+    /// The model whose answer set is `atoms`, with no theory assignment — the
+    /// backend's construction door (docs/design/solve.md §5.1). O(1).
+    pub fn of(atoms: AnswerSet) -> Model {
+        Model {
+            atoms,
+            theory: TheoryAssignments::default(),
+        }
+    }
+
+    /// The model's answer set — what every reading reads. Total; O(1).
+    pub fn atoms(&self) -> &AnswerSet {
+        &self.atoms
+    }
+
+    /// The theory assignment that satisfied the model's theory atoms — empty
+    /// unless the backend evaluates a theory (docs/design/solve.md §5.4).
+    /// Total; O(1).
+    pub fn assignment(&self) -> &TheoryAssignments {
+        &self.theory
+    }
+}
 
 /// The streaming/terminal-state protocol a backend's `solve` drives (docs/design/
 /// solve.md §5.2): the enumeration a backend wraps into the [`Solved`] it returns,
@@ -140,23 +235,26 @@ impl Partial {
 /// The obligations every implementor owes, which the live handle relies on when it
 /// re-polls a spent run (after an inspecting resolve, a second stream, a
 /// completeness drain):
-/// - **Fused**: once `next_answer_set` has returned `None`, it returns `None`
+/// - **Fused**: once `next_model` has returned `None`, it returns `None`
 ///   forever.
-/// - **Terminal conclusion**: once `next_answer_set` has returned `None`,
-///   `conclusion` returns `Some`; it is `None` only while the search is open.
-/// - **After a fault**: a completeness drain ([`Solved::all_answer_sets`],
+/// - **Terminal conclusion**: once `next_model` has returned `None` with no
+///   fault before it, `conclusion` returns `Some`; it is `None` while the
+///   search is open.
+/// - **After a fault**: a completeness drain ([`Solved::all_models`],
 ///   [`Models::all_members`]) stops at the first `Some(Err(_))`, keeping it as the
-///   cause, while a lazy stream ([`Solved::answer_sets`], [`Models::members`])
-///   relays exactly what the run yields — so a conforming run yields `None` after a
+///   cause, while a lazy stream ([`Solved::models`], [`Models::members`]) relays
+///   exactly what the run yields — so a conforming run yields `None` after a
 ///   fault rather than enumerate past it, since a run that never ends is a stream
-///   that never ends.
+///   that never ends; and its `conclusion` stays `None`, since a faulted search
+///   reached no conclusion — the core records the fault as the cause.
 pub trait Run {
-    /// The next answer set, or `None` at the end of the search (fused — see the
+    /// The next model, or `None` at the end of the search (fused — see the
     /// trait obligations). Each item a `Result`, so a mid-stream engine fault
     /// surfaces at the item, not as a clean end.
-    fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>>;
-    /// How the search ended — `None` while it is still open, `Some` once
-    /// `next_answer_set` has returned `None`.
+    fn next_model(&mut self) -> Option<Result<Model, Fault>>;
+    /// How the search concluded — `None` while it is still open, `Some` once
+    /// `next_model` has returned `None` with no fault before it, and `None`
+    /// after a fault, which reached no conclusion.
     fn conclusion(&self) -> Option<Conclusion>;
 }
 
@@ -168,10 +266,8 @@ pub trait Run {
 pub(crate) enum DrainState {
     /// Untouched: the search may still be drained to a complete collection.
     Fresh,
-    /// The stream has been touched; completeness is forfeit.
-    MidDrain,
-    /// Drained to the end.
-    Drained,
+    /// The stream has been read — partly, or to its end; completeness is forfeit.
+    Touched,
 }
 
 /// The live run behind a [`Solved`] or [`Models`] (docs/design/solve.md §5.2):
@@ -184,9 +280,9 @@ pub(crate) enum DrainState {
 /// opened it, so the borrow checker is the lock against a second question while
 /// it lives (§6.1) — or `'static` when the run owns an ephemeral engine (§6.4).
 pub(crate) struct LiveRun<'a> {
-    current: Option<Box<dyn Run + 'a>>,
+    current: Box<dyn Run + 'a>,
     scenario: Scenario,
-    lookahead: Option<Result<AnswerSet, Fault>>,
+    lookahead: Option<Result<Model, Fault>>,
     drain: DrainState,
     // Whether any model has ever been pulled from the run. The trichotomy is a
     // property of the program, not of how much has been consumed, so a search
@@ -203,7 +299,7 @@ pub(crate) struct LiveRun<'a> {
 enum Class {
     Consistent,
     Inconsistent,
-    Inconclusive(Conclusion),
+    Inconclusive(Truncation),
     /// A resolve-time engine fault before any model — the fault retained.
     Faulted(Fault),
 }
@@ -211,8 +307,8 @@ enum Class {
 impl LiveRun<'_> {
     /// Pull the next item from the run, remembering a witnessed model. The single
     /// point every member flows through, so `witnessed` is always current.
-    fn pull(&mut self) -> Option<Result<AnswerSet, Fault>> {
-        let item = self.current.as_mut()?.next_answer_set();
+    fn pull(&mut self) -> Option<Result<Model, Fault>> {
+        let item = self.current.next_model();
         match &item {
             Some(Ok(_)) => self.witnessed = true,
             Some(Err(fault)) => {
@@ -223,28 +319,32 @@ impl LiveRun<'_> {
         item
     }
 
-    /// The next answer set, yielding the one-model `lookahead` first so no member
+    /// The next model, yielding the one-model `lookahead` first so no member
     /// peeked to resolve the trichotomy is lost.
-    fn next(&mut self) -> Option<Result<AnswerSet, Fault>> {
+    fn next(&mut self) -> Option<Result<Model, Fault>> {
         if let Some(peeked) = self.lookahead.take() {
             return Some(peeked);
         }
         self.pull()
     }
 
-    /// The streaming pull `answer_sets`/`members` yield through: completeness is
+    /// The streaming pull `models`/`members` yield through: completeness is
     /// forfeit on the FIRST pull (not at iterator creation), then the member is
     /// yielded.
-    fn stream_next(&mut self) -> Option<Result<AnswerSet, Fault>> {
+    fn stream_next(&mut self) -> Option<Result<Model, Fault>> {
         if self.drain == DrainState::Fresh {
-            self.drain = DrainState::MidDrain;
+            self.drain = DrainState::Touched;
         }
         self.next()
     }
 
-    /// How the search ended — `None` until it reaches its end.
+    /// How the search concluded — `None` until it ends, and after a fault,
+    /// which reached no conclusion whatever the run reports.
     fn conclusion(&self) -> Option<Conclusion> {
-        self.current.as_ref().and_then(|run| run.conclusion())
+        if self.faulted.is_some() {
+            return None;
+        }
+        self.current.conclusion()
     }
 
     /// Read off the trichotomy (docs/design/solve.md §5.1). Consistent iff a model
@@ -253,7 +353,7 @@ impl LiveRun<'_> {
     /// Consistent. With no witness, peek one member: a model makes it Consistent,
     /// a fault makes it Faulted (retained, never a false "yes"), a clean end reads
     /// the conclusion — Exhausted with no model is Inconsistent, a truncation is
-    /// Inconclusive.
+    /// Inconclusive, and an end with no conclusion is the run's own fault.
     fn classify(&mut self) -> Class {
         // A witnessed model or a remembered fault decides the reading whatever
         // the handle has since consumed, so repeated inspection is stable. A
@@ -276,44 +376,48 @@ impl LiveRun<'_> {
         }
         // No model and no fault: the search reached a clean end.
         match self.conclusion() {
-            Some(Conclusion::Exhausted) => Class::Inconsistent,
-            Some(truncating) => Class::Inconclusive(truncating),
-            // A conforming run reports its conclusion once ended (the `Run`
-            // fused/terminal obligation); this is the defensive fallback for a
-            // run that violates it — never "yes", never "no".
-            None => Class::Inconclusive(Conclusion::Interrupted),
+            Some(conclusion) => {
+                Truncation::of(conclusion).map_or(Class::Inconsistent, Class::Inconclusive)
+            }
+            // A conforming run reports its conclusion once it ends cleanly (the
+            // `Run` terminal obligation); one that does not broke the contract,
+            // and says so — never "yes", never "no".
+            None => Class::Faulted(Fault::adapter_bug(
+                "the search ended without concluding, against the run protocol",
+            )),
         }
     }
 
-    /// The exhaustion gate, shared by `Solved::all_answer_sets` and
+    /// The exhaustion gate, shared by `Solved::all_models` and
     /// `Models::all_members` (docs/design/solve.md §5.3): a complete collection
     /// ONLY from an untouched handle whose search closed the space; refuses
     /// otherwise, keeping a mid-stream fault as the cause.
-    fn drain_complete(&mut self) -> Result<Vec<AnswerSet>, NotExhausted> {
-        if self.drain != DrainState::Fresh {
-            return Err(NotExhausted::already_taken(self.conclusion()));
-        }
-        // A search that has already faulted cannot yield a complete collection —
-        // refuse with the remembered fault (cause preserved on every attempt),
+    fn drain_complete(&mut self) -> Result<Vec<Model>, NotExhausted> {
+        // A search that has faulted cannot yield a complete collection — refuse
+        // with the remembered fault, the cause preserved on every attempt and named
+        // before touched-ness, since the fault is why the collection is gone; and
         // without draining, so a handle that pulled nothing is not marked touched.
         if let Some(fault) = self.faulted.clone() {
             return Err(NotExhausted::faulted(self.conclusion(), fault));
         }
+        if self.drain != DrainState::Fresh {
+            return Err(NotExhausted::already_taken(self.conclusion()));
+        }
         let mut all = Vec::new();
         loop {
             match self.next() {
-                Some(Ok(set)) => all.push(set),
+                Some(Ok(model)) => all.push(model),
                 Some(Err(fault)) => {
                     // Models were pulled and dropped: the handle is no longer
                     // untouched, so a re-drain refuses rather than returning a
                     // collection missing them.
-                    self.drain = DrainState::MidDrain;
+                    self.drain = DrainState::Touched;
                     return Err(NotExhausted::faulted(self.conclusion(), fault));
                 }
                 None => break,
             }
         }
-        self.drain = DrainState::Drained;
+        self.drain = DrainState::Touched;
         if self.conclusion() == Some(Conclusion::Exhausted) {
             Ok(all)
         } else {
@@ -332,8 +436,8 @@ impl<'a> Determination<'a> {
             // Blame's derivation over `solve_assuming` (§5.4) is not yet
             // realised, so every resolution, scoped or not, reports none.
             Class::Inconsistent => Determination::Inconsistent(Unsat { blame: None }),
-            Class::Inconclusive(conclusion) => {
-                Determination::Inconclusive(Partial::truncated(conclusion))
+            Class::Inconclusive(truncation) => {
+                Determination::Inconclusive(Partial::truncated(truncation))
             }
             Class::Faulted(fault) => Determination::Inconclusive(Partial::faulted(fault)),
         }
@@ -346,8 +450,8 @@ impl<'a> Determination<'a> {
             Class::Consistent => Determination::Consistent(Models::borrowed(live)),
             // No blame yet, as in the consuming resolver.
             Class::Inconsistent => Determination::Inconsistent(Unsat { blame: None }),
-            Class::Inconclusive(conclusion) => {
-                Determination::Inconclusive(Partial::truncated(conclusion))
+            Class::Inconclusive(truncation) => {
+                Determination::Inconclusive(Partial::truncated(truncation))
             }
             Class::Faulted(fault) => Determination::Inconclusive(Partial::faulted(fault)),
         }
@@ -363,7 +467,7 @@ impl<'a> Determination<'a> {
 pub struct NotExhausted {
     pub(crate) conclusion: Option<Conclusion>,
     pub(crate) cause: Option<Fault>,
-    /// True when the handle's answer sets were already taken (its stream was
+    /// True when the handle's models were already taken (its stream was
     /// touched), as distinct from a search that ran but did not close the space.
     pub(crate) already_taken: bool,
 }
@@ -416,7 +520,7 @@ impl From<NotExhausted> for Fault {
         }
         if already_taken {
             return Fault::request(
-                "the answer sets were already taken from this handle, so a complete world view is unavailable",
+                "the models were already taken from this handle, so a complete world view is unavailable",
             );
         }
         match conclusion {
@@ -437,12 +541,12 @@ impl From<Partial> for Fault {
     /// fault naming the conclusion it reached — the reason the search stopped stays
     /// visible, symmetric with a witnessed truncation (docs/design/solve.md §5.1).
     fn from(partial: Partial) -> Fault {
-        let Partial { conclusion, cause } = partial;
-        cause.unwrap_or_else(|| {
-            Fault::request(format!(
-                "the search did not decide the program: {conclusion}"
-            ))
-        })
+        match partial.reason {
+            Reason::Faulted(fault) => fault,
+            Reason::Concluded(truncation) => Fault::request(format!(
+                "the search did not decide the program: {truncation}"
+            )),
+        }
     }
 }
 
@@ -450,7 +554,7 @@ impl std::fmt::Display for NotExhausted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.already_taken {
             return f.write_str(
-                "the answer sets were already taken from this handle; a complete collection is unavailable",
+                "the models were already taken from this handle; a complete collection is unavailable",
             );
         }
         match self.conclusion {
@@ -470,7 +574,7 @@ impl std::error::Error for NotExhausted {
     }
 }
 
-/// The borrowed run handle `solve` returns: stream the answer sets, inspect or
+/// The borrowed run handle `solve` returns: stream the models, inspect or
 /// resolve the trichotomy, read the conclusion. Read by `&mut` because draining
 /// the stream is stateful — the terminal `conclusion` is readable only after the
 /// drain reaches the end (docs/design/solve.md §5.2).
@@ -479,21 +583,24 @@ pub struct Solved<'a> {
 }
 
 impl<'a> Solved<'a> {
-    /// The lazy answer-set stream; each item a `Result`, so a mid-stream engine
+    /// The lazy model stream; each item a `Result`, so a mid-stream engine
     /// fault surfaces at the item. Touching it forfeits completeness. Cost: O(1)
     /// resident.
-    pub fn answer_sets(&mut self) -> impl Iterator<Item = Result<AnswerSet, Fault>> + '_ {
+    pub fn models(&mut self) -> impl Iterator<Item = Result<Model, Fault>> + '_ {
         std::iter::from_fn(|| self.live.stream_next())
     }
 
     /// A COMPLETE collection — available ONLY from an untouched handle whose search
-    /// closed the space; refuses otherwise (the exhaustion gate, §5.3). This is
-    /// what makes a truncated search structurally unable to pass as complete.
-    pub fn all_answer_sets(&mut self) -> Result<Vec<AnswerSet>, NotExhausted> {
+    /// closed the space; refuses otherwise (the exhaustion gate, §5.3), a faulted
+    /// search's refusal carrying the fault as its cause. This is what makes a
+    /// truncated search structurally unable to pass as complete.
+    pub fn all_models(&mut self) -> Result<Vec<Model>, NotExhausted> {
         self.live.drain_complete()
     }
 
-    /// How the search ended — readable once it resolves.
+    /// How the search concluded — `Some` once it ended without a fault; `None`
+    /// while it is open, and after a fault, which reached no conclusion (the
+    /// determination's [`Stopped::Faulted`] carries it).
     pub fn conclusion(&self) -> Option<Conclusion> {
         self.live.conclusion()
     }
@@ -524,7 +631,7 @@ impl<'a> Solved<'a> {
     pub fn running(run: Box<dyn Run + 'a>, scenario: Scenario) -> Solved<'a> {
         Solved {
             live: LiveRun {
-                current: Some(run),
+                current: run,
                 scenario,
                 lookahead: None,
                 drain: DrainState::Fresh,
@@ -589,7 +696,8 @@ impl<'a> Optimized<'a> {
         None::<std::iter::Empty<_>>
     }
 
-    /// How the search ended — readable once it resolves.
+    /// How the search concluded — `Some` once it ended without a fault; `None`
+    /// while it is open, and after a fault, which reached no conclusion.
     pub fn conclusion(&self) -> Option<Conclusion> {
         self.live.conclusion()
     }
@@ -598,9 +706,13 @@ impl<'a> Optimized<'a> {
 /// Cautious (⋂) or brave (⋃) consequences (docs/design/solve.md §5.2): a set
 /// of ground symbols carrying the [`Mode`] that produced it, so a value that
 /// has travelled still says which question it answers. Not an answer set —
-/// its own type, for that reason. Under an objective the set ranges over the
-/// optimal answer sets, and the optimal-vs-all marker joins these fields with
-/// optimization; non-exhaustive leaves it the room.
+/// its own type, for that reason. Built by the [`fold`](Consequences::fold) or
+/// by the core's gate over a [`NativeAnswer`]: a backend reports, and never
+/// builds one. The set ranges over the model set of the
+/// question that produced it — all stable models for a solve's, whose question
+/// ignores any objective; the optimal set for an optimization's — and the
+/// optimal-vs-all marker joins these fields with optimization; non-exhaustive
+/// leaves it the room.
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Consequences {
@@ -626,32 +738,33 @@ impl Consequences {
         self.symbols.contains(symbol)
     }
 
-    /// The cautious (⋂) or brave (⋃) consequences of a collection of answer sets
-    /// — the derived reading a world view folds when the backend has no native
-    /// door (docs/design/solve.md §4.2; query.md §2.4). This is the construction
-    /// door the query tier's `Snapshot`/`WorldView` build a `Consequences`
-    /// through, over an exhausted, non-empty collection. Cautious is the
+    /// The consequences as the set they are — borrowed, so a reading that needs
+    /// the set itself, a range scan say, reads it without a copy. Total; O(1).
+    pub fn as_set(&self) -> &BTreeSet<Symbol> {
+        &self.symbols
+    }
+
+    /// The cautious (⋂) or brave (⋃) consequences of the given answer sets —
+    /// the fold, exposed as a primitive (docs/design/solve.md §5.2). `None` over
+    /// none, since no world view is empty (query.md §2.3) and a consequence set
+    /// over no models certifies nothing. Nor does it certify completeness: the
+    /// gated readings are the agent's `cautious`/`brave` and a `Snapshot`'s, each
+    /// folding a world view whose search closed the space. Cautious is the
     /// intersection (a symbol in EVERY answer set), brave the union (a symbol in
-    /// SOME); over no models both are empty. Cost: O(members × set size).
-    pub fn fold<'m, I>(mode: Mode, members: I) -> Consequences
+    /// SOME). Cost: O(members × set size).
+    pub fn fold<'m, I>(mode: Mode, members: I) -> Option<Consequences>
     where
         I: IntoIterator<Item = &'m AnswerSet>,
     {
         let mut members = members.into_iter();
-        let symbols = match members.next() {
-            None => BTreeSet::new(),
-            Some(first) => {
-                let mut acc = first.clone();
-                for member in members {
-                    match mode {
-                        Mode::Cautious => acc.retain(|symbol| member.contains(symbol)),
-                        Mode::Brave => acc.extend(member.iter().cloned()),
-                    }
-                }
-                acc
+        let mut symbols = members.next()?.clone();
+        for member in members {
+            match mode {
+                Mode::Cautious => symbols.retain(|symbol| member.contains(symbol)),
+                Mode::Brave => symbols.extend(member.iter().cloned()),
             }
-        };
-        Consequences { symbols, mode }
+        }
+        Some(Consequences { symbols, mode })
     }
 }
 
@@ -662,23 +775,25 @@ impl Consequences {
 /// inspecting resolver hand back a borrowed `Models` without a second lifetime on
 /// the public type.
 pub(crate) trait RunAccess {
-    fn stream_next(&mut self) -> Option<Result<AnswerSet, Fault>>;
-    fn conclusion(&self) -> Option<Conclusion>;
+    fn stream_next(&mut self) -> Option<Result<Model, Fault>>;
+    fn is_exhausted(&self) -> bool;
     fn scenario(&self) -> &Scenario;
-    fn drain_complete(&mut self) -> Result<Vec<AnswerSet>, NotExhausted>;
+    fn drain_complete(&mut self) -> Result<Vec<Model>, NotExhausted>;
 }
 
 impl RunAccess for LiveRun<'_> {
-    fn stream_next(&mut self) -> Option<Result<AnswerSet, Fault>> {
+    fn stream_next(&mut self) -> Option<Result<Model, Fault>> {
         LiveRun::stream_next(self)
     }
-    fn conclusion(&self) -> Option<Conclusion> {
-        LiveRun::conclusion(self)
+    fn is_exhausted(&self) -> bool {
+        // After a fault the conclusion reads `None` whatever the run reports, so
+        // the report agrees with the gate on the same handle.
+        LiveRun::conclusion(self) == Some(Conclusion::Exhausted)
     }
     fn scenario(&self) -> &Scenario {
         &self.scenario
     }
-    fn drain_complete(&mut self) -> Result<Vec<AnswerSet>, NotExhausted> {
+    fn drain_complete(&mut self) -> Result<Vec<Model>, NotExhausted> {
         LiveRun::drain_complete(self)
     }
 }
@@ -736,7 +851,7 @@ impl<'a> Models<'a> {
     /// Stream the members; each item a `Result`, so a mid-stream engine fault
     /// surfaces at the item. Touching the stream forfeits completeness (on the
     /// first pull).
-    pub fn members(&mut self) -> impl Iterator<Item = Result<AnswerSet, Fault>> + '_ {
+    pub fn members(&mut self) -> impl Iterator<Item = Result<Model, Fault>> + '_ {
         std::iter::from_fn(|| self.access().stream_next())
     }
 
@@ -744,20 +859,43 @@ impl<'a> Models<'a> {
     /// handle whose search closed the space; refuses otherwise (the exhaustion
     /// gate, §5.3), so the query tier's `materialize` cannot launder a partial
     /// set as complete (query.md §3.2).
-    pub fn all_members(&mut self) -> Result<Vec<AnswerSet>, NotExhausted> {
+    pub fn all_members(&mut self) -> Result<Vec<Model>, NotExhausted> {
         self.access().drain_complete()
     }
 
     /// Whether the search closed the space — the `WorldView::is_exhausted` analog
-    /// (docs/design/solve.md §5.3).
+    /// (docs/design/solve.md §5.3). A search that faulted did not, whatever its run
+    /// reports, so the report agrees with the exhaustion gate on the same handle.
     pub fn is_exhausted(&self) -> bool {
-        self.access_ref().conclusion() == Some(Conclusion::Exhausted)
+        self.access_ref().is_exhausted()
     }
 
     /// The scenario the models range over (query.md §2.3).
     pub fn scenario(&self) -> &Scenario {
         self.access_ref().scenario()
     }
+}
+
+/// What the engine's own consequence search established (docs/design/solve.md
+/// §5.2) — the raw material the core builds [`Consequences`] from: the backend
+/// reports, and the core decides and words the refusal. A `Closed` set becomes
+/// the consequences in the mode asked; `NoModel` refuses, `⋂`/`⋃` over the
+/// empty world view being undefined, not `∅`; `Stopped` refuses, a native
+/// cautious search stopped early having converged on a *super*set of `⋂`, not
+/// the consequences. Unlike a [`Run`]'s models, which the core pulls, the
+/// report is the backend's word: its honesty is the backend's obligation, which
+/// the conformance suite and the native-versus-derived differential hold.
+/// Closed: a native search closed the space having seen a model, closed it
+/// having seen none, or stopped short of it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum NativeAnswer {
+    /// The engine's `⋂` or `⋃` over the space it closed, a model seen.
+    Closed(BTreeSet<Symbol>),
+    /// The space closed with no model: the scenario admits none.
+    NoModel,
+    /// The search stopped short of the space, at this truncation; the engine's
+    /// partial set, not the consequences, is not carried.
+    Stopped(Truncation),
 }
 
 // ---- Assumption blame (§5.4) ----
@@ -850,13 +988,32 @@ mod tests {
         (Conclusion::Interrupted, "Interrupted"),
     ];
 
-    /// The conclusions of a search that did not close the space — the ones a
-    /// partial can carry.
-    const TRUNCATING: [Conclusion; 3] = [
-        Conclusion::Target,
-        Conclusion::Budget,
-        Conclusion::Interrupted,
+    /// The truncations, each beside the conclusion of its name.
+    const TRUNCATIONS: [(Truncation, Conclusion); 3] = [
+        (Truncation::Target, Conclusion::Target),
+        (Truncation::Budget, Conclusion::Budget),
+        (Truncation::Interrupted, Conclusion::Interrupted),
     ];
+
+    #[test]
+    fn a_truncation_is_the_conclusion_of_its_name() {
+        for (truncation, conclusion) in TRUNCATIONS {
+            assert_eq!(Conclusion::from(truncation), conclusion);
+            assert_eq!(Truncation::of(conclusion), Some(truncation));
+        }
+    }
+
+    #[test]
+    fn an_exhausted_conclusion_is_no_truncation() {
+        assert_eq!(Truncation::of(Conclusion::Exhausted), None);
+    }
+
+    #[test]
+    fn a_truncation_renders_as_the_conclusion_of_its_name() {
+        for (truncation, conclusion) in TRUNCATIONS {
+            assert_eq!(truncation.to_string(), conclusion.to_string());
+        }
+    }
 
     #[test]
     fn a_completeness_refusal_becomes_an_honest_fault() {
@@ -887,7 +1044,7 @@ mod tests {
         // reason is laundered away (docs/design/solve.md §5.1).
         let cause = Fault::engine("the engine died mid-search");
         assert_eq!(Fault::from(Partial::faulted(cause.clone())), cause);
-        let truncated = Fault::from(Partial::truncated(Conclusion::Budget));
+        let truncated = Fault::from(Partial::truncated(Truncation::Budget));
         assert_eq!(truncated.locus(), crate::contract::Locus::Request);
         assert!(truncated.to_string().contains("budget"));
     }
@@ -909,33 +1066,29 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_reports_the_conclusion_it_was_built_with() {
-        for conclusion in TRUNCATING {
-            let partial = Partial::truncated(conclusion);
-            assert_eq!(partial.conclusion(), conclusion);
+    fn a_truncated_partial_stopped_at_the_truncation_it_was_built_with() {
+        for (truncation, _) in TRUNCATIONS {
+            let partial = Partial::truncated(truncation);
+            assert_eq!(partial.stopped(), Stopped::Concluded(truncation));
         }
     }
 
     #[test]
-    fn a_truncated_partial_carries_no_fault() {
-        assert!(Partial::truncated(Conclusion::Budget).cause().is_none());
-    }
-
-    #[test]
-    fn a_faulted_partial_retains_its_fault() {
-        let partial = Partial::faulted(Fault::engine("engine died"));
-        assert!(partial.cause().is_some());
+    fn a_faulted_partial_stopped_at_its_fault() {
+        let cause = Fault::engine("engine died");
+        let partial = Partial::faulted(cause.clone());
+        assert_eq!(partial.stopped(), Stopped::Faulted(&cause));
     }
 
     #[test]
     fn a_cloned_partial_equals_its_original() {
-        let partial = Partial::truncated(Conclusion::Budget);
+        let partial = Partial::truncated(Truncation::Budget);
         assert_eq!(partial.clone(), partial);
     }
 
     #[test]
     fn a_partial_s_debug_view_names_its_conclusion() {
-        let partial = Partial::truncated(Conclusion::Interrupted);
+        let partial = Partial::truncated(Truncation::Interrupted);
         let rendered = format!("{partial:?}");
         assert!(rendered.contains("Interrupted"), "{rendered}");
     }
@@ -954,9 +1107,9 @@ mod tests {
     /// How many members of an unbounded search a laziness proof takes.
     const STREAM_PREFIX: usize = 8;
 
-    /// A stub engine-free run: a fixed answer-set sequence, and a terminal
-    /// conclusion known only after the drain reaches its end — a lazy engine does
-    /// not know its conclusion until the search reaches its end.
+    /// A stub engine-free run: a fixed model sequence, and a terminal conclusion
+    /// known only after the drain reaches its end — a lazy engine does not know
+    /// its conclusion until the search reaches its end.
     struct StubRun {
         sets: std::vec::IntoIter<AnswerSet>,
         terminal: Conclusion,
@@ -974,9 +1127,9 @@ mod tests {
     }
 
     impl Run for StubRun {
-        fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+        fn next_model(&mut self) -> Option<Result<Model, Fault>> {
             if let Some(set) = self.sets.next() {
-                Some(Ok(set))
+                Some(Ok(Model::of(set)))
             } else {
                 self.drained = true;
                 None
@@ -990,7 +1143,7 @@ mod tests {
     /// A run that yields an engine fault at its first pull.
     struct FaultyRun;
     impl Run for FaultyRun {
-        fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+        fn next_model(&mut self) -> Option<Result<Model, Fault>> {
             Some(Err(Fault::engine("stub engine fault")))
         }
         fn conclusion(&self) -> Option<Conclusion> {
@@ -1001,7 +1154,7 @@ mod tests {
     /// A malformed run that ends at once and never reports a conclusion.
     struct SilentRun;
     impl Run for SilentRun {
-        fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+        fn next_model(&mut self) -> Option<Result<Model, Fault>> {
             None
         }
         fn conclusion(&self) -> Option<Conclusion> {
@@ -1023,9 +1176,9 @@ mod tests {
         }
     }
     impl Run for MidFaultRun {
-        fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
-            if let Some(model) = self.models.next() {
-                Some(Ok(model))
+        fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+            if let Some(set) = self.models.next() {
+                Some(Ok(Model::of(set)))
             } else if self.faulted {
                 None
             } else {
@@ -1046,26 +1199,27 @@ mod tests {
         limit: usize,
     }
     impl Run for BoundedRun {
-        fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+        fn next_model(&mut self) -> Option<Result<Model, Fault>> {
             self.pulls += 1;
             assert!(
                 self.pulls <= self.limit,
                 "the stream over-pulled — not lazy"
             );
-            Some(Ok(singleton(0)))
+            Some(Ok(Model::of(singleton(0))))
         }
         fn conclusion(&self) -> Option<Conclusion> {
             None
         }
     }
 
-    /// A run that faults at its first pull, then ends with a clean conclusion —
-    /// a search whose only word was an engine fault.
+    /// A run that faults at its first pull, then ends reporting a clean
+    /// conclusion — a search whose only word was an engine fault, over a run that
+    /// breaks the after-a-fault obligation.
     struct FaultThenEndRun {
         step: usize,
     }
     impl Run for FaultThenEndRun {
-        fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+        fn next_model(&mut self) -> Option<Result<Model, Fault>> {
             self.step += 1;
             if self.step == 1 {
                 Some(Err(Fault::engine("first-pull fault")))
@@ -1085,12 +1239,12 @@ mod tests {
         step: usize,
     }
     impl Run for RecoveringRun {
-        fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+        fn next_model(&mut self) -> Option<Result<Model, Fault>> {
             self.step += 1;
             match self.step {
-                1 => Some(Ok(singleton(0))),
+                1 => Some(Ok(Model::of(singleton(0)))),
                 2 => Some(Err(Fault::engine("transient fault"))),
-                3 => Some(Ok(singleton(1))),
+                3 => Some(Ok(Model::of(singleton(1)))),
                 _ => None,
             }
         }
@@ -1112,10 +1266,21 @@ mod tests {
         answer_set(&[symbol])
     }
 
+    #[test]
+    fn a_model_reads_back_the_answer_set_it_was_built_over() {
+        assert_eq!(*Model::of(answer_set(&[1, 2])).atoms(), answer_set(&[1, 2]));
+    }
+
+    #[test]
+    fn a_model_built_over_an_answer_set_carries_no_assignment() {
+        let model = Model::of(answer_set(&[1]));
+        assert_eq!(*model.assignment(), TheoryAssignments::default());
+    }
+
     /// A live run over `run`, ranging over the empty scenario.
     fn live_with(run: Box<dyn Run>) -> LiveRun<'static> {
         LiveRun {
-            current: Some(run),
+            current: run,
             scenario: Scenario::default(),
             lookahead: None,
             drain: DrainState::Fresh,
@@ -1162,9 +1327,9 @@ mod tests {
 
     #[test]
     fn an_inconclusive_determination_is_not_decided() {
-        for conclusion in TRUNCATING {
-            let inconclusive = Determination::Inconclusive(Partial::truncated(conclusion));
-            assert_eq!(decided(&inconclusive), None, "{conclusion:?}");
+        for (truncation, _) in TRUNCATIONS {
+            let inconclusive = Determination::Inconclusive(Partial::truncated(truncation));
+            assert_eq!(decided(&inconclusive), None, "{truncation:?}");
         }
     }
 
@@ -1181,15 +1346,15 @@ mod tests {
     // ---- The exhaustion gate (§5.3) ----
 
     #[test]
-    fn all_answer_sets_refuses_a_budget_truncated_search() {
+    fn all_models_refuses_a_budget_truncated_search() {
         let mut solved = solved_over(vec![singleton(0)], Conclusion::Budget);
-        assert!(matches!(solved.all_answer_sets(), Err(NotExhausted { .. })));
+        assert!(matches!(solved.all_models(), Err(NotExhausted { .. })));
     }
 
     #[test]
-    fn all_answer_sets_yields_when_the_space_closed() {
+    fn all_models_yields_when_the_space_closed() {
         let mut solved = solved_over(vec![singleton(0), singleton(1)], Conclusion::Exhausted);
-        assert_eq!(solved.all_answer_sets().unwrap().len(), 2);
+        assert_eq!(solved.all_models().unwrap().len(), 2);
     }
 
     #[test]
@@ -1203,21 +1368,21 @@ mod tests {
             (Conclusion::Interrupted, false),
         ] {
             let mut solved = solved_over(vec![singleton(0)], terminal);
-            assert_eq!(solved.all_answer_sets().is_ok(), complete, "{terminal:?}");
+            assert_eq!(solved.all_models().is_ok(), complete, "{terminal:?}");
         }
     }
 
     #[test]
     fn a_partially_consumed_stream_cannot_be_read_as_complete() {
         let mut solved = solved_over(vec![singleton(0), singleton(1)], Conclusion::Exhausted);
-        let _first = solved.answer_sets().next();
-        assert!(matches!(solved.all_answer_sets(), Err(NotExhausted { .. })));
+        let _first = solved.models().next();
+        assert!(matches!(solved.all_models(), Err(NotExhausted { .. })));
     }
 
     #[test]
     fn a_fault_during_the_drain_becomes_the_refusals_cause() {
         let mut solved = solved_with(Box::new(MidFaultRun::new(vec![singleton(0)])));
-        let refusal = solved.all_answer_sets().unwrap_err();
+        let refusal = solved.all_models().unwrap_err();
         assert!(refusal.cause.is_some());
     }
 
@@ -1225,7 +1390,7 @@ mod tests {
     fn a_mid_stream_fault_surfaces_at_the_stream_item() {
         // A model, then the fault at the item — not a clean end.
         let mut solved = solved_with(Box::new(MidFaultRun::new(vec![singleton(0)])));
-        let ok_ness: Vec<bool> = solved.answer_sets().map(|item| item.is_ok()).collect();
+        let ok_ness: Vec<bool> = solved.models().map(|item| item.is_ok()).collect();
         assert_eq!(ok_ness, vec![true, false]);
     }
 
@@ -1238,7 +1403,7 @@ mod tests {
             limit: STREAM_PREFIX,
         }));
         let prefix: Vec<_> = solved
-            .answer_sets()
+            .models()
             .take(STREAM_PREFIX)
             .filter_map(Result::ok)
             .collect();
@@ -1250,14 +1415,14 @@ mod tests {
     #[test]
     fn a_refusal_names_the_conclusion_the_search_reached() {
         let mut solved = solved_over(vec![singleton(0)], Conclusion::Budget);
-        let refusal = solved.all_answer_sets().unwrap_err();
+        let refusal = solved.all_models().unwrap_err();
         assert!(format!("{refusal}").contains("budget"), "{refusal}");
     }
 
     #[test]
     fn a_refusal_without_a_known_conclusion_still_explains_itself() {
         let mut solved = solved_with(Box::new(SilentRun));
-        let refusal = solved.all_answer_sets().unwrap_err();
+        let refusal = solved.all_models().unwrap_err();
         assert!(refusal.conclusion.is_none());
         assert!(
             format!("{refusal}").contains("did not close the space"),
@@ -1281,7 +1446,7 @@ mod tests {
     fn a_refusal_from_a_fault_carries_the_fault_as_its_source() {
         use std::error::Error;
         let mut solved = solved_with(Box::new(FaultyRun));
-        let refusal = solved.all_answer_sets().unwrap_err();
+        let refusal = solved.all_models().unwrap_err();
         assert!(refusal.source().is_some());
     }
 
@@ -1307,7 +1472,7 @@ mod tests {
 
     #[test]
     fn a_cut_search_with_no_model_resolves_inconclusive() {
-        for conclusion in TRUNCATING {
+        for (_, conclusion) in TRUNCATIONS {
             let solved = solved_over(vec![], conclusion);
             assert!(
                 matches!(solved.into_determination(), Determination::Inconclusive(_)),
@@ -1317,12 +1482,17 @@ mod tests {
     }
 
     #[test]
-    fn a_run_that_ends_without_a_conclusion_resolves_inconclusive() {
+    fn a_run_that_ends_without_a_conclusion_stops_at_an_adapter_fault() {
+        // The run broke the terminal obligation; the core says so rather than
+        // read the silence as any conclusion.
         let solved = solved_with(Box::new(SilentRun));
-        assert!(matches!(
-            solved.into_determination(),
-            Determination::Inconclusive(_)
-        ));
+        let Determination::Inconclusive(partial) = solved.into_determination() else {
+            panic!("Inconclusive");
+        };
+        let Stopped::Faulted(fault) = partial.stopped() else {
+            panic!("a fault, not a conclusion");
+        };
+        assert_eq!(fault.locus(), crate::contract::Locus::Adapter);
     }
 
     #[test]
@@ -1337,12 +1507,37 @@ mod tests {
     }
 
     #[test]
-    fn a_first_pull_fault_retains_its_fault_on_the_partial() {
+    fn a_first_pull_fault_is_the_partial_s_stopping_reason() {
         let solved = solved_with(Box::new(FaultyRun));
         let Determination::Inconclusive(partial) = solved.into_determination() else {
             panic!("Inconclusive");
         };
-        assert!(partial.cause().is_some());
+        assert_eq!(
+            partial.stopped(),
+            Stopped::Faulted(&Fault::engine("stub engine fault"))
+        );
+    }
+
+    #[test]
+    fn a_faulted_search_reports_no_conclusion() {
+        // The run reports `Exhausted` once it ends, against the after-a-fault
+        // obligation; the handle reads no conclusion anyway, since a faulted
+        // search reached none.
+        let mut solved = solved_with(Box::new(FaultThenEndRun { step: 0 }));
+        let _drain: Vec<_> = solved.models().collect();
+        assert_eq!(solved.conclusion(), None);
+    }
+
+    #[test]
+    fn faulted_models_report_no_exhaustion() {
+        // A model, then a fault, then a run claiming `Exhausted`: the report
+        // agrees with the gate, which refuses.
+        let solved = solved_with(Box::new(RecoveringRun { step: 0 }));
+        let Determination::Consistent(mut models) = solved.into_determination() else {
+            panic!("Consistent");
+        };
+        let _drain: Vec<_> = models.members().collect();
+        assert!(!models.is_exhausted());
     }
 
     #[test]
@@ -1357,7 +1552,7 @@ mod tests {
     #[test]
     fn a_resolved_conclusion_is_readable() {
         let mut solved = solved_over(vec![singleton(0)], Conclusion::Exhausted);
-        let all = solved.all_answer_sets().unwrap();
+        let all = solved.all_models().unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(solved.conclusion(), Some(Conclusion::Exhausted));
     }
@@ -1464,7 +1659,7 @@ mod tests {
     #[test]
     fn a_drained_consistent_search_still_resolves_consistent() {
         let mut solved = solved_over(vec![singleton(0), singleton(1)], Conclusion::Exhausted);
-        assert_eq!(solved.all_answer_sets().unwrap().len(), 2);
+        assert_eq!(solved.all_models().unwrap().len(), 2);
         assert!(matches!(
             solved.determination(),
             Determination::Consistent(_)
@@ -1474,7 +1669,7 @@ mod tests {
     #[test]
     fn a_streamed_consistent_search_still_resolves_consistent() {
         let mut solved = solved_over(vec![singleton(0), singleton(1)], Conclusion::Exhausted);
-        let _all: Vec<_> = solved.answer_sets().collect();
+        let _all: Vec<_> = solved.models().collect();
         assert!(matches!(
             solved.determination(),
             Determination::Consistent(_)
@@ -1484,7 +1679,7 @@ mod tests {
     #[test]
     fn a_partially_consumed_consistent_search_still_resolves_consistent() {
         let mut solved = solved_over(vec![singleton(0), singleton(1)], Conclusion::Exhausted);
-        let _first = solved.answer_sets().next();
+        let _first = solved.models().next();
         let Determination::Consistent(mut models) = solved.into_determination() else {
             panic!("Consistent");
         };
@@ -1519,7 +1714,7 @@ mod tests {
             solved.determination(),
             Determination::Consistent(_)
         ));
-        assert_eq!(solved.all_answer_sets().unwrap().len(), 2);
+        assert_eq!(solved.all_models().unwrap().len(), 2);
     }
 
     #[test]
@@ -1529,21 +1724,21 @@ mod tests {
             solved.determination(),
             Determination::Inconsistent(_)
         ));
-        assert!(solved.all_answer_sets().unwrap().is_empty());
+        assert!(solved.all_models().unwrap().is_empty());
     }
 
     #[test]
     fn a_run_that_ends_without_a_conclusion_refuses_a_complete_collection() {
         let mut solved = solved_with(Box::new(SilentRun));
-        let refusal = solved.all_answer_sets().unwrap_err();
+        let refusal = solved.all_models().unwrap_err();
         assert!(refusal.conclusion.is_none());
     }
 
     #[test]
-    fn a_refusal_after_a_successful_drain_says_the_sets_were_taken() {
+    fn a_refusal_after_a_successful_drain_says_the_models_were_taken() {
         let mut solved = solved_over(vec![singleton(0)], Conclusion::Exhausted);
-        let _all = solved.all_answer_sets().unwrap();
-        let refusal = solved.all_answer_sets().unwrap_err();
+        let _all = solved.all_models().unwrap();
+        let refusal = solved.all_models().unwrap_err();
         assert!(format!("{refusal}").contains("already taken"), "{refusal}");
     }
 
@@ -1603,7 +1798,7 @@ mod tests {
             solved.determination(),
             Determination::Inconclusive(_)
         ));
-        assert!(solved.all_answer_sets().is_err());
+        assert!(solved.all_models().is_err());
     }
 
     #[test]
@@ -1612,16 +1807,16 @@ mod tests {
         // a re-drain must refuse, never return a collection missing the dropped
         // model (even over a run that recovers).
         let mut solved = solved_with(Box::new(RecoveringRun { step: 0 }));
-        assert!(solved.all_answer_sets().is_err());
-        assert!(solved.all_answer_sets().is_err());
+        assert!(solved.all_models().is_err());
+        assert!(solved.all_models().is_err());
     }
 
     #[test]
     fn a_faulted_handle_keeps_its_fault_as_the_cause_across_refusals() {
         let mut solved = solved_with(Box::new(FaultThenEndRun { step: 0 }));
         let _ = solved.determination();
-        assert!(solved.all_answer_sets().unwrap_err().cause.is_some());
-        assert!(solved.all_answer_sets().unwrap_err().cause.is_some());
+        assert!(solved.all_models().unwrap_err().cause.is_some());
+        assert!(solved.all_models().unwrap_err().cause.is_some());
     }
 
     // ---- Assumption blame (§5.4) ----
@@ -1786,6 +1981,7 @@ mod tests {
     /// The folded symbols as a set, for exact comparison against an expectation.
     fn folded(mode: Mode, members: &[AnswerSet]) -> AnswerSet {
         Consequences::fold(mode, members)
+            .expect("a fold over members")
             .symbols()
             .cloned()
             .collect()
@@ -1833,23 +2029,22 @@ mod tests {
     }
 
     #[test]
-    fn folding_no_models_yields_the_empty_set() {
+    fn folding_no_models_yields_no_consequences() {
+        // No world view is empty, and a set over no models certifies nothing —
+        // under ⋃ as under ⋂.
         let members: [AnswerSet; 0] = [];
-        assert_eq!(folded(Mode::Cautious, &members), answer_set(&[]));
-        assert_eq!(folded(Mode::Brave, &members), answer_set(&[]));
+        for mode in MODES {
+            assert_eq!(Consequences::fold(mode, &members), None, "{mode:?}");
+        }
     }
 
     #[test]
     fn a_folded_consequence_carries_its_mode() {
         let members = [answer_set(&[1])];
-        assert_eq!(
-            Consequences::fold(Mode::Cautious, &members).mode(),
-            Mode::Cautious
-        );
-        assert_eq!(
-            Consequences::fold(Mode::Brave, &members).mode(),
-            Mode::Brave
-        );
+        for mode in MODES {
+            let consequences = Consequences::fold(mode, &members).expect("one member");
+            assert_eq!(consequences.mode(), mode);
+        }
     }
 
     // ---- The optimization register (§5.2, §5.3) ----
@@ -1882,7 +2077,7 @@ mod tests {
 
     #[test]
     fn a_cut_optimized_search_with_no_model_resolves_inconclusive() {
-        for conclusion in TRUNCATING {
+        for (_, conclusion) in TRUNCATIONS {
             let optimized = optimized_over(vec![], conclusion);
             assert!(
                 matches!(

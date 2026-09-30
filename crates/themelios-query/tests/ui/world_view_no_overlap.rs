@@ -7,7 +7,7 @@ use themelios_program::program::Program;
 use themelios_solve::agent::{Agent, Scenario};
 use themelios_solve::bridge::{Door, GroundProgram};
 use themelios_solve::contract::{Backend, Capabilities, Fault, SolveRequest};
-use themelios_solve::outcome::{AnswerSet, Conclusion, Determination, Run, Solved};
+use themelios_solve::outcome::{AnswerSet, Conclusion, Determination, Model, Run, Solved};
 use themelios_query::WorldView;
 
 // A backend with one model over a closed space — a consistent world view.
@@ -19,9 +19,9 @@ struct Once {
 }
 
 impl Run for Once {
-    fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+    fn next_model(&mut self) -> Option<Result<Model, Fault>> {
         if let Some(set) = self.sets.next() {
-            Some(Ok(set))
+            Some(Ok(Model::of(set)))
         } else {
             self.ended = true;
             None

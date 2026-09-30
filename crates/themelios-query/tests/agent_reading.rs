@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::{answer_set, atom, with_agent, with_hypothetical_agent};
+use common::{answer_set, atom, atoms_of, with_agent, with_hypothetical_agent};
 use themelios_program::program::{Arguments, Atom};
 use themelios_program::symbol::{Name, Sign, Symbol, VarName};
 use themelios_program::term::Term;
@@ -62,7 +62,7 @@ fn snapshot_materialises_the_world_view() {
             let snapshot = agent
                 .snapshot()
                 .expect("a consistent program has a world view");
-            let members: Vec<_> = snapshot.members().cloned().collect();
+            let members = atoms_of(snapshot.members());
             assert_eq!(members, vec![answer_set(["a"]), answer_set(["a", "b"])]);
         },
     );
@@ -221,7 +221,7 @@ fn snapshot_assuming_materialises_the_scenario_s_models() {
         let snapshot = agent
             .snapshot_assuming(&assuming_a())
             .expect("a scoped world view");
-        let members: Vec<_> = snapshot.members().cloned().collect();
+        let members = atoms_of(snapshot.members());
         assert_eq!(members, [answer_set(["a", "b"]), answer_set(["a", "c"])]);
     });
 }

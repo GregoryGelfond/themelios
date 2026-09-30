@@ -10,7 +10,7 @@ use themelios_program::symbol::{Name, Sign, Symbol};
 use themelios_solve::agent::{Agent, Scenario};
 use themelios_solve::bridge::{Door, GroundProgram};
 use themelios_solve::contract::{Backend, Capabilities, Fault, SolveRequest};
-use themelios_solve::outcome::{AnswerSet, Conclusion, Determination, Run, Solved};
+use themelios_solve::outcome::{AnswerSet, Conclusion, Determination, Model, Run, Solved};
 
 /// The ground constant `name`, a member of an answer set.
 fn atom(name: &str) -> Symbol {
@@ -26,18 +26,19 @@ fn answer_set(name: &str) -> AnswerSet {
     [atom(name)].into_iter().collect()
 }
 
-/// A backend's own enumeration state: a scripted answer-set sequence, then a
-/// closed space — the smallest honest [`Run`], reporting `Exhausted` once its
-/// stream ends (the terminal-conclusion obligation).
+/// A backend's own enumeration state: a scripted model sequence, then a closed
+/// space — the smallest honest [`Run`], reporting `Exhausted` once its stream
+/// ends (the terminal-conclusion obligation). Each model is built through the
+/// backend's door, `Model::of`.
 struct Enumeration {
     sets: std::vec::IntoIter<AnswerSet>,
     ended: bool,
 }
 
 impl Run for Enumeration {
-    fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+    fn next_model(&mut self) -> Option<Result<Model, Fault>> {
         if let Some(set) = self.sets.next() {
-            Some(Ok(set))
+            Some(Ok(Model::of(set)))
         } else {
             self.ended = true;
             None
@@ -89,8 +90,8 @@ fn a_backend_streams_the_enumeration_it_built_the_solved_over() {
     );
     let mut solved = agent.solve().expect("the backend solves");
     let streamed: Vec<AnswerSet> = solved
-        .answer_sets()
-        .map(|item| item.expect("no engine fault"))
+        .models()
+        .map(|item| item.expect("no engine fault").atoms().clone())
         .collect();
     assert_eq!(
         streamed,
@@ -109,10 +110,8 @@ fn a_closed_search_yields_its_complete_collection_through_the_door() {
     );
     let mut solved = agent.solve().expect("the backend solves");
     assert_eq!(
-        solved
-            .all_answer_sets()
-            .expect("an untouched, closed search"),
-        vec![answer_set("a")],
+        solved.all_models().expect("an untouched, closed search"),
+        vec![Model::of(answer_set("a"))],
         "a fresh handle over a closed search is complete",
     );
 }

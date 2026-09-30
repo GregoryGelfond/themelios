@@ -14,7 +14,7 @@ use themelios_query::WorldView;
 use themelios_solve::agent::{Agent, Scenario};
 use themelios_solve::bridge::{Door, GroundProgram};
 use themelios_solve::contract::{Backend, Capabilities, Fault, SolveRequest};
-use themelios_solve::outcome::{AnswerSet, Conclusion, Determination, Run, Solved};
+use themelios_solve::outcome::{AnswerSet, Conclusion, Determination, Model, Run, Solved};
 
 /// The ground constant `name`.
 pub fn atom(name: &str) -> Symbol {
@@ -30,7 +30,15 @@ pub fn answer_set<'a>(names: impl IntoIterator<Item = &'a str>) -> AnswerSet {
     names.into_iter().map(atom).collect()
 }
 
-/// A backend's own enumeration: a scripted answer-set sequence, then a search that
+/// The answer sets of `models`, in order — what every reading reads of them.
+pub fn atoms_of<'m>(models: impl IntoIterator<Item = &'m Model>) -> Vec<AnswerSet> {
+    models
+        .into_iter()
+        .map(|model| model.atoms().clone())
+        .collect()
+}
+
+/// A backend's own enumeration: a scripted model sequence, then a search that
 /// ended with `terminal` (the terminal-conclusion obligation, reported once its
 /// stream runs out).
 struct Enumeration {
@@ -40,9 +48,9 @@ struct Enumeration {
 }
 
 impl Run for Enumeration {
-    fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+    fn next_model(&mut self) -> Option<Result<Model, Fault>> {
         if let Some(set) = self.sets.next() {
-            Some(Ok(set))
+            Some(Ok(Model::of(set)))
         } else {
             self.ended = true;
             None
@@ -202,10 +210,10 @@ struct FaultingRun {
 }
 
 impl Run for FaultingRun {
-    fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+    fn next_model(&mut self) -> Option<Result<Model, Fault>> {
         if !self.yielded_model {
             self.yielded_model = true;
-            Some(Ok(answer_set(["a"])))
+            Some(Ok(Model::of(answer_set(["a"]))))
         } else if !self.faulted {
             self.faulted = true;
             Some(Err(Fault::engine("a stub engine failure")))
@@ -215,8 +223,8 @@ impl Run for FaultingRun {
     }
 
     fn conclusion(&self) -> Option<Conclusion> {
-        // The search stopped at the fault without closing the space; the fault the
-        // run reported is the cause a completeness drain keeps, not this.
+        // A faulted search reached no conclusion; the fault the run reported is
+        // the cause a completeness drain keeps.
         None
     }
 }

@@ -4,9 +4,19 @@
 //! snapshot's cautious and brave consequences fold its complete collection.
 mod common;
 
-use common::{answer_set, atom, with_faulting_world_view, with_world_view};
+use common::{answer_set, atom, atoms_of, with_faulting_world_view, with_world_view};
+use themelios_program::{AnswerSet, Name, Sign, Symbol};
 use themelios_solve::contract::Locus;
 use themelios_solve::outcome::Conclusion;
+
+/// The strongly negated atom `-name`.
+fn negated(name: &str) -> Symbol {
+    Symbol::function(
+        Name::new(name).expect("a valid identifier"),
+        [],
+        Sign::Negative,
+    )
+}
 
 #[test]
 fn a_world_view_is_non_empty_by_construction() {
@@ -50,12 +60,15 @@ fn a_drained_budget_cut_world_view_reports_the_space_open() {
 }
 
 #[test]
-fn a_world_view_streams_the_answer_sets_the_search_found() {
+fn a_world_view_streams_the_models_the_search_found() {
     with_world_view(
         vec![answer_set(["a"]), answer_set(["b"])],
         Conclusion::Exhausted,
         |mut wv| {
-            let streamed: Vec<_> = wv.members().map(|item| item.expect("no fault")).collect();
+            let streamed: Vec<_> = wv
+                .members()
+                .map(|item| item.expect("no fault").atoms().clone())
+                .collect();
             assert_eq!(streamed, vec![answer_set(["a"]), answer_set(["b"])]);
         },
     );
@@ -107,10 +120,32 @@ fn a_closed_world_view_materialises_to_its_complete_collection() {
         Conclusion::Exhausted,
         |wv| {
             let snapshot = wv.materialize().expect("a closed search materialises");
-            let members: Vec<_> = snapshot.members().cloned().collect();
+            let members = atoms_of(snapshot.members());
             assert_eq!(members, vec![answer_set(["a"]), answer_set(["b"])]);
         },
     );
+}
+
+#[test]
+fn a_member_holding_an_atom_and_its_contrary_refuses_to_materialise() {
+    // No answer set holds `a` and `-a`, so such a member is the backend's contract
+    // broken — refused as its bug, never read as a world.
+    let inconsistent: AnswerSet = [atom("a"), negated("a")].into_iter().collect();
+    with_world_view(vec![inconsistent], Conclusion::Exhausted, |wv| {
+        let refusal = wv
+            .materialize()
+            .expect_err("an inconsistent member is refused");
+        assert_eq!(refusal.locus(), Locus::Adapter);
+        assert!(refusal.is_backend_bug());
+    });
+}
+
+#[test]
+fn a_member_holding_a_negated_atom_without_its_contrary_materialises() {
+    let consistent: AnswerSet = [negated("a"), atom("b")].into_iter().collect();
+    with_world_view(vec![consistent], Conclusion::Exhausted, |wv| {
+        assert!(wv.materialize().is_ok());
+    });
 }
 
 #[test]

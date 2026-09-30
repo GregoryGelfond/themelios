@@ -80,7 +80,10 @@ pub trait AspifSource {
 /// source drives a sink it never names. The committed surface is the
 /// backend's full roster — the four declared here, and the remaining backend
 /// methods (`bd_aggr`, `project`, `heuristic`, `edge`, `show`, step framing,
-/// `next_lit`/`fact_lit`, §10.3) join with the lowering that drives them.
+/// `next_lit`/`fact_lit`, §10.3) join with the first source that drives a
+/// sink: a Door-C [`AspifSource`] — a foreign grounder's output, as the
+/// differential harness reads it. Nothing drives a sink before then: Door B
+/// lowers into the engine's grounder, not into a sink (§10.2).
 pub trait AspifSink {
     /// A rule: `head` holds — or, with `choice`, may hold — when every
     /// literal of `body` holds. An empty `head` without `choice` is an

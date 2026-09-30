@@ -13,7 +13,6 @@ license.workspace = true
 # resolved graph.
 [dependencies]
 themelios-base = { path = "../themelios-base" }
-themelios-syntax = { path = "../themelios-syntax" }
 themelios-program = { path = "../themelios-program" }
 themelios-solve = { path = "../themelios-solve" }
 
@@ -26,12 +25,20 @@ themelios-solve = { path = "../themelios-solve" }
 scale-proofs = []
 default = ["scale-proofs"]
 
-# The stage instruments, outside the shipped closure's claim: proptest as in
-# the tiers beneath, and trybuild for the compile-fail witness that the borrow
-# checker serialises a world view's overlapping reads (docs/design/query.md §2.3).
+# The stage instruments, outside the shipped closure's claim: proptest and
+# criterion as in the tiers beneath; trybuild for the compile-fail witness that
+# the borrow checker serialises a world view's overlapping reads
+# (docs/design/query.md §2.3); and the syntax tier solely so
+# tests/cross_prelude.rs can glob its prelude beside this one.
 [dev-dependencies]
 proptest = "1"
+criterion = "0.7"
 trybuild = "1"
+themelios-syntax = { path = "../themelios-syntax" }
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "matching"
+harness = false

@@ -18,12 +18,22 @@ use themelios_solve::outcome::Solved;
 
 // ---- a recording backend the laws inspect ----
 
+/// One thing the backend was asked to do, in the order asked.
+#[derive(Clone, PartialEq, Debug)]
+enum Step {
+    Reset,
+    Lower,
+    Ground(Vec<Part>),
+    Assign(Symbol, TruthValue),
+}
+
 /// What the backend was asked to do, shared with the test that owns the agent.
 #[derive(Default)]
 struct Records {
     lowered: u32,
     grounded: u32,
     assigned: Vec<(Symbol, TruthValue)>,
+    steps: Vec<Step>,
 }
 
 /// A backend that records what it is asked and never actually solves — the laws
@@ -47,7 +57,9 @@ impl Backend for Recorder {
     }
 
     fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
-        self.records.borrow_mut().lowered += 1;
+        let mut records = self.records.borrow_mut();
+        records.lowered += 1;
+        records.steps.push(Step::Lower);
         Ok(())
     }
 
@@ -55,16 +67,34 @@ impl Backend for Recorder {
         None
     }
 
-    fn ground(&mut self, _parts: &[Part], _options: &GroundOptions) -> Result<(), Fault> {
-        self.records.borrow_mut().grounded += 1;
+    fn ground(&mut self, parts: &[Part], _options: &GroundOptions) -> Result<(), Fault> {
+        if parts
+            .iter()
+            .any(|part| part.key().name == identifier(REFUSED_PART))
+        {
+            return Err(Fault::request("the recorder grounds no such part"));
+        }
+        let mut records = self.records.borrow_mut();
+        records.grounded += 1;
+        records.steps.push(Step::Ground(parts.to_vec()));
         Ok(())
     }
 
     fn assign_external(&mut self, external: Symbol, value: TruthValue) -> Result<(), Fault> {
-        self.records.borrow_mut().assigned.push((external, value));
+        let mut records = self.records.borrow_mut();
+        records.assigned.push((external.clone(), value));
+        records.steps.push(Step::Assign(external, value));
+        Ok(())
+    }
+
+    fn reset(&mut self) -> Result<(), Fault> {
+        self.records.borrow_mut().steps.push(Step::Reset);
         Ok(())
     }
 }
+
+/// The name of a part the recorder refuses to ground.
+const REFUSED_PART: &str = "refused";
 
 /// An agent over the knowledge `program` and a fresh recorder, with the record
 /// handed back so a law can read what the backend was asked.
@@ -244,20 +274,19 @@ fn a_plain_fact_discloses_the_rebuild_class() {
 }
 
 #[test]
-fn an_assertion_under_a_guarding_backend_discloses_the_toggle_class() {
+fn an_assertion_discloses_rebuild_though_the_backend_honours_externals() {
+    // A toggle needs an externally guarded statement as well as the backend's
+    // `externals`, and the agent guards none yet.
     let (mut agent, _records) = agent_over(Program::empty(), GUARDS_EXTERNALS, MULTI_SHOT);
     let added = agent.assert(fact("p")).expect("assert succeeds");
-    assert_eq!(added.retraction_class(), RetractionClass::Toggle);
+    assert_eq!(added.retraction_class(), RetractionClass::Rebuild);
 }
 
 #[test]
-fn a_toggle_class_statement_still_retracts() {
+fn a_statement_over_an_externals_backend_still_retracts() {
     let (mut agent, _records) = agent_over(Program::empty(), GUARDS_EXTERNALS, MULTI_SHOT);
     let added = agent.assert(fact("p")).expect("assert succeeds");
-    assert_eq!(added.retraction_class(), RetractionClass::Toggle);
-    agent
-        .retract(added)
-        .expect("a toggle-class handle retracts");
+    agent.retract(added).expect("the handle retracts");
     assert_eq!(agent.knowledge(), &Program::empty());
 }
 
@@ -294,6 +323,115 @@ fn grounding_reaches_the_backend_seam() {
     assert_eq!(records.borrow().grounded, 1);
 }
 
+// ---- a rebuild re-establishes what the loop retains ----
+
+/// The part named `name`, with no formals and no statements.
+fn part(name: &str) -> Part {
+    Program::of_keyed_nodes([(
+        themelios_program::program::PartKey {
+            name: identifier(name),
+            formals: Vec::new(),
+        },
+        themelios_program::WithProvenance::constructed(fact("x")),
+    )])
+    .parts()
+    .find(|part| part.key().name == identifier(name))
+    .cloned()
+    .expect("the part was built")
+}
+
+/// Put a question to `agent`, and forget the recorder's refusal to solve: the
+/// steps before the solve are what the laws read.
+fn ask(agent: &mut Agent<Recorder>) {
+    let _ = agent.solve();
+}
+
+#[test]
+fn a_question_over_a_multi_shot_backend_resets_before_it_lowers() {
+    let (mut agent, records) = agent_over(Program::empty(), NO_EXTERNALS, MULTI_SHOT);
+    ask(&mut agent);
+    ask(&mut agent);
+    assert_eq!(
+        records.borrow().steps,
+        [Step::Reset, Step::Lower, Step::Reset, Step::Lower]
+    );
+}
+
+#[test]
+fn a_question_over_a_single_shot_backend_lowers_without_a_reset() {
+    let (mut agent, records) = agent_over(Program::empty(), NO_EXTERNALS, SINGLE_SHOT);
+    ask(&mut agent);
+    ask(&mut agent);
+    assert_eq!(records.borrow().steps, [Step::Lower, Step::Lower]);
+}
+
+#[test]
+fn a_rebuild_grounds_the_retained_parts_before_it_assigns_the_externals() {
+    let (mut agent, records) = agent_over(Program::empty(), GUARDS_EXTERNALS, MULTI_SHOT);
+    let (first, second) = (atom_symbol(1), atom_symbol(2));
+    agent.ground(&[part("step")]).expect("ground succeeds");
+    agent
+        .assign_external(second.clone(), TruthValue::True)
+        .expect("assign succeeds");
+    agent
+        .assign_external(first.clone(), TruthValue::True)
+        .expect("assign succeeds");
+    records.borrow_mut().steps.clear();
+    ask(&mut agent);
+    assert_eq!(
+        records.borrow().steps,
+        [
+            Step::Reset,
+            Step::Lower,
+            Step::Ground(vec![part("step")]),
+            Step::Assign(first, TruthValue::True),
+            Step::Assign(second, TruthValue::True),
+        ]
+    );
+}
+
+#[test]
+fn a_rebuild_assigns_each_external_its_latest_value() {
+    let (mut agent, records) = agent_over(Program::empty(), GUARDS_EXTERNALS, MULTI_SHOT);
+    let external = atom_symbol(1);
+    for value in [TruthValue::True, TruthValue::Free, TruthValue::False] {
+        agent
+            .assign_external(external.clone(), value)
+            .expect("assign succeeds");
+    }
+    records.borrow_mut().steps.clear();
+    ask(&mut agent);
+    assert_eq!(
+        records.borrow().steps,
+        [
+            Step::Reset,
+            Step::Lower,
+            Step::Assign(external, TruthValue::False)
+        ]
+    );
+}
+
+#[test]
+fn a_refused_grounding_is_not_replayed() {
+    let (mut agent, records) = agent_over(Program::empty(), GUARDS_EXTERNALS, MULTI_SHOT);
+    agent
+        .ground(&[part(REFUSED_PART)])
+        .expect_err("the recorder refuses the part");
+    records.borrow_mut().steps.clear();
+    ask(&mut agent);
+    assert_eq!(records.borrow().steps, [Step::Reset, Step::Lower]);
+}
+
+#[test]
+fn a_grounding_brings_the_engine_level_before_it_grounds() {
+    let (mut agent, records) = agent_over(Program::empty(), GUARDS_EXTERNALS, MULTI_SHOT);
+    agent.ground(&[part("step")]).expect("ground succeeds");
+    assert_eq!(
+        records.borrow().steps,
+        [Step::Reset, Step::Lower, Step::Ground(vec![part("step")])]
+    );
+}
+
 // ---- observe and forget ----
 
 #[test]
@@ -305,13 +443,21 @@ fn observe_records_each_fact_in_the_knowledge_base() {
 }
 
 #[test]
-fn an_empty_observation_records_nothing_and_forgets_trivially() {
+fn an_empty_observation_records_nothing() {
     let (mut agent, _records) = agent_over(Program::of([fact("a")]), NO_EXTERNALS, SINGLE_SHOT);
     let observation = agent
         .observe(Predicates(vec![]))
         .expect("observe of nothing");
     assert!(observation.is_empty());
     assert_eq!(agent.knowledge(), &Program::of([fact("a")]));
+}
+
+#[test]
+fn forgetting_an_empty_observation_leaves_the_knowledge_base() {
+    let (mut agent, _records) = agent_over(Program::of([fact("a")]), NO_EXTERNALS, SINGLE_SHOT);
+    let observation = agent
+        .observe(Predicates(vec![]))
+        .expect("observe of nothing");
     agent.forget(observation).expect("forget of nothing");
     assert_eq!(agent.knowledge(), &Program::of([fact("a")]));
 }

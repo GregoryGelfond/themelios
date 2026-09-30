@@ -1,8 +1,8 @@
 //! The cross-prelude no-collision compile-lock (docs/design/query.md §2.1; the
 //! rule in `themelios_query::prelude`). A consumer that globs
 //! `themelios_query::prelude::*` beside `themelios_program::prelude::*` — and
-//! the syntax prelude beneath them, as a facade over the whole stack does —
-//! compiles: the query prelude is flat with the reading vocabulary only, and the
+//! the solve and syntax preludes beside them, as a facade over the whole stack
+//! does — compiles: the query prelude is flat with the reading vocabulary only, and the
 //! one spelling the two tiers share, `Query`, is flat on the program side (the
 //! ASP-Core-2 `a?` statement) and reached by module path on the query side.
 //!
@@ -17,13 +17,19 @@
 
 use themelios_program::prelude::*;
 use themelios_query::prelude::*;
+use themelios_solve::prelude::*;
 use themelios_syntax::prelude::*;
 
 #[test]
 fn the_query_prelude_coexists_with_the_program_prelude() {
-    // The reading vocabulary resolves bare from the query prelude.
+    // The reading vocabulary resolves bare from the query prelude, the solve
+    // tier's `Consequences` one item under both globs.
     let _: Option<Answer> = None;
     let _: Option<Consequences> = None;
+
+    // The driving vocabulary resolves bare from the solve prelude beside it.
+    let _: Option<Determination<'static>> = None;
+    let _: Option<Model> = None;
 
     // The program IR resolves bare from the program prelude — every spelling
     // the program and syntax tiers share, each with no `E0659` beside the
@@ -62,4 +68,12 @@ fn a_bare_query_is_the_program_tier_statement() {
 fn consequences_is_one_item_under_two_paths() {
     // The query prelude's `Consequences` is the solve tier's own, re-exported.
     let _: Option<themelios_solve::outcome::Consequences> = None::<Consequences>;
+}
+
+#[test]
+fn atom_is_one_item_under_two_paths() {
+    // The pattern type is the program tier's own, re-exported at the query root:
+    // bare `Atom`, globbed from both preludes, is that one item.
+    let _: Option<themelios_program::program::Atom> = None::<Atom>;
+    let _: Option<themelios_program::program::Atom> = None::<themelios_query::Atom>;
 }

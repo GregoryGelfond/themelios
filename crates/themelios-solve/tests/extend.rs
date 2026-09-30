@@ -101,8 +101,8 @@ impl Function for Successor {
 struct AtomCount(usize);
 
 impl Extract for AtomCount {
-    fn extract(model: &AnswerSet) -> Result<Self, ExtractError> {
-        Ok(AtomCount(model.len()))
+    fn extract(answer_set: &AnswerSet) -> Result<Self, ExtractError> {
+        Ok(AtomCount(answer_set.len()))
     }
 }
 

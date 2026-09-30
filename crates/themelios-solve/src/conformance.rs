@@ -9,19 +9,23 @@
 //! (§1.3).
 //!
 //! The suite checks what the compiler cannot. **Outcome correctness:** each
-//! corpus program's determination is its known one, and — where the backend
-//! enumerates — its answer sets are exactly its known ones, its search closing
-//! the space; every stream ends for good once it ends, its search concluded.
-//! The corpus holds the programs a shortcut semantics gets wrong: a positive
-//! loop, which completion reads with an unsupported model, the same loop
-//! constrained to hold, which completion reads as consistent, and a head cycle,
-//! which shifting the disjunction reads with no model. **The `enumeration`
+//! corpus program's determination is its known one, every model it yields
+//! consistent — no atom beside its contrary — and, where the backend
+//! enumerates, its answer sets exactly its known ones, its search closing the
+//! space; every stream ends for good once it ends, its search concluded. The
+//! corpus holds the programs a shortcut semantics gets wrong: a positive loop,
+//! which completion reads with an unsupported model, the same loop constrained
+//! to hold, which completion reads as consistent, a head cycle, which shifting
+//! the disjunction reads with no model, and a choice under an objective, whose
+//! solve yields its non-optimal model too — a solve ignores any objective
+//! (§5.2). **The `enumeration`
 //! bit's soundness obligation** (§4.1): a search concluded as closing the space
 //! yielded every answer set there is. **Capability honesty, in both directions**
 //! (§4.1, §4.2): a declared capability's method answers, and answers rightly — a
 //! provided method needs no override, so a declared bit whose method still
 //! refuses is a lie the type cannot see — and an undeclared one's refuses at the
-//! request locus, never degrading silently. **Fault loci:** a program the backend
+//! request locus, never degrading silently; the native door's answer is its
+//! known one, no model over a program with none. **Fault loci:** a program the backend
 //! cannot ground is refused at the program locus, located at the statement that
 //! cannot be grounded (§5.4); assigning an atom that is not external is refused
 //! at the request locus, never the silent no-op an engine may give. **The ground
@@ -53,7 +57,6 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::time::Duration;
 
-use themelios_base::diagnostic::ToDiagnostic;
 use themelios_base::span::{ByteOffset, Location};
 use themelios_program::raise::{raise_source, raise_str};
 use themelios_program::{Dialect, Name, Origin, Program, Sign, Source, SourceId, Symbol};
@@ -65,7 +68,9 @@ use crate::contract::{
     Mode, OptimizeRequest, SolveRequest, TruthValue,
 };
 use crate::extend::{Function, GroundFault, Propagator};
-use crate::outcome::{AnswerSet, Conclusion, Consequences, Determination, Solved};
+use crate::outcome::{
+    AnswerSet, Conclusion, Consequences, Determination, NativeAnswer, Solved, Stopped,
+};
 
 // ---- The report ----
 
@@ -181,9 +186,9 @@ impl fmt::Display for ConformanceReport {
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Check {
-    /// Each corpus program's determination is its known one, and where the
-    /// backend enumerates, its answer sets are its known ones, its search
-    /// closing the space.
+    /// Each corpus program's determination is its known one, every model it
+    /// yields consistent, and where the backend enumerates, its answer sets are
+    /// its known ones, its search closing the space.
     OutcomeCorrectness,
     /// A search concluded as closing the space yielded every answer set there
     /// is — the `enumeration` bit's soundness obligation (§4.1).
@@ -274,17 +279,89 @@ pub enum Capability {
 impl fmt::Display for Capability {
     /// The capability, as a phrase.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Capability::Optimization => "optimization",
-            Capability::NativeConsequences => "native-consequences",
-            Capability::Assumptions => "assumptions",
-            Capability::MultiShot => "multi-shot",
-            Capability::Externals => "externals",
-            Capability::Cancellation => "cancellation",
-            Capability::TimeBudget => "time-budget",
-            Capability::Functions => "@-functions",
-            Capability::Propagators => "propagators",
-        })
+        f.write_str(self.row().name)
+    }
+}
+
+/// A capability's row (docs/design/solve.md §4.1): how a report names it, its
+/// reader of the declaration, the contract method — or request — its probe
+/// drives, and the probe, so a capability the contract grows is one row. The
+/// probe is handed whether the capability is declared, and the corpus.
+#[derive(Clone, Copy)]
+struct Row {
+    name: &'static str,
+    declared: fn(&Capabilities) -> bool,
+    method: &'static str,
+    probe: fn(&mut dyn Backend, bool, &[Case]) -> Response,
+}
+
+impl Capability {
+    /// This capability's row — the table, written as one exhaustive match, so a
+    /// capability the enum gains has no reading until its row is written. O(1).
+    #[allow(clippy::too_many_lines)] // one arm per capability, each its whole row
+    fn row(self) -> Row {
+        match self {
+            Capability::Optimization => Row {
+                name: "optimization",
+                declared: |capabilities| capabilities.optimization,
+                method: "optimize",
+                probe: |backend, _, _| probe_optimization(backend),
+            },
+            Capability::NativeConsequences => Row {
+                name: "native-consequences",
+                declared: |capabilities| {
+                    capabilities.native_consequences == ConsequenceSupport::Native
+                },
+                method: "consequences_native",
+                probe: |backend, _, corpus| probe_native_consequences(backend, corpus),
+            },
+            Capability::Assumptions => Row {
+                name: "assumptions",
+                declared: |capabilities| capabilities.assumptions,
+                method: "solve_assuming",
+                probe: |backend, _, _| probe_assumptions(backend),
+            },
+            Capability::MultiShot => Row {
+                name: "multi-shot",
+                declared: |capabilities| capabilities.multi_shot,
+                method: "the multi-shot methods",
+                probe: |backend, declared, _| probe_multi_shot(backend, declared),
+            },
+            Capability::Externals => Row {
+                name: "externals",
+                declared: |capabilities| capabilities.externals,
+                method: "assign_external",
+                probe: |backend, _, _| probe_externals(backend),
+            },
+            Capability::Cancellation => Row {
+                name: "cancellation",
+                declared: |capabilities| capabilities.cancellation,
+                method: "interrupt",
+                // `interrupt` answers `None` where another method refuses (§4.1).
+                probe: |backend, _, _| match backend.interrupt() {
+                    Some(_) => Response::Answered,
+                    None => Response::Refused(Fault::unsupported()),
+                },
+            },
+            Capability::TimeBudget => Row {
+                name: "time-budget",
+                declared: |capabilities| capabilities.budgets.time,
+                method: "a solve under a time budget",
+                probe: |backend, declared, _| probe_time_budget(backend, declared),
+            },
+            Capability::Functions => Row {
+                name: "@-functions",
+                declared: |capabilities| capabilities.functions,
+                method: "register_function",
+                probe: |backend, _, _| respond(backend.register_function(Box::new(Echo))),
+            },
+            Capability::Propagators => Row {
+                name: "propagators",
+                declared: |capabilities| capabilities.propagators,
+                method: "register_propagator",
+                probe: |backend, _, _| respond(backend.register_propagator(Box::new(Inert))),
+            },
+        }
     }
 }
 
@@ -517,7 +594,8 @@ const FACT: &str = "a.";
 const EVEN_LOOP: &str = "a :- not b. b :- not a.";
 
 /// A choice under an objective, whose proven optimum is `{}` — the program the
-/// optimization probe asks `optimize` about.
+/// optimization probe asks `optimize` about — and whose stable models, the
+/// objective ignored as a solve ignores it, are `{}` and `{a}`.
 const OPTIMIZATION: &str = "{ a }. #minimize { 1 : a }.";
 
 /// The positive loop over `a` and `b`: one answer set, `{}` — completion also
@@ -573,6 +651,13 @@ fn corpus() -> Vec<Case> {
         (
             "a choice",
             "{ a }.",
+            vec![answer_set([]), answer_set([constant("a")])],
+        ),
+        // A solve asks for the stable models, the objective ignored: an engine
+        // optimising by default reads only the optimum, {}.
+        (
+            "a choice under an objective",
+            OPTIMIZATION,
             vec![answer_set([]), answer_set([constant("a")])],
         ),
         (
@@ -697,27 +782,44 @@ fn solve(backend: &mut dyn Backend) -> Result<Solved<'_>, Failure> {
         .map_err(|fault| Failure::new(Breach::Refused, "the solve was refused").with_fault(fault))
 }
 
-/// What a bounded read of a stream found: the answer sets it yielded, and
-/// whether it ended within the bound.
+/// What a bounded read of a stream found: the answer sets of the models it
+/// yielded, and whether it ended within the bound.
 struct Pulled {
     sets: Vec<AnswerSet>,
     ended: bool,
 }
 
-/// Read at most one answer set more than `bound` — enough to see the stream end,
-/// or to see it yield past a program's answer sets — so a run that never ends is
+/// Read at most one model more than `bound` — enough to see the stream end, or
+/// to see it yield past a program's answer sets — so a run that never ends is
 /// caught at the bound rather than drained forever. A mid-stream fault is the
 /// refusal.
 fn pull(solved: &mut Solved<'_>, bound: usize) -> Result<Pulled, Fault> {
     let mut sets = Vec::new();
-    for yielded in solved.answer_sets() {
-        let set = yielded?;
+    for yielded in solved.models() {
+        let model = yielded?;
         if sets.len() == bound {
             return Ok(Pulled { sets, ended: false });
         }
-        sets.push(set);
+        sets.push(model.atoms().clone());
     }
     Ok(Pulled { sets, ended: true })
+}
+
+/// Whether `set` holds an atom beside its contrary, its strong negation — which
+/// no answer set does (query.md §2.3). One lookup per strongly negated atom.
+fn holds_a_contrary_pair(set: &AnswerSet) -> bool {
+    set.iter().any(|symbol| match symbol {
+        Symbol::Function {
+            name,
+            arguments,
+            sign: Sign::Negative,
+        } => set.contains(&Symbol::function(
+            name.clone(),
+            arguments.iter().cloned(),
+            Sign::Positive,
+        )),
+        _ => false,
+    })
 }
 
 /// A mid-stream fault, as a failure.
@@ -759,13 +861,15 @@ fn outcome_correctness(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
             }
             Determination::Inconsistent(_) => false,
             Determination::Inconclusive(partial) => {
-                let undecided = Failure::new(
-                    Breach::Refused,
-                    format!("the search stopped undecided: {}", partial.conclusion()),
-                );
-                return Err(Shortfall::Broke(match partial.cause() {
-                    Some(cause) => undecided.with_fault(cause.clone()),
-                    None => undecided,
+                return Err(Shortfall::Broke(match partial.stopped() {
+                    Stopped::Concluded(truncation) => Failure::new(
+                        Breach::Refused,
+                        format!("the search stopped undecided: {truncation}"),
+                    ),
+                    Stopped::Faulted(fault) => {
+                        Failure::new(Breach::Refused, "the search stopped at a fault, undecided")
+                            .with_fault(fault.clone())
+                    }
                 }));
             }
         };
@@ -784,16 +888,22 @@ fn outcome_correctness(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
         if !ended {
             return Err(Shortfall::Broke(past_the_bound()));
         }
-        if solved.answer_sets().next().is_some() {
+        if solved.models().next().is_some() {
             return Err(Shortfall::Broke(Failure::new(
                 Breach::Misanswered,
-                "yielded an answer set after its stream ended",
+                "yielded a model after its stream ended",
             )));
         }
         if solved.conclusion().is_none() {
             return Err(Shortfall::Broke(Failure::new(
                 Breach::Misanswered,
                 "ended its stream with its search still open",
+            )));
+        }
+        if sets.iter().any(holds_a_contrary_pair) {
+            return Err(Shortfall::Broke(Failure::new(
+                Breach::Misanswered,
+                "yielded a model holding an atom and its contrary",
             )));
         }
         if sets
@@ -851,23 +961,26 @@ fn exhaustion_is_earned(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
     over_corpus(corpus, |case| {
         load(backend, &case.program, case.source).map_err(Shortfall::Undriven)?;
         let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
-        let Pulled { mut sets, ended } = pull(&mut solved, case.answer_sets.len())
+        let Pulled { sets, ended } = pull(&mut solved, case.answer_sets.len())
             .map_err(|fault| Shortfall::Undriven(faulted(fault)))?;
         if !ended {
             return Err(Shortfall::Undriven(past_the_bound()));
         }
-        if solved.conclusion() == Some(Conclusion::Exhausted) {
-            sets.sort();
-            if sets != case.answer_sets {
-                return Err(Shortfall::Broke(Failure::new(
-                    Breach::Misanswered,
-                    format!(
-                        "concluded that the search closed the space having yielded {} where the program has {}",
-                        counted(sets.len()),
-                        counted(case.answer_sets.len()),
-                    ),
-                )));
-            }
+        // What else the stream yielded is outcome correctness's to judge; this
+        // obligation is that none of the answer sets went unseen.
+        let seen = case
+            .answer_sets
+            .iter()
+            .filter(|set| sets.contains(set))
+            .count();
+        if solved.conclusion() == Some(Conclusion::Exhausted) && seen < case.answer_sets.len() {
+            return Err(Shortfall::Broke(Failure::new(
+                Breach::Misanswered,
+                format!(
+                    "concluded that the search closed the space having seen {seen} of the program's {}",
+                    counted(case.answer_sets.len()),
+                ),
+            )));
         }
         Ok(())
     })
@@ -903,9 +1016,9 @@ fn truncation_cannot_pose_as_complete(backend: &mut dyn Backend, corpus: &[Case]
         }
         load(backend, &case.program, case.source).map_err(Shortfall::Undriven)?;
         let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
-        drop(solved.answer_sets().next());
+        drop(solved.models().next());
         // The gate refuses a touched handle at once, draining nothing.
-        if solved.all_answer_sets().is_ok() {
+        if solved.all_models().is_ok() {
             return Err(Shortfall::Broke(Failure::new(
                 Breach::Misanswered,
                 "a touched stream yielded a complete collection",
@@ -915,8 +1028,9 @@ fn truncation_cannot_pose_as_complete(backend: &mut dyn Backend, corpus: &[Case]
     })
 }
 
-/// A cancelled search never concludes as closing the space. Not yet drivable:
-/// the interrupt handle is reserved, so no search can be cancelled through it.
+/// A cancelled search never concludes as closing the space — nor does a pull
+/// with no search in flight cancel a later one (§4.1). Not yet drivable: the
+/// interrupt handle is reserved, so no search can be cancelled through it.
 fn cancellation_is_not_exhaustion(backend: &dyn Backend) -> Verdict {
     Verdict::Skipped(if backend.capabilities().cancellation {
         Skip::Reserved
@@ -991,7 +1105,7 @@ fn program_fault_is_located(backend: &mut dyn Backend) -> Verdict {
         Ok(solved) => solved,
         Err(fault) => return located(fault, &program),
     };
-    match solved.answer_sets().next() {
+    match solved.models().next() {
         Some(Err(fault)) => located(fault, &program),
         _ => Verdict::Failed(Failure::new(
             Breach::Accepted,
@@ -1017,7 +1131,7 @@ fn located(fault: Fault, program: &Program) -> Verdict {
     }
     let statement = unsafe_statement(program);
     let within = fault.located().is_some_and(|refusal| {
-        let at = refusal.to_diagnostic().primary().location;
+        let at = refusal.label().location;
         at.source == statement.source && statement.span.contains_span(at.span)
     });
     if within {
@@ -1149,39 +1263,6 @@ fn locus_phrase(locus: Locus) -> &'static str {
     }
 }
 
-/// Whether `capabilities` declares `capability`.
-fn is_declared(capability: Capability, capabilities: &Capabilities) -> bool {
-    match capability {
-        Capability::Optimization => capabilities.optimization,
-        Capability::NativeConsequences => {
-            capabilities.native_consequences == ConsequenceSupport::Native
-        }
-        Capability::Assumptions => capabilities.assumptions,
-        Capability::MultiShot => capabilities.multi_shot,
-        Capability::Externals => capabilities.externals,
-        Capability::Cancellation => capabilities.cancellation,
-        Capability::TimeBudget => capabilities.budgets.time,
-        Capability::Functions => capabilities.functions,
-        Capability::Propagators => capabilities.propagators,
-    }
-}
-
-/// The contract method, or request, a capability's probe drives, as a verdict
-/// names it.
-fn method_of(capability: Capability) -> &'static str {
-    match capability {
-        Capability::Optimization => "optimize",
-        Capability::NativeConsequences => "consequences_native",
-        Capability::Assumptions => "solve_assuming",
-        Capability::MultiShot => "the multi-shot methods",
-        Capability::Externals => "assign_external",
-        Capability::Cancellation => "interrupt",
-        Capability::TimeBudget => "a solve under a time budget",
-        Capability::Functions => "register_function",
-        Capability::Propagators => "register_propagator",
-    }
-}
-
 /// One capability's declaration is honest (§4.1, §4.2): declared, its method
 /// answers rightly; undeclared, it refuses at the request locus. `externals`
 /// gates no method alone — `assign_external` is multi-shot's — so undeclared,
@@ -1191,26 +1272,12 @@ fn capability_is_honest(
     capability: Capability,
     corpus: &[Case],
 ) -> Verdict {
-    let declared = is_declared(capability, &backend.capabilities());
+    let row = capability.row();
+    let declared = (row.declared)(&backend.capabilities());
     if capability == Capability::Externals && !declared {
         return Verdict::Skipped(Skip::Undeclared(Capability::Externals));
     }
-    let response = match capability {
-        Capability::Optimization => probe_optimization(backend),
-        Capability::NativeConsequences => probe_native_consequences(backend, corpus),
-        Capability::Assumptions => probe_assumptions(backend),
-        Capability::MultiShot => probe_multi_shot(backend, declared),
-        Capability::Externals => probe_externals(backend),
-        // `interrupt` answers `None` where another method refuses (§4.1).
-        Capability::Cancellation => match backend.interrupt() {
-            Some(_) => Response::Answered,
-            None => Response::Refused(Fault::unsupported()),
-        },
-        Capability::TimeBudget => probe_time_budget(backend, declared),
-        Capability::Functions => respond(backend.register_function(Box::new(Echo))),
-        Capability::Propagators => respond(backend.register_propagator(Box::new(Inert))),
-    };
-    judge(method_of(capability), declared, response)
+    judge(row.method, declared, (row.probe)(backend, declared, corpus))
 }
 
 /// The verdict on a probe's response to a capability declared, or not.
@@ -1269,46 +1336,50 @@ fn probe_optimization(backend: &mut dyn Backend) -> Response {
     respond(backend.optimize(&OptimizeRequest::default()))
 }
 
-/// The native door's probe: over every consistent corpus program, its cautious
-/// and brave consequences are its known answer sets' `⋂` and `⋃`; over every
-/// inconsistent one, it refuses — `⋂`/`⋃` over no answer set is undefined, not
-/// `∅` (query.md §2.3). Where the backend also declares `assumptions` — the only
-/// backend handed a non-empty scenario (§6.2) — the door ranges over the models
-/// a request's scenario admits, so it agrees with the fold over `solve_assuming`.
+/// The native door's answer over `sets` in `mode`: the `⋂` or `⋃` of the sets
+/// over a space closed, or no model where there are none — `⋂`/`⋃` over no
+/// answer set is undefined, not `∅` (query.md §2.3).
+fn native_answer(mode: Mode, sets: &[AnswerSet]) -> NativeAnswer {
+    Consequences::fold(mode, sets).map_or(NativeAnswer::NoModel, |folded| {
+        NativeAnswer::Closed(folded.as_set().clone())
+    })
+}
+
+/// How a native answer misread the known one, as a phrase.
+fn misread(found: &NativeAnswer, known: &NativeAnswer) -> &'static str {
+    match (found, known) {
+        (NativeAnswer::Stopped(_), _) => "stopped short of the space, though no budget was asked",
+        (NativeAnswer::Closed(_), NativeAnswer::NoModel) => {
+            "answered consequences of a program with no answer set"
+        }
+        (NativeAnswer::NoModel, _) => "reported no model of a program with an answer set",
+        (NativeAnswer::Closed(_), _) => "gave consequences other than those of its answer sets",
+    }
+}
+
+/// The native door's probe: over every corpus program, in each mode, its answer
+/// is its known one — the `⋂` or `⋃` of the program's answer sets over a space
+/// closed, and no model over a program with none. Where the backend also
+/// declares `assumptions` — the only backend handed a non-empty scenario (§6.2)
+/// — the door ranges over the models a request's scenario admits, so it agrees
+/// with the fold over `solve_assuming`.
 fn probe_native_consequences(backend: &mut dyn Backend, corpus: &[Case]) -> Response {
     let assumes = backend.capabilities().assumptions;
-    let (consistent, inconsistent): (Vec<&Case>, Vec<&Case>) =
-        corpus.iter().partition(|case| case.is_consistent());
-    for case in consistent {
+    for case in corpus {
         if let Err(failure) = load(backend, &case.program, case.source) {
             return Response::Unprobed(failure);
         }
         for mode in [Mode::Cautious, Mode::Brave] {
+            let known = native_answer(mode, &case.answer_sets);
             match backend.consequences_native(mode, &ConsequenceRequest::default()) {
                 Err(fault) => return Response::Refused(fault),
-                Ok(found) if found != Consequences::fold(mode, case.answer_sets.iter()) => {
+                Ok(found) if found != known => {
                     return Response::Misanswered {
                         case: Some(case.name),
-                        how: "gave consequences other than those of its answer sets".to_owned(),
+                        how: misread(&found, &known).to_owned(),
                     };
                 }
                 Ok(_) => {}
-            }
-        }
-    }
-    for case in inconsistent {
-        if let Err(failure) = load(backend, &case.program, case.source) {
-            return Response::Unprobed(failure);
-        }
-        for mode in [Mode::Cautious, Mode::Brave] {
-            if backend
-                .consequences_native(mode, &ConsequenceRequest::default())
-                .is_ok()
-            {
-                return Response::Misanswered {
-                    case: Some(case.name),
-                    how: "answered consequences of a program with no answer set".to_owned(),
-                };
             }
         }
     }
@@ -1321,9 +1392,9 @@ fn probe_native_consequences(backend: &mut dyn Backend, corpus: &[Case]) -> Resp
 /// The native door under a scenario: the even loop's consequences under a
 /// scenario fixing `a` to hold, then not to, are those of the one answer set
 /// each admits — a door that dropped the scenario would answer the whole
-/// program's — and under a scenario that admits no model it refuses, as over a
-/// program with none: the positive loop under `a` fixed to hold (an atom no
-/// answer set holds), and the fact `a.` under `a` fixed not to.
+/// program's — and under a scenario that admits no model it reports none, as
+/// over a program with none: the positive loop under `a` fixed to hold (an atom
+/// no answer set holds), and the fact `a.` under `a` fixed not to.
 fn probe_scoped_native_consequences(backend: &mut dyn Backend) -> Response {
     if let Err(failure) = load_source(backend, EVEN_LOOP) {
         return Response::Unprobed(failure);
@@ -1336,7 +1407,7 @@ fn probe_scoped_native_consequences(backend: &mut dyn Backend) -> Response {
         for mode in [Mode::Cautious, Mode::Brave] {
             match backend.consequences_native(mode, &request) {
                 Err(fault) => return Response::Refused(fault),
-                Ok(found) if found != Consequences::fold(mode, admitted.iter()) => {
+                Ok(found) if found != native_answer(mode, &admitted) => {
                     return misanswered(
                         "gave consequences under a scenario other than those of the models it admits",
                     );
@@ -1353,8 +1424,14 @@ fn probe_scoped_native_consequences(backend: &mut dyn Backend) -> Response {
             scenario: fixing_a(holds),
         };
         for mode in [Mode::Cautious, Mode::Brave] {
-            if backend.consequences_native(mode, &request).is_ok() {
-                return misanswered("answered consequences under a scenario that admits no model");
+            match backend.consequences_native(mode, &request) {
+                Err(fault) => return Response::Refused(fault),
+                Ok(NativeAnswer::NoModel) => {}
+                Ok(_) => {
+                    return misanswered(
+                        "answered consequences under a scenario that admits no model",
+                    );
+                }
             }
         }
     }
@@ -1601,7 +1678,36 @@ impl Propagator for Inert {}
 mod tests {
     use super::*;
     use crate::bridge::{GroundProgram, GroundRule};
-    use crate::outcome::Run;
+    use crate::outcome::{Model, Run};
+
+    #[test]
+    fn every_capability_s_row_names_it_apart() {
+        let names: BTreeSet<&str> = CAPABILITIES.map(|capability| capability.row().name).into();
+        let methods: BTreeSet<&str> = CAPABILITIES
+            .map(|capability| capability.row().method)
+            .into();
+        assert_eq!(names.len(), CAPABILITIES.len());
+        assert_eq!(methods.len(), CAPABILITIES.len());
+    }
+
+    #[test]
+    fn every_capability_is_probed_once() {
+        let probed: BTreeSet<String> = CAPABILITIES.map(|capability| capability.to_string()).into();
+        assert_eq!(probed.len(), CAPABILITIES.len());
+    }
+
+    #[test]
+    fn a_model_holding_an_atom_and_its_contrary_is_caught() {
+        let negated = atom("a", [], Sign::Negative);
+        assert!(holds_a_contrary_pair(&answer_set([
+            constant("a"),
+            negated.clone()
+        ])));
+        assert!(!holds_a_contrary_pair(&answer_set([
+            negated,
+            constant("b")
+        ])));
+    }
 
     #[test]
     fn every_suite_program_raises_without_a_diagnostic() {
@@ -1792,7 +1898,7 @@ mod tests {
     struct Closed;
 
     impl Run for Closed {
-        fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+        fn next_model(&mut self) -> Option<Result<Model, Fault>> {
             None
         }
 
