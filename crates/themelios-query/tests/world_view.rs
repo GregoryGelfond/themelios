@@ -192,3 +192,19 @@ fn a_materialised_snapshot_folds_its_brave_consequences() {
 fn overlapping_member_reads_do_not_compile() {
     trybuild::TestCases::new().compile_fail("tests/ui/world_view_*.rs");
 }
+
+// ---- The engine-free form crosses a service boundary (solve.md §5.2, §6.1) ----
+
+/// Holds only of plain data: sendable, shareable, cloneable, comparable, and
+/// borrowing nothing.
+fn plain<T: Send + Sync + Clone + Eq + std::fmt::Debug + 'static>() {}
+
+#[test]
+fn a_snapshot_is_plain_data() {
+    plain::<themelios_query::Snapshot>();
+}
+
+#[test]
+fn bindings_are_plain_data() {
+    plain::<themelios_query::Bindings>();
+}

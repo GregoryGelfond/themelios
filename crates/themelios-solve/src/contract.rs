@@ -85,9 +85,9 @@ pub trait Backend {
 
     /// Required. The bridge (§10): consume a program through a door. On a
     /// multi-shot backend a repeat `lower` accumulates into the engine's
-    /// program — the assert path lowers only the delta (§6.2) — so a rebuild
-    /// is `reset` then `lower` the amended whole; on a single-shot backend a
-    /// `lower` replaces the program, so a rebuild is one `lower`.
+    /// program, so a rebuild is `reset` then `lower` the amended whole; on a
+    /// single-shot backend a `lower` replaces the program, so a rebuild is one
+    /// `lower`.
     fn lower(&mut self, door: Door<'_>) -> Result<(), Fault>;
 
     /// Required. The ground program the backend exposes — the committed
@@ -200,9 +200,12 @@ pub trait Backend {
 /// A pull with no solve in flight is a no-op — never a cancellation of the
 /// next question. An implementation over an engine whose own primitive cuts
 /// "the active call or the following one" compensates by arming its forward
-/// only while a run is open, which suffices only where its notion of *open*
-/// closes no later than the engine's own search — a claim to establish for the
-/// pinned engine, with a race harness holding the concurrent close.
+/// only while a run is open: armed from before the engine's search can begin
+/// until it ends, and disarmed no later than it ends, so the window coincides
+/// with the engine's active call — a pull inside it is never dropped, and one
+/// outside it never reaches the engine. That coincidence is a claim to
+/// establish for the pinned engine, with a race harness holding the concurrent
+/// open and close.
 ///
 /// The primitive carries no authority over a dropped engine: a pull reaches a
 /// slot the backend owns and clears on drop, shared with the handle, never a
@@ -299,8 +302,11 @@ pub struct TheorySupport {}
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct BudgetSupport {
-    /// Whether the backend enforces a time budget — natively, or through the
-    /// `interrupt` primitive on a timer (§6.3).
+    /// Whether the backend enforces a time budget natively: the request
+    /// carries the budget to it (§6.3). Over a backend that declares only
+    /// `cancellation`, the core's own timer enforces a budget instead, once
+    /// cancellation is realised; over one that declares neither, a budgeted
+    /// request refuses.
     pub time: bool,
 }
 
@@ -406,6 +412,20 @@ pub enum Locus {
     /// The adapter: the seam between the contract and the engine — where a
     /// backend contract violation is located.
     Adapter,
+}
+
+impl fmt::Display for Locus {
+    /// The locus, as the word a sentence names it by (docs/design/solve.md
+    /// §1.3: every value has a human `Display`).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Locus::Program => "program",
+            Locus::Request => "request",
+            Locus::Resource => "resource",
+            Locus::Engine => "engine",
+            Locus::Adapter => "adapter",
+        })
+    }
 }
 
 /// The solve tier's diagnostic namespace (docs/design/base.md §6.1).
@@ -654,6 +674,19 @@ mod tests {
 
         fn ground_program(&self) -> Option<&GroundProgram> {
             None
+        }
+    }
+
+    #[test]
+    fn each_locus_renders_the_word_a_sentence_names_it_by() {
+        for (locus, word) in [
+            (Locus::Program, "program"),
+            (Locus::Request, "request"),
+            (Locus::Resource, "resource"),
+            (Locus::Engine, "engine"),
+            (Locus::Adapter, "adapter"),
+        ] {
+            assert_eq!(locus.to_string(), word);
         }
     }
 

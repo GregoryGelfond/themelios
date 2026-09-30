@@ -13,7 +13,7 @@ use crate::contract::{
 };
 use crate::extend::Facts;
 use crate::outcome::{
-    Consequences, Determination, Model, NativeAnswer, NotExhausted, Optimized, Solved,
+    Consequences, Determination, Model, NativeAnswer, NotExhausted, Optimized, Solved, Stopped,
 };
 use themelios_program::program::{Arguments, Part, PartKey};
 use themelios_program::{Atom, Program, Rule, Statement, Symbol, Term, WithProvenance};
@@ -200,7 +200,9 @@ impl<B: Backend> Agent<B> {
     /// same question the bare `Program` answers with an owned handle (§6.4).
     /// Refusal: an engine or request `Fault` — an inconsistent or inconclusive
     /// knowledge base is a reading of the handle, never a fault (§5.1). Cost:
-    /// one lowering, then the engine's, streamed.
+    /// the engine brought level — on a multi-shot backend a `reset`, one
+    /// lowering, and the replay of what the loop retains; on a single-shot one
+    /// the lowering — then the engine's, streamed.
     pub fn solve(&mut self) -> Result<Solved<'_>, Fault> {
         self.bring_level()?;
         self.backend.solve(&SolveRequest::default())
@@ -208,9 +210,11 @@ impl<B: Backend> Agent<B> {
 
     /// The configured pair of [`solve`](Agent::solve) (docs/design/solve.md
     /// §6.3): the same question under the options — the time budget the
-    /// question carries, handed to the backend on the request. A budget the
-    /// backend does not declare enforcing refuses at the request locus before
-    /// anything is lowered.
+    /// question carries, handed on the request to a backend that enforces it
+    /// natively. A budget the backend does not so enforce refuses at the
+    /// request locus before anything is lowered: the core's own timer over a
+    /// cancelling backend — the realisation rule's other arm — is realised with
+    /// cancellation.
     // The options are taken by value — the design's surface (§6.3): the caller
     // hands the configuration over, though only its knobs are read.
     #[allow(clippy::needless_pass_by_value)]
@@ -264,7 +268,10 @@ impl<B: Backend> Agent<B> {
     /// thread (docs/design/solve.md §6.1, §6.3), over the backend's
     /// cancellation primitive — `Some` exactly when the backend declares
     /// `cancellation`; `None` says the engine cannot be interrupted, readable
-    /// before any question is paid for. O(1).
+    /// before any question is paid for. Reserved: the handle's pull is realised
+    /// with cancellation, and until then it holds the primitive and nothing
+    /// more — `Some` says the engine can be interrupted, not yet that this
+    /// handle does (see [`Interrupt`]). O(1).
     pub fn interrupt(&self) -> Option<Interrupt> {
         self.backend.interrupt().map(|primitive| Interrupt {
             _primitive: primitive,
@@ -362,7 +369,15 @@ impl<B: Backend> Agent<B> {
                             .expect("a consistent search's collection holds its witness"))
                     }
                     Determination::Inconsistent(_) => Err(no_answer_set(scenario)),
-                    Determination::Inconclusive(partial) => Err(partial.into()),
+                    // A truncated search refuses in the native door's words
+                    // whether or not it saw a model, since a native answer
+                    // cannot say; a fault stays its own cause.
+                    Determination::Inconclusive(partial) => Err(match partial.stopped() {
+                        Stopped::Concluded(truncation) => {
+                            NotExhausted::not_closed(Some(truncation.into())).into()
+                        }
+                        Stopped::Faulted(fault) => fault.clone(),
+                    }),
                 }
             }
         }
@@ -1844,6 +1859,30 @@ mod ask_laws {
             .cautious_assuming(&assuming_a())
             .expect_err("an unexhausted world view refuses");
         assert!(native.to_string().contains("budget"), "{native}");
+        assert_eq!(native, derived);
+    }
+
+    #[test]
+    fn the_doors_refuse_a_truncated_search_alike_though_it_saw_no_model() {
+        // No model admitted, and the search cut at its budget: the derived door
+        // reads it inconclusive, the native door reports it stopped, and the two
+        // refuse in one wording.
+        let unwitnessed = |support| {
+            Agent::new(
+                Program::empty(),
+                Hypothetical {
+                    sets: Vec::new(),
+                    support,
+                    truncated: true,
+                },
+            )
+        };
+        let native = unwitnessed(ConsequenceSupport::Native)
+            .brave_assuming(&assuming_a())
+            .expect_err("a native search stopped short refuses");
+        let derived = unwitnessed(ConsequenceSupport::DerivedByEnumeration)
+            .brave_assuming(&assuming_a())
+            .expect_err("a truncated search refuses");
         assert_eq!(native, derived);
     }
 

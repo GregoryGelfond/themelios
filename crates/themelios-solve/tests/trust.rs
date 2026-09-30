@@ -211,11 +211,10 @@ fn the_engine_free_crates_draw_only_on_the_ffi_free_closure() {
 }
 
 #[test]
-fn the_engine_free_closures_are_ffi_free_with_build_scripts_admitted_by_name() {
+fn the_engine_free_closures_link_no_native_code() {
     let metadata = cargo_metadata();
     let packages = packages(&metadata);
     for crate_name in ENGINE_FREE {
-        let mut scripted = BTreeSet::new();
         for id in &shipped_closure(&metadata, &packages, crate_name) {
             let package = &packages[id];
             assert!(
@@ -228,10 +227,21 @@ fn the_engine_free_closures_are_ffi_free_with_build_scripts_admitted_by_name() {
                 "docs/specification.md §12.3: {crate_name} reaches {}, a sys crate",
                 package.name
             );
-            if package.has_build_script {
-                scripted.insert(package.name.as_str());
-            }
         }
+    }
+}
+
+#[test]
+fn the_engine_free_closures_run_only_the_admitted_build_scripts() {
+    let metadata = cargo_metadata();
+    let packages = packages(&metadata);
+    for crate_name in ENGINE_FREE {
+        let scripted: BTreeSet<&str> = shipped_closure(&metadata, &packages, crate_name)
+            .iter()
+            .map(|id| &packages[id])
+            .filter(|package| package.has_build_script)
+            .map(|package| package.name.as_str())
+            .collect();
         assert_eq!(
             scripted,
             BUILD_SCRIPTS_ADMITTED

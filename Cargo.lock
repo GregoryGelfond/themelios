@@ -945,7 +945,6 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "proptest",
- "themelios-base",
  "themelios-program",
  "themelios-solve",
  "themelios-syntax",
