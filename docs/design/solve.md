@@ -277,7 +277,12 @@ pub trait Backend {
 }
 
 /// The engine's cancellation primitive (§6.3): one call cuts the in-flight solve short. `Send + Sync`, so
-/// the core's timer thread and the caller's handle pull it from another thread.
+/// the core's timer thread and the caller's handle pull it from another thread. A pull with no solve in
+/// flight is a no-op — never a cancellation of the next question — so an adapter over an engine whose
+/// own primitive cuts "the active call or the following one" compensates, arming its forward only while
+/// a run is open. The primitive carries no authority over a dropped engine: a pull after its backend is
+/// dropped is a no-op, so an adapter shares ownership of what the pull reaches, never a bare pointer into
+/// the engine.
 pub trait Cancel: Send + Sync {
     fn cancel(&self);
 }
@@ -913,8 +918,9 @@ hit budget as what it is. The core owns that timer and the caller's handle alike
 `Cancel` primitive (§4.1) — so it attributes the stop over the run's `Interrupted`: its timer alone
 concludes `Budget`, a pulled caller's handle concludes `Interrupted`, and when both fire in one window the
 stop is `Interrupted`, the caller's act; the conformance suite checks the attribution once cancellation is
-realised. The long tail of engine parameters, when a real consumer needs it, follows the two-tier facade
-pattern (typed knobs over a legible open form); it is YAGNI-gated, grown on demand, never a CLI-string
+realised, beside the stale pull — a pull with no solve in flight, which cancels no later question (§4.1).
+The long tail of engine parameters, when a real consumer needs it, follows the two-tier facade pattern
+(typed knobs over a legible open form); it is YAGNI-gated, grown on demand, never a CLI-string
 passthrough.
 
 ### 6.4 Single-shot: the questions asked of a program directly
@@ -1662,3 +1668,7 @@ necessity where it is declared.
    differential (§5.2, §13.1). The backend-bug bit and the adapter locus coincide today, and the case that
    parts them is named (§5.4). Form: the model's reason is its own paragraph, and the `Models` note is
    prose (§5.1, §5.2).
+11. **The cancellation primitive's other states** (2026-09-29). A pull with no solve in flight, and a pull
+   after the backend is dropped, are no-ops: an adapter over an engine whose primitive cuts the following
+   call compensates, and shares ownership of what the pull reaches (§4.1). The conformance suite checks the
+   stale pull beside the attribution, once cancellation is realised (§6.3).
