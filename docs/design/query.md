@@ -176,7 +176,7 @@ projection of the consequence sets.
 // engine-driving and FALLIBLE (each call solves once, §2.7); and on a materialised `Snapshot`, where it
 // is engine-free and INFALLIBLE. It is NOT on the live `WorldView`: a reading is a self-contained solve,
 // not a drain of that handle's `members` stream (§2.3). Every reading asks `solve`'s question, so it
-// ranges over all stable models, any objective ignored (§2.3).
+// ranges over `solve`'s model set (`solve.md` §5.2).
 pub trait AgentReading {   // impl'd for `Agent<B>` (solve.md §6); solves once, then reads
     /// The Gelfond–Kahl three-valued reading of a ground query (drives the engine, then reads; §2.7).
     fn answer(&mut self, q: &Query) -> Result<Answer, Fault>;
@@ -290,15 +290,18 @@ Properties and cost:
   borrowing the agent's engine (`'a`) or owning an ephemeral one (`'static`, single-shot, solve.md §6.4);
   a `Snapshot` (from `materialize`) owns its data, engine-free. A universal reading (all members, all
   optimal, a cautious consequence) is answerable only from a search that closed the space, and the gate
-  lives at the point the universal value is produced: **`materialize` drains and *then* gates** — it
-  returns `Err` if the search did not close (§3.2), if the members were already streamed (a
-  partially-drained live handle cannot yield a complete snapshot), or if a member holds an atom and its
-  contrary — no answer set does, so that is a backend contract violation (`Locus::Adapter`), checked
-  here because every reading's partition rests on answer-set consistency (the contract half is the
-  conformance suite's, `solve.md` §13.1; the check costs one contrary lookup per strongly negated atom,
-  `O(Σ|M| log|M|)` over the members, a log factor over their own size) — and the agent's
-  `cautious`/`brave`/`answer` solve to
-  exhaustion before reading. A `Snapshot` is complete by construction. `is_exhausted` on the live handle
+  lives at the point the universal value is produced: **`materialize` drains and *then* gates**, and
+  the agent's `cautious`/`brave`/`answer` solve to exhaustion before reading. `materialize` returns
+  `Err`:
+  - if the search did not close the space (§3.2);
+  - if the members were already streamed — a partially-drained live handle cannot yield a complete
+    snapshot;
+  - if a member holds an atom and its contrary — a backend contract violation (`Locus::Adapter`).
+
+  No answer set holds an atom and its contrary, and every reading's partition rests on answer-set
+  consistency, so the check is made here; its contract half is the conformance suite's (`solve.md` §13.1),
+  and it costs one contrary lookup per strongly negated atom, `O(Σ|M| log|M|)` over the members, a log
+  factor over their own size. A `Snapshot` is complete by construction. `is_exhausted` on the live handle
   is a **report, not the gate**: it is drain-dependent — reading the run's terminal conclusion, it is
   `false` on a fresh, not-yet-drained consistent view and becomes `true` only after the stream drains to
   its end — so it answers "is this *known* complete now?", while `materialize` (not a prior `is_exhausted`
@@ -313,20 +316,27 @@ Properties and cost:
 - **Receiver, fallibility, and exclusion.** The live `WorldView<'a>` drives the engine only through its
   `members` stream (**`&mut self`**, each item a `Result<_, Fault>`) — matching `solve.md`'s `Solved`
   (compile-time serialisation by the borrow checker, no interior mutability). The epistemic readings that
-  drive the engine are the **agent's** (`&mut self -> Result<_, Fault>`, §2.7), giving engine faults, the
-  exhaustion refusal, and a non-pattern each a typed home (`Fault`, with `Locus` as appropriate): each
-  solves once, so a reading is a self-contained call and the `&mut self` borrow is the "no reasoning while
-  mutating" lock (solve.md §6.1). Because a reading does not borrow a live `WorldView`, there is no
-  live-handle re-entrancy to refuse — holding a `members` stream is a `&mut` borrow that cannot overlap
-  another use of the same handle, the borrow checker forbidding it at compile time. The **`Snapshot`**
-  (from `materialize`) needs no engine; its reads are infallible `&self`. The fallibility axis lives here
-  — engine-driving vs engine-free — kept off the ownership/lifetime axis.
-- **A world view ranges over the model set of the question that produced it** (`solve.md` §5.2): a
-  `solve`'s — and so every `AgentReading` reading's — over all stable models, any objective ignored; an
-  `optimize`'s over the *optimal* set, those tied at the proven optimum, where the exhaustion gate requires
-  the optimum *proven* and the optimal set exhausted before the world view is valid. Until optimization is
-  realised every world view ranges over all stable models by construction; the optimal set's world view,
-  and the marker that says which set a value ranges over, land with `optimize` (`solve.md` §5.2).
+  drive the engine are the **agent's** (`&mut self -> Result<_, Fault>`, §2.7), giving every refusal a
+  home in `Fault` — `Locus` telling an engine fault from the rest, which are told apart by message (the
+  named departure below): each solves once, so a reading is a self-contained call and the `&mut self`
+  borrow is the "no reasoning while mutating" lock (solve.md §6.1). Because a reading does not borrow a
+  live `WorldView`, there is no live-handle re-entrancy to refuse — holding a `members` stream is a `&mut`
+  borrow that cannot overlap another use of the same handle, the borrow checker forbidding it at compile
+  time. The **`Snapshot`** (from `materialize`) needs no engine; its reads are infallible `&self`. The
+  fallibility axis lives here — engine-driving vs engine-free — kept off the ownership/lifetime axis.
+- **A world view ranges over the model set of the question that produced it** (`solve.md` §5.2, the
+  law's home) — `solve`'s for every `AgentReading` reading — and an optimization's world view, when
+  `optimize` lands, is valid only once the exhaustion gate finds the optimum *proven* and the optimal
+  set exhausted.
+
+NAMED DEPARTURE (§1.3): the reading path's refusals are flattened into `Fault`. `materialize`, and the
+agent's `answer`/`entails`/`bindings`/`snapshot`/`snapshot_assuming`, refuse an inconsistent program, a
+search that did not close the space, a spent handle, and a member holding an atom and its contrary alike as
+a `Fault`, told apart by message — the violating member by `Locus::Adapter` too — where §1.3 asks for typed
+data; the solve tier types the completeness refusal (`NotExhausted`), and this tier erases it. A typed
+reading refusal — a closed sum over those arms, with `From` into `Fault` for the caller who wants `?` and
+no more — is reserved to the first consumer that must case-split on them, elenctic's verdict classifier
+(§4), with which it is designed.
 
 ### 2.4 Cautious and brave consequences
 
@@ -359,14 +369,10 @@ free — the solver solves through a foreign engine, and an independent check on
 otherwise hard to come by. Cost: native is one solve; derived is `Θ(|W|)` in members folded, and is why
 the native door exists.
 
-**Both doors must range over the same model set — the question's** (`solve.md` §5.2): all stable
-models for the agent's `cautious`/`brave`, whose question ignores any objective, and the *optimal* set for
-an optimization's world view. The derived door does so by construction — it folds that question's world
-view — and the native door carries the matching obligation, over the optimal set under the
-optimum-proven/exhausted gate. So the required agreement is over one model set; without that obligation
-the two would either disagree or, worse, agree while both range over the wrong set. The optimal-set pair
-lands with `optimize` (`solve.md` §5.2): until then a `ConsequenceRequest` carries the scenario alone, and
-every door ranges over all stable models.
+**Both doors must range over the same model set — the question's** (`solve.md` §5.2, the law's
+home). The derived door does so by construction — it folds that question's world view — and the native
+door carries the matching obligation. So the required agreement is over one model set; without that
+obligation the two would either disagree or, worse, agree while both range over the wrong set.
 
 ### 2.5 Bindings and conjunctions
 
@@ -639,3 +645,7 @@ it.
    stated of literals, where the contrary is defined (§2.2, §4). The consistency check's cost is stated as
    the log factor it is (§2.3). The native door's answer is gated by the core, so the two doors refuse
    alike (§2.4; `solve.md` §5.2).
+10. **The model-set law cited, and the reading path's departure named** (2026-09-29). The model-set law
+   is cited from its home, `solve.md` §5.2 (§2.2, §2.3, §2.4). The reading path's flattened refusals are
+   a named departure, their typed form reserved to the first consumer that must case-split on them
+   (§2.3). `materialize`'s refusals are a list (§2.3).
