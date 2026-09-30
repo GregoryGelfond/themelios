@@ -749,9 +749,9 @@ this section states what it adds.
 
 **Computational cost, consolidated.** `Analysis::of` is `O(unpooled + edges)`, where
 `unpooled` is the pool-eliminated program the analysis reads (§5; program §9): one
-iterative walk builds the construct scan, the dependency edges, and the safety
-facts, and the strongly-connected-components decomposition is linear in the graph
-(§4). For a pool-free program `unpooled` is the program itself. Every read thereafter is `O(1)` for a flag or a facet and `O(witness)` for a
+iterative walk of the program as written builds the construct scan (§7), one of the
+unpooled program builds the dependency edges and the safety facts, and the
+strongly-connected-components decomposition is linear in the graph (§4). For a pool-free program `unpooled` is the program itself. Every read thereafter is `O(1)` for a flag or a facet and `O(witness)` for a
 witness. Clone is linear; equality, ordering, and hashing are structural. No walk
 recurses on the call stack (the graph decomposition is iterative, §4; the program
 walks are the program tier's iterative ones, program §13), so a pathological

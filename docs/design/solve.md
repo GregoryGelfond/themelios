@@ -1437,9 +1437,10 @@ control, grounder, solver, or model of its own, only a plug-in on a clingo contr
 theory and configures it before registering it — a registered theory can be neither reconfigured nor
 unregistered — and registration adds clingcon's `#theory cp` definition to the `base` part and registers
 its propagator. Every lowered statement passes through clingcon's rewrite on its way to the program
-builder: the registered definition names only the rewritten atoms (`&sum` becomes a head or body variant;
-an element tuple gains the fields multiset semantics needs), so the rewrite is part of the lowering, not an
-option; it also unpools the statement and, by default, shifts a constraint atom out of an integrity
+builder: the registered definition declares `&sum`, `&nsum`, and `&diff` only in their rewritten head and
+body forms, and its other six atoms under their program names (§4.1), while the rewrite also gives the
+element tuples of the sums and of `&distinct`, `&disjoint`, `&minimize`, and `&maximize` the fields multiset
+semantics needs — so the rewrite is part of the lowering, not an option; it also unpools the statement and, by default, shifts a constraint atom out of an integrity
 constraint's body into its head. Before the rewrite, `lower` resolves each theory atom (§4.1), so an atom
 a program's own `#theory` definition declares never reaches it. The adapter pins the request's model count before calling clingcon's
 `prepare` between grounding and solving, so the one thing `prepare` does — setting an unpinned count to all
@@ -1469,16 +1470,17 @@ exhausting it — is part of that seam (§14).
 
 The theory's configuration is fixed when the theory is created, for the backend's lifetime — a rebuild
 recreates it identically — while the control's solve configuration (enumeration mode, model count,
-optimization mode) is set per request shape (§11.3). Five of the theory's keys bear on the program's
+optimization mode) is set per request shape (§11.3). Four of the theory's keys bear on the program's
 meaning, and each is pinned with its reason: `min-int` and `max-int` at clingcon's defaults (the default
 domain, above); `shift-constraints` on, clingcon's default — it moves a `&sum` or `&diff` atom out of an
 integrity constraint's body into its head with the relation negated, where the head form is strict and the
 body form is not, so it decides what `:- &sum{x} > 5.` means, and the backend means what the clingcon
-binary means; `split-all` off, clingcon's default — on, it splits every unassigned domain at a total
-assignment, making each remaining value a distinct model; and `translate-opt` at 0, so a theory objective
+binary means; and `translate-opt` at 0, so a theory objective
 stays inside the theory and the rule above holds. Two more are pinned for assurance: `check-solution` on,
 so clingcon verifies each solution at a total assignment, and `check-state` off. The rest change the search
-and not the model set — `sort-constraints`, `translate-clauses`, `translate-pb`, `translate-distinct`,
+and not the model set — `split-all` among them: at a total assignment clingcon splits an unassigned
+variable's domain, the first or, with the key on, all of them, and accepts a model only once every variable
+is assigned, so the key shapes the branching and not which models exist — `sort-constraints`, `translate-clauses`, `translate-pb`, `translate-distinct`,
 `literals-only`, `add-order-clauses`, `sign-value`, `refine-reasons`, `refine-introduce`, `propagate-chain`,
 and `order-heuristic`, pinned to none for the reason §11.3 gives — and stay at clingcon's defaults,
 recorded with the pin. A program that defines clingcon's `cp` theory itself is refused: the backend
@@ -1491,16 +1493,18 @@ design: linking clingcon costs one more C library in the trusted computing base,
 deployment that enables it, and bought back by a battle-tested constraint theory available immediately,
 ahead of the satellite.
 
-### 11.2 The clingo and clingcon binaries as external oracles
+### 11.2 The clingo and clingcon packages as external oracles
 
 Correctness is proved the way the syntax/program/analysis tiers prove themselves — against **external
-binary oracles** invoked out-of-band (via pixi, never linked into the shipped stack). The **clingo
-binary** is the grounding/solving authority over the corpus (§13.2); the **clingcon binary** plays the
-identical role for the constraint theory — the differential authority that keeps *both* the linked
-clingcon backend and our own Rust CP theory (§8.3) honest on answer sets and constraint assignments.
-These out-of-band *binaries* are distinct from the *linked* libclingo/libclingcon of §11.1: the linked
-library is the shipped backend, the binary is the vendored-for-tests oracle it (and the satellite) is
-differenced against, so a divergence is caught rather than trusted.
+oracles** invoked out of band: the clingo and clingcon packages pinned in the out-of-band environment (via
+pixi, never linked into the shipped stack), each driven through its Python module — the route that reads a
+model's constraint values with the has-a-name guard (§11.3) rather than parsing printed output. **clingo**
+is the grounding/solving authority over the corpus (§13.2); **clingcon** plays the identical role for the
+constraint theory — the differential authority that keeps *both* the linked clingcon backend and our own
+Rust CP theory (§8.3) honest on answer sets and constraint assignments. These out-of-band *packages* are
+distinct from the *linked* libclingo/libclingcon of §11.1: the linked library is the shipped backend, the
+package is the pinned-for-tests oracle it (and the satellite) is differenced against, so a divergence is
+caught rather than trusted.
 
 ### 11.3 The trusted computing base
 
@@ -1580,9 +1584,9 @@ radically different architecture, stronger corroboration than a naive built-in o
 
 ### 13.2 Differentials and oracles
 
-The clingo binary as the grounding/solving authority over the corpus; the **clingcon binary** as the
-external oracle for the constraint theory — differencing *both* the linked clingcon backend and the
-in-house CP satellite (§11.2); the native-versus-derived consequence differential the tier gets for free
+clingo as the grounding/solving authority over the corpus and **clingcon** as the external oracle for the
+constraint theory, each driven out of band through its Python module (§11.2) — differencing *both* the
+linked clingcon backend and the in-house CP satellite; the native-versus-derived consequence differential the tier gets for free
 (query.md §2.4); and the bridge differential with its worst-case cost tripwires (§10.1). An adapter that
 shares the program tier's `Symbol` (zetesis, §12) adds a further cross-implementation differential when it
 lands. The clingcon oracle runs out of band as clingo's does — clingcon's Python module, pinned beside
@@ -1605,8 +1609,8 @@ specification §5.2); the trust floor is minimal and legible (unsafe confined to
 above it, FFI-free with the adapter disabled); leak- and race-checking harnesses at the TCB; the
 scaling-shape benches, each beside an in-suite scaling tripwire, assert complexity class for the
 load-bearing operations (the bridge lowering linear in the program each backend reads, with a tripwire
-per backend on its own adversarial shape, §10.1; the query tier's matching
-scan; the agent's knowledge-ledger rebuild), and streaming enumeration's constant resident set is
+per backend on its own adversarial shape, §10.1; the query tier's matching scan; the agent's
+knowledge-ledger rebuild, `observe`, and `forget`), and streaming enumeration's constant resident set is
 asserted by the laziness law — a bounded pull count that goes red if a stream collects before it
 yields (§5.2).
 
@@ -2004,7 +2008,7 @@ necessity where it is declared.
    clingcon's theory registered: the resolution before the rewrite, the rewrite as part of the lowering,
    `prepare` after the model count is pinned, the per-model read of every named variable, the model hook
    left uncalled and why, the out-of-range constant's door, the theory's configuration fixed at creation
-   with its five meaning-bearing keys pinned and the rest search-only (§11.1). The trusted computing base
+   with its four meaning-bearing keys pinned and the rest search-only (§11.1). The trusted computing base
    names the threat model of record, builds both engines from their unmodified upstream sources at the
    pinned releases, and carries clingcon's obligations (§11.3). The conformance suite, the differentials,
    and the spike suite gain the theory checks and clingcon's claims, and each backend's lowering tripwire

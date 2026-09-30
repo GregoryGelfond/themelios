@@ -187,14 +187,17 @@ Every tier inherits these; the entries of §3–§5 cite where each binds.
 - **Defends.** The contract is the one door to an engine (specification §12.3, criterion 4). A request beyond a
   backend's declared capabilities is refused with a typed fault before it is paid for, never silently degraded
   (`solve.md` §4.1, §4.2). Faults carry a closed locus, and a located one lowers to a diagnostic (`solve.md` §5.4).
-  The outcome vocabulary makes the named pathologies unconstructible (`solve.md` §5.3): an inconsistent conclusion
-  is exhaustive, a cancelled search never is, a complete collection exists only for a closed search, and `Optimum`
-  has no public constructor. Enumeration streams with a constant resident set, asserted by the laziness law
-  (`solve.md` §5.2, §13.3). The knowledge ledger's rebuild is linear, held by a scaling tripwire (`solve.md` §13.3),
-  as are `observe` and `forget`. A cancellation handle carries no authority over a dropped engine — a pull reaches a
-  slot the backend owns and clears on drop, never a pointer into the engine (`solve.md` §4.1). The conformance suite
-  checks a backend's honesty: outcome correctness, capability honesty (every declared capability's method answers),
-  the pathologies, the fault loci, and the two conclusion invariants (`solve.md` §13.1).
+  The outcome vocabulary makes the named pathologies unconstructible (`solve.md` §5.3): enumeration and optimization
+  are distinct requests and handles, so no enumeration reports a trajectory; a complete collection exists only for a
+  closed search; one `Conclusion` stands orthogonal to the `Determination`, with no second flag to disagree with it;
+  and `Optimum` has no public constructor. The two conclusion invariants — an inconsistent conclusion is exhaustive, a
+  cancelled search never is — are not among them: the backend supplies the terminal conclusion (`solve.md` §5.2), so
+  they are held by the conformance suite, below. Enumeration streams with a constant resident set, asserted by the
+  laziness law (`solve.md` §5.2, §13.3). The knowledge ledger's rebuild, `observe`, and `forget` are linear, each held
+  by a scaling tripwire (`solve.md` §13.3). A cancellation handle carries no authority over a dropped engine — a pull
+  reaches a slot the backend owns and clears on drop, never a pointer into the engine (`solve.md` §4.1). The
+  conformance suite checks a backend's honesty: outcome correctness, capability honesty (every declared capability's
+  method answers), the pathologies, the fault loci, and the two conclusion invariants (`solve.md` §13.1).
 - **Trusts.** The backend. The core cannot re-derive an engine's answer; it trusts the backend to report the
   engine's, and it checks what it can structurally — a model holding an atom beside its contrary is refused as a
   backend contract violation (`query.md` §2.3). The conformance suite and the differentials (§8) are how a backend
@@ -259,8 +262,8 @@ section were read in the pinned sources and are version-scoped (§7).
 - **The bindings.** Generated from the two public C headers only, `libclingo/clingo.h` and `libclingcon/clingcon.h`,
   and committed; regeneration runs out of band behind the `bindgen` feature, never in a default build (specification
   §12.5; `solve.md` §2.1).
-- **One native library, claimed.** The `links` key claims the library by name, so no second package in a build links
-  it.
+- **The native library, claimed.** The `links` key claims the `clingo` library by name, so no second package in a
+  build links another copy of it; libclingcon is built inside the same crate, against that one library.
 - **The feature gate.** Without the adapter's feature both crates are empty shells and the stack is FFI-free
   (`solve.md` §11.3), which the trust check holds for the engine-free closures.
 - **Trusts.** The pinned upstream sources, git's content addressing of the pinned commits, CMake, and the host's C++
@@ -274,7 +277,8 @@ section were read in the pinned sources and are version-scoped (§7).
   reach is closed: it admits no call that loads a file (`clingo_control_load`, `clingo_control_load_aspif`), writes
   one (`clingo_control_register_backend`), parses program text (`clingo_control_add`, `clingo_ast_parse_string`,
   `clingo_ast_parse_files`), registers a script runtime (`clingo_register_script`, whose registry is process-global),
-  or runs the application (`clingo_main`). The only program the engine sees is the one the lowering builds (§5.6).
+  or runs the application (`clingo_main`). The only program the engine sees is the one the lowering builds (§5.6)
+  and, on the clingcon backend, clingcon's own fixed theory definition (§5.8).
 - **Errors.** Every fallible engine call returns `bool`; on `false` the adapter reads the thread-local error code and
   message at once, on the same thread, before another engine call can overwrite them, and returns a typed fault.
 - **The calls that end the process.** In the pinned source, `clingo_solve_handle_wait` catches any exception and
@@ -284,9 +288,13 @@ section were read in the pinned sources and are version-scoped (§7).
   yield-mode loop of §5.7 needs only `resume`, `model`, `get`, and `close` — and the adapter registers no solve-event
   callback. One added later returns `true` on every non-model event and stashes its error for the enclosing call.
 - **Engine messages.** The adapter installs a logger through the trampoline — a null logger writes to the host
-  process's standard error — and bounds how many messages it keeps, so a program cannot flood the host's error stream
-  or grow the capture without limit. Each message class the pinned engine logs (`clingo_warning_e`,
-  `libclingo/clingo.h`) has one disposition, read after the engine call that logged it returns:
+  process's standard error. The logger classifies each message as it arrives and records its class in a per-call
+  set of flags that no volume of messages can fill, while the message *text* it keeps is bounded by a named limit,
+  the message capture, with a stated default; so a program cannot flood the host's error stream or grow the capture
+  without limit, and no message of a class that faults the call is ever lost to the bound — a flood of benign
+  messages followed by one that faults still faults. Each message class the pinned engine logs
+  (`clingo_warning_e`, `libclingo/clingo.h`) has one disposition, applied from the flags after the engine call
+  that logged it returns, with the kept text as the fault's message where there is any:
   - *undefined operation* — the engine met an arithmetic operation or aggregate weight it could not evaluate, or an
     `@`-call nothing answers (`libclingo/src/scripts.cc`), treated the instance as false, and went on. The adapter
     refuses that repair: the message faults the call with the program locus, located at the statement it maps back
@@ -341,16 +349,17 @@ The pinned libclingo crashes under concurrent interning despite its header's cla
   `program.md` §3.1).
 - **Into the engine.** Creating an engine symbol is an interning write under §5.3. A string or name holding an
   interior NUL is refused — with the program locus in a statement, the request locus in an assumption (`solve.md`
-  §10.2) — because the engine's string input stops at the first NUL and would silently truncate. The walk is iterative, so a deep owned symbol never recurses.
-- **Out of the engine, bounded.** Reading an engine symbol is an iterative walk, so no depth recurses on the
-  adapter's stack. The engine hash-conses its symbols — a symbol is a node in a shared graph — while `Symbol` is an
-  owned tree (`program.md` §3.1), and `program.md` §13 leaves the unfolding to this tier. A five-line program builds
-  `s(i+1) = f(s(i), s(i))`: thirty levels of it are a few dozen engine nodes and about 2³⁰ owned ones. A memo keyed
-  on the engine's handle saves the walk but not the output. So the adapter sizes an unfolding before it builds it: one
-  memoised pass over the shared graph computes the owned size, saturating at the limit in force, in time linear in
-  the shared graph's nodes and edges. Past the limit the read refuses with a resource-locus fault — at that stream item, as
-  any mid-enumeration fault does (`solve.md` §5.2); within it, the copy is linear in its output. The limit is named —
-  an `UnfoldLimit`, counted in owned nodes per read — and its `DEFAULT` is fixed by measurement when the adapter is
+  §10.2) — because the engine's string input stops at the first NUL and would silently truncate. The walk is
+  iterative, so a deep owned symbol never recurses.
+- **Out of the engine, bounded.** Reading an engine symbol is an iterative walk, so no depth recurses on the adapter's
+  stack. The engine hash-conses its symbols — a symbol is a node in a shared graph — while `Symbol` is an owned tree
+  (`program.md` §3.1), and `program.md` §13 leaves the unfolding to this tier. A five-line program builds `s(i+1) =
+  f(s(i), s(i))`: thirty levels of it are a few dozen engine nodes and about 2³⁰ owned ones. A memo keyed on the
+  engine's handle saves the walk but not the output. So the adapter sizes an unfolding before it builds it: one
+  memoised pass over the shared graph computes the owned size, saturating at the limit in force, in time linear in the
+  shared graph's nodes and edges. Past the limit the read refuses with a resource-locus fault — at that stream item,
+  as any mid-enumeration fault does (`solve.md` §5.2); within it, the copy is linear in its output. The limit is named
+  — an `UnfoldLimit`, counted in owned nodes per read — and its `DEFAULT` is fixed by measurement when the adapter is
   built: far above the largest read in the corpus, with that measurement and the margin recorded beside it, as
   `NestingLimit::DEFAULT` records its own (`syntax.md` §6.6). An embedder may choose a tighter point. There is no
   stack pole here, because the walk is iterative; the limit bounds memory. It governs every door where an engine
@@ -358,9 +367,10 @@ The pinned libclingo crashes under concurrent interning despite its header's cla
   the variable names a theory reports.
 - **Order, owned-side.** A model's symbols arrive unsorted. The canonical order is computed on the owned side by the
   program tier's iterative `Ord`, which is the engine's order (`program.md` §3.1), settled by the program tier's
-  differential (`program.md` §16), whose shapes stay within the engine-safe depth (§5.6). The adapter never sorts with the engine's comparator, which recurses on argument
-  depth in the pinned source (`libgringo/src/symbol.cc`), so that comparing two deep symbols could exhaust the calling
-  thread's stack; for the same reason it never prints a symbol through the engine.
+  differential (`program.md` §16), whose shapes stay within the engine-safe depth (§5.6). The adapter never sorts with
+  the engine's comparator, which recurses on argument depth in the pinned source (`libgringo/src/symbol.cc`), so that
+  comparing two deep symbols could exhaust the calling thread's stack; for the same reason it never prints a symbol
+  through the engine.
 - **Hashes.** The engine's symbol hash embeds addresses and is not stable across processes; nothing persists or
   compares it.
 
@@ -450,10 +460,11 @@ this section states what it costs in trust. The adapter:
   unregistered (`libclingcon/clingcon.h`), so its configuration is fixed for the backend's lifetime and a rebuild
   recreates it — and pins every key that bears on the program's meaning (`solve.md` §11.1): `min-int` and
   `max-int` at clingcon's defaults, 32-bit values bounded to ±(2³⁰−1) (`libclingcon/clingcon/base.hh`), since that
-  range is the domain of every variable no `&dom` bounds; `shift-constraints` on and `split-all` off, clingcon's
-  defaults, since the first decides what a constraint in an integrity constraint's body means and the second
-  would split each remaining domain value into its own model; and `translate-opt` at 0, so a theory objective
-  stays inside the theory;
+  range is the domain of every variable no `&dom` bounds; `shift-constraints` on, clingcon's default, since it
+  decides what a constraint in an integrity constraint's body means; and `translate-opt` at 0, so a theory
+  objective stays inside the theory. The remaining keys shape the search and not the model set — `split-all`
+  among them: at a total assignment clingcon splits an unassigned variable's domain, the first or, with the key
+  on, all of them, and accepts a model only once every variable is assigned (`libclingcon/src/solver.cc`);
 - **registers it.** clingcon parses its fixed `#theory` definition into the control's `base` part through
   `clingo_control_add` and registers its propagator. The text is libclingcon's own and carries no input — clingcon's
   act, not a themelios render-then-parse — and it is an interning write, made under the discipline (§5.3). A program
@@ -574,6 +585,20 @@ Each context adds to the one before it and inherits the rest.
   is a fact about the code's shape. An engine upgrade re-runs the held claims and re-reads the read ones,
   re-establishing each compensation's necessity or retiring it (specification §5.2, §10.1; `solve.md` §13.2).
   - concurrent interning crashes the engine (§5.3) — *held*, the interning spike;
+  - the engine's error state is thread-local (§5.2) — *read*, `libclingo/src/control.cc`, in the default build: the
+    `-sys` build leaves `CLINGO_NO_THREAD_LOCAL` undefined, since other builds keep one shared state; *held* too by the
+    race harness;
+  - the engine hash-conses its symbols, and its symbol hash embeds addresses and is not stable across processes
+    (§5.4) — *read*, `libgringo/src/symbol.cc`; the sharing is *held* too by the unfold tripwire;
+  - a pointer the engine lends a callback is valid only for that callback (§5.5) — *read*, `libclingo/clingo.h`;
+  - the AST builder's add and grounding's term handling recurse in term depth (§5.6) — *read* in `libgringo`, and
+    *held* by the engine-safe depth's measurement;
+  - the engine refuses the next solve over an unclosed handle, `get` does not drain a satisfiable search, and a
+    model's memory is reused when the search resumes (§5.7) — *held*, the solve path's tests and the leak harness;
+  - grounding and automatic cleanup invalidate atom iterators between steps (§5.7) — *held*, the conformance suite's
+    multi-shot cases;
+  - a second concurrent solve on one control is undefined behaviour (§5.7) — *read*, `libclingo/clingo.h`; no test
+    can exercise it, and the borrow makes it unwritable;
   - `clingo_solve_handle_wait` with a positive timeout outside asynchronous mode, and a solve-event callback
     returning `false` on a non-model event, end the process (§5.2) — *read*, `libclingo/src/control.cc`;
   - `assign_external` of a non-external does nothing (§5.7) — *held*, the external spike;
@@ -584,13 +609,19 @@ Each context adds to the one before it and inherits the rest.
     the undefined-operation spike;
   - extended model symbols appear only under the `theory` show bit (§5.8) — *read*,
     `libclingo/clingo/clingocontrol.hh`, and *held* by the conformance suite's answer-set reads;
-  - of clingcon: an assignment read while the model is current equals the value the engine's own display reports,
-    and a theory objective with the model hook uncalled leaves the model set as it is without the objective (§5.8)
-    — *held*, the clingcon spikes; `prepare` sets an unset model count under a theory objective and nothing else
-    (§5.8) — *held*; the rewrite is mandatory (§5.8) — *held*; an assignment read skips unnamed indices across
-    multi-shot steps (§5.8) — *held*; the theory-free equivalence (§5.8) — *held*; the process-global decision-hook
-    latch, and `undo`'s uncaught path (§5.5, §5.8) — *read*, `libclingcon/src/clingcon.cc`; the drop order (§5.8) —
-    *read*, `libclingcon/clingcon.h`, and *held* by the leak harness's drop paths.
+  - clingcon's arithmetic raises on overflow and on an out-of-range constant (§5.8) — *read*,
+    `libclingcon/clingcon/util.hh` and `base.hh`, and *held* by the out-of-range spike;
+  - of clingcon: an assignment read while the model is current equals the value the engine's own display reports, and
+    a theory objective with the model hook uncalled leaves the model set as it is without the objective (§5.8) —
+    *held*, the clingcon spikes; `prepare` sets an unset model count under a theory objective and nothing else (§5.8)
+    — *held*; the rewrite is mandatory (§5.8) — *held*; an assignment read skips unnamed indices across multi-shot
+    steps (§5.8) — *held*; the theory-free equivalence (§5.8) — *held*; the process-global decision-hook latch, and
+    `undo`'s uncaught path (§5.5, §5.8) — *read*, `libclingcon/src/clingcon.cc`; the drop order (§5.8) — *read*,
+    `libclingcon/clingcon.h`, and *held* by the leak harness's drop paths.
+- **What cannot be contained in-process.** A grounding that never returns, a search that runs exponentially long
+  before cancellation is realised, and an engine crash — a deep term the grounder builds and then compares among
+  them — cannot be contained inside the host process. At the service boundary the only sound defense is process
+  isolation, which the embedder supplies (§5.9, §6).
 - **Characterized divergences stay divergences.** The grounder wraps overflowing arithmetic where the program tier
   refuses (`program.md` §3.5; `analysis.md` §12), so a program whose ground arithmetic overflows receives the engine's
   wrapped answer: the engine reports nothing, and themelios does not see inside grounding. The engine's other repair —

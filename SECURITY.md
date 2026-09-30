@@ -14,7 +14,7 @@ Include what a maintainer needs to reproduce it: the input (ASP source text, a p
 
 themelios is a library: it reads, represents, analyzes, and builds ASP programs, and it defines the contract a solving engine implements. It opens no network connection, runs no solver of its own, and executes nothing it reads. Its security posture is stated per tier and surface in the threat model of record, [`docs/threat-model.md`](docs/threat-model.md) — what each tier defends against however it is embedded, what it trusts, and what an embedder must supply — and that document is the starting point for a security review. The trust architecture it rests on is the specification's, [`docs/specification.md`](docs/specification.md) §12.3. In brief:
 
-- The syntax tier is the surface built to meet untrusted input. Its parser is total on arbitrary input and answers with a tree and typed diagnostics, never a panic.
+- The syntax tier is the surface built to meet untrusted input. Its parser is total on every admitted text — arbitrary bytes are refused at admission with a typed reason — and answers with a tree and typed diagnostics, never a panic.
 - A registered `@`-function or propagator runs with the host process's full trust. themelios contains an extension author's accidents, never their malice.
 - The engine adapter, behind its feature, links libclingo and libclingcon into the host process. A grounding that never ends, or a crash inside the engine, cannot be contained in-process, so a service that runs untrusted programs isolates engine work in a process it can kill (the threat model, §5.9 and §6).
 
