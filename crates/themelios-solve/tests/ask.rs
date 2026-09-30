@@ -14,10 +14,13 @@ use std::fmt::Debug;
 use std::rc::Rc;
 use std::time::Duration;
 
+use themelios_program::program::Part;
 use themelios_program::{Atom, Name, Program, Sign, Statement, Symbol};
 use themelios_solve::agent::{Agent, Assumption, Interrupt, Scenario, SolveOptions};
 use themelios_solve::bridge::{Door, GroundProgram};
-use themelios_solve::contract::{Backend, Capabilities, Fault, OptimizeRequest, SolveRequest};
+use themelios_solve::contract::{
+    Backend, Cancel, Capabilities, Fault, GroundOptions, OptimizeRequest, SolveRequest, TruthValue,
+};
 use themelios_solve::outcome::{Determination, Optimized, Solved};
 
 // ---- a recording backend the laws inspect ----
@@ -56,6 +59,10 @@ const BUDGET: Duration = Duration::from_secs(1);
 /// One question put to a recording agent, read for the fault it propagates.
 type Ask = fn(&mut Agent<Recorder>) -> Option<Fault>;
 
+/// One gated question put to an agent over a backend that declares nothing,
+/// read for the fault it propagates.
+type Overreach = fn(&mut Agent<Overreaching>) -> Option<Fault>;
+
 /// A backend that records what it is asked and never solves. It declares the
 /// capabilities its overrides answer for; cancellation is configurable so a
 /// law can read the handle both ways.
@@ -70,6 +77,7 @@ impl Backend for Recorder {
         let mut capabilities = Capabilities::default();
         capabilities.assumptions = true;
         capabilities.optimization = true;
+        capabilities.budgets.time = true;
         capabilities.cancellation = self.cancellation;
         capabilities
     }
@@ -100,8 +108,9 @@ impl Backend for Recorder {
         None
     }
 
-    fn interrupt(&self) -> Option<Interrupt> {
-        self.cancellation.then_some(Interrupt)
+    fn interrupt(&self) -> Option<Box<dyn Cancel>> {
+        self.cancellation
+            .then(|| Box::new(Unheeded) as Box<dyn Cancel>)
     }
 
     fn optimize(&mut self, request: &OptimizeRequest) -> Result<Optimized<'_>, Fault> {
@@ -144,6 +153,56 @@ impl Backend for Dormant {
     fn ground_program(&self) -> Option<&GroundProgram> {
         None
     }
+}
+
+/// A backend that declares nothing yet answers every gated method, recording
+/// each call — so a law can tell the agent's refusal on the declaration from the
+/// backend's own.
+struct Overreaching {
+    calls: Rc<RefCell<Vec<&'static str>>>,
+}
+
+impl Backend for Overreaching {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default()
+    }
+
+    fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
+        self.calls.borrow_mut().push("solve");
+        Err(Fault::engine(NO_ENGINE))
+    }
+
+    fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
+        self.calls.borrow_mut().push("lower");
+        Ok(())
+    }
+
+    fn ground_program(&self) -> Option<&GroundProgram> {
+        None
+    }
+
+    fn optimize(&mut self, _request: &OptimizeRequest) -> Result<Optimized<'_>, Fault> {
+        self.calls.borrow_mut().push("optimize");
+        Err(Fault::engine(NO_ENGINE))
+    }
+
+    fn ground(&mut self, _parts: &[Part], _options: &GroundOptions) -> Result<(), Fault> {
+        self.calls.borrow_mut().push("ground");
+        Ok(())
+    }
+
+    fn assign_external(&mut self, _external: Symbol, _value: TruthValue) -> Result<(), Fault> {
+        self.calls.borrow_mut().push("assign_external");
+        Ok(())
+    }
+}
+
+/// A cancellation primitive that cuts nothing short — the recorder's engine
+/// runs no search to cut.
+struct Unheeded;
+
+impl Cancel for Unheeded {
+    fn cancel(&self) {}
 }
 
 /// An agent over `program` and a fresh recorder, with the record handed back so
@@ -389,6 +448,34 @@ fn a_refused_lowering_is_not_followed_by_a_delegation() {
 // ---- a gated question over a backend without the capability is refused ----
 
 #[test]
+fn a_question_beyond_the_declaration_refuses_before_anything_is_lowered() {
+    // The backend would answer each of these; the agent reads the declaration,
+    // not the method, and refuses before paying for a lowering.
+    let questions: [(&str, Overreach); 4] = [
+        ("optimize", |agent| {
+            agent.optimize(&OptimizeRequest::default()).err()
+        }),
+        ("a budgeted solve", |agent| {
+            agent.solve_with(budgeted()).err()
+        }),
+        ("ground", |agent| agent.ground(&[]).err()),
+        ("assign_external", |agent| {
+            let atom = Symbol::function(identifier("a"), [], Sign::Positive);
+            agent.assign_external(atom, TruthValue::True).err()
+        }),
+    ];
+    for (name, question) in questions {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let backend = Overreaching {
+            calls: Rc::clone(&calls),
+        };
+        let mut agent = Agent::new(Program::empty(), backend);
+        assert_eq!(question(&mut agent), Some(Fault::unsupported()), "{name}");
+        assert!(calls.borrow().is_empty(), "{name}: {:?}", calls.borrow());
+    }
+}
+
+#[test]
 fn optimize_over_a_backend_without_the_capability_is_refused() {
     let mut agent = Agent::new(Program::empty(), Dormant);
     assert_eq!(
@@ -438,6 +525,12 @@ fn holding_a_solved_handle_locks_the_agent() {
 fn the_interrupt_handle_is_send() {
     fn assert_send<T: Send>() {}
     assert_send::<Interrupt>();
+}
+
+#[test]
+fn the_cancellation_primitive_crosses_threads() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Box<dyn Cancel>>();
 }
 
 #[test]

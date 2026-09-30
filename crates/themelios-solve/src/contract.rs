@@ -35,10 +35,10 @@ use themelios_base::diagnostic::{Diagnostic, DiagnosticId, Label, Severity, ToDi
 use themelios_program::Symbol;
 use themelios_program::program::Part;
 
-use crate::agent::{Interrupt, Scenario};
+use crate::agent::Scenario;
 use crate::bridge::{Door, GroundProgram};
 use crate::extend::{Function, Propagator};
-use crate::outcome::{Consequences, Optimized, Solved};
+use crate::outcome::{NativeAnswer, Optimized, Solved};
 
 // ---- The backend contract (§4.1, §4.3) ----
 
@@ -77,7 +77,10 @@ pub trait Backend {
     fn capabilities(&self) -> Capabilities;
 
     /// Required. Consistency and enumeration: the handle resolves the
-    /// trichotomy and streams the answer sets lazily (§5.2).
+    /// trichotomy and streams the models lazily (§5.2). It enumerates
+    /// `solve`'s model set, which ignores any objective (§5.2): the stable
+    /// models, as if the program had none, so an engine that optimises a
+    /// program with an objective by default owes the enumeration without it.
     fn solve(&mut self, request: &SolveRequest) -> Result<Solved<'_>, Fault>;
 
     /// Required. The bridge (§10): consume a program through a door. On a
@@ -91,14 +94,15 @@ pub trait Backend {
     /// observer (§10.4); `None` when it has none to expose.
     fn ground_program(&self) -> Option<&GroundProgram>;
 
-    /// Provided. A handle that interrupts an in-flight solve from another
-    /// thread — `Some` exactly when `capabilities().cancellation` (§6.1,
-    /// §6.3). The default answers `None`, so a non-cancelling backend inherits
-    /// it and a cancelling one overrides. It is the one primitive the
-    /// request-side time budget (§6.3) and the agent's interrupt (§6.2) are
-    /// realised over; the conformance suite (§13.1) checks that a declared
-    /// cancellation answers `Some`, so the bit cannot lie.
-    fn interrupt(&self) -> Option<Interrupt> {
+    /// Provided. The engine's cancellation primitive, to cut an in-flight
+    /// solve short from another thread — `Some` exactly when
+    /// `capabilities().cancellation` (§6.1, §6.3). The default answers `None`,
+    /// so a non-cancelling backend inherits it and a cancelling one overrides.
+    /// It is the one primitive the request-side time budget (§6.3) and the
+    /// agent's interrupt handle — the core's, over it (§6.2) — are realised
+    /// over; the conformance suite (§13.1) checks that a declared cancellation
+    /// answers `Some`, so the bit cannot lie.
+    fn interrupt(&self) -> Option<Box<dyn Cancel>> {
         None
     }
 
@@ -110,9 +114,10 @@ pub trait Backend {
     }
 
     /// Required under `capabilities().assumptions`. Solve under a scenario
-    /// (§6.3). Blame (§5.4) is the core's reading over this, not the
-    /// backend's — its derivation not yet realised — so there is no separate
-    /// blame method. Refuses otherwise.
+    /// (§6.3): the models of `solve`'s set the scenario admits (§5.2). Blame
+    /// (§5.4) is the core's reading over this, not the backend's — its
+    /// derivation not yet realised — so there is no separate blame method.
+    /// Refuses otherwise.
     fn solve_assuming(
         &mut self,
         _scenario: &Scenario,
@@ -168,20 +173,45 @@ pub trait Backend {
     /// scenario over `solve_assuming` — and the request surface says which path
     /// runs. Refuses by default.
     ///
-    /// Like the derived door, an implementation refuses — a [`Fault`] — where
-    /// the request's scenario admits no answer set: `⋂`/`⋃` over the empty world
-    /// view is undefined, not `∅`. It refuses likewise over a search that did not close
-    /// the space — a native cautious solve that stopped early has converged on a
-    /// *super*set of `⋂`, an over-approximation, not the consequences. So the
-    /// native and derived doors give the same answer, the free differential of
-    /// `query.md` §2.4.
+    /// It reports what the engine's search established, a [`NativeAnswer`]: the
+    /// set it computed over a space it closed having seen a model, no model over
+    /// a closed space, or where it stopped short. The core builds the
+    /// consequences from that answer, or refuses — over no model, and over a
+    /// search that did not close the space, as the derived door refuses — so
+    /// the two doors refuse alike as they answer alike, the free differential of
+    /// `query.md` §2.4. The refusals' decision and wording are the core's; the
+    /// report's honesty is the backend's, which the conformance suite checks. A
+    /// fault the search raised is the method's own refusal.
     fn consequences_native(
         &mut self,
         _mode: Mode,
         _request: &ConsequenceRequest,
-    ) -> Result<Consequences, Fault> {
+    ) -> Result<NativeAnswer, Fault> {
         Err(Fault::unsupported())
     }
+}
+
+/// The engine's cancellation primitive (docs/design/solve.md §4.1, §6.3): one
+/// call cuts the in-flight solve short. `Send + Sync`, so the core's timer
+/// thread and the caller's handle pull it from another thread. A pull signals
+/// and returns — `O(1)`, never blocking on the solving thread — and the stop is
+/// read through the run's `conclusion`.
+///
+/// A pull with no solve in flight is a no-op — never a cancellation of the
+/// next question. An implementation over an engine whose own primitive cuts
+/// "the active call or the following one" compensates by arming its forward
+/// only while a run is open, which suffices only where its notion of *open*
+/// closes no later than the engine's own search — a claim to establish for the
+/// pinned engine, with a race harness holding the concurrent close.
+///
+/// The primitive carries no authority over a dropped engine: a pull reaches a
+/// slot the backend owns and clears on drop, shared with the handle, never a
+/// pointer into the engine — so the engine's lifetime is the backend's, and a
+/// handle that outlives its backend holds nothing and cuts nothing.
+pub trait Cancel: Send + Sync {
+    /// Signal the in-flight solve to stop, and return; a no-op with none in
+    /// flight, or once the backend is dropped. `O(1)`.
+    fn cancel(&self);
 }
 
 // ---- The capability declaration (§4.1, §4.2) ----
@@ -525,6 +555,14 @@ impl std::error::Error for Fault {}
 pub struct LocatedFault<'a> {
     fault: &'a Fault,
     label: &'a Label,
+}
+
+impl<'a> LocatedFault<'a> {
+    /// The label the fault carries — its source location, with a message where
+    /// it has one — readable without lowering to a diagnostic. Total; O(1).
+    pub fn label(&self) -> &'a Label {
+        self.label
+    }
 }
 
 impl ToDiagnostic for LocatedFault<'_> {

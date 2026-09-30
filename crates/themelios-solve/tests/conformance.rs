@@ -13,17 +13,19 @@ use themelios_base::span::{ByteOffset, Location};
 use themelios_program::program::Part;
 use themelios_program::raise::raise_str;
 use themelios_program::{Dialect, Name, Origin, Program, Sign, SourceId, Symbol};
-use themelios_solve::agent::{Assumption, Interrupt, Scenario};
+use themelios_solve::agent::{Assumption, Scenario};
 use themelios_solve::bridge::{Door, GroundProgram};
 use themelios_solve::conformance::{
     self, Breach, Capability, Check, ConformanceReport, Skip, Verdict,
 };
 use themelios_solve::contract::{
-    Backend, Capabilities, ConsequenceRequest, ConsequenceSupport, Fault, GroundOptions, Locus,
-    Mode, SolveRequest, TruthValue,
+    Backend, Cancel, Capabilities, ConsequenceRequest, ConsequenceSupport, Fault, GroundOptions,
+    Locus, Mode, SolveRequest, TruthValue,
 };
 use themelios_solve::extend::{Function, Propagator};
-use themelios_solve::outcome::{AnswerSet, Conclusion, Consequences, Run, Solved};
+use themelios_solve::outcome::{
+    AnswerSet, Conclusion, Consequences, Model, NativeAnswer, Run, Solved, Truncation,
+};
 
 // ---- The table a stub answers the suite from ----
 
@@ -74,6 +76,10 @@ const RULE: &str = "b :- a.";
 /// instantiate the second statement.
 const UNSAFE: &str = "a. p(X).";
 
+/// A choice under an objective: its stable models, the objective ignored as a
+/// solve ignores it, are `{}` and `{a}`; its optimum is `{}`.
+const OBJECTIVE: &str = "{ a }. #minimize { 1 : a }.";
+
 /// How the stub answers a program.
 enum Answers {
     /// These answer sets, known independently of any engine.
@@ -116,16 +122,30 @@ fn table() -> Vec<(&'static str, Program, Answers)> {
         (HEAD_CYCLE, known(vec![set([constant("a"), constant("b")])])),
         (CONSTRAINED_LOOP, known(vec![])),
         (RULE, known(vec![set([])])),
-        (
-            "{ a }. #minimize { 1 : a }.",
-            known(vec![set([]), set([constant("a")])]),
-        ),
+        (OBJECTIVE, known(vec![set([]), set([constant("a")])])),
         (EXTERNAL, Answers::External),
         (UNSAFE, Answers::Unsafe),
     ]
     .into_iter()
     .map(|(source, answers)| (source, program(source), answers))
     .collect()
+}
+
+/// The positive atom a strongly negated `symbol` is the contrary of, if it is
+/// one.
+fn positive_of(symbol: &Symbol) -> Option<Symbol> {
+    match symbol {
+        Symbol::Function {
+            name,
+            arguments,
+            sign: Sign::Negative,
+        } => Some(Symbol::function(
+            name.clone(),
+            arguments.iter().cloned(),
+            Sign::Positive,
+        )),
+        _ => None,
+    }
 }
 
 /// Where each statement of `program` was parsed.
@@ -211,8 +231,8 @@ struct Enumeration {
 }
 
 impl Run for Enumeration {
-    fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
-        let next = self.sets.next().map(Ok);
+    fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+        let next = self.sets.next().map(|set| Ok(Model::of(set)));
         if next.is_none() {
             self.ended = true;
         }
@@ -237,13 +257,13 @@ struct Endless {
 }
 
 impl Run for Endless {
-    fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+    fn next_model(&mut self) -> Option<Result<Model, Fault>> {
         self.yielded += 1;
         assert!(
             self.yielded <= ENDLESS_TRIPWIRE,
             "the suite read {ENDLESS_TRIPWIRE} models of a run that never ends: its bound failed"
         );
-        Some(Ok(self.model.clone()))
+        Some(Ok(Model::of(self.model.clone())))
     }
 
     fn conclusion(&self) -> Option<Conclusion> {
@@ -252,22 +272,22 @@ impl Run for Endless {
 }
 
 /// A search that faults: its first model, where it has one, then the fault,
-/// then the end, concluded as cut short.
+/// then the end — with no conclusion, a faulted search having reached none.
 struct Faulting {
     first: Option<AnswerSet>,
     fault: Option<Fault>,
 }
 
 impl Run for Faulting {
-    fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+    fn next_model(&mut self) -> Option<Result<Model, Fault>> {
         if let Some(first) = self.first.take() {
-            return Some(Ok(first));
+            return Some(Ok(Model::of(first)));
         }
         self.fault.take().map(Err)
     }
 
     fn conclusion(&self) -> Option<Conclusion> {
-        (self.first.is_none() && self.fault.is_none()).then_some(Conclusion::Interrupted)
+        None
     }
 }
 
@@ -280,11 +300,11 @@ struct Unfused {
 }
 
 impl Run for Unfused {
-    fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+    fn next_model(&mut self) -> Option<Result<Model, Fault>> {
         if self.ended {
-            return self.again.take().map(Ok);
+            return self.again.take().map(|set| Ok(Model::of(set)));
         }
-        let next = self.sets.next().map(Ok);
+        let next = self.sets.next().map(|set| Ok(Model::of(set)));
         self.ended = next.is_none();
         next
     }
@@ -339,6 +359,12 @@ enum Flaw {
     /// Yields, as the first model of a program that has answer sets, a set that
     /// is none of them.
     YieldsAStranger,
+    /// Yields each model with the contrary of its every strongly negated atom
+    /// beside it.
+    YieldsAnInconsistentModel,
+    /// Solves under the objective, as an engine optimising by default does,
+    /// yielding the program under an objective its optimum alone.
+    OptimizesTheSolve,
     /// Reads the positive loops by completion, with their unsupported model.
     SolvesByCompletion,
     /// Reads the head cycle by shifting its disjunction, with no model.
@@ -403,6 +429,9 @@ enum Flaw {
     /// Declares the native door and `assumptions`, yet answers under a scenario
     /// that admits no model.
     AnswersAnUnsatisfiableScenario,
+    /// Declares the native door, yet reports every search stopped at its budget,
+    /// though none was asked.
+    StopsTheNativeSearchShort,
     /// Declares multi-shot solving, yet refuses `reset`.
     RefusesTheReset,
     /// Declares multi-shot solving, yet its `lower` replaces what it keeps.
@@ -441,6 +470,14 @@ enum Flaw {
     AnswersUndeclaredFunctions,
     /// Registers a propagator without declaring `propagators`.
     AnswersUndeclaredPropagators,
+}
+
+/// A cancellation primitive that cuts nothing short — the stub's searches are
+/// scripted, with nothing to cut.
+struct Unheeded;
+
+impl Cancel for Unheeded {
+    fn cancel(&self) {}
 }
 
 /// A backend answering the suite from its table, honouring exactly what it
@@ -515,6 +552,13 @@ impl Stub {
                 sets.push(set([constant("a"), constant("b")]));
             }
             Flaw::ShiftsTheHeadCycle if source == HEAD_CYCLE => sets.clear(),
+            Flaw::OptimizesTheSolve if source == OBJECTIVE => sets.retain(AnswerSet::is_empty),
+            Flaw::YieldsAnInconsistentModel => {
+                for set in &mut sets {
+                    let contraries: Vec<Symbol> = set.iter().filter_map(positive_of).collect();
+                    set.extend(contraries);
+                }
+            }
             _ => {}
         }
         Ok(sets)
@@ -708,13 +752,13 @@ impl Backend for Stub {
         (self.flaw == Flaw::ExposesAnEmptyGroundProgram).then_some(&self.nothing)
     }
 
-    fn interrupt(&self) -> Option<Interrupt> {
+    fn interrupt(&self) -> Option<Box<dyn Cancel>> {
         let offered = match self.flaw {
             Flaw::WithholdsTheInterruptHandle => false,
             Flaw::OffersAnUndeclaredInterrupt => true,
             _ => self.capabilities.cancellation,
         };
-        offered.then_some(Interrupt)
+        offered.then(|| Box::new(Unheeded) as Box<dyn Cancel>)
     }
 
     fn solve_assuming(
@@ -855,7 +899,7 @@ impl Backend for Stub {
         &mut self,
         mode: Mode,
         request: &ConsequenceRequest,
-    ) -> Result<Consequences, Fault> {
+    ) -> Result<NativeAnswer, Fault> {
         if self.capabilities.native_consequences != ConsequenceSupport::Native {
             return Err(Fault::unsupported());
         }
@@ -863,6 +907,9 @@ impl Backend for Stub {
             && request.scenario.assumptions().next().is_some()
         {
             return Err(Fault::request("the stub's door ranges over no scenario"));
+        }
+        if self.flaw == Flaw::StopsTheNativeSearchShort {
+            return Ok(NativeAnswer::Stopped(Truncation::Budget));
         }
         let scoped = self.flaw != Flaw::IgnoresTheNativeScenario;
         let all = self.answer_sets()?;
@@ -890,15 +937,18 @@ impl Backend for Stub {
         let answers_anyway = self.flaw == Flaw::AnswersTheConsequencesOfNoModel
             || (scoped_request && self.flaw == Flaw::AnswersAnUnsatisfiableScenario);
         if sets.is_empty() && !answers_anyway {
-            return Err(Fault::request(
-                "no consequences: the program has no answer set",
-            ));
+            return Ok(NativeAnswer::NoModel);
         }
         let answered = match (mode, self.flaw) {
             (Mode::Cautious, Flaw::MisanswersTheNativeCautious) => Mode::Brave,
             _ => mode,
         };
-        Ok(Consequences::fold(answered, sets.iter()))
+        // Answering over no model anyway, the flawed door answers the empty set.
+        Ok(NativeAnswer::Closed(
+            Consequences::fold(answered, &sets)
+                .map(|consequences| consequences.as_set().clone())
+                .unwrap_or_default(),
+        ))
     }
 }
 
@@ -1252,6 +1302,17 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             vec![(Outcome, Misanswered)],
         ),
         (
+            // Its stream is wrong, and the answer set it corrupted went unseen.
+            Flaw::YieldsAnInconsistentModel,
+            enumerating(),
+            vec![(Outcome, Misanswered), (Earned, Misanswered)],
+        ),
+        (
+            Flaw::OptimizesTheSolve,
+            enumerating(),
+            vec![(Outcome, Misanswered), (Earned, Misanswered)],
+        ),
+        (
             Flaw::SolvesByCompletion,
             enumerating(),
             vec![(Outcome, Misanswered)],
@@ -1405,6 +1466,18 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             vec![(Declared(C::NativeConsequences), Misanswered)],
         ),
         (
+            Flaw::StopsTheNativeSearchShort,
+            realising(),
+            vec![(Declared(C::NativeConsequences), Misanswered)],
+        ),
+        (
+            // Without assumptions no scoped probe runs, so the unscoped door's
+            // own check is what catches the stop.
+            Flaw::StopsTheNativeSearchShort,
+            only(Capability::NativeConsequences),
+            vec![(Declared(C::NativeConsequences), Misanswered)],
+        ),
+        (
             Flaw::RefusesTheReset,
             realising(),
             vec![(Outcome, Refused), (Declared(C::MultiShot), Refused)],
@@ -1529,6 +1602,25 @@ fn a_failure_names_the_corpus_program_it_broke_on() {
         panic!("the dropped answer set fails its outcome: {report}");
     };
     assert_eq!(failure.case(), Some("an even loop"));
+}
+
+#[test]
+fn an_inconsistent_model_fails_its_outcome_as_one() {
+    let report = report(enumerating(), Flaw::YieldsAnInconsistentModel);
+    let Some(Verdict::Failed(failure)) = report.verdict(Check::OutcomeCorrectness) else {
+        panic!("the inconsistent model fails its outcome: {report}");
+    };
+    assert_eq!(failure.case(), Some("classical negation"));
+    assert!(failure.to_string().contains("contrary"), "{failure}");
+}
+
+#[test]
+fn a_solve_under_the_objective_fails_on_the_program_under_one() {
+    let report = report(enumerating(), Flaw::OptimizesTheSolve);
+    let Some(Verdict::Failed(failure)) = report.verdict(Check::OutcomeCorrectness) else {
+        panic!("the optimising solve fails its outcome: {report}");
+    };
+    assert_eq!(failure.case(), Some("a choice under an objective"));
 }
 
 #[test]

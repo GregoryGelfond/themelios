@@ -18,13 +18,13 @@
 use std::collections::BTreeSet;
 
 use themelios_program::AnswerSet;
-use themelios_program::program::{Arguments, Atom};
+use themelios_program::program::Arguments;
 use themelios_program::symbol::{Sign, Symbol};
 use themelios_program::term::{EvalError, Term, Variable};
-use themelios_program::unify::{NotAPattern, Substitution, mgu, signature_range};
+use themelios_program::unify::{NotAPattern, mgu, signature_range};
 use themelios_solve::agent::{Agent, Scenario};
 use themelios_solve::contract::{Backend, Fault, Mode};
-use themelios_solve::outcome::{Determination, Models};
+use themelios_solve::outcome::{Determination, Model, Models};
 
 pub mod prelude;
 
@@ -32,6 +32,12 @@ pub mod prelude;
 // consequences are the solve tier's typed sets, each carrying the mode that
 // produced it, and the query tier hands them back under the one name.
 pub use themelios_solve::outcome::Consequences;
+
+// A pattern is a signed `Atom` (docs/design/query.md §2.1; program.md §11.2): the
+// query tier reuses the program tier's type directly — no new type — and hands it
+// on under the one name, so a client of this tier alone can spell the pattern its
+// readings take.
+pub use themelios_program::Atom;
 
 /// The epistemic answer to a ground query (docs/design/query.md §2.2): `Yes`
 /// iff the query is true in every member of the world view, `No` iff it is
@@ -196,7 +202,9 @@ impl std::error::Error for NotAQuery {
 }
 
 /// A program's *world view* (docs/design/query.md §2.3): the live reading over a
-/// consistent program's answer sets, driving the engine that produced them. It is
+/// consistent program's models, driving the engine that produced them — every
+/// reading reads a member's answer set, and a theory assignment, where a backend
+/// supplies one, rides beside it unread. It is
 /// built only from a resolved `Determination::Consistent(Models)` (solve.md §5.2)
 /// through [`of`](WorldView::of), so a world view that exists is **non-empty by
 /// construction** — an inconsistent program is `Determination::Inconsistent`, never
@@ -222,12 +230,12 @@ impl<'a> WorldView<'a> {
         WorldView { models }
     }
 
-    /// Stream the answer sets (docs/design/query.md §2.3): each item a `Result`, so
-    /// a mid-stream engine fault surfaces at the item, not as a clean end. Touching
+    /// Stream the models (docs/design/query.md §2.3): each item a `Result`, so a
+    /// mid-stream engine fault surfaces at the item, not as a clean end. Touching
     /// the stream forfeits the complete collection
     /// [`materialize`](WorldView::materialize) would drain. Borrows the handle for
     /// the stream's life. Cost: O(1) resident.
-    pub fn members(&mut self) -> impl Iterator<Item = Result<AnswerSet, Fault>> + '_ {
+    pub fn members(&mut self) -> impl Iterator<Item = Result<Model, Fault>> + '_ {
         self.models.members()
     }
 
@@ -244,7 +252,7 @@ impl<'a> WorldView<'a> {
         self.models.is_exhausted()
     }
 
-    /// The scenario the answer sets range over (docs/design/query.md §2.3): the
+    /// The scenario the models range over (docs/design/query.md §2.3): the
     /// assumptions in force, or the empty scenario for the unscoped program.
     /// Borrowed; reading does not spend the handle. O(1).
     pub fn scenario(&self) -> &Scenario {
@@ -258,16 +266,30 @@ impl<'a> WorldView<'a> {
     /// complete and non-empty by construction, so a partial or non-exhausted view
     /// must not pass as one. The gate is the solve tier's own completeness refusal,
     /// carried as its [`Fault`], so a truncated search cannot be laundered into a
-    /// complete snapshot. Cost: O(members) to drain, plus a clone of the scenario.
+    /// complete snapshot. **Refuses** too a member holding an atom and its
+    /// contrary: no answer set does, so the backend broke its contract — a
+    /// [`Fault::adapter_bug`] — and every reading's partition rests on answer-set
+    /// consistency, so it is checked here rather than trusted. Cost: O(members) to
+    /// drain; the check looks up each strongly negated atom's contrary — a copy of
+    /// its arguments and an `O(log m)` lookup in its `m`-atom member; plus a clone
+    /// of the scenario.
     pub fn materialize(mut self) -> Result<Snapshot, Fault> {
         let members = self.models.all_members()?;
+        if members
+            .iter()
+            .any(|member| holds_an_atom_and_its_contrary(member.atoms()))
+        {
+            return Err(Fault::adapter_bug(
+                "the backend yielded a model holding an atom and its contrary",
+            ));
+        }
         let scenario = self.models.scenario().clone();
         Ok(Snapshot::of(members, scenario))
     }
 }
 
 /// The engine-free form of a world view (docs/design/query.md §2.3): the owned,
-/// materialised answer sets and the scenario they range over, every reading
+/// materialised models and the scenario they range over, every reading
 /// **infallible** — no engine remains to fault, no stream to exhaust. Built only by
 /// [`WorldView::materialize`], from a world view whose search closed the space, so
 /// a snapshot is **complete and non-empty by construction**: its cautious and brave
@@ -277,7 +299,7 @@ impl<'a> WorldView<'a> {
 /// Owned plain data; the readings borrow it and never spend it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Snapshot {
-    members: Vec<AnswerSet>,
+    members: Vec<Model>,
     scenario: Scenario,
 }
 
@@ -289,6 +311,22 @@ enum Truth {
     False,
     Unknown,
     True,
+}
+
+/// Whether `member` holds some atom and its contrary (docs/design/query.md
+/// §2.3) — which no answer set does. Each strongly negated atom's contrary is
+/// looked up, so an `m`-atom member costs `O(m log m)` lookups plus a copy of each
+/// negated atom's arguments.
+fn holds_an_atom_and_its_contrary(member: &AnswerSet) -> bool {
+    member.iter().any(|symbol| {
+        matches!(
+            symbol,
+            Symbol::Function {
+                sign: Sign::Negative,
+                ..
+            }
+        ) && member.contains(&contrary(symbol))
+    })
 }
 
 /// The contrary of a ground literal symbol — its strong negation, the same
@@ -653,28 +691,36 @@ impl Snapshot {
     /// Crate-private: a snapshot is reached only by materialising a live world view,
     /// so the "complete and non-empty by construction" invariant it inherits is not
     /// forgeable from arbitrary data. O(1) — the members move in.
-    pub(crate) fn of(members: Vec<AnswerSet>, scenario: Scenario) -> Snapshot {
+    pub(crate) fn of(members: Vec<Model>, scenario: Scenario) -> Snapshot {
         Snapshot { members, scenario }
+    }
+
+    /// The consequences in `mode`: the fold over the members' answer sets, which
+    /// refuses only an empty collection — and a snapshot is non-empty by
+    /// construction, so the expect discharges that invariant.
+    fn folded(&self, mode: Mode) -> Consequences {
+        Consequences::fold(mode, self.members.iter().map(Model::atoms))
+            .expect("a snapshot is non-empty by construction")
     }
 
     /// The cautious consequences — the intersection of the answer sets, what holds
     /// in every member (docs/design/query.md §2.4). Infallible over owned data, and
     /// complete because the collection is. Cost: O(members × set size).
     pub fn cautious(&self) -> Consequences {
-        Consequences::fold(Mode::Cautious, &self.members)
+        self.folded(Mode::Cautious)
     }
 
     /// The brave consequences — the union of the answer sets, what holds in some
     /// member (docs/design/query.md §2.4). Infallible over owned data, and complete
     /// because the collection is. Cost: O(members × set size).
     pub fn brave(&self) -> Consequences {
-        Consequences::fold(Mode::Brave, &self.members)
+        self.folded(Mode::Brave)
     }
 
-    /// The answer sets, each borrowed (docs/design/query.md §2.3): reading does not
+    /// The models, each borrowed (docs/design/query.md §2.3): reading does not
     /// spend the snapshot, and every member is present — the collection is complete
     /// by construction. Cost: O(1) to open; O(n) over the whole stream.
-    pub fn members(&self) -> impl Iterator<Item = &AnswerSet> + '_ {
+    pub fn members(&self) -> impl Iterator<Item = &Model> + '_ {
         self.members.iter()
     }
 
@@ -685,7 +731,7 @@ impl Snapshot {
         true
     }
 
-    /// The scenario the answer sets range over (docs/design/query.md §2.3): the
+    /// The scenario the models range over (docs/design/query.md §2.3): the
     /// assumptions in force, or the empty scenario for the unscoped program.
     /// Borrowed; reading does not spend the snapshot. O(1).
     pub fn scenario(&self) -> &Scenario {
@@ -703,7 +749,7 @@ impl Snapshot {
         let mut all_true = true;
         let mut all_false = true;
         for member in &self.members {
-            match query.truth_in(member) {
+            match query.truth_in(member.atoms()) {
                 Truth::True => all_false = false,
                 Truth::False => all_true = false,
                 Truth::Unknown => {
@@ -760,23 +806,23 @@ impl Snapshot {
         // refuses before the folds — the program tier's `mgu` refuses a pool and a
         // non-denoting argument alike (§3.1).
         mgu(pat, pat)?;
-        // The cautious (⋂) and brave (⋃) consequences as symbol sets — the derived
-        // reading a snapshot folds (§2.4), the ground the partition is read off.
-        let cautious: AnswerSet = self.cautious().symbols().cloned().collect();
-        let brave: AnswerSet = self.brave().symbols().cloned().collect();
+        // The cautious (⋂) and brave (⋃) consequences — the derived reading a
+        // snapshot folds (§2.4), the ground the partition is read off — borrowed as
+        // the symbol sets they are.
+        let (cautious, brave) = (self.cautious(), self.brave());
         // `yes`: the instances present in every member.
-        let yes: BTreeSet<Symbol> = matched_in(pat, &cautious)?.into_iter().collect();
+        let yes: BTreeSet<Symbol> = matched_in(pat, cautious.as_set())?.into_iter().collect();
         // `no`: the instances whose contrary is cautiously entailed, reported with the
         // pattern's sign (the contrary of each matched contrary). Disjoint from the
         // brave domain of `pat` by answer-set consistency (no member holds both `g`
         // and `-g`), so it never re-enters `unknown`.
-        let no: BTreeSet<Symbol> = matched_in(&contrary_pattern(pat), &cautious)?
+        let no: BTreeSet<Symbol> = matched_in(&contrary_pattern(pat), cautious.as_set())?
             .iter()
             .map(contrary)
             .collect();
         // `unknown`: the brave domain, less the settled. `yes ⊆ brave` (⋂ ⊆ ⋃), so
         // this subtraction is the whole of the disjointness the partition owes.
-        let unknown: BTreeSet<Symbol> = matched_in(pat, &brave)?
+        let unknown: BTreeSet<Symbol> = matched_in(pat, brave.as_set())?
             .into_iter()
             .filter(|instance| !yes.contains(instance))
             .collect();
@@ -792,8 +838,8 @@ impl Snapshot {
 /// sign is carried through unchanged. `O(the symbol's size)` — each argument is
 /// copied.
 ///
-/// The building block of `matches_in` and `matched_in`; the bindings partition
-/// (§2.5) reaches it through the latter.
+/// The building block of `matched_in`, through which the bindings partition
+/// (§2.5) reaches it.
 pub(crate) fn lift(symbol: &Symbol) -> Option<Atom> {
     match symbol {
         Symbol::Function {
@@ -812,42 +858,6 @@ pub(crate) fn lift(symbol: &Symbol) -> Option<Atom> {
     }
 }
 
-/// Every substitution under which `pattern` matches a member of `set` (docs/
-/// design/query.md §3.1). The candidates are the contiguous block of symbols
-/// sharing `pattern`'s signature — `set.range(signature_range(pattern))`, an
-/// `O(log n + k)` scan of the `k` candidates, not the whole `n`-member set, each
-/// then lifted and unified at a cost linear in its own size. Reuse, not
-/// reinvention: the unifier, the signature range, the triangular substitution,
-/// and the forced occurs-check are the program tier's; only enumerating the
-/// candidates is this tier's.
-///
-/// Refusal is *set-independent*. A `pattern` that is not a pattern is an `Err`,
-/// and the same `Err`, whether or not `set` holds a same-signature member: it is
-/// classified once, up front, by self-unifying `pattern` — the program tier's own
-/// `mgu` refuses a pool and a non-denoting argument (a variable-bearing arithmetic
-/// term, an undefined or out-of-range ground operation, an interval, a pooled
-/// argument, an unevaluated `@`-call, §3.1) alike — never incidentally by a `mgu`
-/// reached only when the candidate block is non-empty. That classification runs
-/// before `signature_range`, whose value on a pool is the empty range
-/// `#sup..=#inf` that `BTreeSet::range` would panic on (`start > end`), so the
-/// panic is unreachable. *Cannot decide* is never *no match*.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn matches_in(
-    pattern: &Atom,
-    set: &AnswerSet,
-) -> Result<Vec<Substitution>, NotAPattern> {
-    mgu(pattern, pattern)?;
-    let mut out = Vec::new();
-    for candidate in set.range(signature_range(pattern)) {
-        if let Some(atom) = lift(candidate)
-            && let Some(substitution) = mgu(pattern, &atom)?
-        {
-            out.push(substitution);
-        }
-    }
-    Ok(out)
-}
-
 /// Whether any argument position of `pattern` bears an anonymous variable `_`, at
 /// any depth (docs/design/query.md §2.5). The scan is deep — a `_` nested in a
 /// compound argument (`p(f(_))`) counts — because an anonymous variable anywhere
@@ -861,13 +871,25 @@ fn has_anonymous_position(pattern: &Atom) -> bool {
         .any(|term| matches!(term, Term::Variable(Variable::Anonymous)))
 }
 
-/// The matched ground *instances* of `pattern` in `set` — the sibling of
-/// [`matches_in`] that returns the matched ground `Symbol`s rather than the
-/// substitutions (docs/design/query.md §2.5). [`Snapshot::bindings`] partitions
-/// instances, not bindings, so it needs the symbols an answer set holds. The
-/// candidate block, the `O(log n + k)` scan, and the set-independent up-front
-/// classification (a non-pattern is an `Err`, the same whether or not `set` holds a
-/// same-signature member) are exactly [`matches_in`]'s; only the pushed value differs.
+/// The ground *instances* of `pattern` in `set` — the matched symbols, since
+/// [`Snapshot::bindings`] partitions instances, not substitutions (docs/design/
+/// query.md §2.5, §3.1). The candidates are the contiguous block of symbols sharing
+/// `pattern`'s signature — `set.range(signature_range(pattern))`, an `O(log n + k)`
+/// scan of the `k` candidates, not the whole `n`-member set, each then lifted and
+/// unified at a cost linear in its own size and the pattern's. Reuse, not
+/// reinvention: the unifier, the signature range, and the forced occurs-check are the
+/// program tier's; only enumerating the candidates is this tier's.
+///
+/// Refusal is *set-independent*. A `pattern` that is not a pattern is an `Err`,
+/// and the same `Err`, whether or not `set` holds a same-signature member: it is
+/// classified once per scan, up front, by self-unifying `pattern` — the program
+/// tier's own `mgu` refuses a pool and a non-denoting argument (a variable-bearing
+/// arithmetic term, an undefined or out-of-range ground operation, an interval, a
+/// pooled argument, an unevaluated `@`-call, §3.1) alike — never incidentally by a
+/// `mgu` reached only when the candidate block is non-empty. That classification
+/// runs before `signature_range`, whose value on a pool is the empty range
+/// `#sup..=#inf` that `BTreeSet::range` would panic on (`start > end`), so the
+/// panic is unreachable. *Cannot decide* is never *no match*.
 pub(crate) fn matched_in(pattern: &Atom, set: &AnswerSet) -> Result<Vec<Symbol>, NotAPattern> {
     mgu(pattern, pattern)?;
     let mut out = Vec::new();
@@ -1007,9 +1029,17 @@ mod snapshot {
         names.into_iter().map(atom).collect()
     }
 
+    /// A snapshot over the models of the given answer sets.
+    fn snapshot_of(sets: impl IntoIterator<Item = AnswerSet>) -> Snapshot {
+        Snapshot::of(
+            sets.into_iter().map(Model::of).collect(),
+            Scenario::default(),
+        )
+    }
+
     #[test]
     fn a_snapshot_is_exhausted_by_construction() {
-        let snapshot = Snapshot::of(vec![answer_set(["a"])], Scenario::default());
+        let snapshot = snapshot_of([answer_set(["a"])]);
         assert!(
             snapshot.is_exhausted(),
             "a snapshot is materialised only from a closed search",
@@ -1018,30 +1048,24 @@ mod snapshot {
 
     #[test]
     fn a_snapshot_streams_its_owned_members() {
-        let snapshot = Snapshot::of(
-            vec![answer_set(["a"]), answer_set(["b"])],
-            Scenario::default(),
-        );
-        let members: Vec<_> = snapshot.members().cloned().collect();
+        let snapshot = snapshot_of([answer_set(["a"]), answer_set(["b"])]);
+        let members: Vec<AnswerSet> = snapshot
+            .members()
+            .map(|model| model.atoms().clone())
+            .collect();
         assert_eq!(members, vec![answer_set(["a"]), answer_set(["b"])]);
     }
 
     #[test]
     fn a_snapshot_reads_cautious_as_the_intersection() {
-        let snapshot = Snapshot::of(
-            vec![answer_set(["a", "b"]), answer_set(["a", "c"])],
-            Scenario::default(),
-        );
+        let snapshot = snapshot_of([answer_set(["a", "b"]), answer_set(["a", "c"])]);
         let cautious: Vec<_> = snapshot.cautious().symbols().cloned().collect();
         assert_eq!(cautious, vec![atom("a")], "the intersection holds a alone");
     }
 
     #[test]
     fn a_snapshot_reads_brave_as_the_union() {
-        let snapshot = Snapshot::of(
-            vec![answer_set(["a", "b"]), answer_set(["a", "c"])],
-            Scenario::default(),
-        );
+        let snapshot = snapshot_of([answer_set(["a", "b"]), answer_set(["a", "c"])]);
         let brave: Vec<_> = snapshot.brave().symbols().cloned().collect();
         assert_eq!(
             brave,
@@ -1052,20 +1076,20 @@ mod snapshot {
 
     #[test]
     fn a_cautious_reading_carries_the_cautious_mode() {
-        let snapshot = Snapshot::of(vec![answer_set(["a"])], Scenario::default());
+        let snapshot = snapshot_of([answer_set(["a"])]);
         assert_eq!(snapshot.cautious().mode(), Mode::Cautious);
     }
 
     #[test]
     fn a_brave_reading_carries_the_brave_mode() {
-        let snapshot = Snapshot::of(vec![answer_set(["a"])], Scenario::default());
+        let snapshot = snapshot_of([answer_set(["a"])]);
         assert_eq!(snapshot.brave().mode(), Mode::Brave);
     }
 
     #[test]
     fn a_snapshot_carries_the_scenario_it_ranges_over() {
         // The empty (unscoped) scenario round-trips — its assumptions are none.
-        let snapshot = Snapshot::of(vec![answer_set(["a"])], Scenario::default());
+        let snapshot = snapshot_of([answer_set(["a"])]);
         assert_eq!(snapshot.scenario().assumptions().count(), 0);
     }
 }
@@ -1086,9 +1110,13 @@ mod epistemic {
         symbols.into_iter().collect()
     }
 
-    /// A snapshot over the given members, ranging over the unscoped program.
+    /// A snapshot over the models of the given members, ranging over the
+    /// unscoped program.
     fn snapshot(members: impl IntoIterator<Item = AnswerSet>) -> Snapshot {
-        Snapshot::of(members.into_iter().collect(), Scenario::default())
+        Snapshot::of(
+            members.into_iter().map(Model::of).collect(),
+            Scenario::default(),
+        )
     }
 
     /// The positive ground literal query `name`.
@@ -1276,14 +1304,15 @@ mod matching {
         symbol
     }
 
-    /// The full-scan reference: lift and `mgu` every member, not just the block.
-    fn full_scan(pattern: &Atom, set: &AnswerSet) -> Vec<Substitution> {
+    /// The full-scan reference: lift and `mgu` every member, not just the block,
+    /// keeping each member that matches.
+    fn full_scan(pattern: &Atom, set: &AnswerSet) -> Vec<Symbol> {
         let mut out = Vec::new();
         for candidate in set {
             if let Some(atom) = lift(candidate)
-                && let Some(substitution) = mgu(pattern, &atom).expect("a pattern")
+                && mgu(pattern, &atom).expect("a pattern").is_some()
             {
-                out.push(substitution);
+                out.push(candidate.clone());
             }
         }
         out
@@ -1316,16 +1345,11 @@ mod matching {
     #[test]
     fn a_lifted_symbol_matches_its_own_member() {
         // lift inverts a ground query pattern's construction: the atom a symbol
-        // lifts to matches that very symbol, and binds nothing.
+        // lifts to matches that very symbol.
         let symbol = applied("p", [constant("a")]);
         let atom = lift(&symbol).expect("a function symbol lifts to an atom");
-        let set: AnswerSet = [symbol].into_iter().collect();
-        let matches = matches_in(&atom, &set).expect("a pattern");
-        assert_eq!(matches.len(), 1);
-        assert!(
-            matches[0].iter().next().is_none(),
-            "a lifted ground symbol matches itself exactly, binding nothing",
-        );
+        let set: AnswerSet = [symbol.clone()].into_iter().collect();
+        assert_eq!(matched_in(&atom, &set), Ok(vec![symbol]));
     }
 
     #[test]
@@ -1340,7 +1364,7 @@ mod matching {
         };
         let set: AnswerSet = [applied("p", [constant("a")])].into_iter().collect();
         assert!(matches!(
-            matches_in(&pooled, &set),
+            matched_in(&pooled, &set),
             Err(NotAPattern::Pooled)
         ));
     }
@@ -1358,12 +1382,8 @@ mod matching {
         .into_iter()
         .collect();
         let matches =
-            matches_in(&pattern("p", vec![ground(constant("a"))]), &set).expect("a pattern");
-        assert_eq!(matches.len(), 1);
-        assert!(
-            matches[0].iter().next().is_none(),
-            "a ground pattern binds nothing: its one match is the empty substitution",
-        );
+            matched_in(&pattern("p", vec![ground(constant("a"))]), &set).expect("a pattern");
+        assert_eq!(matches, vec![applied("p", [constant("a")])]);
     }
 
     #[test]
@@ -1378,15 +1398,12 @@ mod matching {
         ]
         .into_iter()
         .collect();
-        let matches = matches_in(&pattern("p", vec![var("X")]), &set).expect("a pattern");
-        assert_eq!(matches.len(), 2, "X binds to each of a and b, never to c");
-        for substitution in &matches {
-            assert_eq!(
-                substitution.iter().count(),
-                1,
-                "a one-variable pattern binds exactly its one variable",
-            );
-        }
+        let matches = matched_in(&pattern("p", vec![var("X")]), &set).expect("a pattern");
+        assert_eq!(
+            matches,
+            vec![applied("p", [constant("a")]), applied("p", [constant("b")])],
+            "X binds to each of a and b, never to c",
+        );
     }
 
     #[test]
@@ -1401,7 +1418,7 @@ mod matching {
         ]
         .into_iter()
         .collect();
-        let matches = matches_in(&pattern("p", vec![var("X")]), &set).expect("a pattern");
+        let matches = matched_in(&pattern("p", vec![var("X")]), &set).expect("a pattern");
         assert_eq!(
             matches.len(),
             3,
@@ -1425,14 +1442,14 @@ mod matching {
         let with_same_signature: AnswerSet = [applied("p", [constant("a")])].into_iter().collect();
         let with_other_signature: AnswerSet = [applied("q", [constant("a")])].into_iter().collect();
         let empty = AnswerSet::new();
-        let refusal = matches_in(&interval, &empty);
+        let refusal = matched_in(&interval, &empty);
         assert!(
             matches!(refusal, Err(NotAPattern::NonDenoting { .. })),
             "an interval pattern is a non-denoting refusal, not a match",
         );
         for set in [&with_same_signature, &with_other_signature] {
             assert_eq!(
-                matches_in(&interval, set),
+                matched_in(&interval, set),
                 refusal,
                 "the refusal is identical whichever members the set holds",
             );
@@ -1456,7 +1473,7 @@ mod matching {
             name: Name::new("p").expect("a valid identifier"),
             arguments: Arguments::Single(vec![var("X")]),
         };
-        let matches = matches_in(&pattern, &set).expect("a pattern");
+        let matches = matched_in(&pattern, &set).expect("a pattern");
         assert_eq!(
             matches.len(),
             1,
@@ -1519,7 +1536,7 @@ mod matching {
             let pat = pattern("p", vec![ground(nested(depth))]);
             time_once(|| {
                 for _ in 0..REPEAT {
-                    let found = matches_in(&pat, &set).expect("a pattern");
+                    let found = matched_in(&pat, &set).expect("a pattern");
                     std::hint::black_box(&found);
                 }
             })
@@ -1549,7 +1566,7 @@ mod matching {
             let set: AnswerSet = members.iter().map(|&(pred, a)| sym(pred, a)).collect();
             let pat = pattern(&format!("p{pat_pred}"), vec![ground(arg(pat_arg))]);
             prop_assert_eq!(
-                matches_in(&pat, &set).expect("a pattern"),
+                matched_in(&pat, &set).expect("a pattern"),
                 full_scan(&pat, &set)
             );
         }
@@ -1567,7 +1584,7 @@ mod matching {
             let set: AnswerSet = members.iter().map(|&(pred, a)| sym(pred, a)).collect();
             let pat = pattern(&format!("p{pat_pred}"), vec![var("X")]);
             prop_assert_eq!(
-                matches_in(&pat, &set).expect("a pattern"),
+                matched_in(&pat, &set).expect("a pattern"),
                 full_scan(&pat, &set)
             );
         }
@@ -1604,9 +1621,13 @@ mod bindings {
         symbols.into_iter().collect()
     }
 
-    /// The snapshot over the given members, ranging over the unscoped program.
+    /// The snapshot over the models of the given members, ranging over the
+    /// unscoped program.
     fn snapshot(members: impl IntoIterator<Item = AnswerSet>) -> Snapshot {
-        Snapshot::of(members.into_iter().collect(), Scenario::default())
+        Snapshot::of(
+            members.into_iter().map(Model::of).collect(),
+            Scenario::default(),
+        )
     }
 
     /// The open pattern `sign pred(X)` with one named variable and the given sign.
@@ -1834,50 +1855,6 @@ mod bindings {
             member([atom_symbol("p", "c", Sign::Negative)]),
             "p(c) is cautiously entailed, so -p(c) is refuted",
         );
-    }
-
-    #[test]
-    fn matched_in_returns_the_matched_ground_symbols() {
-        // p(X) over { p(a), p(b), q(c) }: the matched instances are the two p-symbols,
-        // returned as ground symbols (not substitutions); the block scan skips q(c).
-        let set = member([
-            atom_symbol("p", "a", Sign::Positive),
-            atom_symbol("p", "b", Sign::Positive),
-            atom_symbol("q", "c", Sign::Positive),
-        ]);
-        let matched: BTreeSet<Symbol> = matched_in(&var_pattern("p", "X"), &set)
-            .expect("a pattern")
-            .into_iter()
-            .collect();
-        assert_eq!(
-            matched,
-            member([
-                atom_symbol("p", "a", Sign::Positive),
-                atom_symbol("p", "b", Sign::Positive),
-            ]),
-        );
-    }
-
-    #[test]
-    fn matched_in_refuses_a_non_pattern_whichever_members_the_set_holds() {
-        // Like matches_in, matched_in classifies the pattern up front, so a non-pattern
-        // refuses set-independently: the identical Err over the empty set, a
-        // same-signature member, and an other-signature one — never a quiet empty match.
-        let interval = || Term::Interval {
-            lower: Box::new(Term::Symbolic(Symbol::number(1))),
-            upper: Box::new(Term::Symbolic(Symbol::number(3))),
-        };
-        let refusal = matched_in(&pattern(interval()), &AnswerSet::new());
-        assert!(matches!(refusal, Err(NotAPattern::NonDenoting { .. })));
-        let same_signature = member([atom_symbol("p", "a", Sign::Positive)]);
-        let other_signature = member([atom_symbol("q", "b", Sign::Positive)]);
-        for set in [&same_signature, &other_signature] {
-            assert_eq!(
-                matched_in(&pattern(interval()), set),
-                refusal,
-                "the refusal is identical whichever members the set holds",
-            );
-        }
     }
 
     proptest! {

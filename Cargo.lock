@@ -943,6 +943,7 @@ dependencies = [
 name = "themelios-query"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "proptest",
  "themelios-base",
  "themelios-program",
@@ -955,9 +956,9 @@ dependencies = [
 name = "themelios-solve"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "proptest",
  "serde_json",
- "themelios-analysis",
  "themelios-base",
  "themelios-program",
  "themelios-syntax",

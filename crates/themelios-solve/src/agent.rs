@@ -2,17 +2,20 @@
 //! reified as a reasoner, driven by observe, modify, ask, act — with its
 //! assumptions, per-operation options, and cancellation.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
 use crate::bridge::Door;
 use crate::contract::{
-    Backend, ConsequenceRequest, ConsequenceSupport, Fault, Mode, OptimizeRequest, SolveRequest,
-    TruthValue,
+    Backend, Cancel, Capabilities, ConsequenceRequest, ConsequenceSupport, Fault, GroundOptions,
+    Mode, OptimizeRequest, SolveRequest, TruthValue,
 };
 use crate::extend::Facts;
-use crate::outcome::{Consequences, Determination, Optimized, Solved};
-use themelios_program::program::{Arguments, PartKey};
+use crate::outcome::{
+    Consequences, Determination, Model, NativeAnswer, NotExhausted, Optimized, Solved,
+};
+use themelios_program::program::{Arguments, Part, PartKey};
 use themelios_program::{Atom, Program, Rule, Statement, Symbol, Term, WithProvenance};
 
 /// A program made active — the same knowledge seen not as an object of study
@@ -37,6 +40,13 @@ pub struct Agent<B: Backend> {
     knowledge: Program,
     /// The ledger kept beside the knowledge base (§6.2).
     ledger: KnowledgeLedger,
+    /// The parts grounded through [`ground`](Agent::ground), call by call in
+    /// the order grounded — the state a rebuild re-establishes (§6.2).
+    grounded: Vec<Box<[Part]>>,
+    /// Each external's latest truth value assigned through
+    /// [`assign_external`](Agent::assign_external) — re-established by a
+    /// rebuild after the grounded parts (§6.2).
+    assigned: BTreeMap<Symbol, TruthValue>,
 }
 
 impl<B: Backend> Agent<B> {
@@ -50,6 +60,8 @@ impl<B: Backend> Agent<B> {
             backend,
             knowledge,
             ledger,
+            grounded: Vec::new(),
+            assigned: BTreeMap::new(),
         }
     }
 
@@ -62,8 +74,8 @@ impl<B: Backend> Agent<B> {
     /// Add a statement to the knowledge base, returning the handle that names it
     /// and its retraction class (docs/design/solve.md §6.2). Assertion is
     /// monotone and clean: it amends the owned knowledge base and discloses how
-    /// the statement would retract — `Toggle` at the seam where the backend
-    /// guards externals, `Rebuild` (re-grounding) otherwise — readable from the
+    /// the statement would retract — `Rebuild` (re-grounding) for every statement
+    /// today, since the agent guards none with an external — readable from the
     /// handle before any retraction is paid for. The engine is brought level
     /// with the amended knowledge at the next ask, not here, so a single
     /// `assert` touches no backend. Two content-equal assertions get distinct
@@ -71,7 +83,7 @@ impl<B: Backend> Agent<B> {
     /// while either handle is unretracted. Cost: `Θ(program size)`.
     pub fn assert(&mut self, statement: impl Into<Statement>) -> Result<StatementId, Fault> {
         let node = WithProvenance::constructed(statement.into());
-        let id = self.ledger.push(node, self.retraction_class());
+        let id = self.ledger.push(node, Self::retraction_class());
         self.knowledge = self.ledger.rebuild();
         Ok(id)
     }
@@ -114,7 +126,7 @@ impl<B: Backend> Agent<B> {
                 members: Box::default(),
             });
         }
-        let class = self.retraction_class();
+        let class = Self::retraction_class();
         let members: Box<[StatementId]> = rules
             .into_iter()
             .map(|rule| {
@@ -149,24 +161,39 @@ impl<B: Backend> Agent<B> {
 
     /// Ground the named program parts through the backend (docs/design/solve.md
     /// §6.2) — one of the retained multi-shot mechanisms a caller drives
-    /// explicitly, distinct from the monotone `assert`.
-    pub fn ground(&mut self, parts: &[themelios_program::program::Part]) -> Result<(), Fault> {
-        self.backend
-            .ground(parts, &crate::contract::GroundOptions::default())
+    /// explicitly, distinct from the monotone `assert`. The engine is first
+    /// brought level with what the agent holds, so the parts are grounded over
+    /// the knowledge as it stands; grounded, they are retained, and every
+    /// rebuild grounds them again. Refuses, retaining nothing, where the backend
+    /// refuses. Cost: a rebuild, then the grounding.
+    pub fn ground(&mut self, parts: &[Part]) -> Result<(), Fault> {
+        self.require(|capabilities| capabilities.multi_shot)?;
+        self.bring_level()?;
+        self.backend.ground(parts, &GroundOptions::default())?;
+        self.grounded.push(parts.into());
+        Ok(())
     }
 
     /// Assign an external atom a truth value at the seam (docs/design/solve.md
     /// §6.2) — the retained multi-shot mechanism a caller toggles an open truth
-    /// with.
+    /// with. The engine is first brought level with what the agent holds, so
+    /// the atom is assigned over the knowledge as it stands; the latest value
+    /// assigned each external is retained, and every rebuild assigns it again.
+    /// Refuses, retaining nothing, where the backend refuses. Cost: a rebuild,
+    /// then the assignment.
     pub fn assign_external(&mut self, external: Symbol, value: TruthValue) -> Result<(), Fault> {
-        self.backend.assign_external(external, value)
+        self.require(|capabilities| capabilities.multi_shot)?;
+        self.bring_level()?;
+        self.backend.assign_external(external.clone(), value)?;
+        self.assigned.insert(external, value);
+        Ok(())
     }
 
     // ---- ask (§6.2, §6.4) ----
 
     /// Ask the question `solve` of the knowledge base (docs/design/solve.md
     /// §6.2): bring the engine level with the owned knowledge, then the run
-    /// handle — stream the answer sets, inspect or resolve the trichotomy, read
+    /// handle — stream the models, inspect or resolve the trichotomy, read
     /// the conclusion (§5.2). The handle borrows the agent for its life: the
     /// borrow checker is the "no mutation while reasoning" lock (§6.1), so an
     /// amendment or a second question while it is held does not compile. The
@@ -181,11 +208,16 @@ impl<B: Backend> Agent<B> {
 
     /// The configured pair of [`solve`](Agent::solve) (docs/design/solve.md
     /// §6.3): the same question under the options — the time budget the
-    /// question carries, handed to the backend on the request.
+    /// question carries, handed to the backend on the request. A budget the
+    /// backend does not declare enforcing refuses at the request locus before
+    /// anything is lowered.
     // The options are taken by value — the design's surface (§6.3): the caller
     // hands the configuration over, though only its knobs are read.
     #[allow(clippy::needless_pass_by_value)]
     pub fn solve_with(&mut self, options: SolveOptions) -> Result<Solved<'_>, Fault> {
+        if options.time.is_some() {
+            self.require(|capabilities| capabilities.budgets.time)?;
+        }
         self.bring_level()?;
         self.backend.solve(&SolveRequest { time: options.time })
     }
@@ -208,8 +240,9 @@ impl<B: Backend> Agent<B> {
     /// §6.2, §5.3): bring the engine level, then the optimization run handle —
     /// a sibling of [`solve`](Agent::solve), not a second vocabulary. Refuses
     /// at the request locus over a backend that does not declare
-    /// `optimization` (§4.2).
+    /// `optimization` (§4.2), before anything is lowered.
     pub fn optimize(&mut self, request: &OptimizeRequest) -> Result<Optimized<'_>, Fault> {
+        self.require(|capabilities| capabilities.optimization)?;
         self.bring_level()?;
         self.backend.optimize(request)
     }
@@ -221,18 +254,21 @@ impl<B: Backend> Agent<B> {
     /// that does not declare `assumptions` (§4.2) — read from the declaration
     /// before the question is paid for, so a refused scenario lowers nothing.
     pub fn solve_assuming(&mut self, scenario: &Scenario) -> Result<Solved<'_>, Fault> {
-        self.require_assumptions()?;
+        self.require(|capabilities| capabilities.assumptions)?;
         self.bring_level()?;
         self.backend
             .solve_assuming(scenario, &SolveRequest::default())
     }
 
-    /// A handle that interrupts an in-flight question from another thread
-    /// (docs/design/solve.md §6.1, §6.3) — `Some` exactly when the backend
-    /// declares `cancellation`; `None` says the engine cannot be interrupted,
-    /// readable before any question is paid for. O(1).
+    /// The core's handle that interrupts an in-flight question from another
+    /// thread (docs/design/solve.md §6.1, §6.3), over the backend's
+    /// cancellation primitive — `Some` exactly when the backend declares
+    /// `cancellation`; `None` says the engine cannot be interrupted, readable
+    /// before any question is paid for. O(1).
     pub fn interrupt(&self) -> Option<Interrupt> {
-        self.backend.interrupt()
+        self.backend.interrupt().map(|primitive| Interrupt {
+            _primitive: primitive,
+        })
     }
 
     /// The cautious consequences (`⋂`, "what must hold") of the knowledge base
@@ -278,23 +314,25 @@ impl<B: Backend> Agent<B> {
 
     /// The consequences in `mode` — the shared body of the cautious and brave
     /// readings, unscoped or over a scenario's models. The native door computes
-    /// them in one solve, over a request carrying the scenario; the derived door
-    /// folds the enumerated CONSISTENT world view — `solve`'s, or
-    /// `solve_assuming`'s under a scenario — so the two doors range over the same
-    /// models and agree (the free differential, query.md §2.4). The consistency
-    /// gate is load-bearing: folding zero members returns an empty set for both
-    /// modes, and an empty cautious set would say the program forces nothing — of
-    /// a program that has no model, where `⋂` is undefined — so it refuses
-    /// (query.md §2.3). Both range over ALL stable models today; under an
-    /// optimization objective they must instead range over the optimal set
-    /// (solve.md §5.2), the obligation that joins when optimization lands.
+    /// them in one solve, over a request carrying the scenario, and the core
+    /// gates its answer; the derived door folds the enumerated CONSISTENT world
+    /// view — `solve`'s, or `solve_assuming`'s under a scenario — so the two doors
+    /// range over the same models, and answer and refuse alike (the free
+    /// differential, query.md §2.4). The consistency
+    /// gate is load-bearing: a fold over no models is no consequence set — `⋂`
+    /// over none is undefined, and an empty cautious set would say the program
+    /// forces nothing, of a program that has no model — so an inconsistent program
+    /// refuses (query.md §2.3), while a consistent one's complete collection holds
+    /// the model that witnessed it. Both range over all stable models: the question `solve`
+    /// asks ignores any objective, and an optimization's consequences range over
+    /// its optimal set instead (solve.md §5.2).
     fn consequences(
         &mut self,
         mode: Mode,
         scenario: Option<&Scenario>,
     ) -> Result<Consequences, Fault> {
         if scenario.is_some() {
-            self.require_assumptions()?;
+            self.require(|capabilities| capabilities.assumptions)?;
         }
         self.bring_level()?;
         match self.backend.capabilities().native_consequences {
@@ -302,7 +340,13 @@ impl<B: Backend> Agent<B> {
                 let request = ConsequenceRequest {
                     scenario: scenario.cloned().unwrap_or_default(),
                 };
-                self.backend.consequences_native(mode, &request)
+                match self.backend.consequences_native(mode, &request)? {
+                    NativeAnswer::Closed(symbols) => Ok(Consequences { symbols, mode }),
+                    NativeAnswer::NoModel => Err(no_answer_set(scenario)),
+                    NativeAnswer::Stopped(truncation) => {
+                        Err(NotExhausted::not_closed(Some(truncation.into())).into())
+                    }
+                }
             }
             ConsequenceSupport::DerivedByEnumeration => {
                 let solved = match scenario {
@@ -314,63 +358,85 @@ impl<B: Backend> Agent<B> {
                 match solved.into_determination() {
                     Determination::Consistent(mut models) => {
                         let members = models.all_members()?;
-                        Ok(Consequences::fold(mode, members.iter()))
+                        Ok(Consequences::fold(mode, members.iter().map(Model::atoms))
+                            .expect("a consistent search's collection holds its witness"))
                     }
-                    // Under a scenario the program may well have answer sets — just
-                    // none the scenario admits — so the refusal says which.
-                    Determination::Inconsistent(_) => Err(Fault::request(match scenario {
-                        None => "no consequences: the program has no answer set",
-                        Some(_) => {
-                            "no consequences: the program has no answer set under the scenario"
-                        }
-                    })),
+                    Determination::Inconsistent(_) => Err(no_answer_set(scenario)),
                     Determination::Inconclusive(partial) => Err(partial.into()),
                 }
             }
         }
     }
 
-    /// The gate every scenario-scoped question passes (docs/design/solve.md §4.2,
-    /// §6.2): a scenario needs `solve_assuming`, so a backend that does not
-    /// declare `assumptions` refuses at the request locus. The declaration is
-    /// read, not the method trusted — a native consequence door handed a scenario
-    /// it cannot honour would otherwise answer the unscoped question in its place,
-    /// a silent degrade — and it is read before the question is paid for. O(1).
-    fn require_assumptions(&self) -> Result<(), Fault> {
-        if self.backend.capabilities().assumptions {
+    /// The gate every capability-gated question passes (docs/design/solve.md
+    /// §4.1, §4.2): a question beyond the backend's declaration refuses at the
+    /// request locus. The declaration is read, not the method trusted — a
+    /// backend answering a method it does not declare, or a native consequence
+    /// door handed a scenario it cannot honour, would otherwise answer in its
+    /// place, a silent degrade — and it is read before the question is paid for,
+    /// so a refused question lowers nothing. O(1).
+    fn require(&self, declared: fn(&Capabilities) -> bool) -> Result<(), Fault> {
+        if declared(&self.backend.capabilities()) {
             Ok(())
         } else {
             Err(Fault::unsupported())
         }
     }
 
-    /// Bring the engine level with the owned knowledge base before a question
-    /// is put to it (docs/design/solve.md §6.2): lower the knowledge as it
-    /// stands, through Door B (§10.2), so the engine reasons over exactly what
-    /// the agent holds — the assertions and retractions since the last question
-    /// included. A refused lowering is the question's fault, and nothing is
-    /// delegated after it. Every question lowers the whole knowledge base; the
-    /// retained-engine realisations the retraction classes disclose — the
-    /// external toggle, the rebuild as a `reset` then one lowering, the
-    /// incremental grounding of an addition — are reserved until the retained
-    /// engine is implemented. Cost: one lowering (§10.1).
+    /// Bring the engine level with what the agent holds before a question, a
+    /// grounding, or an assignment is put to it (docs/design/solve.md §6.2):
+    /// the knowledge base as it stands, lowered through Door B (§10.2) — the
+    /// assertions and retractions since the last rebuild included — and the
+    /// state the loop retains, re-established. On a multi-shot backend, where
+    /// `lower` accumulates, that is §6.2's rebuild: a `reset`, the lowering,
+    /// then the replay — the grounded parts first, in the order they were
+    /// grounded, then each assigned external's latest value, since an external
+    /// is assigned only once grounded. On a single-shot backend `lower`
+    /// replaces the program and nothing is retained, so the lowering is the
+    /// whole of it. A refused step is the caller's fault, and nothing is
+    /// delegated after it. Every call rebuilds; the retained-engine
+    /// realisations the retraction classes disclose — the external toggle at
+    /// the seam, the incremental grounding of an addition — are reserved until
+    /// the retained engine is implemented. Cost: `Θ(program size + grounded
+    /// parts + assigned externals)` at the seam — a reset, one lowering
+    /// (§10.1), and the replay — the re-grounding the engine's.
     fn bring_level(&mut self) -> Result<(), Fault> {
-        self.backend.lower(Door::Program(&self.knowledge))
+        if !self.backend.capabilities().multi_shot {
+            return self.backend.lower(Door::Program(&self.knowledge));
+        }
+        self.backend.reset()?;
+        self.backend.lower(Door::Program(&self.knowledge))?;
+        for parts in &self.grounded {
+            self.backend.ground(parts, &GroundOptions::default())?;
+        }
+        for (external, value) in &self.assigned {
+            self.backend.assign_external(external.clone(), *value)?;
+        }
+        Ok(())
     }
 
     /// The retraction class an asserted statement is disclosed under
-    /// (docs/design/solve.md §6.2): `Toggle` when the backend declares
-    /// `externals` — the agent guards an asserted statement with an external so
-    /// its retraction is an `O(1)` toggle, the realisation being the agent's to
-    /// choose — and `Rebuild` otherwise, where retraction re-grounds the amended
-    /// program. O(1).
-    fn retraction_class(&self) -> RetractionClass {
-        if self.backend.capabilities().externals {
-            RetractionClass::Toggle
-        } else {
-            RetractionClass::Rebuild
-        }
+    /// (docs/design/solve.md §6.2) — fixed from the backend's `externals`
+    /// capability and whether the statement is externally guarded: `Toggle` for
+    /// a guarded statement over a backend honouring externals, `Rebuild`
+    /// otherwise. The agent guards no statement yet — every question lowers the
+    /// whole knowledge base, the guarded-external realisation landing with the
+    /// retained engine — so every statement discloses `Rebuild`, whatever the
+    /// backend declares: no caller pays a rebuild believing it a toggle. O(1).
+    fn retraction_class() -> RetractionClass {
+        RetractionClass::Rebuild
     }
+}
+
+/// The refusal of consequences over no model — `⋂`/`⋃` over the empty world
+/// view is undefined, not `∅` (query.md §2.3). Under a scenario the program may
+/// well have answer sets, just none the scenario admits, so the refusal says
+/// which.
+fn no_answer_set(scenario: Option<&Scenario>) -> Fault {
+    Fault::request(match scenario {
+        None => "no consequences: the program has no answer set",
+        Some(_) => "no consequences: the program has no answer set under the scenario",
+    })
 }
 
 /// The base fact a ground atom symbol denotes (docs/design/solve.md §6.2, §7.3),
@@ -453,7 +519,12 @@ impl Observation {
 }
 
 /// The brand a [`KnowledgeLedger`] stamps its handles with, so a handle names a
-/// statement in the ledger that issued it and nowhere else. Process-unique.
+/// statement in the ledger that issued it and nowhere else. The one
+/// process-global the crate keeps, against the design's rule of no global
+/// mutable state (docs/design/solve.md §6.1): a monotone counter that confers
+/// no authority — it only tells one agent's handles from another's — kept
+/// because a handle from another agent at the same slot and generation has no
+/// cheaper witness.
 static NEXT_LEDGER_BRAND: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The side structure the agent keeps beside its knowledge base (docs/design/
@@ -749,9 +820,15 @@ pub struct SolveOptions {
     pub time: Option<Duration>,
 }
 
-/// A handle that interrupts an in-flight solve from another thread. Reserved;
-/// its surface is defined with §6.1 and §6.3.
-pub struct Interrupt;
+/// The core's handle that interrupts an in-flight solve from another thread
+/// (docs/design/solve.md §6.2, §6.3), over the backend's [`Cancel`] primitive.
+/// The core owns it so it can record a caller's pull, and so attribute a stop
+/// to the caller rather than to its own budget timer. Reserved: the pull and
+/// its attribution are realised with cancellation, until when the handle holds
+/// the primitive and nothing more. `Send`, as the primitive is.
+pub struct Interrupt {
+    _primitive: Box<dyn Cancel>,
+}
 
 #[cfg(test)]
 mod tests {
@@ -884,7 +961,17 @@ mod ask_laws {
 
     use crate::bridge::GroundProgram;
     use crate::contract::Capabilities;
-    use crate::outcome::{AnswerSet, Conclusion, Run};
+    use crate::outcome::{AnswerSet, Conclusion, Run, Truncation};
+
+    /// The answer sets of `models`, in order.
+    fn atoms_of(models: &[Model]) -> Vec<AnswerSet> {
+        models.iter().map(|model| model.atoms().clone()).collect()
+    }
+
+    /// The consequences `mode` folds over `sets`, a non-empty world view.
+    fn folded(mode: Mode, sets: &[AnswerSet]) -> Consequences {
+        Consequences::fold(mode, sets).expect("a non-empty world view")
+    }
     use themelios_program::Name;
 
     // A question resolves over a run, and a run is built here, in the defining
@@ -892,15 +979,15 @@ mod ask_laws {
     // answers with a scripted search, so the resolution register is exercised
     // end to end — a recording backend outside the crate can only refuse.
 
-    /// A scripted search: a fixed answer-set sequence, then a closed space.
+    /// A scripted search: a fixed model sequence, then a closed space.
     struct Scripted {
         sets: std::vec::IntoIter<AnswerSet>,
         ended: bool,
     }
 
     impl Run for Scripted {
-        fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
-            let next = self.sets.next().map(Ok);
+        fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+            let next = self.sets.next().map(|set| Ok(Model::of(set)));
             if next.is_none() {
                 self.ended = true;
             }
@@ -1023,17 +1110,14 @@ mod ask_laws {
             &mut self,
             mode: Mode,
             _request: &ConsequenceRequest,
-        ) -> Result<Consequences, Fault> {
+        ) -> Result<NativeAnswer, Fault> {
             if self.sets.is_empty() {
-                return Err(Fault::request(
-                    "no consequences: the program has no answer set",
-                ));
+                return Ok(NativeAnswer::NoModel);
             }
-            let symbols = match mode {
+            Ok(NativeAnswer::Closed(match mode {
                 Mode::Cautious => intersect(&self.sets),
                 Mode::Brave => union(&self.sets),
-            };
-            Ok(Consequences { symbols, mode })
+            }))
         }
     }
 
@@ -1058,29 +1142,37 @@ mod ask_laws {
             _ => panic!("the backend answers consistent"),
         };
         assert_eq!(
-            enumerated, sets,
+            atoms_of(&enumerated),
+            sets,
             "the backend enumerates the models it holds"
         );
         assert_eq!(
             agent.cautious().expect("a consistent program"),
-            Consequences::fold(Mode::Cautious, enumerated.iter()),
+            folded(Mode::Cautious, &sets),
             "the native cautious door and the derived fold disagree",
         );
         assert_eq!(
             agent.brave().expect("a consistent program"),
-            Consequences::fold(Mode::Brave, enumerated.iter()),
+            folded(Mode::Brave, &sets),
             "the native brave door and the derived fold disagree",
         );
     }
 
     #[test]
     fn the_native_door_refuses_a_program_with_no_answer_set() {
-        // Like the derived door, the native door refuses ⋂/⋃ over a program with
-        // no answer set, so the two agree there too (query.md §2.4). The stub
-        // honours that contract; the agent forwards its verdict — a contract exemplar.
-        let mut agent = Agent::new(Program::empty(), Dual { sets: Vec::new() });
-        assert!(agent.cautious().is_err());
-        assert!(agent.brave().is_err());
+        // The native door reports no model and the core refuses ⋂/⋃ over it —
+        // in the derived door's words, so the two agree there too (query.md
+        // §2.4).
+        let mut native = Agent::new(Program::empty(), Dual { sets: Vec::new() });
+        let mut derived = agent_answering(Vec::new());
+        assert_eq!(
+            native.cautious().expect_err("no model"),
+            derived.cautious().expect_err("no model"),
+        );
+        assert_eq!(
+            native.brave().expect_err("no model"),
+            derived.brave().expect_err("no model"),
+        );
     }
 
     #[test]
@@ -1132,8 +1224,8 @@ mod ask_laws {
     }
 
     impl Run for Truncated {
-        fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
-            let next = self.sets.next().map(Ok);
+        fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+            let next = self.sets.next().map(|set| Ok(Model::of(set)));
             if next.is_none() {
                 self.ended = true;
             }
@@ -1207,7 +1299,7 @@ mod ask_laws {
     struct Faulting;
 
     impl Run for Faulting {
-        fn next_answer_set(&mut self) -> Option<Result<AnswerSet, Fault>> {
+        fn next_model(&mut self) -> Option<Result<Model, Fault>> {
             Some(Err(Fault::engine("the engine died mid-search")))
         }
 
@@ -1293,11 +1385,12 @@ mod ask_laws {
     }
 
     #[test]
-    fn solve_streams_the_answer_sets_the_backend_yields() {
+    fn solve_streams_the_models_the_backend_yields() {
         let sets = vec![answer_set(&["a"]), answer_set(&["a", "b"])];
         let mut agent = agent_answering(sets.clone());
         let mut solved = agent.solve().expect("the backend answers");
-        assert_eq!(solved.all_answer_sets().expect("a closed search"), sets);
+        let models = solved.all_models().expect("a closed search");
+        assert_eq!(atoms_of(&models), sets);
     }
 
     #[test]
@@ -1307,7 +1400,8 @@ mod ask_laws {
         let mut solved = agent
             .solve_with(SolveOptions::default())
             .expect("the backend answers");
-        assert_eq!(solved.all_answer_sets().expect("a closed search"), sets);
+        let models = solved.all_models().expect("a closed search");
+        assert_eq!(atoms_of(&models), sets);
     }
 
     #[test]
@@ -1403,23 +1497,18 @@ mod ask_laws {
             &mut self,
             mode: Mode,
             request: &ConsequenceRequest,
-        ) -> Result<Consequences, Fault> {
+        ) -> Result<NativeAnswer, Fault> {
+            if self.truncated {
+                return Ok(NativeAnswer::Stopped(Truncation::Budget));
+            }
             let sets = admitted(&self.sets, &request.scenario);
             if sets.is_empty() {
-                // The refusal the derived door gives, so the two agree in word too.
-                return Err(Fault::request(
-                    if request.scenario.assumptions().next().is_none() {
-                        "no consequences: the program has no answer set"
-                    } else {
-                        "no consequences: the program has no answer set under the scenario"
-                    },
-                ));
+                return Ok(NativeAnswer::NoModel);
             }
-            let symbols = match mode {
+            Ok(NativeAnswer::Closed(match mode {
                 Mode::Cautious => intersect(&sets),
                 Mode::Brave => union(&sets),
-            };
-            Ok(Consequences { symbols, mode })
+            }))
         }
     }
 
@@ -1569,14 +1658,15 @@ mod ask_laws {
             }
             _ => panic!("the scenario admits a model"),
         };
+        let admitted = atoms_of(&enumerated);
         assert_eq!(
             agent.cautious_assuming(&scenario),
-            Ok(Consequences::fold(Mode::Cautious, enumerated.iter())),
+            Ok(folded(Mode::Cautious, &admitted)),
             "the scoped native cautious door and the scoped fold disagree",
         );
         assert_eq!(
             agent.brave_assuming(&scenario),
-            Ok(Consequences::fold(Mode::Brave, enumerated.iter())),
+            Ok(folded(Mode::Brave, &admitted)),
             "the scoped native brave door and the scoped fold disagree",
         );
     }
@@ -1730,6 +1820,31 @@ mod ask_laws {
         let mut agent = agent_assuming(three_models(), ConsequenceSupport::Native);
         assert!(agent.cautious_assuming(&impossible).is_err());
         assert!(agent.brave_assuming(&impossible).is_err());
+    }
+
+    #[test]
+    fn the_native_door_refuses_a_truncated_search_as_the_derived_door_does() {
+        // A native search stopped short has converged on an approximation, not
+        // the consequences: the core refuses it, naming the budget, in the words
+        // the derived door gives a search that did not close the space.
+        let truncated = |support| {
+            Agent::new(
+                Program::empty(),
+                Hypothetical {
+                    sets: three_models(),
+                    support,
+                    truncated: true,
+                },
+            )
+        };
+        let native = truncated(ConsequenceSupport::Native)
+            .cautious_assuming(&assuming_a())
+            .expect_err("a native search stopped short refuses");
+        let derived = truncated(ConsequenceSupport::DerivedByEnumeration)
+            .cautious_assuming(&assuming_a())
+            .expect_err("an unexhausted world view refuses");
+        assert!(native.to_string().contains("budget"), "{native}");
+        assert_eq!(native, derived);
     }
 
     #[test]
