@@ -298,7 +298,6 @@ struct Row {
 impl Capability {
     /// This capability's row — the table, written as one exhaustive match, so a
     /// capability the enum gains has no reading until its row is written. O(1).
-    #[allow(clippy::too_many_lines)] // one arm per capability, each its whole row
     fn row(self) -> Row {
         match self {
             Capability::Optimization => Row {

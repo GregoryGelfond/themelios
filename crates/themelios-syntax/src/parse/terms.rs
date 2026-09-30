@@ -106,11 +106,13 @@ enum Shape {
 }
 
 /// One open bracket context.
-// The four flags are distinct, independently-live pieces of frame state —
-// an open unary run, an open tuple, a trailing comma, an open theory
-// opterm (docs/design/syntax.md §6.2); folding them into one enum would
-// obscure the frame's shape, not clarify it.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the four flags are distinct, independently-live pieces of frame state — an open \
+              unary run, an open tuple, a trailing comma, an open theory opterm \
+              (docs/design/syntax.md §6.2); folding them into one enum would obscure the \
+              frame's shape, not clarify it"
+)]
 struct Frame {
     shape: Shape,
     /// The open precedence levels, tighter on top, each with the
@@ -515,10 +517,12 @@ impl<S: TokenSource> Parser<'_, S> {
     /// a variable, a splice — or nothing that begins a term, which is a
     /// missing operand at a synchronizing token and an intruder anywhere
     /// else.
-    // One dispatch by the operand's first token — a prefix run, an opener,
-    // a leaf, a leading comma, an error standing for the operand, or an
-    // intruder; splitting it would scatter that single decision.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one dispatch by the operand's first token — a prefix run, an opener, a leaf, a \
+                  leading comma, an error standing for the operand, or an intruder; splitting it \
+                  would scatter that single decision"
+    )]
     fn operand(
         &mut self,
         frames: &mut Vec<Frame>,

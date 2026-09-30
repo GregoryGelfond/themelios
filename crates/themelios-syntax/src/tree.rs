@@ -29,10 +29,12 @@ macro_rules! syntax_kinds {
         /// both the lexical error token and the recovery node — the tree
         /// says which it is where it stands. `Debug` and `Display` are
         /// the SCREAMING_SNAKE name, the spelling dumps and goldens use.
-        // The variants are the roster's own SCREAMING_SNAKE names — the
-        // rowan idiom, and the spelling the goldens read — so the
-        // camel-case convention is set aside here by name.
-        #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+        #[expect(
+            non_camel_case_types,
+            reason = "the variants are the roster's own SCREAMING_SNAKE names — the rowan idiom, \
+                      and the spelling the goldens read — so the camel-case convention is set \
+                      aside here by name"
+        )]
         #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
         #[repr(u16)]
         pub enum SyntaxKind {

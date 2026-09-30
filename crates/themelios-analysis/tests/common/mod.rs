@@ -1,5 +1,3 @@
-#![allow(dead_code)] // each test binary reads a subset of the corpus
-
 /// A labeled finiteness template: `(label, program)`. Its intended verdict is fixed by the class it sits
 /// in; its **true** boundedness is argued in the row's own comment and cross-checked against clingo in the
 /// feature-gated differential (never read from themelios).

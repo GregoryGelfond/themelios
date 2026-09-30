@@ -31,11 +31,13 @@ pub(super) fn expected(items: &[Expected]) -> ExpectedSet {
 /// The parser over one token source: a cursor, a builder, and the
 /// diagnostics it accumulates. Constructed per parse and dropped with
 /// it — no state outlives a call (docs/design/syntax.md §12.1).
-// The four flags are distinct pieces of parser state — the witnessed
-// breach, the docs-are-trivia region, the silenced lexical diagnostics,
-// and the depth refusal (docs/design/syntax.md §4.2, §4.3, §4.5, §6.6);
-// folding them into one field would obscure, not clarify.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the four flags are distinct pieces of parser state — the witnessed breach, the \
+              docs-are-trivia region, the silenced lexical diagnostics, and the depth refusal \
+              (docs/design/syntax.md §4.2, §4.3, §4.5, §6.6); folding them into one field would \
+              obscure, not clarify"
+)]
 pub(super) struct Parser<'s, S: TokenSource> {
     source: &'s S,
     text: &'s str,

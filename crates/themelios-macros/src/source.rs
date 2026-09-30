@@ -690,10 +690,7 @@ fn length_of(text: &str) -> u32 {
     u32::try_from(text.len()).expect("a macro body's assembled text stays below 4 GiB")
 }
 
-// The roster's screaming-snake kinds read as the tokens they are; the
-// glob is what lets these tables name them without a hundred qualifiers.
 #[cfg(test)]
-#[allow(clippy::enum_glob_use)]
 mod tests {
     use std::str::FromStr;
 

@@ -1210,10 +1210,12 @@ fn an_undriven_check_carries_the_backend_s_refusal() {
 
 // ---- A broken backend fails exactly the checks that name its break ----
 
-// One table: each flaw beside the declaration it runs under and the exact
-// checks it fails; splitting it would scatter the one universal the law states.
 #[test]
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table: each flaw beside the declaration it runs under and the exact checks it \
+              fails; splitting it would scatter the one universal the law states"
+)]
 fn each_flaw_fails_exactly_the_checks_that_name_it() {
     use Breach::{Accepted, Misanswered, Mislocated, Refused};
     use Capability as C;
