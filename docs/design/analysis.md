@@ -153,9 +153,9 @@ facet would rebuild the graph each time; one pass builds it once. Every facet is
 a typed value, never a rendered string, so a consumer acts on the fact and no
 consumer parses prose (spec §1.5).
 
-**Computational cost.** `Analysis::of` is `O(program + edges)` — one iterative
-walk of the program (program §13) to scan constructs and collect dependency
-edges and safety facts, plus the strongly-connected-components decomposition of
+**Computational cost.** `Analysis::of` is `O(unpooled + edges)` (§8) — one iterative
+walk of the program (program §13) to scan constructs, one of the unpooled program to
+collect dependency edges and safety facts, plus the strongly-connected-components decomposition of
 the dependency graph, which is linear in the graph (§4). It allocates the graph
 and the facets and nothing per query thereafter; reading a facet is `O(1)`, and
 reading a witness is `O(the witness)`. Clone is linear; equality is structural.
@@ -465,9 +465,10 @@ consumer that needs full grounding finiteness conjoins `Holds` with those. Withi
 the reading is a sound over-approximation: it may report `Unknown` where the ground program
 is in fact finite (a deepening a lower stratum in fact bounds), never a false `Holds`.
 
-**Computational cost.** Safety is `O(rules · variables)` — one pass per rule
-collecting binding occurrences; finiteness reads the components (§4) and the
-term structure of the recursive rules, `O(program + edges)`.
+**Computational cost.** Safety is `O(rules · variables)` over the unpooled program's
+rules — one pass per rule collecting binding occurrences; finiteness reads the
+components (§4) and the term structure of the recursive rules, `O(unpooled + edges)`
+(§8).
 
 ## 6. The program classes
 
@@ -712,7 +713,8 @@ the scan's witness for them is a `Statement::Rule`; negation is not, since the s
 records a directive's negation too (`#external -p`, `#show a : not p`), so Horn
 reads it from the derivation rules alone (§6.3).
 
-**Computational cost.** `O(program)` — one walk; `uses` is `O(1)`, and reading a
+**Computational cost.** `O(program)` — one walk of the program as written, since the
+scan reads constructs before any unpooling; `uses` is `O(1)`, and reading a
 witness clones a statement, `O(witness)` (§8).
 
 ## 8. Posture, totality, and cost
@@ -759,8 +761,8 @@ program cannot overflow one.
 with an `h`-atom head over a `b`-atom body contributes `h · b` dependency edges, so a
 single wide rule `p1;…;pn :- q1,…,qn.` of size `Θ(n)` yields `Θ(n²)` edges, which every
 `O(nodes + edges)` reader then pays. This is *faithful*, not a defect: the graph
-genuinely has that many edges; `O(program + edges)` names `edges` separately precisely
-because it can exceed `program`; and clingo's own grounding is likewise super-linear on
+genuinely has that many edges; `O(unpooled + edges)` names `edges` separately precisely
+because it can exceed `unpooled`; and clingo's own grounding is likewise super-linear on
 such a program. An adversary at the untrusted boundary (spec §12.4) can push the
 analysis to `Θ(program²)` only by handing it a program whose graph *is* that large — the
 work equals the output, never a multiplier on top of it. The linear commitments

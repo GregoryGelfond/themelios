@@ -22,7 +22,7 @@ Reports of the following are especially in scope:
 
 - a panic, a hang, or unbounded resource use reachable from source text handed to the lexer or parser;
 - a crash or unbounded resource use reachable from a program handed to the analysis, the rendering, or the solving contract — themelios bounds its own walks and aims to refuse such input with a typed reason, never to abort;
-- an unsound answer: an analysis verdict of `Holds` that is false, rendered text that raises to a different program, ground arithmetic that wraps instead of refusing, or a truncated search reported as complete;
+- an unsound answer: an analysis verdict of `Holds` that is false, rendered text that raises to a different program, ground evaluation through `Term::evaluate` that wraps instead of refusing, a model reached through a repair the engine reported — an undefined operation treated as false — or a truncated search reported as complete. The engine's own wrapping of overflowing ground arithmetic, which it does not report, is a divergence the threat model records (§7), not a report to file;
 - `unsafe` code, a foreign library, or a build script reaching a crate whose closure forbids it. The structural checks in the crates' `tests/trust.rs` hold those closures (specification §12.3);
 - undefined behaviour, a process abort, an unbounded read, or an act beyond the input handed in — a file read, a script run — reachable through the engine adapter's own calls (the threat model, §5).
 

@@ -238,7 +238,7 @@ answer sets. Its members are `Model`s (`solve.md` §5.1): every reading here rea
 `Model::atoms`; a theory assignment, where a backend supplies one, rides beside it and no epistemic
 reading consults it. Two members may share an answer set — distinct models that agree on the shown atoms,
 or on the atoms with different assignments; the readings, reading atoms, are unaffected, and the members
-keep their multiplicity.
+keep their multiplicity (`solve.md` §5.1, §5.2).
 
 The invariant is a **type state**, and it is the correctness keystone here: **a `WorldView` value is
 non-empty by construction.** It is obtained only from a `Consistent` outcome, so a `WorldView` you
@@ -653,4 +653,4 @@ it.
    (§2.3). `materialize`'s refusals are a list (§2.3).
 11. **Members that share an answer set** (2026-09-30). Two members may share an answer set — models that
    agree on the shown atoms, or on the atoms with different theory assignments; the readings are unaffected,
-   and the members keep their multiplicity (§2.3; `solve.md` §5.1).
+   and the members keep their multiplicity (§2.3; `solve.md` §5.1, §5.2).
