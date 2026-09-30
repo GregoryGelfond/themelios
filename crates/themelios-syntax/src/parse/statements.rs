@@ -443,11 +443,13 @@ impl<S: TokenSource> Parser<'_, S> {
     /// a literal, an aggregate, or a theory atom — then the element by
     /// its first token, and, where the position admits it, a condition
     /// after `:` wrapping the literal into a `CONDITIONAL_LITERAL`.
-    // One decision by first token, each arm a distinct element shape (a
-    // theory atom, an aggregate, a truth constant, a literal or guard),
-    // with the two disallowed-position arms beside their admitted twins;
-    // splitting it would scatter that single dispatch.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one decision by first token, each arm a distinct element shape (a theory atom, \
+                  an aggregate, a truth constant, a literal or guard), with the two \
+                  disallowed-position arms beside their admitted twins; splitting it would \
+                  scatter that single dispatch"
+    )]
     pub(super) fn element(&mut self, position: Position) -> Element {
         if !self.element_begins(position) {
             return Element::None;

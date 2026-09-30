@@ -85,10 +85,7 @@ fn render(error: &impl ToDiagnostic) -> String {
     error.to_diagnostic().message().to_owned()
 }
 
-// The roster's screaming-snake kinds read as the tokens they are; the glob is
-// what lets the isomorphism walk name them without a qualifier apiece.
 #[cfg(test)]
-#[allow(clippy::enum_glob_use)]
 mod tests {
     use std::ops::Range;
     use std::str::FromStr;

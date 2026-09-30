@@ -69,3 +69,9 @@ doc_markdown = "allow"
 # set of owned statements — rewards. The disparity is a deliberate
 # consequence of in-node provenance, not a defect.
 large_enum_variant = "allow"
+# A lint is set aside only on the one item where its concern does not apply,
+# by an `expect` that carries its reason: an expectation that stops being met
+# fails the checks, so a suppression cannot outlive its argument. `allow`,
+# which would outlive it silently, is denied, and so is either without a reason.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"

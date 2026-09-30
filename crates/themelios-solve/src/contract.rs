@@ -230,10 +230,12 @@ pub trait Cancel: Send + Sync {
 /// surface, and so refuses every gated request. A backend declares itself by
 /// setting the bits it can answer for; a later capability is a new field, not
 /// a migration.
-// The eight bits are distinct capabilities, each gating its own method of the
-// contract (docs/design/solve.md §4.1); folding them into one field would
-// obscure the declaration a consumer reads, not clarify it.
-#[allow(clippy::struct_excessive_bools)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the eight bits are distinct capabilities, each gating its own method of the \
+              contract (docs/design/solve.md §4.1); folding them into one field would obscure \
+              the declaration a consumer reads, not clarify it"
+)]
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Capabilities {

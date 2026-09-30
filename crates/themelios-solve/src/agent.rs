@@ -113,9 +113,12 @@ impl<B: Backend> Agent<B> {
     /// statement. A later step retracts the whole set with
     /// [`forget`](Agent::forget). Cost: `Θ(facts + program size)` — one rebuild,
     /// not one per fact.
-    // The fact source is taken by value — the design's surface (§6.2): the caller
-    // hands its observations over, though a `Facts` is only read to enumerate them.
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the fact source is taken by value — the design's surface \
+                  (docs/design/solve.md §6.2): the caller hands its observations over, though a \
+                  `Facts` is only read to enumerate them"
+    )]
     pub fn observe(&mut self, facts: impl Facts) -> Result<Observation, Fault> {
         let rules = facts
             .facts()
@@ -215,9 +218,11 @@ impl<B: Backend> Agent<B> {
     /// request locus before anything is lowered: the core's own timer over a
     /// cancelling backend — the realisation rule's other arm — is realised with
     /// cancellation.
-    // The options are taken by value — the design's surface (§6.3): the caller
-    // hands the configuration over, though only its knobs are read.
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the options are taken by value — the design's surface (docs/design/solve.md \
+                  §6.3): the caller hands the configuration over, though only its knobs are read"
+    )]
     pub fn solve_with(&mut self, options: SolveOptions) -> Result<Solved<'_>, Fault> {
         if options.time.is_some() {
             self.require(|capabilities| capabilities.budgets.time)?;

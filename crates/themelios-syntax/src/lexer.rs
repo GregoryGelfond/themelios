@@ -627,10 +627,7 @@ fn string_defect(text: &str, following: Option<char>, dialect: Dialect) -> Lexic
     }
 }
 
-// The roster's names read as the tokens they are; qualifying a hundred
-// of them in these tables adds noise, not information.
 #[cfg(test)]
-#[allow(clippy::enum_glob_use)]
 mod tests {
     use themelios_base::line::PositionRefusal;
     use themelios_base::source::{Source, SourceId};

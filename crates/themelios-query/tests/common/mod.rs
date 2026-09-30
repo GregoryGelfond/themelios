@@ -2,11 +2,12 @@
 //! (docs/design/solve.md §5.2): it answers with a fixed enumeration ending in a
 //! chosen conclusion, so a test builds a consistent world view — closed or
 //! budget-cut — from owned answer sets, with no real solver.
-//!
-//! `dead_code` is allowed because this helper is shared across the reading-surface
-//! test files and each uses only the part it needs (Cargo recompiles `common` per
-//! test crate, so an unused helper there is expected, not a defect).
-#![allow(dead_code)]
+#![expect(
+    dead_code,
+    reason = "this helper is shared across the reading-surface test files and each uses only \
+              the part it needs; Cargo recompiles `common` per test crate, so an unused helper \
+              there is expected, not a defect"
+)]
 
 use themelios_program::program::Program;
 use themelios_program::symbol::{Name, Sign, Symbol};
