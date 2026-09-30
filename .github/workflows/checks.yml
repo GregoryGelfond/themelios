@@ -12,7 +12,8 @@ permissions:
 # The toolchain the checks pin, named once and referenced at every rustup
 # call. The pin is reproducibility and matches the floor
 # (docs/specification.md §10.1); rust-version = "1.97" in Cargo.toml is the
-# floor, and this pin is at or above it.
+# floor, and this pin is at or above it. rust-toolchain.toml pins local builds
+# to the same version; the two change together.
 env:
   RUST_TOOLCHAIN: "1.97.1"
 
