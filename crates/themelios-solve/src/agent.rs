@@ -879,13 +879,16 @@ mod ledger_laws {
     use std::hint::black_box;
     use std::time::Instant;
 
-    /// The rebuild-scaling probe size: large enough that a quadratic rebuild
-    /// stands clear of timing noise, small enough to stay a fast unit test.
-    const PROBE_ENTRIES: usize = 4_000;
-    /// Doubling the entries at most triples the time — a linear rebuild roughly
-    /// doubles (~2×), a quadratic one quadruples (~4×), so the tripwire trips
-    /// between them.
-    const LINEAR_CEILING: u128 = 3;
+    /// The smaller rebuild-scaling probe: large enough to time well above the
+    /// clock's resolution, small enough that the larger probe stays a fast unit
+    /// test.
+    const PROBE_ENTRIES: usize = 1_000;
+    /// The data-size ratio between the smaller and the larger probe.
+    const SIZE_RATIO: usize = 16;
+    /// A linear rebuild at SIZE_RATIO may cost at most this factor: fourfold
+    /// noise headroom above linear (x16) and fourfold separation below quadratic
+    /// (x256), the margin the other tiers' scaling tripwires hold.
+    const LINEAR_CEILING: u128 = SIZE_RATIO as u128 * 4;
     /// The rebuild is timed several times and the fastest kept, so a scheduling
     /// hiccup in one run does not read as super-linear growth.
     const SAMPLES: usize = 9;
@@ -914,13 +917,13 @@ mod ledger_laws {
 
     #[test]
     fn the_rebuild_scales_linearly_with_the_program_size() {
-        let single = fastest_rebuild_nanos(&ledger_of_size(PROBE_ENTRIES));
-        let double = fastest_rebuild_nanos(&ledger_of_size(PROBE_ENTRIES * 2));
+        let small = fastest_rebuild_nanos(&ledger_of_size(PROBE_ENTRIES));
+        let large = fastest_rebuild_nanos(&ledger_of_size(PROBE_ENTRIES * SIZE_RATIO));
         assert!(
-            double < single.saturating_mul(LINEAR_CEILING),
-            "rebuild grew worse than linearly — {single}ns at {PROBE_ENTRIES} entries, \
-             {double}ns at {} entries — the reinsertion recurrence to avoid",
-            PROBE_ENTRIES * 2,
+            large < small.saturating_mul(LINEAR_CEILING),
+            "rebuild grew worse than linearly — {small}ns at {PROBE_ENTRIES} entries, \
+             {large}ns at {} entries — the reinsertion recurrence to avoid",
+            PROBE_ENTRIES * SIZE_RATIO,
         );
     }
 

@@ -535,15 +535,18 @@ fn observe_scales_linearly_with_the_fact_count() {
     use std::hint::black_box;
     use std::time::Instant;
 
-    const PROBE_FACTS: i32 = 1_500;
-    const LINEAR_CEILING: u128 = 3;
+    const PROBE_FACTS: u16 = 500;
+    const SIZE_RATIO: u16 = 16;
+    // Fourfold noise headroom above linear (x16) and fourfold separation below
+    // quadratic (x256), the margin the other tiers' scaling tripwires hold.
+    const LINEAR_CEILING: u128 = SIZE_RATIO as u128 * 4;
     const SAMPLES: usize = 9;
 
-    let observe_nanos = |count: i32| -> u128 {
+    let observe_nanos = |count: u16| -> u128 {
         (0..SAMPLES)
             .map(|_| {
                 let (mut agent, _records) = agent_over(Program::empty(), NO_EXTERNALS, SINGLE_SHOT);
-                let source = Predicates((0..count).collect());
+                let source = Predicates((0..i32::from(count)).collect());
                 let start = Instant::now();
                 black_box(agent.observe(source).expect("observe succeeds"));
                 start.elapsed().as_nanos()
@@ -552,13 +555,13 @@ fn observe_scales_linearly_with_the_fact_count() {
             .expect("at least one sample")
     };
 
-    let single = observe_nanos(PROBE_FACTS);
-    let double = observe_nanos(PROBE_FACTS * 2);
+    let small = observe_nanos(PROBE_FACTS);
+    let large = observe_nanos(PROBE_FACTS * SIZE_RATIO);
     assert!(
-        double < single.saturating_mul(LINEAR_CEILING),
-        "observe grew worse than linearly — {single}ns for {PROBE_FACTS} facts, \
-         {double}ns for {} — a rebuild per fact is the quadratic to avoid",
-        PROBE_FACTS * 2,
+        large < small.saturating_mul(LINEAR_CEILING),
+        "observe grew worse than linearly — {small}ns for {PROBE_FACTS} facts, \
+         {large}ns for {} — a rebuild per fact is the quadratic to avoid",
+        PROBE_FACTS * SIZE_RATIO,
     );
 }
 
@@ -567,16 +570,19 @@ fn forget_scales_linearly_with_the_fact_count() {
     use std::hint::black_box;
     use std::time::Instant;
 
-    const PROBE_FACTS: i32 = 1_500;
-    const LINEAR_CEILING: u128 = 3;
+    const PROBE_FACTS: u16 = 500;
+    const SIZE_RATIO: u16 = 16;
+    // Fourfold noise headroom above linear (x16) and fourfold separation below
+    // quadratic (x256), the margin the other tiers' scaling tripwires hold.
+    const LINEAR_CEILING: u128 = SIZE_RATIO as u128 * 4;
     const SAMPLES: usize = 9;
 
-    let forget_nanos = |count: i32| -> u128 {
+    let forget_nanos = |count: u16| -> u128 {
         (0..SAMPLES)
             .map(|_| {
                 let (mut agent, _records) = agent_over(Program::empty(), NO_EXTERNALS, SINGLE_SHOT);
                 let observation = agent
-                    .observe(Predicates((0..count).collect()))
+                    .observe(Predicates((0..i32::from(count)).collect()))
                     .expect("observe succeeds");
                 let start = Instant::now();
                 agent.forget(observation).expect("forget succeeds");
@@ -587,12 +593,12 @@ fn forget_scales_linearly_with_the_fact_count() {
             .expect("at least one sample")
     };
 
-    let single = forget_nanos(PROBE_FACTS);
-    let double = forget_nanos(PROBE_FACTS * 2);
+    let small = forget_nanos(PROBE_FACTS);
+    let large = forget_nanos(PROBE_FACTS * SIZE_RATIO);
     assert!(
-        double < single.saturating_mul(LINEAR_CEILING),
-        "forget grew worse than linearly — {single}ns for {PROBE_FACTS} facts, \
-         {double}ns for {} — a rebuild per member is the quadratic to avoid",
-        PROBE_FACTS * 2,
+        large < small.saturating_mul(LINEAR_CEILING),
+        "forget grew worse than linearly — {small}ns for {PROBE_FACTS} facts, \
+         {large}ns for {} — a rebuild per member is the quadratic to avoid",
+        PROBE_FACTS * SIZE_RATIO,
     );
 }
