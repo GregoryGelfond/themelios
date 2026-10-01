@@ -265,7 +265,10 @@ pub trait Backend {
     /// cautious/brave by enumeration over `solve` (unscoped) or `solve_assuming` (scoped) (§4.2); the
     /// request surface says which path runs. What the backend owes: a native door honours the
     /// `ConsequenceRequest`'s scenario, ranging over the models `solve_assuming(scenario)` denotes (§5.2);
-    /// an unscoped request carries the empty scenario. It reports what the engine's search established, a
+    /// an unscoped request carries the empty scenario. It ranges over those models' answer sets — every
+    /// atom true in each — never over what the program's `#show` directives display (§5.1), so an
+    /// engine whose consequence search tracks only displayed atoms is driven with every atom tracked or
+    /// does not declare the door. It reports what the engine's search established, a
     /// `NativeAnswer` (§5.2) — the set it computed over a space it closed having seen a model, no model
     /// over a closed space, or where it stopped short — and the core builds the `Consequences` from that
     /// answer or refuses: the refusals' decision and wording are the core's, the report's honesty the
@@ -404,25 +407,32 @@ pub enum Stopped<'a> { Concluded(Truncation), Faulted(&'a Fault) }
 /// four.
 pub enum Truncation { Target, Budget, Interrupted }
 
-/// An answer set is a set of ground symbols — re-exported from the program tier (program.md §11.3),
-/// so the solve, query, and program tiers speak one answer-set vocabulary.
+/// An answer set, as the literature defines it: the ground literals true in a stable model of the
+/// program — every atom the model makes true, a strongly negated atom included, so every member is a
+/// function symbol — and never what the program's `#show` directives display (below). Re-exported from
+/// the program tier (program.md §11.3), so the solve, query, and program tiers speak one answer-set
+/// vocabulary.
 pub use themelios_program::AnswerSet;   // = BTreeSet<Symbol>
 
 /// One model of the program — the unit every stream yields and every complete collection holds: its
-/// answer set, and the theory assignment a backend evaluating theory atoms supplies with it (§5.4) —
-/// empty for a backend that evaluates none. The readings read the answer set; the assignment rides
-/// beside it, never laundered into atoms. Cost: the answer set by value, and for a backend evaluating no
-/// theory an empty assignment — nothing per model beyond the answer set, so the constant-resident stream
-/// (§13.3) holds for the unit.
+/// answer set; what the program displays of it by its `#show` directives; and the theory assignment a
+/// backend evaluating theory atoms supplies with it (§5.4) — empty for a backend that evaluates none. The
+/// readings read the answer set and only it: the display and the assignment ride beside it, and neither
+/// is laundered into atoms. Cost: the answer set by value; the display stored only where a backend sets
+/// one, so a model that displays its whole answer set holds it once; and for a backend evaluating no
+/// theory an empty assignment — so the constant-resident stream (§13.3) holds for the unit.
 #[non_exhaustive]
-pub struct Model { /* atoms: AnswerSet + theory: TheoryAssignments */ }
+pub struct Model { /* atoms: AnswerSet + shown: Option<BTreeSet<Symbol>> + theory: TheoryAssignments */ }
 impl Model {
-    pub fn of(atoms: AnswerSet) -> Model;             // the backend's construction door: no assignment
-    pub fn atoms(&self) -> &AnswerSet;
+    pub fn of(atoms: AnswerSet) -> Model;             // the backend's construction door: displays every atom, no assignment
+    pub fn with_shown(self, shown: BTreeSet<Symbol>) -> Model; // a backend evaluating `#show` sets the display; O(1)
+    pub fn atoms(&self) -> &AnswerSet;                // the answer set — what every reading reads
+    pub fn shown(&self) -> &BTreeSet<Symbol>;         // the display, for printing and export — no reading consults it
     pub fn assignment(&self) -> &TheoryAssignments;   // empty unless the backend evaluates a theory
     pub fn is_consistent(&self) -> bool;              // no atom beside its strong negation (query.md §2.3)
-    // The assignment-bearing construction door lands with `TheoryAssignments`' own constructors, when a
-    // theory-evaluating backend is built (§11.1); until then every model's assignment is empty.
+    // Equality compares the display by content, so `of(a)` and `of(a.clone()).with_shown(a)` are one
+    // model. The assignment-bearing construction door lands with `TheoryAssignments`' own constructors,
+    // when a theory-evaluating backend is built (§11.1); until then every model's assignment is empty.
 }
 ```
 
@@ -445,6 +455,22 @@ produced.
 theory atoms comes with the assignment that satisfied them — the constraint-ASP literature's *constraint
 answer set* — and the tier names the pair for what it is, a model of the program: the stream's unit is the
 model, and a backend that evaluates no theory yields models whose assignment is empty.
+
+**The answer set and the display are different things, and only the answer set is read.** A program's
+`#show` directives say what to *display* of a model: with none, every atom; with a signature directive or
+`#show.`, only the atoms of the signatures listed, a strongly negated signature listed in its own right
+(`#show -p/1.`); and, beside either, for a term directive `#show t : body.`, the term `t` wherever its
+body holds — a symbol that need not be a true atom, or an atom at all: `q. #show p : q.` displays `p`,
+which is false, and `q. #show 42 : q.` displays a number. The display is therefore neither a subset of
+the answer set nor a reading of it. A reading over it would answer *yes* of a false atom, and *unknown*
+of an atom the program hides yet entails (`a. #show.`), or of the contrary of a hidden strongly negated
+atom (`-p. #show q/0.`). So every reading reads the answer set — every true atom, displayed or not — and
+the display rides beside it for the client that prints or exports what the program shows. It is a set:
+where an engine lists a displayed atom and an equal displayed term both, the display holds the symbol
+once. A backend that evaluates the directives builds each model as `Model::of(atoms).with_shown(display)`;
+a model built by `Model::of(atoms)` alone displays its whole answer set, which is what a program without
+directives shows. The display costs a reading nothing, and the conformance suite holds a backend to the
+directives (§13.1).
 
 ### 5.2 Answer sets, optima, consequences
 
@@ -473,7 +499,10 @@ impl<'a> Solved<'a> {
     /// A COMPLETE collection — available ONLY when the search closed the space; refuses otherwise
     /// (the exhaustion gate, the `WorldView::is_exhausted` analog), a faulted search's refusal carrying
     /// the fault as its cause. This is what makes "a truncated search passing as complete"
-    /// unconstructible (§5.3), not merely visible via `conclusion`.
+    /// unconstructible (§5.3), not merely visible via `conclusion`. One model per stable model the
+    /// engine enumerates, so no two models are merged because they display alike — `{a}. #show.` has
+    /// the two models `∅` and `{a}`, each displaying nothing — and the differentials compare the
+    /// collection as a multiset (§13.2).
     pub fn all_models(&mut self) -> Result<Vec<Model>, NotExhausted>;
 
     /// How the search concluded — `Some` once it ended without a fault; `None` while it is open, and
@@ -531,7 +560,7 @@ impl<'a> Optimized<'a> {
 /// Cautious (⋂) or brave (⋃) consequences — a set of ground `Symbol`s carrying the `Mode` that produced
 /// it and, under an objective, whether it ranged over the OPTIMAL set or all stable models (query.md
 /// §2.4, §5.2). Built by the fold or by the core's gate over a native door's answer (below): a backend
-/// reports, and never builds one.
+/// reports, and never builds one. Both range over the models' answer sets, never their displays (§5.1).
 #[non_exhaustive]
 pub struct Consequences { /* Symbol set + Mode + the optimal-vs-all marker */ }
 impl Consequences {
@@ -549,7 +578,7 @@ pub enum Mode { Cautious, Brave }
 /// Closed: a native search closed the space having seen a model, closed it having seen none, or stopped
 /// short of it.
 pub enum NativeAnswer {
-    Closed(BTreeSet<Symbol>),   // the engine's ⋂ or ⋃ over the space it closed, a model seen
+    Closed(BTreeSet<Symbol>),   // the engine's ⋂ or ⋃ of the answer sets over the space it closed, a model seen
     NoModel,                    // the space closed with no model: the scenario admits none
     Stopped(Truncation),        // short of the space; the engine's partial set is not carried
 }
@@ -652,14 +681,23 @@ pub enum Refutation {
 }
 
 /// A fault is a value with a CLOSED locus taxonomy at the seam. It OWNS its model — a message, the
-/// `Locus`, the backend-bug bit, and a `base::Location` ONLY where it has one (Program faults). An
-/// unlocated fault (Request/Resource/Engine/Adapter) is NOT a degenerate diagnostic with a fabricated
-/// span at an "unknown source" but a different thing (base's §diagnostic): it renders through its own
-/// `Display`.
+/// `Locus`, the backend-bug bit, and a `base::Location` ONLY where it has one: a Program fault carries
+/// the refused statement's location when the statement has one, and a statement built in Rust has none,
+/// so a Program fault may be unlocated too; a Request, Resource, Engine, or Adapter fault is always
+/// unlocated. An unlocated fault (of any locus) is NOT a degenerate diagnostic with a fabricated span at
+/// an "unknown source" but a different thing (base's §diagnostic): it renders through its own `Display`.
 #[non_exhaustive]
 pub struct Fault { /* message + Locus + Option<base::Label> + the backend-bug bit */ }
 pub enum Locus { Program, Request, Resource, Engine, Adapter }
 impl Fault {
+    // The construction doors, one per locus; an empty message is replaced, so a fault always has one.
+    pub fn program(message: impl Into<String>, label: Option<base::Label>) -> Fault; // the refused statement's
+        // label where it was parsed, `None` where it was built in Rust — never a span made up for it
+    pub fn request(message: impl Into<String>) -> Fault;
+    pub fn unsupported() -> Fault;                         // a Request fault: beyond the declared capabilities
+    pub fn resource(message: impl Into<String>) -> Fault;
+    pub fn engine(message: impl Into<String>) -> Fault;
+    pub fn adapter_bug(message: impl Into<String>) -> Fault; // the one door that sets the backend-bug bit
     pub fn is_backend_bug(&self) -> bool;                  // a closed bit
     pub fn locus(&self) -> Locus;
     pub fn located(&self) -> Option<LocatedFault<'_>>;     // Some iff it carries a Location
@@ -684,10 +722,12 @@ pub struct LocatedFault<'a> { /* a &Fault whose Location is guaranteed present *
   Today the bit and the `Adapter` locus coincide — every adapter-locus fault is a bug, such as a model
   holding an atom and its contrary (query.md §2.3); the bit is kept apart because the specification
   mandates it (§9.3) and the case that parts them is real: an engine- or resource-locus failure the
-  adapter should have prevented. A *located* fault (Program) lowers to a `themelios-base` `Diagnostic`
-  through `LocatedFault` (loci and provenance, solved once, here, for every consumer), while an unlocated
-  one (Request/Resource/Engine/Adapter) renders through its own `Display` — a fault is not, in general, a
-  diagnostic.
+  adapter should have prevented. A *located* fault — a Program fault whose refused statement was parsed —
+  lowers to a `themelios-base` `Diagnostic` through `LocatedFault` (loci and provenance, solved once, here,
+  for every consumer), while an unlocated one — any other fault, and a Program fault whose statement was
+  built in Rust — renders through its own `Display`: a fault is not, in general, a diagnostic. A backend
+  locates a Program fault from the refused statement's provenance (program.md §6) and never invents a
+  source for a statement that has none; the conformance suite fails one that does (§13.1).
 - **Statistics** are exposed per solve through a `Statistics` trait — engine-scoped, provenance-marked,
   typed data (v1: the clingo adapter provides clingo's own). The minimal v1 shape a consumer reads:
 
@@ -1117,7 +1157,10 @@ the specification's §9.6 does not itself mention, it is recorded in §16.
 pillar (the *extraction* witness), with documented failure behaviour on non-matching atoms.
 
 ```rust
-/// An answer set (or a projection) → a user-defined Rust value. The read-time inverse of Facts (§7.3).
+/// An answer set → a user-defined Rust value. The read-time inverse of Facts (§7.3). A client that wants
+/// what the program displays instead — a `#show (X, Y) : edge(X, Y).` table, say — extracts from the
+/// model's display (§5.1), a set of the same symbols: the choice of which to read is the client's, named
+/// at the call.
 pub trait Extract: Sized {
     fn extract(answer_set: &AnswerSet) -> Result<Self, ExtractError>;
 }
@@ -1298,11 +1341,18 @@ already expresses this; the ambitious native engine (§14) inherits the contract
 
 Executable, shipped with the contract, run by every adapter: outcome correctness on a corpus of small
 programs with independently known answer sets — a program under an objective among them, whose `solve`
-must yield its non-optimal models too (§5.2), and every yielded model consistent, no atom beside its
-contrary (query.md §2.3); capability honesty (a declared-unsupported request must refuse), and the native
-consequence door's answer its known one — `NoModel` over a program with no answer set and under a scenario
+must yield its non-optimal models too (§5.2), and programs whose `#show` directives hide atoms or display
+terms (`a. #show.`, `{a}. #show.`, `q. #show p : q.`, `-p. #show q/0.`), whose models must carry their
+whole answer sets, whatever they display (§5.1) — every yielded model consistent, no atom beside its
+contrary (query.md §2.3), and every member of its answer set a literal (a function symbol); each model's
+display the one the program's directives select (`q. #show p : q.` displays `{p, q}` over the answer set
+`{q}`); capability honesty (a declared-unsupported request must refuse), and the native
+consequence door's answer its known one — over the same corpus, so a door that ranged over the display
+answers wrongly — and `NoModel` over a program with no answer set and under a scenario
 that admits none (§5.2); the named pathologies (§5.3) attempted and structurally impossible; fault loci
-landing where they belong; and **the ground-program observer produced faithfully** where declared (§10.4).
+landing where they belong, a Program fault located within its refused statement where that statement was
+parsed and unlocated where it was built in Rust (§5.4); and **the ground-program observer produced
+faithfully** where declared (§10.4).
 The suite's skeleton is exercisable **engine-free over a stub backend** before any adapter — that run is
 the core's own check (it streams models through the real contract), not an adapter's authority. The
 **clingo and clingcon adapters** run it (clingcon adds the constraint-theory cases), differenced against
@@ -1312,9 +1362,12 @@ radically different architecture, stronger corroboration than a naive built-in o
 
 ### 13.2 Differentials and oracles
 
-The clingo binary as the grounding/solving authority over the corpus; the **clingcon binary** as the
+The clingo binary as the grounding/solving authority over the corpus, a model compared on its answer set
+(every atom, read under the engine's all-atoms selection) and its display apart, never one for the other
+(§5.1); the **clingcon binary** as the
 external oracle for the constraint theory — differencing *both* the linked clingcon backend and the
-in-house CP satellite (§11.2); the native-versus-derived consequence differential the tier gets for free
+in-house CP satellite (§11.2), a theory atom's counted elements among its cases (`&sum{x; x} = 4`,
+program.md §4.9); the native-versus-derived consequence differential the tier gets for free
 (query.md §2.4); and the bridge differential with its worst-case cost tripwires (§10.1). An adapter that
 shares the program tier's `Symbol` (zetesis, §12) adds a further cross-implementation differential when it
 lands. The **spike suite** (specification §5.2, §10.1) holds the design's version-scoped claims about the
@@ -1701,3 +1754,18 @@ necessity where it is declared.
    timer enforce it, neither refuses (§4.1, §6.3). The spike suite is named among the assurance instruments,
    with the two claims it holds (§13.2). A model states whether it is consistent (§5.1), and the one
    process-wide value, the ledger brand, confers no authority (§6.1).
+14. **The answer set, the display, and the unlocated Program fault** (2026-10-01). An answer set is what the
+   literature means by one — the ground literals true in a stable model, every member a function symbol —
+   and a model carries it whole, whatever the program's `#show` directives display: the display is a
+   component of its own, `Model::shown`, set by a backend evaluating the directives through
+   `Model::with_shown` and otherwise the whole answer set, compared by content, and read by no reading
+   (§5.1). A term directive displays symbols that are not true atoms — `q. #show p : q.` displays `p` — so a
+   reading over the display could answer *yes* of a false atom; the readings, the fold, and the native
+   consequence door all range over answer sets, and a door whose engine tracks only displayed atoms is
+   driven with every atom tracked or not declared (§4.1, §5.2). `all_models` keeps one model per stable
+   model, two models that display alike included (§5.2), and `Extract` names the display as the client's
+   choice (§9). A Program fault is located from the refused statement's provenance and is unlocated for a
+   statement built in Rust: `Fault::program` takes an optional label, and the construction doors are
+   stated (§5.4). The conformance suite gains the display corpus, the literal-membership and display
+   checks, and the unlocated refusal (§13.1); the clingo differential compares answer sets and displays
+   apart, and the clingcon oracle covers a theory atom's counted elements (§13.2, program.md §4.9).
