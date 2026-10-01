@@ -145,6 +145,13 @@ specification's own rules (spec §4, §7); a §7 amendment owes its form here.
   constructed and not refused.
 - **render → parse → raise is not identity up to provenance** on a program the
   round-trip law covers (spec §7.6, §10.3).
+- **The raise changes what a program means**: for a source `S` the round-trip law
+  covers that raises without a diagnostic and bears no theory atom, the authority
+  grounds `render(raise(S))` to answer sets other than those it grounds `S` to. The
+  round-trip law cannot see this — render and raise agree on whatever the value
+  keeps — so its instrument is the answer-set differential of §16, which grounds
+  the source and its render both, over seeded shapes where a merge would change a
+  count (§4.4).
 - Provenance is a **side table** rather than in-node data (spec §7.4), or it
   changes what programs are equal, or it fails to survive a transformation that
   keeps a node's content.
@@ -680,9 +687,10 @@ here and are stated once:
   order is meaning. The type carries the shape: `BTreeSet` where the object is a set
   (so duplicates are unrepresentable, iteration is deterministic in `Ord`, and
   equality is set equality — two rules with the body written in two orders are one
-  rule); a `Vec` kept in `Ord` order where it is counted (an entry per counted
-  occurrence, so equality is multiset equality, and the order the elements were
-  written in is still not meaning); a `Vec` in written order where it is a sequence.
+  rule); a `Counted` collection where it is counted (§4.4 — kept in `Ord` order, a
+  repeat merged or kept as the authority identifies the element, so equality is
+  multiset equality, and the order the elements were written in is still not
+  meaning); a `Vec` in written order where it is a sequence.
 - **The three negations are three types, and the vocabulary is precise.** *Strong
   (explicit) negation* is a `Sign` on an atom (`-p`, legal in a head or a body);
   *default negation* is a `DefaultNegation` on a body element (`not p`, `not not
@@ -786,7 +794,7 @@ value. Structural equality therefore distinguishes `:~ b. [w@p]` from
 `#minimize { w@p : b }` and `#minimize` from `#maximize` — they are syntactically
 different, which is exactly what structural equality reports (§5). This is one of
 the two documented carve-outs where this tier's equality is *finer* than the
-authority's own print-and-reparse (§5); the theory carve-out is the other.
+authority's own parse-then-unparse (§5.2); the theory carve-out is the other.
 
 ### 4.3 Rules; facts and constraints as shapes
 
@@ -850,8 +858,8 @@ is a third, distinct head; a head theory atom a fourth.
 ```rust
 pub struct Disjunction { /* elements: BTreeSet<DisjunctionElement> */ }   // a | b | … (grammar §5.5)
 pub struct Choice {
-    /* left_guard: Option<Guard>, elements: Vec<ChoiceElement> — counted, in `Ord`
-       order (below), right_guard: Option<Guard> */                 // 1 { a; b } 2 (grammar §5.3)
+    /* left_guard: Option<Guard>, elements: Counted<ChoiceElement> (below),
+       right_guard: Option<Guard> */                                // 1 { a; b } 2 (grammar §5.3)
 }
 /// A disjunction or a choice element: a literal with an optional condition
 /// (grammar §5.5, §5.3) — the singleton conditioned head `p(X) : q(X).` among
@@ -865,29 +873,39 @@ body — one syntax, two meanings by position (grammar §5.3); the raise (§8) k
 the position and builds the right one, so the value carries the meaning, never
 the ambiguity.
 
-**Counted elements, as the authority counts them.** A choice holds an element
-whose literal is a comparison or a boolean constant (`#true`, `#false`), under any
-default negation, once for every occurrence, and an element whose literal is an
-atom once for every distinct element. The authority grounds a choice — and a set
-aggregate (§4.7) — to a count over tuples: it keys an atom element by its atom and
-its default negation, so a repeated `a` is one tuple, but it numbers each comparison
-element by its occurrence, and builds `#true` as the comparison `0 = 0`, so a
-repeated `#true` is two tuples (`libgringo/src/input/literals.cc`,
-`RelationLiteral::toTuple`; `libgringo/src/input/programbuilder.cc`, `boollit`).
+**Counted elements, as the authority counts them.** The authority grounds a choice
+— and a set aggregate (§4.7) — to a count over tuples, and the tuple it gives an
+element decides what a repeat of it means. It keys an element whose literal is an
+atom by its atom and its default negation (`libgringo/src/input/literals.cc`,
+`PredicateLiteral::toTuple`), so a repeated `a` is one tuple: the element is
+identified **by content**. It numbers an element whose literal is a comparison by its
+occurrence (`RelationLiteral::toTuple`), and builds the boolean constants as
+comparisons — `#true` is `0 = 0`, `#false` is `0 != 0`, and a negated constant folds
+onto the other (`libgringo/src/input/programbuilder.cc`, `boollit`;
+`libgringo/src/input/nongroundgrammar.yy`) — so a repeated `#true` is two tuples: the
+element is identified **by occurrence**, under any default negation.
 `1 { #true; #true } 1.` therefore has no answer set where `1 { #true } 1.` has one;
 `{ X < 3 : p(X); X < 3 : p(X) } = 4.` holds over `p(1..2)`, each occurrence counting
 once per binding of its own variables; and an occurrence the grounder makes counts
-as one written — `{ #true : p(1; 1) } = 2.` holds once `p(1)` does, the pool
-expanding to two occurrences. A value that merged these repeats would denote another
-program, so the elements are **counted**: a `Vec` kept in `Ord` order, each counted
-occurrence its own entry carrying its own provenance (§6.3), content-equal entries in
-the order they were written or built, and a repeated atom element merged as a set
-merges it. Equality, `Ord`, and `Hash` read the entries in order — multiset equality
-over the elements — render writes every entry (§10), and every door that builds
-elements keeps the count: the raise, construction, substitution, the rewrites, and
-`unpool`. A repeated *statement* stays one: a rule, weak constraint, or optimize
-statement written twice means what it means once, so the program is still a set of
-statements (§6.3).
+as one written — `{ #true : p(1; 1) } = 2.` holds once `p(1)` does, the grounder
+expanding the pool to two occurrences before it numbers them.
+
+A value that merged a by-occurrence repeat would denote another program, so the
+elements are held in one structure that applies the rule, a **`Counted<T>`**: a
+`Vec` in `Ord` order whose one insert reads the element's identity. A by-content
+element merges with an equal entry, the provenances unioned as a set's members' are
+(§6.3); a by-occurrence element is kept beside any equal entry, with its own
+provenance. Every door that builds elements — the raise, construction, substitution,
+the rewrites, `unpool` — builds through that insert, so the count is kept by the
+structure, as the statement-level merge is (§6.3), not by each door's care.
+Equality, `Ord`, and `Hash` read the entries in order — multiset equality over the
+elements — and render writes every entry (§10). Both halves of the rule are the
+authority's, and the razor settles the first: a repeated atom element is one tuple
+to the grounder, so keeping the repeat would draw a distinction nothing consumes and
+make `{ a; a }` and `{ a }` unequal for no reading's sake — a uniform multiset is
+faithful, and finer than the logic. A repeated *statement* stays one: a rule, weak
+constraint, or optimize statement written twice means what it means once, so the
+program is still a set of statements (§6.3).
 
 ### 4.5 Bodies
 
@@ -1029,7 +1047,7 @@ pub struct HeadAggregate {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum AggregateFunction { Count, Sum, SumPlus, Min, Max }
 pub struct SetAggregate {
-    /* guards + Vec<SetElement>, counted as a choice's are (§4.4) — the body cardinality form */
+    /* guards + Counted<SetElement>, identified as a choice's are (§4.4) — the body cardinality form */
 }
 
 /// The position-specific aggregate elements (grammar §5.3). A body element is a term
@@ -1116,20 +1134,25 @@ consumer has them.
 /// negation (§4.5).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct TheoryAtom {
-    /* name: Name, arguments: Vec<Term>, elements: Vec<TheoryElement> — counted,
-       every one (below), guard: Option<TheoryGuard> */
+    /* name: Name, arguments: Vec<Term>, elements: Counted<TheoryElement> — every
+       element by occurrence (below), guard: Option<TheoryGuard> */
 }
 ```
 
-**A theory atom's elements are counted, every one.** What a repeated element means
-is the theory's to say, not the grounder's. The grounder merges a repeated theory
-element — `&a { x; x }` grounds as `&a { x }` — but a theory may count it: clingcon
-gives the elements of a sum, and of `&distinct`, `&disjoint`, `&minimize`, and
-`&maximize`, multiset semantics, so `&sum { x; x } = 4` sets `x` to `2` where
-`&sum { x } = 4` sets it to `4`. So every element occurrence is its own entry — §4.4's
-counted collection, with every element counted: keeping a repeat changes nothing for
-a theory that does not count it, since the grounder then merges it, while merging a
-repeat a theory counts would change the program. This makes the equality finer than
+**A theory atom's elements are identified by occurrence, every one.** What a repeated
+element means is the theory's to say, not the grounder's. The grounder merges a
+repeated theory element by its tuple and condition (`libgringo/src/output/theory.cc`,
+`TheoryData::addElem`) — `&a { x; x }` grounds as `&a { x }` — so a theory that counts
+repeats must keep them apart *before* grounding, and clingcon does: its rewrite of the
+program appends each element's number, and its condition's free variables, to the
+element's tuple, for a sum, `&nsum`, `&diff`, `&distinct`, `&disjoint`, `&minimize`,
+and `&maximize` (`libclingcon/src/parsing.cc`, `TheoryRewriter::rewrite_tuple`), so
+the grounder never meets the repeat — `&sum { x; x } = 4` sets `x` to `2` where
+`&sum { x } = 4` sets it to `4`. That rewrite reads the program this tier hands it, so
+a repeat must survive to it: every element of a theory atom is identified by
+occurrence (§4.4's `Counted`, with no element merged). Keeping a repeat changes
+nothing for a theory that does not count it, since the grounder then merges it, while
+merging one a theory counts would change the program — and the equality is finer than
 the grounder's for a theory that does not count (§5.2's second carve-out).
 
 **Theory terms are a distinct peer algebra.** The theory-term grammar (grammar
@@ -1245,10 +1268,11 @@ Canonicalization does the following, each syntactic:
 - **Set order.** The set-shaped children (§4) are held in `BTreeSet`, so their
   order is `Ord` and duplicates are gone — this is set membership, not a pass, but
   it is what makes a body written in two orders one value.
-- **Counted order.** The counted children (§4.4) are sorted into `Ord` order with
-  their counted occurrences kept and a repeated atom element merged, so a choice
-  written in two orders is one value while `1 { #true; #true } 1.` keeps both
-  elements.
+- **Counted order.** The counted children (§4.4) are sorted into `Ord` order by a
+  stable sort, each by-occurrence entry kept and each by-content repeat merged, so a
+  choice written in two orders is one value while `1 { #true; #true } 1.` keeps both
+  elements; content-equal entries keep the order they were written or built in,
+  which only their provenance observes.
 
 Three normalizations are **deliberately not** performed, because each erases a
 distinction the author wrote and none is forced by set semantics: the direction
@@ -1283,16 +1307,26 @@ an ASP practitioner means by the word:
   the empty program have the same single answer set `∅` — they are ordinarily,
   indeed strongly, equivalent — yet their canonical forms differ, so they are not
   equal here, and that is correct: the value records the rules, and the rules
-  differ. The law holds of the *sources* only because the value keeps what the
-  authority counts: `1 { #true } 1.` and `1 { #true; #true } 1.` differ in their
-  answer sets, so they are unequal values (§4.4) — a value that merged the repeat
-  would equate them.
+  differ. Of values the law holds for any structure; what gives it content is the
+  raise's own law (§2), that the authority grounds a source and the render of its
+  raise to the same answer sets — which is why the value keeps what the authority
+  counts:
+  `1 { #true } 1.` and `1 { #true; #true } 1.` differ in their answer sets, so they
+  raise to unequal values (§4.4).
 
 **The arbiter, and its two carve-outs.** On the theory-free, optimization-free
-fragment, this equality **coincides with the authority's own parse-then-unparse
-equality** — no finer, no coarser — which is what makes it checkable against the
-pinned binary (§16). Two carve-outs where it is deliberately *finer*, each stated
-at its home and repeated here so the relation is exact:
+fragment, this equality is **no finer than the authority's own parse-then-unparse
+equality on this tier's renders**: two values whose renders the authority reads back
+alike are equal here, and that is what the pinned binary checks (§16), re-reading
+this tier's render after every merge. On *sources* this equality is coarser than the
+authority's parse-then-unparse, by exactly the set rule of §4 — a repeated body
+literal, disjunct, explicit-tuple element, or by-content element is one here and two
+in the authority's unparse, which prints what was written — and each such merge is
+argued from the grounder, which gives the repeat no meaning of its own. That the
+merges change no answer set is the raise's law (§2), held by the answer-set
+differential (§16), not by this arbiter. Two carve-outs where the equality is
+deliberately *finer* even on renders, each stated at its home and repeated here so
+the relation is exact:
 
 1. **Optimization** (§4.2): the authority prints `#minimize`, `#maximize`, and a
    weak constraint alike, folding across them by negating weights — a *semantic*
@@ -1409,8 +1443,9 @@ type, and the node a program holds is `WithProvenance<Rule>`,
 `WithProvenance<Atom>`, and so on; their public accessors read the content, and
 `.provenance()` reads the origin and annotations. Because the carrier's identity
 is the content's, the
-`Ord`/`Eq`/`Hash` agreement §5 requires holds by construction, and the merge below
-is the *only* code that reads provenance during a set operation.
+`Ord`/`Eq`/`Hash` agreement §5 requires holds by construction, and the merge below —
+a set's insert, and a counted collection's for a by-content element (§4.4) — is the
+*only* code that reads provenance during a collection operation.
 
 ### 6.3 Merge, through one door
 
@@ -1435,10 +1470,11 @@ distinguish source statements by their nested origins reads them from the occurr
 stream (§8), before this merge — so a deep per-node union would change that cost model to
 no end.
 
-Within a statement the same door works a level down: a repeated element of a set-shaped
-child is one content with its provenances unioned, while a counted occurrence (§4.4) is
-never merged — it is content the program counts, so each occurrence keeps its own
-provenance, and the element-level union never joins two of them.
+Within a statement the same rule holds a level down, through each collection's own
+insert: a repeated element of a set-shaped child, and a repeated by-content element of a
+counted one (§4.4), is one content with its provenances unioned, while a by-occurrence
+element is never merged with an equal entry — the program counts it — so each keeps its
+own provenance.
 
 The equality (not mere containment) is the safety half: a consumer that maps a
 node's references back to their sources — an explanation tool citing a rule's
@@ -2515,9 +2551,9 @@ with what it proves and what it cannot (spec §10.2).
   canonicalization defect — the value must be able to exhibit two spellings of one
   term):
   - **Set and equality semantics:** a body and a disjunction are sets (a duplicate
-    element vanishes, a reordering is the same value); a counted collection (§4.4)
-    keeps every counted occurrence through every door — the raise, construction,
-    substitution, the rewrites, `unpool` — merges a repeated atom element, and is
+    element vanishes, a reordering is the same value); a `Counted` collection (§4.4)
+    keeps every by-occurrence entry and merges every by-content repeat through every
+    door — the raise, construction, substitution, the rewrites, `unpool` — and is
     order-insensitive (`1 { #true; #true } 1.` is two elements, `{ a; a }` one, a
     theory atom's repeated element two); `Program` equality is
     canonical-form equality up to provenance; `Ord`/`Eq`/`Hash` are one content
@@ -2787,21 +2823,24 @@ evolution with its argument, not a drift.
   structural analogue of `of_nodes` for a code generator or the solve tier's agent, reusing the
   one ingest door so part identity (§4.1) holds: content-equal statements under *different* keys
   stay distinct. Purely additive; the `Program` value, its equality, and its merge are unchanged.
-- **Counted elements, and the answer set defined (§4, §4.4, §4.7, §4.9, §5, §6.3, §8,
-  §11.3, §16).** The elements of a choice, a set aggregate, and a theory atom had been
-  sets, so the raise merged a repeated element without a diagnostic — and for the
-  elements the authority counts at every occurrence, that changed the program:
+- **Counted elements, and the answer set defined (§2, §4, §4.4, §4.7, §4.9, §5, §6.2,
+  §6.3, §8, §11.3, §16).** The elements of a choice, a set aggregate, and a theory atom
+  had been sets, so the raise merged a repeated element without a diagnostic — and for
+  the elements the authority counts at every occurrence, that changed the program:
   `1{#true;#true}1.`, which has no answer set, raised to `1{#true}1.`, which has one;
   `{X<3:p(X);X<3:p(X)}=4.` lost two of its four counted tuples; and `&sum{x; x} = 4`,
   which clingcon solves with `x` at `2`, raised to `&sum{x} = 4`. The three collections
-  are now **counted** (§4.4): an element whose literal is a comparison or a boolean
-  constant keeps each occurrence in a choice or a set aggregate, every element of a theory
-  atom keeps each occurrence, a repeated atom element is still one element, and a
-  repeated statement is still one statement. Equality is multiset equality there, so
-  §5.2's `P == Q ⟹ AnswerSets(P) = AnswerSets(Q)` holds of the sources these shapes come
-  from, and the occurrence stream's motivating example (§8) is replaced: the stream still
-  carries a superseded duplicate's nested provenance, but no longer content the `Program`
-  lacks. A new differential compares the authority's answer sets on a source and on its
-  render over the seeded counted shapes (§16). And an answer set is defined as the
-  literature defines it — the ground literals true in a stable model, never a `#show`
-  display (§11.3, solve.md §5.1).
+  are now one structure, `Counted<T>` (§4.4), whose single insert applies the
+  authority's identity for the element: an atom element is identified *by content* and
+  a repeat merges; a comparison or boolean element, under any default negation, and
+  every theory element, is identified *by occurrence* and a repeat is kept — the
+  theory case because clingcon numbers the elements apart in a rewrite ahead of the
+  grounder (§4.9). A repeated statement is still one statement. §2 gains the law this
+  repaired — a source and its render ground to the same answer sets — with a new
+  answer-set differential over seeded counted shapes as its instrument (§16); §5.2's
+  arbiter is narrowed to what its instrument checks, no finer than the authority's
+  parse-then-unparse on renders and coarser on sources by the set rule; and the
+  occurrence stream's motivating example (§8) is replaced — the stream still carries
+  a superseded duplicate's nested provenance, but no longer content the `Program`
+  lacks. And an answer set is defined as the literature defines it — the ground
+  literals true in a stable model, never a `#show` display (§11.3, solve.md §5.1).

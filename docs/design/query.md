@@ -235,14 +235,10 @@ one model.
 A **`WorldView`** is a program's *world view* in the epistemic-specifications sense; for a plain
 program (this tier's scope) that is the program's **unique** world view, which is exactly its set of
 answer sets. Its members are `Model`s (`solve.md` §5.1): every reading here reads a member's answer set,
-`Model::atoms` — every atom true in it, whether or not the program's `#show` directives display it. What
-the program displays (`Model::shown`) and a theory assignment, where a backend supplies one, ride beside
-the answer set, and no epistemic reading consults either: a display may hold a symbol that is not a true
-atom (`q. #show p : q.` displays `p`), so a reading over it could answer *yes* of a false atom, and a
-display may hide an atom the program entails (`a. #show.`), so a reading over it would answer *unknown*
-where the program decides. Two members share an answer set only where their theory assignments differ —
-the constraint answer set is the pair (`solve.md` §5.1) — and two members that display alike stay two
-members (`{a}. #show.` has the members `∅` and `{a}`).
+`Model::atoms` — never its display or its theory assignment, which ride beside it (`solve.md` §5.1, the
+law's home). Two members share an answer set only where their theory assignments differ — the constraint
+answer set is the pair — and two members that display alike stay two (`{a}. #show.` has the members `∅`
+and `{a}`).
 
 The invariant is a **type state**, and it is the correctness keystone here: **a `WorldView` value is
 non-empty by construction.** It is obtained only from a `Consistent` outcome, so a `WorldView` you
@@ -306,10 +302,11 @@ Properties and cost:
     number, a string, a tuple, or the infimum or supremum) — a backend contract violation
     (`Locus::Adapter`).
 
-  No answer set holds an atom and its contrary, and none holds anything but literals; every reading's
-  partition rests on answer-set consistency, and a non-literal is the mark of a display read as an answer
-  set (§2.3), so both checks are made here; their contract half is the conformance suite's (`solve.md`
-  §13.1). Together they cost one contrary lookup per strongly negated atom and one test per member,
+  No answer set holds an atom and its contrary, and none holds anything but literals (`solve.md` §5.1):
+  every reading's partition rests on both, so both are checked here, as the backend contract they are —
+  checks of the answer set's content, not a detector of displays, which their own type keeps apart
+  (`solve.md` §5.1) — and their contract half is the conformance suite's (`solve.md` §13.1). Together they
+  cost one contrary lookup per strongly negated atom and one test per symbol of each member,
   `O(Σ|M| log|M|)` over the members, a log factor over their own size. A `Snapshot` is complete by
   construction. `is_exhausted` on the live handle is a **report, not the gate**: it is drain-dependent —
   reading the run's terminal conclusion, it is
@@ -382,11 +379,9 @@ the native door exists.
 **Both doors must range over the same model set — the question's** (`solve.md` §5.2, the law's
 home). The derived door does so by construction — it folds that question's world view — and the native
 door carries the matching obligation. So the required agreement is over one model set; without that
-obligation the two would either disagree or, worse, agree while both range over the wrong set. The
-same holds one level in: both range over the models' **answer sets**, never their displays (§2.3,
-`solve.md` §4.1) — an engine whose own consequence search tracks only the displayed atoms would agree
-with a fold over displays and with nothing true, which is why the native door's obligation names the
-answer set and the conformance corpus includes programs whose directives hide atoms (`solve.md` §13.1).
+obligation the two would either disagree or, worse, agree while both range over the wrong set. Both
+range over the models' answer sets, never their displays (`solve.md` §5.1; the native door's obligation,
+§4.1).
 
 ### 2.5 Bindings and conjunctions
 
@@ -565,8 +560,8 @@ query, §2.6, is the shipped proof that the primitives suffice).
 **Assurance.** The native/derived consequence agreement (§2.4) as a standing differential; property
 laws over the trichotomy (§2.2 — a literal and its contrary not both `Yes`; `no()` and `yes()` disjoint;
 the conjunction-within-a-model law; the `entails == (answer == Yes)` projection law of §2.6; and the
-answer-set law of §2.3 — an atom a program entails but does not display reads `Yes`, and a displayed term
-that is no true atom never does); the
+answer-set law (`solve.md` §5.1) — an atom a program entails but does not display reads `Yes`, and a
+displayed term that is no true atom never does); the
 mgu's own hardened suite inherited from the program tier; executed examples (the *three-valued-query*
 witness, both faces). No panic on any input; the non-Herbrand refusal is a typed diagnosis with a
 `source()` chain.
@@ -665,9 +660,9 @@ it.
    is cited from its home, `solve.md` §5.2 (§2.2, §2.3, §2.4). The reading path's flattened refusals are
    a named departure, their typed form reserved to the first consumer that must case-split on them
    (§2.3). `materialize`'s refusals are a list (§2.3).
-11. **Answer sets, not displays** (2026-10-01). Every reading reads a member's answer set — every atom
-   true in it — and never what the program's `#show` directives display, which may hold a symbol that is
-   no true atom and may hide one the program entails; two members that display alike stay two members
-   (§2.3; `solve.md` §5.1). Both consequence doors range over answer sets, never displays (§2.4).
-   `materialize` also refuses a member whose answer set holds a non-literal, the mark of a display read as
-   an answer set (§2.3), and the assurance gains the answer-set law (§4).
+11. **Answer sets, not displays** (2026-10-01). Every reading reads a member's answer set and never its
+   display or its assignment, the law's home being `solve.md` §5.1, which the other sites here cite; two
+   members that display alike stay two members (§2.3). Both consequence doors range over answer sets
+   (§2.4). `materialize` also refuses a member whose answer set holds a non-literal, a check of the answer
+   set's content as the backend contract, the display being kept apart by its own type (§2.3), and the
+   assurance gains the answer-set law (§4).
