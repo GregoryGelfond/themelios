@@ -564,7 +564,8 @@ conditional literals. Terms are the full algebra: symbols, variables,
 functions, arithmetic, intervals, pools, tuples. Optimization appears as
 weak constraints and minimize/maximize with weights and priorities.
 `#show`, `#external`, `#const`, and theory atoms are first-class. Set-like
-where the logic says set, ordered where meaning demands order.
+where the logic says set, counted where it counts occurrences, ordered where
+meaning demands order.
 
 **Equality is structural, and named so.** The `Eq` this value carries is
 *structural equality*: the same set of rules, syntactically, up to
