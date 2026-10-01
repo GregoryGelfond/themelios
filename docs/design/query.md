@@ -298,9 +298,10 @@ Properties and cost:
   - if the search did not close the space (§3.2);
   - if the members were already streamed — a partially-drained live handle cannot yield a complete
     snapshot;
-  - if a member holds an atom and its contrary, or a member of its answer set that is not a literal (a
-    number, a string, a tuple, or the infimum or supremum) — a backend contract violation
-    (`Locus::Adapter`).
+  - if a member holds an atom and its contrary, or its answer set is not a set of literals — a number, a
+    string, a tuple, or the infimum or supremum among its members — a backend contract violation
+    (`Locus::Adapter`), checked by `Model::is_consistent` and `Model::is_set_of_literals` (`solve.md`
+    §5.1).
 
   No answer set holds an atom and its contrary, and none holds anything but literals (`solve.md` §5.1):
   every reading's partition rests on both, so both are checked here, as the backend contract they are —
@@ -663,6 +664,6 @@ it.
 11. **Answer sets, not displays** (2026-10-01). Every reading reads a member's answer set and never its
    display or its assignment, the law's home being `solve.md` §5.1, which the other sites here cite; two
    members that display alike stay two members (§2.3). Both consequence doors range over answer sets
-   (§2.4). `materialize` also refuses a member whose answer set holds a non-literal, a check of the answer
-   set's content as the backend contract, the display being kept apart by its own type (§2.3), and the
-   assurance gains the answer-set law (§4).
+   (§2.4). `materialize` also refuses a member whose answer set is not a set of literals
+   (`Model::is_set_of_literals`), a check of the answer set's content as the backend contract, the display
+   being kept apart by its own type (§2.3), and the assurance gains the answer-set law (§4).

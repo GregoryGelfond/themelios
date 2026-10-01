@@ -373,7 +373,7 @@ terms, and it is what makes the audit's job finite.
 
 ## 5. The outcome vocabulary (typed values)
 
-### 5.1 The closed distinctions
+### 5.1 The closed distinctions, and the model
 
 ```rust
 /// The logical question: is the program consistent? Closed trichotomy — deliberately NOT
@@ -409,7 +409,8 @@ pub enum Truncation { Target, Budget, Interrupted }
 
 /// An answer set, as the literature defines it: the ground literals true in a stable model of the
 /// program — every atom the model makes true, a strongly negated atom included, so every member is a
-/// function symbol — and never what the program's `#show` directives display (below). Re-exported from
+/// function symbol (`Model::is_set_of_literals`) — and never what the program's `#show` directives
+/// display (below). Re-exported from
 /// the program tier (program.md §11.3), so the solve, query, and program tiers speak one answer-set
 /// vocabulary.
 pub use themelios_program::AnswerSet;   // = BTreeSet<Symbol>
@@ -426,28 +427,31 @@ impl Model {
     pub fn of(atoms: AnswerSet) -> Model;             // the backend's construction door: displays every atom, no assignment
     pub fn with_shown(self, rule: &ShowRule, terms: impl IntoIterator<Item = Symbol>) -> Model;
         // the display of a program with `#show` directives: the rule's atoms of the answer set, and the
-        // terms its term directives yield, which the engine evaluates (below); O(|M| log |M| + |terms|)
+        // terms its term directives yield, which the engine evaluates (below);
+        // O(|M| log |M| + |terms| log(|M| + |terms|))
     pub fn atoms(&self) -> &AnswerSet;                // the answer set — what every reading reads
     pub fn shown(&self) -> Shown<'_>;                 // the display, a type of its own — no reading consults it
     pub fn assignment(&self) -> &TheoryAssignments;   // empty unless the backend evaluates a theory
     pub fn is_consistent(&self) -> bool;              // no atom beside its strong negation (query.md §2.3)
+    pub fn is_set_of_literals(&self) -> bool;         // every member a literal, a function symbol; O(|M|)
     // Equality compares the display by content. The assignment-bearing construction door lands with
     // `TheoryAssignments`' own constructors, when a theory-evaluating backend is built (§11.1); until then
     // every model's assignment is empty.
 }
 
 /// A program's show rule — which of a model's atoms its `#show` directives display (below): every atom
-/// where the directives in force include no signature directive and no `#show.`, else the atoms of the
-/// signatures listed. Read from the directives (program.md §4.8's `Show`), held here once, so no backend
+/// where the directives in force include no restricting directive (a signature form, or `#show.`), else
+/// the atoms of the signatures those list. Read from the directives (program.md §4.8's `Show`), held here once, so no backend
 /// re-implements it. O(directives).
 pub struct ShowRule { /* every atom, or the listed signatures */ }
 impl ShowRule {
     pub fn of<'p>(directives: impl IntoIterator<Item = &'p Show>) -> ShowRule;
 }
 
-/// What a model displays: a view of its own type over the displayed symbols, so a display is never passed
-/// where an answer set is wanted — `Model::of`, `Consequences::fold`, and the readings take an
-/// `AnswerSet` — and yields its symbols only through `symbols`, named at the call.
+/// What a model displays: a view of its own type over the displayed symbols. It is not an `AnswerSet`, so
+/// `Model::of`, `Consequences::fold`, and the readings, which take one, do not take it; its symbols reach
+/// such a position only through `symbols`, written at the call — a discipline the type names rather than
+/// a barrier it raises, since `AnswerSet` is an alias of the same set type (program.md §11.3).
 #[derive(Clone, Copy)]
 pub struct Shown<'m> { /* &'m BTreeSet<Symbol> */ }
 impl<'m> Shown<'m> {
@@ -478,11 +482,12 @@ model, and a backend that evaluates no theory yields models whose assignment is 
 
 **The answer set and the display are different things, and only the answer set is read** — this
 paragraph is the law's home, and every other site cites it. A program's `#show` directives say what to
-*display* of a model, and the semantics are the language's as the pinned authority implements them: with
-no signature directive and no `#show.`, every atom is displayed; a signature directive or `#show.`
-restricts the atoms displayed to the signatures listed, a strongly negated signature listed in its own
-right (`#show -p/1.`); and, beside either, a term directive displays its term wherever its body holds,
-restricting nothing (`libgringo/src/input/programbuilder.cc`: `showsig` turns on the signature filter of
+*display* of a model, and the semantics are the language's as the pinned authority implements them: the
+**restricting directives** — the signature forms, and `#show.`, which lists none — limit the atoms
+displayed to the signatures they list, a strongly negated signature listed in its own right
+(`#show -p/1.`), and with no restricting directive every atom is displayed; beside either, a term
+directive displays its term wherever its body holds, restricting nothing
+(`libgringo/src/input/programbuilder.cc`: `showsig` turns on the signature filter of
 `OutputPredicates::add`, `libgringo/gringo/output/output.hh`, while `show`, the term form, adds a
 statement and leaves the filter alone — a version-scoped claim the spike suite holds, §13.2). A displayed
 term need not be a true atom, or an atom at all: `q. #show p : q.` displays `p`, which is false, and
@@ -492,18 +497,23 @@ hides yet entails (`a. #show.`), or of the contrary of a hidden strongly negated
 So every reading reads the answer set — every true atom, displayed or not — and the display, a type of
 its own (`Shown`), rides beside it for the client that prints or exports what the program shows. It is a
 set: where an engine lists a displayed atom and an equal displayed term both, it holds the symbol once.
+The law holds of a symbolic source, a program through Door A or B (§10.2), whose directives the backend
+reads. A ground source through Door C names only the atoms its own grounder output, so there a model's
+answer set is the symbols the source names, which may be that grounder's display; the conformance
+suite's display corpus runs through the symbolic doors (§13.1).
 
-**The display's two halves have two homes.** The signature half is a filter over the answer set, held
+**The display's two halves have two homes.** The restricting half is a filter over the answer set, held
 once, here, as the `ShowRule`; only the term half needs a grounder — a term directive's body is grounded
-as a rule's is — and the engine has one where the core does not. So every backend owes the display, and
-owes that half alone: for a program carrying `#show` directives, a fact known at `lower`, it builds each
-model as `Model::of(atoms).with_shown(&rule, terms)`, the rule read from the directives in force and the
-terms evaluated by its engine; a program without directives displays its answer set, which `Model::of`
-alone gives, so its models store nothing more. A backend that solves a program with directives but builds
-no display breaks the contract, and the conformance suite fails it (§13.1). The split also keeps the
-native consequence door honest by construction on an engine whose consequence search tracks only the
-atoms it displays: an adapter that lowers no signature directive leaves every atom displayed to its
-engine (§4.1).
+as a rule's is — and the engine has one where the core does not. Every backend owes the display, whole:
+for a program carrying `#show` directives — a fact known at `lower` — it reads the `ShowRule` from the
+directives in force, reading it again as an accumulating `lower` adds directives through the reasoning
+loop and afresh after `reset` (§6.2), evaluates the terms the program's term directives yield, and builds
+each model as `Model::of(atoms).with_shown(&rule, terms)`; a program without directives displays its
+answer set, which `Model::of` alone gives, so its models store nothing more. A backend that solves a
+program with directives but builds no display breaks the contract, and the conformance suite fails it
+(§13.1). The split also keeps the native consequence door honest by construction on an engine whose
+consequence search tracks only the atoms it displays: an adapter that lowers none of the restricting
+directives leaves every atom displayed to its engine (§4.1).
 
 ### 5.2 Answer sets, optima, consequences
 
@@ -720,15 +730,20 @@ pub enum Refutation {
 /// Rust carries none, and a ground source through the aspif door (§10.2) has no statement to carry. A
 /// Request, Resource, Engine, or Adapter fault is unlocated. An unlocated fault is NOT a degenerate
 /// diagnostic with a fabricated span at an "unknown source" but a different thing (base's §diagnostic):
-/// it renders through its own `Display`.
+/// it renders through its own `Display`. Equality and hashing include the statement's provenance — two
+/// Program faults refusing content-equal statements at different locations are different faults, which
+/// lower to different diagnostics — a comparison written beside the derive, since a `WithProvenance`
+/// compares content alone (program.md §6.2); and a fault's clone is `O(statement)`.
 #[non_exhaustive]
 pub struct Fault { /* message + Locus + a Program fault's refused statement + the backend-bug bit */ }
 pub enum Locus { Program, Request, Resource, Engine, Adapter }
 impl Fault {
     // The construction doors, one per locus; an empty message is replaced, so a fault always has one.
-    pub fn program(message: impl Into<String>, statement: Option<&WithProvenance<Statement>>) -> Fault;
-        // keeps the refused statement whole, O(statement); `None` only where no statement was refused —
-        // a ground source through the aspif door — so no span is made up and no statement goes unnamed
+    pub fn program(message: impl Into<String>, statement: &WithProvenance<Statement>) -> Fault;
+        // keeps the refused statement whole, O(statement), so no span is made up and no statement goes
+        // unnamed
+    pub fn ground_program(message: impl Into<String>) -> Fault; // a Program fault on a ground source
+        // through the aspif door (§10.2), which has no statement to name — unlocated
     pub fn request(message: impl Into<String>) -> Fault;
     pub fn unsupported() -> Fault;                         // a Request fault: beyond the declared capabilities
     pub fn resource(message: impl Into<String>) -> Fault;
@@ -736,7 +751,8 @@ impl Fault {
     pub fn adapter_bug(message: impl Into<String>) -> Fault; // the one door that sets the backend-bug bit
     pub fn is_backend_bug(&self) -> bool;                  // a closed bit
     pub fn locus(&self) -> Locus;
-    pub fn statement(&self) -> Option<&WithProvenance<Statement>>; // a Program fault's refused statement
+    pub fn statement(&self) -> Option<&WithProvenance<Statement>>; // a Program fault's refused statement,
+                                                           // `None` for a ground source's
     pub fn located(&self) -> Option<LocatedFault<'_>>;     // Some iff that statement has a parsed origin
 }
 impl std::fmt::Display for Fault {}                        // Fault is Display + Error — NOT ToDiagnostic
@@ -767,8 +783,10 @@ pub struct LocatedFault<'a> { /* a &Fault whose statement has a parsed origin */
   not, in general, a diagnostic. A Program fault names its statement whether or not it is located, so a
   consumer — the agent's `assert`/`retract` register (§6.2), an explanation client (§10.4) — acts on
   *which statement* without reading prose (specification §4, §9.3); and because the location is read from
-  the statement's own provenance, a backend cannot invent a source for a statement that has none. The
-  conformance suite fails a refusal that names no statement where one was refused (§13.1).
+  the statement's own provenance, a backend cannot invent a source for a statement that has none. A
+  ground source's refusal has its own door, `ground_program`, so the one fault that names no statement
+  is legible where it is made, and the conformance suite fails a symbolic door's refusal that uses it
+  (§13.1).
 - **Statistics** are exposed per solve through a `Statistics` trait — engine-scoped, provenance-marked,
   typed data (v1: the clingo adapter provides clingo's own). The minimal v1 shape a consumer reads:
 
@@ -1242,7 +1260,8 @@ exposes, which takes ground objects only:
   and mapping it there is a category error.
 - **Door C — aspif → the solver's ingestion** (the engine's ground-object backend), for driving a
   solver from a foreign grounder, for the differential harness, and for an agent's ground-fact
-  additions where the values are already ground.
+  additions where the values are already ground. A ground source names only the atoms its grounder
+  output, so a model's answer set through this door is the symbols the source names (§5.1).
 
 ```rust
 pub enum Door<'a> {
@@ -1386,14 +1405,14 @@ programs with independently known answer sets — a program under an objective a
 must yield its non-optimal models too (§5.2), and programs whose `#show` directives hide atoms or display
 terms (`a. #show.`, `{a}. #show.`, `q. #show p : q.`, `-p. #show q/0.`), whose models must carry their
 whole answer sets, whatever they display (§5.1) — every yielded model consistent, no atom beside its
-contrary (query.md §2.3), and every member of its answer set a literal (a function symbol); each model's
+contrary (query.md §2.3), and its answer set a set of literals (`Model::is_set_of_literals`); each model's
 display the one the program's directives select (§5.1: `q. #show p : q.` displays `{p, q}` over the
-answer set `{q}`); capability honesty (a declared-unsupported request must refuse), and the native
-consequence door's answer its known one over the same corpus, and `NoModel` over a program with no answer
-set and under a scenario that admits none (§5.2); the named pathologies (§5.3) attempted and structurally
-impossible; fault loci landing where they belong, a Program fault naming its refused statement — located
-within it where the statement was parsed, unlocated where it was built in Rust (§5.4); and **the
-ground-program observer produced faithfully** where declared (§10.4).
+answer set `{q}`), through the symbolic doors; capability honesty (a declared-unsupported request must
+refuse), and the native consequence door's answer its known one over the same corpus, and `NoModel` over a
+program with no answer set and under a scenario that admits none (§5.2); the named pathologies (§5.3)
+attempted and structurally impossible; fault loci landing where they belong, a Program fault naming its
+refused statement — located within it where the statement was parsed, unlocated where it was built in Rust
+(§5.4); and **the ground-program observer produced faithfully** where declared (§10.4).
 The suite's skeleton is exercisable **engine-free over a stub backend** before any adapter — that run is
 the core's own check (it streams models through the real contract), not an adapter's authority. The
 **clingo and clingcon adapters** run it (clingcon adds the constraint-theory cases), differenced against
@@ -1807,17 +1826,22 @@ necessity where it is declared.
    `q. #show p : q.` displays `p` — so a reading over the display could answer *yes* of a false atom: the
    readings, the fold, and the native consequence door all range over answer sets, and a door whose engine
    tracks only the atoms it displays is driven with every atom displayed to it or not declared (§4.1,
-   §5.2). The display is a type of its own, `Shown`, so it is never passed where an answer set is wanted,
-   and its two halves have two homes: the signature half is the core's `ShowRule`, a filter over the answer
-   set, and only the term half — which needs a grounder — is the backend's, so every backend owes the
-   display of a program with directives through `Model::with_shown`, and an adapter that lowers no
-   signature directive keeps its engine's consequence search over every atom (§5.1). The display semantics
-   are the language's as the authority implements them, cited, and a version-scoped claim (§5.1, §13.2).
+   §5.2). The display is a type of its own, `Shown`, so passing it where an answer set is wanted is written
+   at the call, and its two halves have two homes: the restricting half is the core's `ShowRule`, a filter
+   over the answer set, and only the term half — which needs a grounder — is the backend's, so every
+   backend owes the display of a program with directives through `Model::with_shown`, the rule following
+   the directives in force, and an adapter that lowers none of the restricting directives (the signature
+   forms and `#show.`) keeps its engine's consequence search over every atom (§5.1). The law holds of a
+   symbolic source; through the aspif door an answer set is what the source names (§5.1, §10.2), and an
+   answer set's literal membership is a named predicate, `Model::is_set_of_literals` (§5.1). The display
+   semantics are the language's as the authority implements them, cited, and a version-scoped claim (§5.1,
+   §13.2).
    `all_models` keeps one model per stable model, two that display alike included (§5.2), and `Extract`
    reads a set of symbols, the answer set or the display named at the call (§9). A Program fault keeps its
    refused statement with its provenance, so it names the statement whether located or not and is located
-   only from a parsed origin — the least as its primary label, the others as secondaries — with no statement
-   only for a ground source through the aspif door; the construction doors are stated (§5.4). The
+   only from a parsed origin — the least as its primary label, the others as secondaries; a ground source's
+   refusal, which names no statement, has its own door, `ground_program`; a fault's equality includes its
+   statement's provenance; and the construction doors are stated (§5.4). The
    conformance suite gains the display corpus, the literal-membership and display checks, and the named,
    unlocated refusal (§13.1); the oracles are the clingo and clingcon packages driven through their Python
    modules, comparing answer sets and displays apart and a run's models as a multiset, and the spike suite
