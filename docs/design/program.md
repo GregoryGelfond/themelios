@@ -1351,9 +1351,10 @@ an ASP practitioner means by the word:
   equivalence checking is a named reserved seam (spec §7.1, §13).
 - It is **strictly finer** than ordinary equivalence: `P == Q` implies
   `AnswerSets(P) = AnswerSets(Q)`, but not conversely. `{ p :- q. q :- p. }` and
-  the empty program have the same single answer set `∅` — they are ordinarily,
-  indeed strongly, equivalent — yet their canonical forms differ, so they are not
-  equal here, and that is correct: the value records the rules, and the rules
+  the empty program have the same single answer set `∅` — they are ordinarily
+  equivalent, though not strongly, since adding the fact `p` derives `q` in the
+  first alone — yet their canonical forms differ, so they are not equal here, and
+  that is correct: the value records the rules, and the rules
   differ. Of values the law holds for any structure; what gives it content is the
   raise's own law (§2), that the authority grounds a source and the render of its
   raise to the same answer sets — which is why the value keeps what the authority
@@ -2771,17 +2772,34 @@ never gaps:
 - **The native-solver components** (spec §1.1, §13): grounding, the solving
   algorithms, and the analysis-directed routing are the satellite's; this tier
   provides the value they compose over.
+- **Typed-dialect declarations**: a dialect whose declarations carry semantic
+  force — predicate argument types, finite domains, arithmetic constraints — has
+  no home in the `Program`, which represents the clingo language and its
+  ASP-Core-2 dialect (grammar §1). When such a dialect is specified, its
+  declarations enter as statements of their own, each with a defined meaning — a
+  restriction of the interpretations, or the license for a semantics-preserving
+  elaboration whose use in grounding is proved against that meaning — never
+  encoded in strings and never erased before analysis. A declaration a consumer
+  does not support is reported, never silently discarded; general term comparison
+  stays term comparison, never numeric arithmetic merely because arithmetic needs
+  numbers; and a translation that erases the types carries a preservation
+  argument and a defined correspondence between the source's answer sets and its
+  own. The dialect is chosen explicitly at admission, and its programs reach every
+  backend through the solve tier's doors (solve.md §10.2), never through an engine
+  format. Its consumer is the first typed dialect; the `Program` as it stands
+  owes none of it.
 
 Non-goals, absolutely: solving and grounding (the solve tier); evaluation of
 rule-embedded terms (only the explicit ground-value door, §3.5 — a `1+2` in a
 rule is the grounder's); admission — `#theory` matching, safety *as a rejection*
 (safety is *analyzed*, §12, never a construction refusal), ASP-Core-2 strict
 conformance, meaningful `#external` values (grammar §13, syntax §17, carried
-forward); the engine-facing lowering (`Program → aspif`, the solve tier's — a
-*different* lowering from the raise, the two named distinctly so neither hides
-the other); styled formatting (the formatter satellite); I/O of any kind
-(`#include` parsed and never resolved, `#script` carried and never run); and
-serialization (shapes, not bytes — base §7.2's posture carried).
+forward); the engine-facing lowering (a `Program` handed through the solve tier's
+doors to a backend's admission, solve.md §10.2 — a *different* lowering from the
+raise, the two named distinctly so neither hides the other); styled formatting
+(the formatter satellite); I/O of any kind (`#include` parsed and never resolved,
+`#script` carried and never run); and serialization (shapes, not bytes — base
+§7.2's posture carried).
 
 The **fitness anchors** (§2) are the acceptance lenses this design is held to,
 each buildable-under, library-first, with the structural-vs-semantic boundary
@@ -2934,3 +2952,13 @@ evolution with its argument, not a drift.
   provenance, but no longer content the `Program` lacks. And an answer set is defined
   as the literature defines it — the ground literals true in a stable model, never a
   `#show` display (§11.3, solve.md §5.1).
+- **The strong-equivalence example, typed-dialect declarations, and the engine-facing
+  lowering named (§5.2, §17).** §5.2's example of programs equivalent yet unequal
+  called `{ p :- q. q :- p. }` strongly equivalent to the empty program, which it is
+  not — adding the fact `p` derives `q` in the first alone — so the example now says
+  *ordinarily*. Typed-dialect declarations are named a reserved seam, with what their
+  arrival owes: statements of their own with a defined meaning, never strings and
+  never erased, reported where unsupported, and reaching a backend through the solve
+  tier's doors (§17). And the engine-facing lowering is named for what it is, a
+  `Program` handed through those doors to a backend's admission, never an engine
+  format (§17, solve.md §10.2).

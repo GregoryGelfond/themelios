@@ -264,7 +264,8 @@ impl<'a> WorldView<'a> {   // the LIVE handle — the run material; `members` is
 // this handle's one live read, the `members` stream.
 
 /// The engine-free form: `WorldView::materialize` drained the world view into owned data, so every read
-/// is INFALLIBLE `&self`. Non-empty by construction and complete, like the live handle it came from.
+/// is INFALLIBLE `&self`. Non-empty by construction, like the live handle it came from, and complete, as
+/// the gate that made it requires — the live handle is not, its search possibly still open (below).
 impl Snapshot {
     pub fn cautious(&self) -> Consequences;
     pub fn brave(&self) -> Consequences;
@@ -667,3 +668,6 @@ it.
    (§2.4). `materialize` also refuses a member whose answer set is not a set of literals
    (`Model::is_set_of_literals`), a check of the answer set's content as the backend contract, the display
    being kept apart by its own type (§2.3), and the assurance gains the answer-set law (§4).
+12. **The live handle is not complete** (2026-10-02). A `Snapshot` is non-empty like the live handle it came
+   from, and complete because `materialize`'s gate requires it; the live handle's completeness is a
+   drain-dependent report, never a property it has (§2.3).

@@ -180,11 +180,11 @@ The centerpieces are not silos; the design treats their seams as first-class:
   the pillar is the meeting point of `@`-functions (§7), extraction (§9), and construction (program
   tier).
 
-- **`@`-functions and propagators share the extension substrate.** Both register onto an agent, both
-  cross the FFI seam through a panic-containing trampoline under the interning discipline (§10.5),
-  both are engine-portable because both are the contract's (§7, §8). The "quarantined-unsafe floor,
-  100%-idiomatic safe surface" machinery is *one* thing serving both — and the theory atoms a
-  propagator watches are authored through the very macro/programmatic faces of §3.1.
+- **`@`-functions and propagators share the extension substrate.** Both register onto an agent; over a
+  foreign engine, both cross its FFI seam through a panic-containing trampoline under its adapter's
+  interning discipline (§10.5); both are engine-portable because both are the contract's (§7, §8). The
+  "quarantined-unsafe floor, 100%-idiomatic safe surface" machinery is *one* thing serving both — and
+  the theory atoms a propagator watches are authored through the very macro/programmatic faces of §3.1.
 
 - **The outcome values are the meeting point.** The driving surface *produces* them, query *reads*
   them, extraction *views* them (the machine-view of §1.3), and a propagator *contributes* the theory
@@ -232,13 +232,18 @@ pub trait Backend {
     /// conformance suite (§13.1) checks `cancellation ⇒ interrupt().is_some()` so the bit cannot lie.
     fn interrupt(&self) -> Option<Box<dyn Cancel>> { None }
 
-    /// REQUIRED. The bridge (§10): consume a `Program`. On a **multi-shot** backend a repeat `lower`
+    /// REQUIRED. The bridge (§10): admit a program through either door — a `Program`, or a `Parse` taken
+    /// natively or through `Door::program` (§10.2). On a **multi-shot** backend a repeat `lower`
     /// ACCUMULATES into the engine's program (the `assert` path lowers only the delta, §6.2), so a rebuild
     /// is `reset` then `lower` the amended whole. On a **single-shot** backend a `lower` REPLACES the
     /// program (each solve is independent; nothing accumulates), so a rebuild is one `lower` and `reset`
-    /// is not called. Expose the ground program.
+    /// is not called.
     fn lower(&mut self, door: Door<'_>) -> Result<(), Fault>;
-    fn ground_program(&self) -> Option<&GroundProgram>;   // the committed observer (§10.4)
+
+    /// OPTIONAL — the observer (§10.4): the complete ground program of the program last lowered, where the
+    /// backend exposes one. The provided default answers `None`, so a backend that exposes none writes
+    /// nothing.
+    fn ground_program(&self) -> Option<&GroundProgram> { None }
 
     /// REQUIRED iff `capabilities().optimization`. The proven optimum, improving trajectory iff asked (§5.3).
     fn optimize(&mut self, req: &OptimizeRequest) -> Result<Optimized<'_>, Fault> { Err(Fault::unsupported()) }
@@ -330,10 +335,11 @@ them silently wrong, so §13.1's conformance suite checks the bit against this o
 gate then carries the reading — a universal reading refuses without a closed search (§5.2).
 
 **Required versus provided — why the core stays lean.** The **trait-required** surface (no default) is
-`capabilities`, `solve`, `lower`, and `ground_program`. Every **capability-gated** method — `optimize` /
+`capabilities`, `solve`, and `lower`. Every **capability-gated** method — `optimize` /
 `solve_assuming` / `ground` / `assign_external` / `reset` / `register_*`, alongside `interrupt` and
 `consequences_native` — is a **provided default that refuses** (`Err(Fault::unsupported())`, or `None` for
-`interrupt`), so a minimal backend implements only the four and a declared-absent capability refuses with
+`interrupt`), and the observer, `ground_program`, is a provided default that exposes nothing (`None`,
+§10.4), so a minimal backend implements only the three and a declared-absent capability refuses with
 no line written. The type cannot force a *declared* capability's method to actually do the work
 — a provided method needs no override — so that obligation is enforced by §13.1's **positive-capability
 check**: a bit set `true` whose method still refuses is the capability lie the conformance suite exists to
@@ -366,10 +372,10 @@ check on this.
 ### 4.3 One door per boundary
 
 The `Backend` trait is the sole crossing between the engine-free core and any engine. No tier reaches
-around another; the bridge seam (§10) is how a backend consumes a `Program` and emits a ground
-program, and it is part of the contract's surface (`lower`/`ground_program` above), not a side
-channel. This is the microkernel "one door per boundary" (specification §12.3) in the tier's own
-terms, and it is what makes the audit's job finite.
+around another; the bridge seam (§10) is how a backend admits a program and, where it exposes one,
+emits its ground program, and it is part of the contract's surface (`lower`/`ground_program` above),
+not a side channel. This is the microkernel "one door per boundary" (specification §12.3) in the tier's
+own terms, and it is what makes the audit's job finite.
 
 ---
 
@@ -481,7 +487,10 @@ produced.
 `Model` owes its §1.4 reason too: an answer set is the atoms alone, while a stable model of a program with
 theory atoms comes with the assignment that satisfied them — the constraint-ASP literature's *constraint
 answer set* — and the tier names the pair for what it is, a model of the program: the stream's unit is the
-model, and a backend that evaluates no theory yields models whose assignment is empty.
+model, and a backend that evaluates no theory yields models whose assignment is empty. The model owns its
+answer set, so it outlives its run — the `Send` `Snapshot` is built from models (query.md §2.3) — and a
+backend pays one conversion per model into the set, linear in the answer set: a native engine fills it
+straight from its own catalog, with no intermediate tree, its own identifiers staying its own (§10.5).
 
 **The answer set and the display are different things, and only the answer set is read** — this
 paragraph is the law's home, and every other site cites it. A program's `#show` directives say what to
@@ -500,12 +509,9 @@ hides yet entails (`a. #show.`), or of the contrary of a hidden strongly negated
 So every reading reads the answer set — every true atom, displayed or not — and the display, a type of
 its own (`Shown`), rides beside it for the client that prints or exports what the program shows. It is a
 set: where an engine lists a displayed atom and an equal displayed term both, it holds the symbol once.
-The law holds of a symbolic source, a program through Door A or B (§10.2), whose directives the backend
-reads. A ground source through Door C names only the symbols its own grounder output, and cannot tell an
-atom it output from a term it displayed: there a model's answer set is the function symbols the source
-names and its display the rest, so the literal-membership law holds at every door, while the answer set
-is only as whole as the source's output — the conformance suite's display corpus runs through the
-symbolic doors (§13.1).
+The law holds at every door, because both doors carry a program whose directives the backend reads
+(§10.2); an adapter that also ingests its engine's own format owes the same answer set from it, or refuses
+the input (§10.3).
 
 `AnswerSet` stays an alias of the set type (program.md §11.3) rather than a type of its own that admits
 only literals. A type of its own would raise both laws above — an answer set is no display, and holds
@@ -513,7 +519,10 @@ only literals — from disciplines to barriers, at the price of a change to a pu
 and client constructs, across the tiers that share it; the alias keeps the set's whole interface at no
 cost. So the two laws stay disciplines, and this is their accepted residue: a display's symbols reach an
 answer-set position only through `Shown::symbols`, written at the call, and literal membership is checked
-by `Model::is_set_of_literals` at `materialize` and in the conformance suite.
+by `Model::is_set_of_literals` at `materialize` and in the conformance suite. Those checks — every member a
+literal, no atom beside its contrary — are necessary, not sufficient: no check of a set's content
+establishes that it is an answer set of the program. That is the backend's semantic obligation, held by
+the conformance suite's corpus and the differentials (§13.1, §13.2).
 
 **The display's two halves have two homes.** The restricting half is a filter over the answer set, the
 `ShowRule`, and the core applies it: a backend hands the core the rule of the directives it holds when it
@@ -580,6 +589,12 @@ impl<'a> Solved<'a> {
 /// `Consistent`** (§5.1). No `Send` bound (a run may hold a raw engine handle whose control is
 /// single-threaded), so the `Solved`/`Models`/live-`WorldView` handles built over it are `!Send` and
 /// `Snapshot` is the `Send` form (§6.1). Cost: `O(1)`.
+///
+/// An engine that computes its complete family of answer sets at once hands it over through this same
+/// protocol: it streams the family's members and concludes `Exhausted` — an empty family yields none and
+/// concludes `Exhausted`, which the core resolves `Inconsistent` — while a search stopped short concludes
+/// at its `Truncation`, and a failure is a fault. So no backend reports exhaustion its search did not
+/// reach.
 pub trait Run {
     fn next_model(&mut self) -> Option<Result<Model, Fault>>;            // stream; None ends it
     fn conclusion(&self) -> Option<Conclusion>;                          // once ended without a fault
@@ -604,6 +619,12 @@ pub struct Models<'a> { /* the live-run-access handle, owned or borrowed (below)
 /// A PROVEN optimum — no public constructor; it exists only because the solver proved it.
 pub struct Optimum { /* levels, in the objectives' own terms */ }
 
+/// A step of the improving trajectory: the levels of the best model the search has found so far, in the
+/// objectives' own terms — not proven optimal, and never convertible into an `Optimum`, so a best-found
+/// cannot pose as proven (§5.3). No public constructor; its construction door lands with `optimize`'s,
+/// beside `Optimum`'s, where whether a step also carries its model is decided.
+pub struct Incumbent { /* levels, in the objectives' own terms */ }
+
 /// The optimization run handle — the same *resolution* register as `Solved`
 /// (`determination`/`into_determination`/`conclusion`), specialised with `optimum`/`trajectory` in place
 /// of the plain-enumeration accessors, so `optimize` is a sibling of `solve`, not a second vocabulary
@@ -614,7 +635,7 @@ impl<'a> Optimized<'a> {
     pub fn determination(&mut self) -> Determination<'_>;   // inspect in place
     pub fn optimum(&self) -> Option<Optimum>;               // the proven optimum, once proved
     pub fn trajectory(&mut self)                            // the improving sequence — Some iff the request asked (§5.3)
-        -> Option<impl Iterator<Item = Result<Optimum, Fault>> + '_>;
+        -> Option<impl Iterator<Item = Result<Incumbent, Fault>> + '_>;
     pub fn conclusion(&self) -> Option<Conclusion>;
 }
 
@@ -662,7 +683,8 @@ a `Snapshot`, not a live handle.
   enumeration is **constant in resident set** (one model materialized at a time — the laziness law
   asserts it, §13.3); the owned no-sharing tree is the authoring form, the huge ground
   instantiation lives in the engine's compact internals.
-- A **proven optimum** is typed distinct from best-found: `Optimum` has no public constructor, and
+- A **proven optimum** is typed distinct from best-found: `Optimum` has no public constructor, the
+  improving trajectory yields `Incumbent`s — best-found levels, a type of their own — and an optimum
   reports its levels in the terms the objectives were written in (a maximized level shows what was
   maximized, not the negation the engine optimizes internally). "All optimal solutions" is available
   only when the search closed the whole space, and says so.
@@ -721,7 +743,8 @@ when — the request asked for it. The three named solver pathologies (specifica
 - *contradictory termination flags* — one `Conclusion`, orthogonal to `Determination`, with no second
   flag to disagree with.
 
-`Optimum`'s absent public constructor closes the last gap (a best-found cannot pose as proven). The
+`Optimum`'s absent public constructor closes the last gap, and the trajectory's own `Incumbent` keeps it
+closed: a best-found is typed apart from a proven optimum, so it cannot pose as one. The
 conformance suite (§13.1) still *attempts* each, but the guarantee is structural, not test-borne.
 
 ### 5.4 Theory assignments, blame, faults
@@ -747,10 +770,11 @@ pub enum Refutation {
 /// A fault is a value with a CLOSED locus taxonomy at the seam. It OWNS its model — a message, the
 /// `Locus`, the backend-bug bit, and, for a Program fault, the refused statement with its provenance
 /// (program.md §6) — and is located only where that provenance places it: a Program fault is located iff
-/// its statement carries a parsed origin, written in source or transformed from one; a statement built in
-/// Rust carries none, and a ground source through the aspif door (§10.2) has no statement to carry. A
-/// Request, Resource, Engine, or Adapter fault is unlocated. An unlocated fault is NOT a degenerate
-/// diagnostic with a fabricated span at an "unknown source" but a different thing (base's §diagnostic):
+/// its statement carries a parsed origin, written in source or transformed from one, and a statement built
+/// in Rust carries none. Every Program fault names its statement; a refusal with no statement to name — a
+/// parse that does not raise cleanly among them (§10.2) — is a Request fault. A Request, Resource, Engine,
+/// or Adapter fault is unlocated. An unlocated fault is NOT a degenerate diagnostic with a fabricated span
+/// at an "unknown source" but a different thing (base's §diagnostic):
 /// it renders through its own `Display`. Equality compares a Program fault's statement by its content and
 /// its origins — two Program faults refusing content-equal statements at different locations are different
 /// faults, which lower to different diagnostics, while a difference in annotations alone (a doc comment, a
@@ -764,8 +788,6 @@ impl Fault {
     pub fn program(message: impl Into<String>, statement: &WithProvenance<Statement>) -> Fault;
         // keeps the refused statement whole, O(statement), so no span is made up and no statement goes
         // unnamed
-    pub fn ground_source(message: impl Into<String>) -> Fault; // a Program fault on a ground source
-        // through the aspif door (§10.2), which has no statement to name — unlocated
     pub fn request(message: impl Into<String>) -> Fault;
     pub fn unsupported() -> Fault;                         // a Request fault: beyond the declared capabilities
     pub fn resource(message: impl Into<String>) -> Fault;
@@ -773,8 +795,8 @@ impl Fault {
     pub fn adapter_bug(message: impl Into<String>) -> Fault; // the one door that sets the backend-bug bit
     pub fn is_backend_bug(&self) -> bool;                  // a closed bit
     pub fn locus(&self) -> Locus;
-    pub fn statement(&self) -> Option<&WithProvenance<Statement>>; // a Program fault's refused statement,
-                                                           // `None` for a ground source's
+    pub fn statement(&self) -> Option<&WithProvenance<Statement>>; // `Some` exactly for a Program fault:
+                                                           // the statement it refused
     pub fn located(&self) -> Option<LocatedFault<'_>>;     // Some iff that statement has a parsed origin
 }
 impl std::fmt::Display for Fault {}                        // Fault is Display + Error — NOT ToDiagnostic
@@ -805,10 +827,9 @@ pub struct LocatedFault<'a> { /* a &Fault whose statement has a parsed origin */
   not, in general, a diagnostic. A Program fault names its statement whether or not it is located, so a
   consumer — the agent's `assert`/`retract` register (§6.2), an explanation client (§10.4) — acts on
   *which statement* without reading prose (specification §4, §9.3); and because the location is read from
-  the statement's own provenance, a backend cannot invent a source for a statement that has none. A
-  ground source's refusal has its own door, `ground_source`, so the one fault that names no statement
-  is legible where it is made, and the conformance suite fails a symbolic door's refusal that uses it
-  (§13.1).
+  the statement's own provenance, a backend cannot invent a source for a statement that has none. No
+  Program fault goes without its statement: a refusal with nothing to name is a Request fault, so a
+  consumer holding a Program fault always holds the statement it refused.
 - **Statistics** are exposed per solve through a `Statistics` trait — engine-scoped, provenance-marked,
   typed data (v1: the clingo adapter provides clingo's own). The minimal v1 shape a consumer reads:
 
@@ -1133,10 +1154,11 @@ compute in Rust's numeric tower (`f64`, `num-bigint`, `num-rational`, and any cr
 units, geo, strings) inside an `@`-function, and convert at the ASP boundary via the fallible rounding
 adapters, refusing rather than repairing when a value cannot be represented (on the 5.8.2-pinned
 target, `Symbol::Number` is `i32`; the boundary refuses out of range). Two hazards are designed in
-rather than rediscovered: an `@`-function must intern *inside* the grounding call under the interning
-discipline (§10.5), and the trampoline contains its panics. One mission discipline is stated: an
-`@`-function is arbitrary Rust at ground time, so purity/determinism is a contract the surface makes
-easy to declare — a clock, an RNG, or the filesystem breaks deterministic mode and auditability.
+rather than rediscovered: over an engine that interns process-globally, an `@`-function must intern
+*inside* the grounding call under its adapter's interning discipline (§10.5), and the trampoline contains
+its panics. One mission discipline is stated: an `@`-function is arbitrary Rust at ground time, so
+purity/determinism is a contract the surface makes easy to declare — a clock, an RNG, or the filesystem
+breaks deterministic mode and auditability.
 
 ### 7.3 `Facts` — the bulk conversion, and `@`-predicates
 
@@ -1261,40 +1283,57 @@ The bridge lowers the owned `Program` to the engine and streams answers back. It
 tier's design pays off or fails, and it is itself an algorithms-of-import-class surface: it must be
 **fast** (a perf claim) *and* **faithful** (a wrong lowering is a soundness bug at the seam that no
 themelios-side rigor catches), so it earns the mgu/finiteness treatment — a differential against the
-engine plus worst-case cost tripwires. Cost model: **the lowering is linear in program size** (the
-scaling bench asserts it, §13.3); it never materializes the ground instantiation on the owned side.
+engine plus worst-case cost tripwires. Cost model: **the lowering — the conversion of a typed value into
+a backend's input — is linear in program size** (the scaling bench asserts it, §13.3), and it never
+materializes the ground instantiation on the owned side. Past the conversion, admission and grounding
+are the backend's own work, and grounding's cost is the program's — exponential in the program in the
+worst case, and unending for a program that does not ground finitely, which a budget bounds (§6.3) — so
+the linear bound is the conversion's, never a claim about grounding's time or storage.
 
 ### 10.2 The doors
 
-Mirroring the engine's own construction paths and the two-doors study in `program.md` §7 (the raise,
-§8), the seam offers three grades. **Doors A and B are two *entry values* into one grounding
-mechanism** — the engine's non-ground input (its AST builder), driven to `ground` — differing only in
-what they preserve; **Door C is the aspif-level ingestion** the engine's ground-by-construction backend
-exposes, which takes ground objects only:
+The seam offers two doors, **two *entry values* into one admission** — the backend's own: a Potassco
+backend's grounder input, its AST builder driven to `ground` (§11.1), or a native engine's admission and
+analysis (§12). They differ only in what they preserve, mirroring the two-doors study in `program.md` §7
+(the raise, §8):
 
-- **Door A — the typed AST (`&Parse<ast::Program>`) → the grounder's input**, order- and
-  span-preserving, where the highest fidelity is possible.
-- **Door B — `themelios_program::Program` → the grounder's input** *through the same mechanism as Door
-  A*, canonical-order, carrying `Origin` provenance through to every ground rule (a capability the C
-  grounder lacks). Programs constructed in Rust, transformed, or loaded through a client enter here. A
-  non-ground `Program` — a variable, an aggregate, a `#program` part — crosses only through A or B, into
-  the grounder; it can **not** be expressed through the ground-by-construction backend (that is Door C),
-  and mapping it there is a category error. The lowering hands the grounder every entry of a counted
-  collection (program.md §4.4), so a repeat the value keeps reaches the grounder — and, for a theory
-  atom, the theory's rewrite — as written.
-- **Door C — aspif → the solver's ingestion** (the engine's ground-object backend), for driving a
-  solver from a foreign grounder, for the differential harness, and for an agent's ground-fact
-  additions where the values are already ground. A ground source names only the symbols its grounder
-  output, so a model's answer set through this door is the function symbols the source names, and its
-  display the rest (§5.1).
+- **Door A — the typed AST (`&Parse<ast::Program>`)**, order- and span-preserving, where the highest
+  fidelity is possible. A backend takes it natively — as the Potassco adapter can, through its AST
+  builder in source order — or through `Door::program`, the core's one route: the raise (`program.md`
+  §8), refusing a parse that carries a syntax error or whose raise emits a diagnostic, since the raise
+  skips a statement it cannot complete and admitting the rest would drop that statement silently. That
+  refusal is a Request fault (§5.4) — the parse holds no completed statement to name — and the parse's
+  diagnostics and the raise's (`Raised::diagnostics`) say where.
+- **Door B — `themelios_program::Program`**, canonical-order, carrying `Origin` provenance through to
+  every ground rule (a capability the C grounder lacks): the primary programmatic entry. Programs
+  constructed in Rust, transformed, or loaded through a client enter here, ground or not: a ground
+  program is a ground `Program` — no file format, no second rule tree — and it passes admission as any
+  program does, since the absence of variables discharges none of a backend's language, arithmetic, or
+  resource obligations. The lowering hands the backend every entry of a counted collection (program.md
+  §4.4), so a repeat the value keeps reaches the grounder — and, for a theory atom, the theory's
+  rewrite — as written.
 
 ```rust
 pub enum Door<'a> {
     Ast(&'a Parse<ast::Program>),   // A: highest fidelity (spans preserved)
-    Program(&'a Program),           // B: canonical, provenance-carrying — same grounding mechanism as A
-    Aspif(&'a mut dyn AspifSource), // C: aspif-level, ground-object ingestion (foreign grounder / differential)
+    Program(&'a Program),           // B: canonical, provenance-carrying, ground or not — the primary entry
+}
+impl<'a> Door<'a> {
+    /// The program this door carries: Door B's, borrowed; Door A's, raised — refused with a Request fault
+    /// where the parse carries a syntax error or its raise a diagnostic (above). The route a backend takes
+    /// for a door it does not take natively, so the derivation has one implementation. O(1) for Door B;
+    /// the raise's cost for Door A (program.md §8).
+    pub fn program(&self) -> Result<Cow<'a, Program>, Fault>;
 }
 ```
+
+**Every backend admits both doors**, natively or through `Door::program`, so the door set is no
+capability: `Capabilities` declares none, and no program is refused for the door it came through. What a
+backend refuses is a construct outside its language — a theory atom of a theory it does not evaluate
+(§4.1), a term directive it cannot evaluate (§5.1), a form its engine lacks — at `lower`, with a Program
+fault naming the statement (§5.4); it never routes the input through another door, and never
+approximates it (§12). The set is closed, so a match over the doors is exhaustive without a wildcard, and
+a new grade is a new variant every backend's `lower` answers.
 
 The **discipline is absolute: never render to text and re-parse across the seam.** The fragile, slow
 path a shell-out imposes (four hand parsers, a pipe deadlock, an output cap, string-matched
@@ -1302,18 +1341,31 @@ optimality — the shell-out's cautionary tale) is exactly what the typed doors 
 no-sharing tree stays the authoring/analysis form only; the huge ground instantiation lives in the
 engine's compact internals, streamed.
 
-### 10.3 The aspif-level sink trait
+### 10.3 Engine formats stay with their adapters
 
-Between the grounder and the solver sits one typed sink trait in the image of the engines' own program
-backend (`rule`, `bd_aggr`, `minimize`, `external`, `project`, `heuristic`, `edge`, `assume`, `show`,
-step framing, `next_lit`/`fact_lit`) with a companion theory-backend trait — typed with distinct
-`Atom`/`Literal` newtypes and distinct id newtypes for the several id roles, which Rust makes cheap.
-Its implementors are the native solver's ingestion, an aspif writer, and the `--text`/reify
-projections.
+An engine's own input format belongs to the adapter whose engine reads it (§11), never to the contract:
+the Potassco family's aspif, and the typed sink in the image of its program backend (`rule`, `bd_aggr`,
+`minimize`, `external`, `project`, `heuristic`, `edge`, `assume`, `show`, step framing,
+`next_lit`/`fact_lit`), with the atom and literal identifiers it numbers. The doors carry the language's
+objects (§10.2); an engine format is one engine's construction interface, so a backend whose engine reads
+no such format owes none of it, and an engine's identifiers never cross into the contract (§10.5).
+
+Where an adapter ingests its engine's format — a foreign grounder's output, say — it owes the answer set
+the contract defines (§5.1), and the format does not carry one by itself: an aspif stream names an atom
+only where it displays one — its one naming statement is the output directive, a string under a condition
+(`clasp/libpotassco/potassco/aspif.h`, `AspifOutput::output`) — so `q. #show. #show p : q.` grounds to a
+stream whose one name, `p`, is a displayed term, while its true atom `q` goes unnamed. The ingestion
+therefore takes every atom named by its symbol — the pinned engine records the correspondence when an
+atom is added with its symbol (`clingo_backend_add_atom`, `libclingo/clingo.h`) — or refuses the stream,
+and it never reads a displayed name as an atom; it is designed with its adapter. A format that takes
+only ground objects is no entry for a non-ground program, and mapping one there is a category error. A
+later serialization of the doors' values — a ground program written out for an external engine, say —
+encodes this contract rather than determining it, and never stands between a backend and the typed
+values.
 
 ### 10.4 The ground-program IR / observer capability
 
-The ground program is a first-class value the bridge can expose — the machine-IR of §1.1 — carrying
+The ground program is a first-class value a backend can expose — the machine-IR of §1.1 — carrying
 `Origin` provenance on every ground rule (`Backend::ground_program`, §4.1):
 
 ```rust
@@ -1329,22 +1381,38 @@ it / gold-plating grows the TCB":
    anchor forces it" no longer holds.
 2. **It does not grow the *unsafe* TCB.** `GroundProgram` is *engine-free* Rust data carrying
    `Origin`, not FFI/unsafe, so §9.6's minimality-of-the-TCB rationale does not bite. The honest cost
-   it *does* add is an **adapter obligation** — the adapter must faithfully produce this value
-   alongside the aspif lowering — which the conformance suite checks (§13.1).
+   it *does* add is an **adapter obligation** — a backend that exposes the value produces it
+   faithfully — which the conformance suite checks (§13.1).
 
-It is a capability over the contract, not part of the mandatory lean core.
+It is a capability over the contract, not part of the mandatory lean core, and **optional**:
+`ground_program` is a provided method answering `None` (§4.1), so a backend — a native engine among them
+— may expose none, whatever door its program came through (§10.2). What a backend exposes is **complete
+or absent**: `Some` holds the whole ground instantiation of the program last lowered, from a grounding
+that finished — never a prefix, a lazy engine's fragment, or a failed grounding's partial output. The
+observer inspects; it is neither an input to an engine nor, by itself, proof that grounding finished — a
+run's conclusion says how its search ended (§5.2). An observer of partial progress, stating its own
+completeness, belongs to the fuller observer surface the reserved seams carry (§14).
 
-### 10.5 The interning discipline and the `Symbol` correspondence
+### 10.5 The `Symbol` correspondence, and the interning discipline
 
-`themelios_program::Symbol` carries the engine's own number width (`i32`, `program.md` §3.1), so no
-value is lost or reshaped crossing the seam; but creating the engine's symbol *handle* from a `Symbol`
-**is** an interning write — serialized under the single interning discipline below, not a free
-correspondence. The FFI cost concentrates at the engine's process-global
-interning; the adapter owns a single interning discipline (specification §5.2) — interning writers
-under one lock, a reentrant-interning tripwire, and a lint over every direct interning FFI call — so
-`@`-functions and located AST construction intern correctly and a non-returning grounder call is a
-loud error, not a silent process-wide wedge. **This compensation is version-scoped to the pinned
-engine and retired by the spike suite** (specification §5.2), a framing the adapter design carries.
+`themelios_program::Symbol` is the identity the contract shares. It carries the engine's own number width
+(`i32`, `program.md` §3.1), so no value is lost or reshaped crossing the seam, and a strongly negated
+atom's sign is part of its symbol, while default negation belongs to a literal, never to an atom — so an
+atom's identity stays apart from both negations. An engine's own identifiers — an aspif atom, a native
+engine's canonical id — are local to the engine that issued them, never a universal atom identity, and
+never in the contract (§10.3).
+
+Where an engine keeps immutable catalogs and scoped identities, as a native engine may, carrying a
+`Symbol` into it is that engine's own business and owes no lock. Where an engine interns process-globally,
+as the Potassco engines do, creating its symbol *handle* from a `Symbol` **is** an interning write —
+serialized under its adapter's single interning discipline, not a free correspondence. The FFI cost
+concentrates at that process-global interning; the adapter owns a single interning discipline
+(specification §5.2) — interning writers under one lock, a reentrant-interning tripwire, and a lint over
+every direct interning FFI call — so `@`-functions and located AST construction intern correctly and a
+non-returning grounder call is a loud error, not a silent process-wide wedge. The discipline is the
+adapter's, stated with it (§11.1), and a backend whose engine interns nothing process-globally owes none
+of it. **This compensation is version-scoped to the pinned engine and retired by the spike suite**
+(specification §5.2), a framing the adapter design carries.
 Semantic divergences from the engine (the characterized arithmetic and safety boundaries, `program.md`
 and `analysis.md`) are consciously reconciled or recorded as expected divergences at the bridge, never
 erased.
@@ -1364,7 +1432,10 @@ so a theory-free program runs identically on either, while a program with `&sum`
 constraints reads its per-model constraint assignments back through `TheoryAssignments` (§5.4) from the
 clingcon backend. The interchange seam between the two engines (and to any further backend, the in-house
 engine of §12 included) is the `Backend` contract itself (§4): the adapter for each engine is one
-implementation of it, so no adapter reaches around another.
+implementation of it, so no adapter reaches around another. What is particular to the Potassco engines is
+the adapter's to handle and to state: their own input format — an aspif ingestion, under §10.3's
+obligation to name every atom by its symbol or refuse — and their process-global interning, under the
+discipline of §10.5.
 
 Our own **in-house CP theory** on the propagator platform (§8.3) is **not** clingcon's replacement but
 its **portable, Rust-native alternative** — written once, it runs behind *any* conforming backend, where
@@ -1415,10 +1486,14 @@ shapes force no conversion a shared-representation backend would never need.
 
 The contract also opens a **fragment-backend path** a native engine can walk: because
 `themelios-analysis` verdicts are sound in the direction that matters (tight ⇒ no unfounded-set check,
-HCF ⇒ no non-HCF tester, Horn ⇒ no search, stratified ⇒ facts-only domains), a backend can *declare its
-fragment* through `Capabilities` (§4.1) and grow it up the lattice over time, routing what it does not
-yet cover to another backend, with the differential run on the overlap. The `Capabilities` declaration
-already expresses this; the ambitious native engine (§14) inherits the contract and this path.
+HCF ⇒ no non-HCF tester, Horn ⇒ no search, stratified ⇒ facts-only domains), a backend can serve a
+fragment and grow it up the lattice over time, what it does not yet cover routed to another backend and
+the differential run on the overlap. Today a backend serves its fragment by refusal: a construct outside
+its language is refused at `lower` with a Program fault naming the statement (§10.2, §5.4), so nothing
+outside the fragment is approximated. `Capabilities` declares no fragment yet. The declaration — and a
+refusal that says a construct lies outside this backend's fragment rather than wrong in every backend,
+which a router reads to send the program on — is a reserved seam that lands with the first router (§14).
+The ambitious native engine (§14) inherits the contract and this path.
 
 ---
 
@@ -1427,20 +1502,27 @@ already expresses this; the ambitious native engine (§14) inherits the contract
 ### 13.1 The conformance suite
 
 Executable, shipped with the contract, run by every adapter: outcome correctness on a corpus of small
-programs with independently known answer sets — a program under an objective among them, whose `solve`
-must yield its non-optimal models too (§5.2), and programs whose `#show` directives hide atoms or display
-terms (`a. #show.`, `{a}. #show.`, `q. #show p : q.`, `-p. #show q/0.`), whose models must carry their
-whole answer sets, whatever they display (§5.1), and a program that projects (`a. {b}. c. #project c/0.`),
-whose models and consequences must range over every stable model whole (§5.2) — every yielded model
-consistent, no atom beside its contrary (query.md §2.3), and its answer set a set of literals
-(`Model::is_set_of_literals`); each model's
+programs with independently known answer sets, each driven through both doors, which must agree (§10.2)
+— a program under an objective among them, whose `solve` must yield its non-optimal models too (§5.2);
+programs whose `#show` directives hide atoms or display terms (`a. #show.`, `{a}. #show.`,
+`q. #show p : q.`, `-p. #show q/0.`), whose models must carry their whole answer sets, whatever they
+display (§5.1); a program that projects (`a. {b}. c. #project c/0.`), whose models and consequences must
+range over every stable model whole (§5.2); counted repeats, which must reach the engine as written
+(`1 { #true; #true } 1.` has no answer set, `{ #true : p(1;1) } = 2. p(1).` has one, program.md §4.4);
+and a tuple counted once however many of its conditions hold (`x :- #count{ 1 : a; 1 : b } = 1. a. b.`
+has the one answer set `{a, b, x}`, program.md §4.7) — every yielded model consistent, no atom beside its
+contrary (query.md §2.3), and its answer set a set of literals (`Model::is_set_of_literals`); each model's
 display the one the program's directives select (§5.1: `q. #show p : q.` displays `{p, q}` over the
-answer set `{q}`), through the symbolic doors; capability honesty (a declared-unsupported request must
+answer set `{q}`); a parse that does not raise cleanly refused through Door A as a request, never partly
+admitted (§10.2); a rebuild leaving nothing of the program it replaced — a second `lower` on a
+single-shot backend, `reset` then `lower` on a multi-shot one — so no statement, model, or cancellation of
+an earlier run reaches the next (§4.1, §6.3); capability honesty (a declared-unsupported request must
 refuse), and the native consequence door's answer its known one over the same corpus, and `NoModel` over a
 program with no answer set and under a scenario that admits none (§5.2); the named pathologies (§5.3)
 attempted and structurally impossible; fault loci landing where they belong, a Program fault naming its
 refused statement — located within it where the statement was parsed, unlocated where it was built in Rust
-(§5.4); and **the ground-program observer produced faithfully** where declared (§10.4).
+(§5.4); and **the ground-program observer produced faithfully** where a backend exposes it (§10.4), a
+backend that exposes none passing without it.
 The suite's skeleton is exercisable **engine-free over a stub backend** before any adapter — that run is
 the core's own check (it streams models through the real contract), not an adapter's authority. The
 **clingo and clingcon adapters** run it (clingcon adds the constraint-theory cases), differenced against
@@ -1477,7 +1559,7 @@ semantics; every walk over user-reachable structure is work-list based (the dept
 specification §5.2); the trust floor is minimal and legible (unsafe confined to the potassco TCB, zero
 above it, FFI-free with the adapter disabled); leak- and race-checking harnesses at the TCB; the
 scaling-shape benches, each beside an in-suite scaling tripwire, assert complexity class for the
-load-bearing operations (the bridge lowering linear in program size, §10.1; the query tier's matching
+load-bearing operations (the bridge's conversion linear in program size, §10.1; the query tier's matching
 scan; the agent's knowledge-ledger rebuild), and streaming enumeration's constant resident set is
 asserted by the laziness law — a bounded pull count that goes red if a stream collects before it
 yields (§5.2).
@@ -1537,6 +1619,19 @@ The **reserved seams** are only the genuinely-separate:
 - **projective enumeration** — a program's models enumerated up to their projection onto the atoms a
   `#project` directive names: until it is designed as a request of its own, `solve` yields every stable
   model whatever the program projects, and an adapter keeps the directive from its engine (§5.2);
+- **streaming ground input** — a checked, typed source of semantic statements, or of views over them, for
+  a foreign grounder that must stream rather than hand over a ground `Program`. It keeps the atom
+  vocabulary, element identity, objectives, observations, and the provenance it has; a complete import
+  ends in an explicit, successful finalization, and a stream that fails leaves an incomplete prefix, never
+  a complete program; its ownership and batching are settled before its signature is. It is transport,
+  not lazy grounding: a lazy engine keeps the source program, or a justified producer plan, and
+  establishes the instances each conclusion needs, so the ground fragment buffered so far certifies no
+  answer set and no exhausted world view. Until a consumer needs it, ground input is a ground `Program`
+  through Door B (§10.2);
+- **the fragment declaration** — a backend's language fragment declared in `Capabilities`, with a refusal
+  that says a construct lies outside this backend's fragment rather than wrong in every backend, which a
+  router reads to send the program on (§12). Until that router, a backend serves its fragment by refusing
+  at `lower` (§10.2);
 - the **native grounder and solver** — a separate engine that implements this contract and can walk the
   fragment-backend path of §12. This is **not hypothetical**: **zetesis** — a clingo-free answer-set
   engine on a candidate-generation + Ferraris-reduct-checking architecture (deliberately *not* CDNL),
@@ -1658,8 +1753,9 @@ The tier is done when all of the following hold:
   outcome carries the path — and the retraction class discloses, on the `StatementId` it rides, which
   realisation a retraction takes (§6.2). An outcome that records either lands when a consumer reads it.
 - **The ground-program observer (§9.6, §13).** Promoted from a reserved seam to a **committed
-  capability** (§10.4), with the two-part argument that defeats §9.6's rejection (an xclingo anchor
-  now forces it; it is engine-free data, not added unsafe TCB — the cost is an adapter obligation).
+  capability** (§10.4) — optional to a backend, and complete where exposed — with the two-part argument
+  that defeats §9.6's rejection (an xclingo anchor now forces it; it is engine-free data, not added
+  unsafe TCB — the cost is an adapter obligation).
 - **Intra-propagator parallelism (§9.6).** Ships as a v1 capability the specification does not mention
   (§8.4); consistent with §9.6's "single solver thread," and distinct from the reserved engine-level
   multi-threaded-propagation seam.
@@ -1869,17 +1965,35 @@ necessity where it is declared.
    §5.2). An adapter lowers none of the restricting directives and no `#project`, so its engine's
    consequence search ranges over every atom; projective enumeration is reserved, `solve` yielding every
    stable model whatever the program projects (§5.2, §11.3, §14). The display semantics and the
-   consequence search's premise are the authority's, cited, and version-scoped (§4.1, §5.1, §13.2). The
-   law holds of a symbolic source; through the aspif door the answer set is the function symbols the
-   source names and the display the rest (§5.1, §10.2). `all_models` keeps one model per stable model, two
-   that display alike included (§5.2); `Extract` reads a set of symbols, the answer set or the display
-   named at the call (§9); and the bridge lowers every entry of a counted collection (§10.2). A Program
+   consequence search's premise are the authority's, cited, and version-scoped (§4.1, §5.1, §13.2).
+   `all_models` keeps one model per stable model, two that display alike included (§5.2); `Extract` reads
+   a set of symbols, the answer set or the display named at the call (§9); and the bridge lowers every
+   entry of a counted collection (§10.2). A Program
    fault keeps its refused statement with its provenance, so it names the statement whether located or not
    and is located only from a parsed origin — the least as its primary label, the others as secondaries; a
-   ground source's refusal, which names no statement, has its own door, `ground_source`; a fault's
-   equality compares its statement's content and origins, and `Fault` is not `Hash`; the construction
-   doors are stated (§5.4). The conformance suite gains the display and projection corpus, the
+   fault's equality compares its statement's content and origins, and `Fault` is not `Hash`; the
+   construction doors are stated (§5.4). The conformance suite gains the display and projection corpus, the
    literal-membership and display checks, and the named, unlocated refusal (§13.1); the oracles are the
    clingo and clingcon packages driven through their Python modules, comparing answer sets and displays
    apart and a run's models as a multiset, and the spike suite gains the display rule, the consequence
    search's premise, and the all-atoms selection's fidelity (§11.2, §13.2).
+15. **The semantic boundary** (2026-10-02). The doors carry the language's objects, and an engine's own
+   format stays with its adapter. `Door` is `Ast | Program`, and every backend admits both: Door A natively
+   or through `Door::program`, the core's one raise-based route, which refuses a parse that does not raise
+   cleanly as a request; Door B, the primary entry, ground or not — a ground program is a ground `Program`,
+   admitted as any program is (§10.2). The aspif door, its sink, its identifiers, and the interning
+   discipline leave the contract for the adapter whose engines need them, which owes the contract's answer
+   set from its own format — every atom named by its symbol, or the stream refused, since an aspif stream
+   names an atom only where it displays one (§10.3, §10.5, §11.1). So the answer-set law holds at every
+   door, and every Program fault names its statement, a refusal with nothing to name being a Request
+   fault; the content checks are necessary, not sufficient (§5.1, §5.4). The lowering's linear bound is
+   the conversion's, and grounding's cost the program's (§10.1). The observer is optional —
+   `ground_program` a provided default, the required surface three methods — and complete where exposed
+   (§4.1, §10.4); `Symbol` is the shared identity, and an engine's identifiers stay its own (§10.5); a model
+   owns its answer set, converted once per model (§5.1); an engine that computes its complete family
+   streams it through the same `Run` (§5.2); and the trajectory yields `Incumbent`s, typed apart from the
+   proven `Optimum` (§5.2, §5.3). §12's claim that `Capabilities` declares a fragment is corrected — a
+   backend serves its fragment by refusal at `lower` — and the fragment declaration and streaming ground
+   input are reserved (§12, §14). The conformance suite drives every case through both doors and gains
+   the counted repeats, a tuple counted once, a parse refused whole, and a rebuild that leaves nothing
+   behind (§13.1).
