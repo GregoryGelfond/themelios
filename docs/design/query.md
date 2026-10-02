@@ -1,11 +1,11 @@
 # themelios-query — design of record
 
-2026-09-03. Draft, pre-implementation. This is the normative design for `themelios-query`, the
-**query tier** — the engine-free epistemic reading over the solve tier's outcomes and the program
-tier's patterns. It is the solve-stage sibling of `solve.md` exactly as `analysis.md` is the
-program-stage sibling of `program.md`: `query : solve :: analysis : program`. It stands with
-`specification.md` §9.7, `solve.md`, `program.md` (§7.7 patterns and unification, §11 the mgu), and
-`analysis.md`.
+2026-09-03, revised through 2026-10-02 (§5). The design of record, which the build follows; §5 records
+each revision. This is the normative design for `themelios-query`, the **query tier** — the engine-free
+epistemic reading over the solve tier's outcomes and the program tier's patterns. It is the solve-stage
+sibling of `solve.md` exactly as `analysis.md` is the program-stage sibling of `program.md`:
+`query : solve :: analysis : program`. It stands with `specification.md` §9.7, `solve.md`, `program.md`
+(§7.7 patterns and unification, §11 the mgu), and `analysis.md`.
 
 The keystone: **the query tier answers the *epistemic* questions about a `Program` — is this true,
 given the program; what are its bindings — where the answer has three values, not two.** The
@@ -670,4 +670,5 @@ it.
    being kept apart by its own type (§2.3), and the assurance gains the answer-set law (§4).
 12. **The live handle is not complete** (2026-10-02). A `Snapshot` is non-empty like the live handle it came
    from, and complete because `materialize`'s gate requires it; the live handle's completeness is a
-   drain-dependent report, never a property it has (§2.3).
+   drain-dependent report, never a property it has (§2.3). The status line names this the design of record
+   the build follows.
