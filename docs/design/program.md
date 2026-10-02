@@ -1782,7 +1782,8 @@ lowered to a canonical, provenance-carrying statement, in source order — and a
 composition, and `raise_occurrences` exposes the lowering, for a consumer that must
 read a statement's nested provenance before the collection sheds it — on a content
 collision the merge keeps one statement's nested provenance and drops the other's
-(§6.3).
+(§6.3) — and for one that reads a program as written, in source order: the solve
+tier's Door A, which admits a parse as its occurrences (solve.md §10.2).
 
 ```rust
 /// Lower a parsed program to a `Program`, under the parse's own dialect. Total:
@@ -2794,9 +2795,9 @@ rule-embedded terms (only the explicit ground-value door, §3.5 — a `1+2` in a
 rule is the grounder's); admission — `#theory` matching, safety *as a rejection*
 (safety is *analyzed*, §12, never a construction refusal), ASP-Core-2 strict
 conformance, meaningful `#external` values (grammar §13, syntax §17, carried
-forward); the engine-facing lowering (a `Program` handed through the solve tier's
-doors to a backend's admission, solve.md §10.2 — a *different* lowering from the
-raise, the two named distinctly so neither hides the other); styled formatting
+forward); the engine-facing lowering (a program handed through the solve tier's
+doors to a backend, solve.md §10.2 — a *different* lowering from the raise, the
+two named distinctly so neither hides the other); styled formatting
 (the formatter satellite); I/O of any kind (`#include` parsed and never resolved,
 `#script` carried and never run); and serialization (shapes, not bytes — base
 §7.2's posture carried).
@@ -2953,12 +2954,13 @@ evolution with its argument, not a drift.
   as the literature defines it — the ground literals true in a stable model, never a
   `#show` display (§11.3, solve.md §5.1).
 - **The strong-equivalence example, typed-dialect declarations, and the engine-facing
-  lowering named (§5.2, §17).** §5.2's example of programs equivalent yet unequal
+  lowering named (§5.2, §8, §17).** §5.2's example of programs equivalent yet unequal
   called `{ p :- q. q :- p. }` strongly equivalent to the empty program, which it is
   not — adding the fact `p` derives `q` in the first alone — so the example now says
   *ordinarily*. Typed-dialect declarations are named a reserved seam, with what their
   arrival owes: statements of their own with a defined meaning, never strings and
   never erased, reported where unsupported, and reaching a backend through the solve
   tier's doors (§17). And the engine-facing lowering is named for what it is, a
-  `Program` handed through those doors to a backend's admission, never an engine
-  format (§17, solve.md §10.2).
+  program handed through those doors to a backend, never an engine format (§17,
+  solve.md §10.2); the occurrence stream gains its second consumer, Door A, which
+  admits a parse as its occurrences (§8).
