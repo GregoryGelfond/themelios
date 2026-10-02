@@ -139,7 +139,9 @@ won or lost.
 
 ### 3.1 The two faces, author → drive → read
 
-Every capability of the tier is reachable two ways, both first-class:
+Every capability a user drives — authoring, driving, reading — is reachable two ways, both first-class;
+the contract's own doors are the backend register (§2.2), which a client composing over `Backend` reaches
+directly (§10.2):
 
 - a **declarative macro face**, for the human writer, spelling ASP as the logician writes it; and
 - a **composable programmatic face**, for humans *and* for programmatic consumers — a code generator,
@@ -240,9 +242,8 @@ pub trait Backend {
     /// `lower` and `reset` is not called.
     fn lower(&mut self, door: Door<'_>) -> Result<(), Fault>;
 
-    /// REQUIRED iff `capabilities().ground_program`. The observer (§10.4): the complete ground program of
-    /// the program last lowered, once a grounding of it has finished — `None` before then. The provided
-    /// default answers `None`, so a backend that does not declare the observer writes nothing.
+    /// REQUIRED iff `capabilities().ground_program`. The observer, complete or absent by §10.4's law. The
+    /// provided default answers `None`, so a backend that does not declare the observer writes nothing.
     fn ground_program(&self) -> Option<&GroundProgram> { None }
 
     /// REQUIRED iff `capabilities().optimization`. The proven optimum, improving trajectory iff asked (§5.3).
@@ -772,20 +773,22 @@ pub enum Refutation {
 }
 
 /// A fault is a value with a CLOSED locus taxonomy at the seam. It OWNS its model — a message, the
-/// `Locus`, the backend-bug bit, and, for a Program fault, the refused statement with its provenance
-/// (program.md §6) — and is located only where that provenance places it: a Program fault is located iff
-/// its statement carries a parsed origin, written in source or transformed from one, and a statement built
-/// in Rust carries none. Every Program fault names its statement; a refusal with no statement to name is a
-/// Request fault — a parse refused at Door A among them, whose typed refusal converts into one (§10.2). A
-/// Request, Resource, Engine, or Adapter fault is unlocated. An unlocated fault is NOT a degenerate
+/// `Locus`, the backend-bug bit, for a Program fault the refused statement with its provenance
+/// (program.md §6), and for a parse refused at Door A the refusal, `NotAdmitted` (§10.2) — and is located
+/// only where that provenance places it: a Program fault is located iff its statement carries a parsed
+/// origin, written in source or transformed from one, and a statement built in Rust carries none. Every
+/// Program fault names its statement; a refusal with no statement to name is a Request fault — a parse
+/// refused at Door A among them, whose refusal rides in it whole. A Request, Resource, Engine, or Adapter
+/// fault is unlocated. An unlocated fault is NOT a degenerate
 /// diagnostic with a fabricated span at an "unknown source" but a different thing (base's §diagnostic): it
 /// renders through its own `Display`. Equality compares a Program fault's statement by its content and
 /// its origins — two Program faults refusing content-equal statements at different locations are different
 /// faults, which lower to different diagnostics, while a difference in annotations alone (a doc comment, a
-/// label) is not — hand-written, since the derive would compare content alone (program.md §6.2). `Fault`
-/// is not `Hash`. A fault's clone is `O(statement)`.
+/// label) is not — hand-written, since the derive would compare content alone (program.md §6.2); a Door A
+/// refusal's, by its diagnostics. `Fault` is not `Hash`. A fault's clone is `O(statement)`, or
+/// `O(diagnostics)` for a Door A refusal.
 #[non_exhaustive]
-pub struct Fault { /* message + Locus + a Program fault's refused statement + the backend-bug bit */ }
+pub struct Fault { /* message + Locus + a Program fault's statement or a Door A refusal + the bug bit */ }
 pub enum Locus { Program, Request, Resource, Engine, Adapter }
 impl Fault {
     // The construction doors, one per locus; an empty message is replaced, so a fault always has one.
@@ -801,6 +804,8 @@ impl Fault {
     pub fn locus(&self) -> Locus;
     pub fn statement(&self) -> Option<&WithProvenance<Statement>>; // `Some` exactly for a Program fault:
                                                            // the statement it refused
+    pub fn not_admitted(&self) -> Option<&NotAdmitted>;    // `Some` exactly for a parse refused at Door A
+                                                           // (§10.2, `From<NotAdmitted>`): its diagnostics
     pub fn located(&self) -> Option<LocatedFault<'_>>;     // Some iff that statement has a parsed origin
 }
 impl std::fmt::Display for Fault {}                        // Fault is Display + Error — NOT ToDiagnostic
@@ -1308,19 +1313,19 @@ two-doors study in `program.md` §7 (the raise, §8):
 
 - **Door A — a parse, admitted (`&Admitted`)**: the program as written — its statements in source order,
   each with its part and provenance, content-equal statements not merged — where the highest fidelity is
-  possible. The core admits a parse once, through the whole raise (`program.md` §8): its lowering half,
-  which keeps the statements in source order (`raise_occurrences`), and its collection into the program
-  they make (§6.3). `Admitted::of` refuses a parse that carries a syntax error, with those errors, or
-  whose raise emits a diagnostic at either half — a repeated definition among them (`program.md` §6.3) —
-  with the raise's; the raise skips a statement it cannot complete, and admitting the rest would drop
-  that statement silently. The refusal, `NotAdmitted`, is typed and located, and reaches the caller
-  before any backend is asked; it converts into a Request fault (§5.4) for a caller that wants `?`, since
-  the parse holds no completed statement to name. So the admission rule has one home and the raise is
-  its one authority: an `Admitted` that exists raised cleanly, and a backend reads its statements in
-  source order — building its engine's input from them, as from Door B's — or the program they collect
-  to, and names any statement it refuses. Cost: the raise's, `O(tree)` for the lowering and the
-  collection's `O(n log n)` ordering, paid once, at admission, with the statements held twice, in
-  source order and as the set.
+  possible. The core admits a parse once, through the raise (`program.md` §8): its lowering half keeps
+  the statements in source order (`raise_occurrences`), and they are collected into the program they make
+  (§6.3). `Admitted::of` refuses a parse that carries a syntax error, with those errors, or whose raise
+  emits a diagnostic, with the whole batch `raise_occurrences` reports — a repeated definition among them
+  (`program.md` §6.3); the collection adds none — since the raise skips a statement it cannot complete,
+  and admitting the rest would drop that statement silently. A warning-severity syntax diagnostic — a
+  misplaced doc comment, say — neither refuses a parse nor rides in the `Admitted`: it stays on the
+  caller's `Parse`. The refusal, `NotAdmitted`, is typed and located, and reaches the caller before any
+  backend is asked; for a caller that wants `?` it converts into a Request fault that carries it whole
+  (§5.4) — a Request fault, since the parse holds no completed statement to name. So the admission rule
+  has one home and the raise is its one authority: an `Admitted` that exists raised cleanly. Cost: the
+  raise's, `O(tree)`, and the collection's `O(n log n)` ordering, paid once, at admission, with the
+  statements held twice, in source order and as the set.
 - **Door B — `themelios_program::Program`**, canonical-order, carrying `Origin` provenance through to
   every ground rule (a capability the C grounder lacks): the primary programmatic entry. Programs
   constructed in Rust, transformed, or loaded through a client enter here, ground or not: a ground
@@ -1347,7 +1352,7 @@ impl<'a> Door<'a> {
 pub struct Admitted { /* the raise's occurrences, and the program they collect to */ }
 impl Admitted {
     /// Admit a parse, or refuse it whole: with its syntax errors, or, the parse being in the language,
-    /// with the raise's diagnostics, from either half of the raise. The raise's cost (above).
+    /// with the raise's whole batch of diagnostics. The raise's cost (above).
     pub fn of(parse: &Parse<ast::Program>) -> Result<Admitted, NotAdmitted>;
     pub fn statements(&self) -> impl Iterator<Item = &StatementOccurrence> + '_;   // in source order
 }
@@ -1356,10 +1361,23 @@ impl Admitted {
 pub struct NotAdmitted { /* the parse's syntax errors, or the raise's diagnostics */ }
 impl NotAdmitted {
     pub fn syntax_errors(&self) -> &[SyntaxError];   // error severity: the parse is not in the language
-    pub fn lowering(&self) -> &[LowerError];         // the raise's, either half: the parse in the language
+    pub fn lowering(&self) -> &[LowerError];         // the raise's whole batch: the parse in the language
 }
-impl From<NotAdmitted> for Fault {}                  // a Request fault (§5.4), for the caller who wants `?`
+impl From<NotAdmitted> for Fault {}                  // a Request fault carrying the refusal (§5.4)
 ```
+
+**Door A's two readings, and who walks through it.** A backend reads Door A's statements in source order
+— building its engine's input from them, as from Door B's — or reads the set `Door::program` lends, and
+its design records which (§11.1, for the Potassco adapter). Under either reading a Door A client may rely
+on the same answer sets, on every statement's parsed origins — the set's merge unions a repeated
+statement's root origins (`program.md` §6.3) — and on each statement's part. Only the source-order reading
+keeps each occurrence apart: a repeated statement lowered as written, the observer attributing a ground
+rule to its occurrence (§10.4) with its nested provenance intact, and a Program fault naming the
+occurrence rather than the merged statement. Door A is an entry of the contract: a client composing over
+`Backend` walks through it — a REPL or an explanation client lowering a parse, and the conformance suite
+— while the agent's loop runs over the set, its knowledge a `Program` lowered through Door B (§6.2). An
+agent door from an `Admitted`, the first lowering through Door A and rebuilds through Door B, waits for a
+consumer that needs the occurrences across the loop.
 
 **Every backend takes both doors**, reading Door A in source order or through `Door::program`, so the
 door set is no capability: `Capabilities` declares none, and no program is refused for the door it came
@@ -1420,19 +1438,22 @@ it / gold-plating grows the TCB":
    it *does* add is an **adapter obligation** — a backend that exposes the value produces it
    faithfully — which the conformance suite checks (§13.1).
 
-It is a capability over the contract, not part of the mandatory lean core: **optional, and declared**.
-`Capabilities::ground_program` says whether a backend exposes it, read before a request is paid for
-(§4.1), so an explanation client learns before it lowers whether a backend serves it; `ground_program` is a
-provided method answering `None` (§4.1), so a backend that does not declare the observer — a native engine
-among them, whatever door its program came through (§10.2) — writes nothing. What a declaring backend
-exposes is **complete or absent**: `Some` holds the whole ground instantiation of the program last lowered,
-once a grounding of it has finished, and `None` before then — never a prefix, a lazy engine's fragment, or
-a failed grounding's partial output. The conformance suite's positive check holds the declaration
-(§13.1): declared, the observer answers `Some` once a grounding has finished; undeclared, `None`. The
-observer inspects; it is neither an input to an engine nor, by itself, proof that grounding finished — a
-run's conclusion says how its search ended (§5.2). The backend committed to exposing it is the Potassco
-adapter (§11.1), the explanation client's anchor (§15 criterion 5). An observer of partial progress,
-stating its own completeness, belongs to the fuller observer surface the reserved seams carry (§14).
+It is a capability over the contract, not part of the mandatory lean core: **optional, and declared** —
+and this paragraph is the observer's law, which the other sites cite. `Capabilities::ground_program` says
+whether a backend exposes it, read before a request is paid for (§4.1), so an explanation client learns
+before it lowers whether a backend serves it; `ground_program` is a provided method answering `None`
+(§4.1), so a backend that does not declare the observer writes nothing. What a declaring backend exposes
+is **complete or absent**: `Some` holds the whole ground program its engine holds — every part
+instantiated, across a multi-shot backend's accumulated lowerings and `ground` steps (§6.2) — as of the
+last grounding that finished; `None` before any grounding has finished, after `reset` until the next one
+finishes, and after a grounding that failed until a later one finishes — never a prefix, a lazy engine's
+fragment, or a failed grounding's partial output. The conformance suite's positive check holds the
+declaration (§13.1): declared, `Some` once a grounding has finished; undeclared, `None`. The observer
+inspects a ground program; it is not an input to an engine, and it says nothing of a search — whether one
+ran, or how it ended, which a run's conclusion says (§5.2). The backend committed to exposing it is the
+Potassco adapter (§11.1), the explanation client's anchor (§15 criterion 5). An observer of partial
+progress, stating its own completeness, belongs to the fuller observer surface the reserved seams carry
+(§14).
 
 ### 10.5 The `Symbol` correspondence, and the interning discipline
 
@@ -1477,7 +1498,8 @@ implementation of it, so no adapter reaches around another. What is particular t
 the adapter's to handle and to state: their own input format — an aspif ingestion, under §10.3's
 obligation to name every atom by its symbol or refuse — and their process-global interning, under the
 discipline of §10.5. The adapter is also the backend committed to the ground-program observer (§10.4),
-which it declares when its observer is built.
+which it declares when its observer is built, and it reads Door A in source order (§10.2), so the
+observer attributes each ground rule to its occurrence.
 
 Our own **in-house CP theory** on the propagator platform (§8.3) is **not** clingcon's replacement but
 its **portable, Rust-native alternative** — written once, it runs behind *any* conforming backend, where
@@ -1531,11 +1553,11 @@ The contract also opens a **fragment-backend path** a native engine can walk: be
 HCF ⇒ no non-HCF tester, Horn ⇒ no search, stratified ⇒ facts-only domains), a backend can serve a
 fragment and grow it up the lattice over time, what it does not yet cover routed to another backend and
 the differential run on the overlap. Today a backend serves its fragment by refusal: a construct outside
-its language is refused at `lower` with a Program fault naming the statement (§10.2, §5.4), so nothing
-outside the fragment is approximated. `Capabilities` declares no fragment yet. The declaration — and a
-refusal that says a construct lies outside this backend's fragment rather than wrong in every backend,
-which a router reads to send the program on — is a reserved seam that lands with the first router (§14).
-The ambitious native engine (§14) inherits the contract and this path.
+its language is refused, at `lower` or where its engine meets the statement, with a Program fault naming
+the statement (§5.4), so nothing outside the fragment is approximated. `Capabilities` declares no
+fragment yet. The declaration — and a refusal that says a construct lies outside this backend's fragment
+rather than wrong in every backend, which a router reads to send the program on — is a reserved seam that
+lands with the first router (§14). The ambitious native engine (§14) inherits the contract and this path.
 
 ---
 
@@ -1564,10 +1586,10 @@ refuse), and the native consequence door's answer its known one over the same co
 program with no answer set and under a scenario that admits none (§5.2); the named pathologies (§5.3)
 attempted and structurally impossible; fault loci landing where they belong, a Program fault naming its
 refused statement — located within it where the statement was parsed, unlocated where it was built in Rust
-(§5.4); and **the ground-program observer produced faithfully** where a backend declares it (§10.4), the
-declaration honest — declared, the observer answers `Some` once a grounding has finished; undeclared, it
-answers `None` — and a backend that declares none passing without it. Door A's admission is the core's,
-before any backend is asked (§10.2), so its refusals are the core's own check, not an adapter's.
+(§5.4); and **the ground-program observer produced faithfully** where a backend declares it, the
+declaration honest by §10.4's law, and a backend that declares none passing without it. Door A's admission
+is the core's, before any backend is asked (§10.2), so its refusals are the core's own check, not an
+adapter's.
 The suite's skeleton is exercisable **engine-free over a stub backend** before any adapter — that run is
 the core's own check (it streams models through the real contract), not an adapter's authority. The
 **clingo and clingcon adapters** run it (clingcon adds the constraint-theory cases), differenced against
@@ -1676,8 +1698,8 @@ The **reserved seams** are only the genuinely-separate:
   through Door B (§10.2);
 - **the fragment declaration** — a backend's language fragment declared in `Capabilities`, with a refusal
   that says a construct lies outside this backend's fragment rather than wrong in every backend, which a
-  router reads to send the program on (§12). Until that router, a backend serves its fragment by refusing
-  at `lower` (§10.2);
+  router reads to send the program on (§12). Until that router, a backend serves its fragment by
+  refusing, at `lower` or where its engine meets the statement (§5.4);
 - the **native grounder and solver** — a separate engine that implements this contract and can walk the
   fragment-backend path of §12. This is **not hypothetical**: **zetesis** — a clingo-free answer-set
   engine on a candidate-generation + Ferraris-reduct-checking architecture (deliberately *not* CDNL),
@@ -2025,28 +2047,33 @@ necessity where it is declared.
    search's premise, and the all-atoms selection's fidelity (§11.2, §13.2).
 15. **The semantic boundary** (2026-10-02). The doors carry the language's objects, and an engine's own
    format stays with its adapter. `Door` is `Parsed | Program`, and every backend takes both: Door A an
-   `Admitted` parse — its statements raised once, in source order, each with its part and provenance,
-   the core's `Admitted::of` refusing a parse that does not raise cleanly with a typed `NotAdmitted`
-   before any backend is asked, so the admission rule has one home and the raise is its one authority —
-   and Door B, the primary entry, ground or not, a ground program being a ground `Program` lowered as any
-   program is; `Door::program` lends either as a set (§10.2). The aspif door, its sink, its identifiers,
-   and the interning discipline leave the contract for the adapter whose engines need them, which owes
-   the contract's answer set from its own format — every atom named by its symbol, or the stream refused,
-   since an aspif stream names an atom only where it displays one, both claims version-scoped and held by
-   the adapter's spike suite (§10.3, §10.5, §11.1, §13.2). So the answer-set law holds at every door, and
-   every Program fault names its statement, a refusal with nothing to name being a Request fault; a
-   Program fault may arise at `lower` or where the engine meets the statement, and a backend that refuses
-   after `lower` retains what names it; the content checks are necessary, not sufficient (§5.1, §5.4).
-   The lowering's linear bound is the conversion's, and grounding's cost the program's (§10.1). The
-   observer is optional and declared — `Capabilities::ground_program`, the method a provided default, the
-   required surface three methods — complete or absent where declared, and committed by the Potassco
-   adapter (§4.1, §10.4, §11.1); `Symbol` is the shared identity, and an engine's identifiers stay its own
-   (§10.5); a model owns its answer set, converted once per model (§5.1); an engine that computes its
-   complete family streams it through the same `Run`, the laziness law's constant resident set being the
-   owned side's and the family the engine's (§5.2, §13.3); and the trajectory yields `Incumbent`s, typed
-   apart from the proven `Optimum` (§5.2, §5.3). §12's claim that `Capabilities` declares a fragment is
-   corrected — a backend serves its fragment by refusal — and the fragment declaration and streaming
-   ground input are reserved (§12, §14). The conformance suite drives every case through both doors and
-   gains the counted repeats, a tuple counted once, a display that is a displayed term alone
-   (`q. #show. #show p : q.`), a rebuild that leaves nothing behind, and the observer's declaration
-   checked (§13.1).
+   `Admitted` parse — its statements raised once, in source order, each with its part and provenance, the
+   core's `Admitted::of` refusing a parse that does not raise cleanly with a typed `NotAdmitted` before any
+   backend is asked, so the admission rule has one home and the raise is its one authority — and Door B,
+   the primary entry, ground or not, a ground program being a ground `Program` lowered as any program is;
+   `Door::program` lends either as a set. A backend reads Door A in source order or as the set, its design
+   recording which — the Potassco adapter, source order — and a client may rely on the answer sets, every
+   parsed origin, and each statement's part under either; Door A is an entry of the contract, which a
+   client composing over `Backend` walks through, the agent's loop running over the set (§3.1, §10.2,
+   §11.1). The aspif door, its sink, its identifiers, and the interning discipline leave the contract for
+   the adapter whose engines need them, which owes the contract's answer set from its own format — every
+   atom named by its symbol, or the stream refused, since an aspif stream names an atom only where it
+   displays one, both claims version-scoped and held by the adapter's spike suite (§10.3, §10.5, §11.1,
+   §13.2). So the answer-set law holds at every door, and every Program fault names its statement, a
+   refusal with nothing to name being a Request fault — a Door A refusal carried whole in one; a Program
+   fault may arise at `lower` or where the engine meets the statement, and a backend that refuses after
+   `lower` retains what names it; the content checks are necessary, not sufficient (§5.1, §5.4). The
+   lowering's linear bound is the conversion's, and grounding's cost the program's (§10.1). The observer is
+   optional and declared — `Capabilities::ground_program`, the method a provided default, the required
+   surface three methods — and its law, at §10.4, holds the whole ground program the engine holds as of
+   the last finished grounding, across accumulated lowerings, `None` before any, after `reset`, and after
+   a failed grounding until another finishes; the Potassco adapter is committed to it (§4.1, §10.4,
+   §11.1). `Symbol` is the shared identity, and an engine's identifiers stay its own (§10.5); a model owns
+   its answer set, converted once per model (§5.1); an engine that computes its complete family streams it
+   through the same `Run`, the laziness law's constant resident set being the owned side's and the family
+   the engine's (§5.2, §13.3); and the trajectory yields `Incumbent`s, typed apart from the proven
+   `Optimum` (§5.2, §5.3). §12's claim that `Capabilities` declares a fragment is corrected — a backend
+   serves its fragment by refusal — and the fragment declaration and streaming ground input are reserved
+   (§12, §14). The conformance suite drives every case through both doors and gains the counted repeats, a
+   tuple counted once, a display that is a displayed term alone (`q. #show. #show p : q.`), a rebuild that
+   leaves nothing behind, and the observer's declaration checked (§13.1).
