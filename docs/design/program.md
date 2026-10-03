@@ -2701,8 +2701,10 @@ with what it proves and what it cannot (spec §10.2).
   authority's source (§4.4), version-scoped claims like every engine claim (spec
   §5.2), and an engine upgrade re-runs the seeds. Beside the seeds stand the
   redefinition witnesses: the authority refuses a content-equal `#const` repeated
-  within a part, the source the raise diagnoses (§6.3, §8), and accepts the program
-  with one. A theory atom's repeat (`&sum{x; x}`) is pinned here structurally; its
+  within a part — unannotated or `[override]` — the source the raise diagnoses (§6.3,
+  §8), and accepts the program with one; and the law's second disjunct is seeded — a
+  same-name `#const` with different content raises without a diagnostic and is refused
+  in source and render alike. A theory atom's repeat (`&sum{x; x}`) is pinned here structurally; its
   meaning is the theory's, so the engine that evaluates the theory checks it
   (solve.md §13.2).
 - **The depth proof** (subprocess, spec §10.1): on a stated stack, a term nested far
@@ -2982,3 +2984,6 @@ evolution with its argument, not a drift.
   is the second statement the set may not merge: the authority runs each block where it
   reads it, so a content-equal block repeated within a part is diagnosed at the repeat
   (`RepeatedScript`, §6.3, §8), a lossy reading of text the authority admits.
+- **The law's refusing half witnessed (§16).** The answer-set differential seeds the law's
+  second disjunct — a same-name `#const` with different content, refused in source and
+  render alike — and adds the `[override]` redefinition witness beside the unannotated one.

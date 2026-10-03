@@ -1029,7 +1029,7 @@ fn the_leading_block_is_grounder_neutral_for_const_and_theory() {
 /// order-insensitive — but that neutrality is incidental, not the global-gathering guarantee
 /// `#const`/`#theory` carry, so the conservative choice keeps `#include` in `Ord` order.
 #[test]
-fn include_is_grounder_position_sensitive_so_it_is_excluded_from_the_leading_block() {
+fn include_is_grounder_position_sensitive() {
     let dir = include_fixture_dir();
     // Position-sensitive: the same `#include` before vs after a `#program` boundary grounds the
     // base part to different answer sets — the fact `q` joins base in one order and `step` in
@@ -1130,6 +1130,17 @@ const MERGES: &[&str] = &[
     "c. b. #count{1 : a : b; 1 : a : b} = 1 :- c.",
 ];
 
+/// Seeds that raise without a diagnostic and that the authority refuses in source and render
+/// alike — the law's second disjunct (§2, §6.3).
+const REFUSED_ALIKE: &[&str] = &["#const n = 1. #const n = 2. p(n)."];
+
+/// Global definitions repeated content-equal within one part — the plain and the annotated
+/// spelling — which the raise diagnoses and the authority refuses (§6.3).
+const REDEFINITIONS: &[&str] = &[
+    "#const n = 1. #const n = 1. p(n).",
+    "#const n = 1. [override] #const n = 1. [override] p(n).",
+];
+
 /// Merge seeds whose costs are compared.
 const COSTED: &[&str] = &[
     "a. :~ a. [1@0] :~ a. [1@0]",
@@ -1182,29 +1193,48 @@ fn a_source_and_its_render_ground_to_the_same_costs() {
 }
 
 #[test]
-fn the_authority_refuses_a_definition_the_raise_diagnoses() {
-    // The redefinition witness (§6.3): the raise diagnoses the repeat, so the law's precondition
-    // excludes the source, and the authority refuses it — while it would accept the merged render.
+fn a_source_and_its_render_are_refused_alike() {
     let cwd = std::env::temp_dir();
-    let source = "#const n = 1. #const n = 1. p(n).";
-    let lowered = raise(&parse(
-        &Source::new(SourceId::new(0), source.to_owned()).expect("the witness admits"),
-        Dialect::Clingo,
-    ));
-    assert!(
-        lowered
-            .diagnostics()
-            .iter()
-            .any(|error| matches!(error.kind(), LowerErrorKind::RepeatedDefinition { .. })),
-        "the raise diagnoses the repeat the authority refuses: {:?}",
-        lowered.diagnostics()
-    );
-    let refused = authority_answer_sets(source, &cwd);
-    assert!(
-        refused.error.is_some(),
-        "the authority accepted a repeated #const: {:?}",
-        refused.sets
-    );
+    for source in REFUSED_ALIKE {
+        let program = raised(source, Dialect::Clingo);
+        let rendered = render(&program, Dialect::Clingo).expect("the seed renders");
+        let original = authority_answer_sets(source, &cwd);
+        let round = authority_answer_sets(&rendered, &cwd);
+        assert!(
+            original.error.is_some() && round.error.is_some(),
+            "{source:?} and its render {rendered:?} are refused alike: source {:?}, render {:?}",
+            original.error,
+            round.error
+        );
+    }
+}
+
+#[test]
+fn the_authority_refuses_a_definition_the_raise_diagnoses() {
+    // The redefinition witnesses (§6.3): the raise diagnoses the repeat, so the law's
+    // precondition excludes the source, and the authority refuses it — while it would accept
+    // the merged render.
+    let cwd = std::env::temp_dir();
+    for source in REDEFINITIONS {
+        let lowered = raise(&parse(
+            &Source::new(SourceId::new(0), (*source).to_owned()).expect("the witness admits"),
+            Dialect::Clingo,
+        ));
+        assert!(
+            lowered
+                .diagnostics()
+                .iter()
+                .any(|error| matches!(error.kind(), LowerErrorKind::RepeatedDefinition { .. })),
+            "{source:?}: the raise diagnoses the repeat the authority refuses: {:?}",
+            lowered.diagnostics()
+        );
+        let refused = authority_answer_sets(source, &cwd);
+        assert!(
+            refused.error.is_some(),
+            "{source:?}: the authority accepted a repeated #const: {:?}",
+            refused.sets
+        );
+    }
     let accepted = authority_answer_sets("#const n = 1. p(n).", &cwd);
     assert!(accepted.error.is_none());
 }

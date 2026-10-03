@@ -174,6 +174,22 @@ fn distinct_constants(size: usize) -> Fixture {
     }
 }
 
+/// `size` constants, each in a part of its own: every definition a switch of part for the
+/// repeated-definition check.
+fn definitions_in_parts(size: usize) -> Fixture {
+    let mut source = String::new();
+    for i in 0..size {
+        write!(source, "#program q{i}. #const c{i} = {i}. ").expect("writing to a String");
+    }
+    Fixture {
+        name: "definitions_in_parts",
+        size,
+        statements: size,
+        merged: size,
+        source,
+    }
+}
+
 /// One choice of `size` copies of the atom element `a`: every repeat merged into one entry
 /// by the counted constructor, each origin unioned into it (§4.4).
 fn repeated_atom_elements(size: usize) -> Fixture {
@@ -244,6 +260,8 @@ fn main() {
         repeated_body_literals(16_000),
         distinct_constants(1_000),
         distinct_constants(16_000),
+        definitions_in_parts(1_000),
+        definitions_in_parts(16_000),
         repeated_atom_elements(1_000),
         repeated_atom_elements(16_000),
     ] {

@@ -274,6 +274,49 @@ impl Rewrite for Unchanged {
 
 const WIDTHS: [usize; 3] = [1_000, 4_000, 16_000];
 
+/// `q :- p(f(f(… (X; 0) …))).` — a two-alternative pool at the bottom of a deep term.
+fn deep_pooled_program(depth: usize) -> Program {
+    let pool = Term::pool([variable("X"), Term::from(0)]).expect("two alternatives");
+    let rule = Rule::new(
+        Atom::constant(name("q")),
+        Atom::new(name("p"), [nest(pool, depth)]),
+    );
+    Program::of([rule])
+}
+
+/// The rewrites over a deep term (§9.1): `unpool` moves each alternative into the one tuple it
+/// joins, level by level, and `rewrite` folds each term bottom-up, so both are linear in depth.
+fn deep_term_scaling(c: &mut Criterion) {
+    let mut unpool_group = c.benchmark_group("unpool/term_depth");
+    for depth in DEPTHS {
+        let program = deep_pooled_program(depth);
+        unpool_group.bench_with_input(
+            BenchmarkId::from_parameter(depth),
+            &program,
+            |b, program| {
+                b.iter(|| drop(std::hint::black_box(unpool(program))));
+            },
+        );
+    }
+    unpool_group.finish();
+    let mut rewrite_group = c.benchmark_group("rewrite/term_depth");
+    for depth in DEPTHS {
+        let program = deep_program(depth);
+        rewrite_group.bench_with_input(
+            BenchmarkId::from_parameter(depth),
+            &program,
+            |b, program| {
+                b.iter_batched(
+                    || program.clone(),
+                    |program| drop(std::hint::black_box(rewrite(program, &mut Unchanged))),
+                    BatchSize::LargeInput,
+                );
+            },
+        );
+    }
+    rewrite_group.finish();
+}
+
 /// The rewrites over a wide part (§8, §9): `rewrite` rebuilds each part as one run, and
 /// `unpool` ingests each part's expansion as one, so neither pays the part's key per statement.
 fn wide_part_scaling(c: &mut Criterion) {
@@ -322,6 +365,7 @@ pub fn scaling() {
     matching_scaling(&mut criterion);
     part_access_scaling(&mut criterion);
     wide_part_scaling(&mut criterion);
+    deep_term_scaling(&mut criterion);
 }
 
 fn main() {

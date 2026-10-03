@@ -36,14 +36,18 @@ use std::collections::BTreeSet;
 use std::fmt::Write;
 use std::time::Instant;
 
-use themelios_program::program::{Atom, PartKey, Program, Rule, Statement};
+use themelios_base::source::{Source, SourceId};
+use themelios_program::program::{Atom, Body, BodyElement, PartKey, Program, Rule, Statement};
 use themelios_program::provenance::{TransformTag, WithProvenance};
+use themelios_program::raise::raise;
 use themelios_program::render::render;
 use themelios_program::symbol::{Name, Sign, Symbol, VarName};
 use themelios_program::term::{Term, Variable};
 use themelios_program::transform::{Rewrite, rewrite, unpool};
 use themelios_program::unify::{mgu, signature_range};
+use themelios_syntax::ast;
 use themelios_syntax::dialect::Dialect;
+use themelios_syntax::parse::{Parse, parse};
 
 /// The data-size ratio between the small and large cases for a linear or near-linear
 /// claim.
@@ -699,6 +703,23 @@ fn raise_text(text: &str) -> themelios_program::raise::RaisedSource {
     themelios_program::raise::raise_str(text, Dialect::Clingo).expect("the source admits")
 }
 
+/// The parse of `text` under the clingo dialect — prepared outside a timed window, so a raise
+/// tripwire times the raise alone.
+fn parsed(text: &str) -> Parse<ast::Program> {
+    let source = Source::new(SourceId::new(0), text.to_owned()).expect("the source admits");
+    parse(&source, Dialect::Clingo)
+}
+
+/// One timed `rewrite` of `program` by the identity rewrite, its input cloned before the
+/// window opens.
+fn timed_rewrite(program: &Program) -> u128 {
+    let mut input = Some(program.clone());
+    time_once(|| {
+        let program = input.take().expect("one run per window");
+        drop(std::hint::black_box(rewrite(program, &mut Unchanged)));
+    })
+}
+
 /// The base count of repeated elements; the large case is SIZE_RATIO more.
 const REPEATS: usize = 1_000;
 
@@ -710,11 +731,11 @@ const REPEATS: usize = 1_000;
 fn raising_a_choice_of_kept_repeats_is_near_linear() {
     // `Counted::from_elements` sorts once and makes one adjacent pass (§4.4): O(n log n). A
     // constructor that scanned its entries for an equal one at every insert would be Θ(n²).
-    let small = repeated_choice("#true", REPEATS);
-    let big = repeated_choice("#true", REPEATS * SIZE_RATIO);
+    let small = parsed(&repeated_choice("#true", REPEATS));
+    let big = parsed(&repeated_choice("#true", REPEATS * SIZE_RATIO));
     let ratio = median_ratio(
-        || time_once(|| drop(std::hint::black_box(raise_text(&small)))),
-        || time_once(|| drop(std::hint::black_box(raise_text(&big)))),
+        || time_once(|| drop(std::hint::black_box(raise(&small)))),
+        || time_once(|| drop(std::hint::black_box(raise(&big)))),
     );
     let approx = ratio / RATIO_SCALE;
     assert!(
@@ -731,11 +752,11 @@ fn raising_a_choice_of_kept_repeats_is_near_linear() {
 fn raising_a_choice_of_merged_repeats_is_near_linear() {
     // Each merge unions the newcomer's one origin into the accumulated provenance by move,
     // O(log k); a merge that cloned the accumulated provenance would be Θ(n²) over n repeats.
-    let small = repeated_choice("a", REPEATS);
-    let big = repeated_choice("a", REPEATS * SIZE_RATIO);
+    let small = parsed(&repeated_choice("a", REPEATS));
+    let big = parsed(&repeated_choice("a", REPEATS * SIZE_RATIO));
     let ratio = median_ratio(
-        || time_once(|| drop(std::hint::black_box(raise_text(&small)))),
-        || time_once(|| drop(std::hint::black_box(raise_text(&big)))),
+        || time_once(|| drop(std::hint::black_box(raise(&small)))),
+        || time_once(|| drop(std::hint::black_box(raise(&big)))),
     );
     let approx = ratio / RATIO_SCALE;
     assert!(
@@ -786,11 +807,11 @@ const STATEMENTS: usize = 512;
 fn raising_repeated_statements_is_near_linear() {
     // Each collision unions the newcomer's one origin into the accumulated provenance by move,
     // O(log k); cloning the accumulated provenance at every collision is Θ(n²).
-    let small = repeated_facts(STATEMENTS);
-    let big = repeated_facts(STATEMENTS * SIZE_RATIO);
+    let small = parsed(&repeated_facts(STATEMENTS));
+    let big = parsed(&repeated_facts(STATEMENTS * SIZE_RATIO));
     let ratio = median_ratio(
-        || time_once(|| drop(std::hint::black_box(raise_text(&small)))),
-        || time_once(|| drop(std::hint::black_box(raise_text(&big)))),
+        || time_once(|| drop(std::hint::black_box(raise(&small)))),
+        || time_once(|| drop(std::hint::black_box(raise(&big)))),
     );
     let approx = ratio / RATIO_SCALE;
     assert!(
@@ -808,11 +829,11 @@ fn raising_a_body_of_repeated_literals_is_near_linear() {
     // A rule body is a set collected through the same merge as the statements: each repeated
     // literal unions its one origin into the accumulation by move, O(log k); cloning the
     // accumulation at every collision is Θ(n²) over n repeats.
-    let small = repeated_body_literals(STATEMENTS);
-    let big = repeated_body_literals(STATEMENTS * SIZE_RATIO);
+    let small = parsed(&repeated_body_literals(STATEMENTS));
+    let big = parsed(&repeated_body_literals(STATEMENTS * SIZE_RATIO));
     let ratio = median_ratio(
-        || time_once(|| drop(std::hint::black_box(raise_text(&small)))),
-        || time_once(|| drop(std::hint::black_box(raise_text(&big)))),
+        || time_once(|| drop(std::hint::black_box(raise(&small)))),
+        || time_once(|| drop(std::hint::black_box(raise(&big)))),
     );
     let approx = ratio / RATIO_SCALE;
     assert!(
@@ -829,11 +850,11 @@ fn raising_a_body_of_repeated_literals_is_near_linear() {
 fn raising_statements_under_a_wide_part_is_near_linear() {
     // The part is looked up once per run of statements sharing it; cloning and comparing its
     // key per statement is Θ(n·m), quadratic when the part is as wide as it is long.
-    let small = wide_part(STATEMENTS);
-    let big = wide_part(STATEMENTS * SIZE_RATIO);
+    let small = parsed(&wide_part(STATEMENTS));
+    let big = parsed(&wide_part(STATEMENTS * SIZE_RATIO));
     let ratio = median_ratio(
-        || time_once(|| drop(std::hint::black_box(raise_text(&small)))),
-        || time_once(|| drop(std::hint::black_box(raise_text(&big)))),
+        || time_once(|| drop(std::hint::black_box(raise(&small)))),
+        || time_once(|| drop(std::hint::black_box(raise(&big)))),
     );
     let approx = ratio / RATIO_SCALE;
     assert!(
@@ -850,10 +871,7 @@ fn raising_statements_under_a_wide_part_is_near_linear() {
 fn rewriting_statements_under_a_wide_part_is_near_linear() {
     let small = raise_text(&wide_part(STATEMENTS)).into_program();
     let big = raise_text(&wide_part(STATEMENTS * SIZE_RATIO)).into_program();
-    let ratio = median_ratio(
-        || time_once(|| drop(std::hint::black_box(rewrite(small.clone(), &mut Unchanged)))),
-        || time_once(|| drop(std::hint::black_box(rewrite(big.clone(), &mut Unchanged)))),
-    );
+    let ratio = median_ratio(|| timed_rewrite(&small), || timed_rewrite(&big));
     let approx = ratio / RATIO_SCALE;
     assert!(
         ratio < LINEAR_CEILING * RATIO_SCALE,
@@ -880,11 +898,11 @@ fn distinct_constants(count: usize) -> String {
 fn checking_many_definitions_is_near_linear() {
     // One ordered-map entry per definition, O(log d); a pairwise scan of the part's
     // definitions would be Θ(d²).
-    let small = distinct_constants(STATEMENTS);
-    let big = distinct_constants(STATEMENTS * SIZE_RATIO);
+    let small = parsed(&distinct_constants(STATEMENTS));
+    let big = parsed(&distinct_constants(STATEMENTS * SIZE_RATIO));
     let ratio = median_ratio(
-        || time_once(|| drop(std::hint::black_box(raise_text(&small)))),
-        || time_once(|| drop(std::hint::black_box(raise_text(&big)))),
+        || time_once(|| drop(std::hint::black_box(raise(&small)))),
+        || time_once(|| drop(std::hint::black_box(raise(&big)))),
     );
     let approx = ratio / RATIO_SCALE;
     assert!(
@@ -911,11 +929,11 @@ fn definitions_in_parts(count: usize) -> String {
 fn checking_definitions_across_many_parts_is_near_linear() {
     // A switch of part is two ordered-map operations over the parts, O(key · log parts); a
     // linear scan of the parked parts at each switch would be Θ(d²) over d definitions.
-    let small = definitions_in_parts(STATEMENTS);
-    let big = definitions_in_parts(STATEMENTS * SIZE_RATIO);
+    let small = parsed(&definitions_in_parts(STATEMENTS));
+    let big = parsed(&definitions_in_parts(STATEMENTS * SIZE_RATIO));
     let ratio = median_ratio(
-        || time_once(|| drop(std::hint::black_box(raise_text(&small)))),
-        || time_once(|| drop(std::hint::black_box(raise_text(&big)))),
+        || time_once(|| drop(std::hint::black_box(raise(&small)))),
+        || time_once(|| drop(std::hint::black_box(raise(&big)))),
     );
     let approx = ratio / RATIO_SCALE;
     assert!(
@@ -953,5 +971,88 @@ fn unpooling_statements_under_a_wide_part_is_near_linear() {
     assert!(
         ratio < LINEAR_CEILING * RATIO_SCALE,
         "unpooling a wide part's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} statements and formals; the near-linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+/// `q :- p(f(f(… (X; 0) …))).` — a two-alternative pool at the bottom of a deep term, which
+/// `unpool` expands into two rules, each carrying the deep term.
+fn deep_pooled_program(depth: usize) -> Program {
+    let pool = Term::pool([variable("X"), Term::from(0)]).expect("two alternatives");
+    Program::of([Rule::new(
+        Atom::constant(name("q")),
+        Atom::new(name("p"), [nest(pool, depth)]),
+    )])
+}
+
+/// `q :- p(f(f(… X …))), r((0; 1)).` — a pool-free deep term in a rule `unpool` expands for
+/// the pool beside it.
+fn deep_term_beside_a_pool(depth: usize) -> Program {
+    let pool = Term::pool([Term::from(0), Term::from(1)]).expect("two alternatives");
+    let body = Body::new([
+        BodyElement::from(Atom::new(name("p"), [deep_term(depth)])),
+        BodyElement::from(Atom::new(name("r"), [pool])),
+    ]);
+    Program::of([Rule::new(Atom::constant(name("q")), body)])
+}
+
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
+#[test]
+fn unpooling_a_pool_under_a_deep_term_is_linear_in_depth() {
+    // The cross-product moves each alternative into the one tuple it joins, level by level;
+    // re-cloning the growing subterm at each level is the Θ(depth²) `unpool` names.
+    let (small, big) = (
+        deep_pooled_program(DEPTH),
+        deep_pooled_program(DEPTH * SIZE_RATIO),
+    );
+    let ratio = median_ratio(
+        || time_once(|| drop(std::hint::black_box(unpool(&small)))),
+        || time_once(|| drop(std::hint::black_box(unpool(&big)))),
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "unpooling under a deep term: the median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} depth; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
+#[test]
+fn unpooling_beside_a_deep_pool_free_term_is_linear_in_depth() {
+    // A pool-free term is recognized in one walk and moved whole; a pass that rebuilt it
+    // through the cross-product would re-clone it at each level.
+    let (small, big) = (
+        deep_term_beside_a_pool(DEPTH),
+        deep_term_beside_a_pool(DEPTH * SIZE_RATIO),
+    );
+    let ratio = median_ratio(
+        || time_once(|| drop(std::hint::black_box(unpool(&small)))),
+        || time_once(|| drop(std::hint::black_box(unpool(&big)))),
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "unpooling beside a deep pool-free term: the median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} depth; the linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
+#[test]
+fn rewriting_a_deep_term_is_linear_in_depth() {
+    // The rewrite folds each term bottom-up, one node at a time (§3.6, §9.1).
+    let (small, big) = (deep_program(DEPTH), deep_program(DEPTH * SIZE_RATIO));
+    let ratio = median_ratio(|| timed_rewrite(&small), || timed_rewrite(&big));
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "rewriting a deep term: the median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} depth; the linear shape allows at most x{LINEAR_CEILING}"
     );
 }
