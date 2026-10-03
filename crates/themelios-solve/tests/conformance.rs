@@ -511,6 +511,9 @@ enum Flaw {
     ObservesWhileNeedingARebuild,
     /// Refuses while needing its rebuild, naming another presupposition.
     MisnamesItsRebuild,
+    /// Declares the native door, yet its door skips the refusal a needed
+    /// rebuild owes.
+    ForgetsItsRebuildAtTheNativeDoor,
     /// Declares functions, yet refuses every registration at the engine.
     RefusesDeclaredFunctions,
     /// Refuses the reset that rebuilds it after a failed grounding.
@@ -1317,7 +1320,9 @@ impl Backend for Stub {
         mode: Mode,
         request: &ConsequenceRequest,
     ) -> Result<NativeAnswer, Fault> {
-        self.rebuild_owed()?;
+        if self.flaw != Flaw::ForgetsItsRebuildAtTheNativeDoor {
+            self.rebuild_owed()?;
+        }
         if self.capabilities.native_consequences != ConsequenceSupport::Native {
             return Err(Fault::unsupported(Capability::NativeConsequences));
         }
@@ -1891,6 +1896,13 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             vec![(State, Mislocated)],
         ),
         (
+            // Past the rebuild it owes, the native door reaches the faulting
+            // call and refuses at its statement: a refusal, not the one owed.
+            Flaw::ForgetsItsRebuildAtTheNativeDoor,
+            realising(),
+            vec![(State, Mislocated)],
+        ),
+        (
             Flaw::RefusesDeclaredFunctions,
             only(Capability::Functions),
             vec![(Declared(C::Functions), Refused)],
@@ -2162,6 +2174,15 @@ fn an_inconsistent_model_fails_its_outcome_as_one() {
     };
     assert_eq!(failure.case(), Some("classical negation"));
     assert!(failure.to_string().contains("contrary"), "{failure}");
+}
+
+#[test]
+fn a_model_holding_a_number_fails_its_outcome_as_no_set_of_literals() {
+    let report = report(deciding(), Flaw::YieldsANumber);
+    let Some(Verdict::Failed(failure)) = report.verdict(Check::OutcomeCorrectness) else {
+        panic!("the model holding a number fails its outcome: {report}");
+    };
+    assert!(failure.to_string().contains("no literal"), "{failure}");
 }
 
 #[test]
