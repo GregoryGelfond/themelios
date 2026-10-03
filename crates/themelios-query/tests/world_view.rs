@@ -6,8 +6,13 @@ mod common;
 
 use common::{answer_set, atom, atoms_of, with_faulting_world_view, with_world_view};
 use themelios_program::{AnswerSet, Name, Sign, Symbol};
-use themelios_solve::contract::Locus;
-use themelios_solve::outcome::Conclusion;
+use themelios_solve::contract::{Fault, Locus, Presupposition, Refused};
+use themelios_solve::outcome::{Conclusion, Truncation};
+
+/// Whether `fault` refused the request for the presupposition `expected`.
+fn refused_for(fault: &Fault, expected: Presupposition) -> bool {
+    matches!(fault.refused(), Refused::Request(presupposition) if presupposition == expected)
+}
 
 /// The strongly negated atom `-name`.
 fn negated(name: &str) -> Symbol {
@@ -75,7 +80,7 @@ fn a_world_view_streams_the_models_the_search_found() {
 }
 
 #[test]
-fn a_partially_streamed_world_view_refuses_to_materialise() {
+fn a_partially_streamed_world_view_refuses_to_materialise_as_taken() {
     // Touching the member stream forfeits completeness, so materialize then refuses:
     // a snapshot cannot be built from only the members that remain after a partial
     // read, and none may pose as complete.
@@ -84,10 +89,10 @@ fn a_partially_streamed_world_view_refuses_to_materialise() {
         Conclusion::Exhausted,
         |mut wv| {
             let _first = wv.members().next();
-            assert!(
-                wv.materialize().is_err(),
-                "a partially-consumed world view cannot materialise",
-            );
+            let refusal = wv
+                .materialize()
+                .expect_err("a partially-consumed world view cannot materialise");
+            assert!(refused_for(&refusal, Presupposition::Taken), "{refusal:?}");
         },
     );
 }
@@ -149,12 +154,40 @@ fn a_member_holding_a_negated_atom_without_its_contrary_materialises() {
 }
 
 #[test]
-fn a_budget_cut_world_view_refuses_to_materialise() {
+fn a_budget_cut_world_view_refuses_to_materialise_naming_its_truncation() {
     with_world_view(vec![answer_set(["a"])], Conclusion::Budget, |wv| {
-        assert!(
-            wv.materialize().is_err(),
-            "a search that did not close the space cannot pose as a complete snapshot",
-        );
+        let refusal = wv
+            .materialize()
+            .expect_err("a search that did not close the space cannot pose as complete");
+        let budget = Presupposition::Unclosed(Truncation::Budget);
+        assert!(refused_for(&refusal, budget), "{refusal:?}");
+    });
+}
+
+#[test]
+fn a_member_holding_a_number_refuses_to_materialise() {
+    // No answer set holds anything but literals, so such a member is the backend's
+    // contract broken — refused as its bug.
+    let numbered: AnswerSet = [atom("a"), Symbol::number(1)].into_iter().collect();
+    with_world_view(vec![numbered], Conclusion::Exhausted, |wv| {
+        let refusal = wv
+            .materialize()
+            .expect_err("a member holding a number is refused");
+        assert_eq!(refusal.locus(), Locus::Adapter);
+        assert!(refusal.is_backend_bug());
+    });
+}
+
+#[test]
+fn a_member_holding_no_literal_is_refused_before_its_consistency_is_read() {
+    // A member that holds a number and an atom beside its contrary breaks both; the
+    // literal check runs first, since consistency reads only function symbols.
+    let both: AnswerSet = [atom("a"), negated("a"), Symbol::number(1)]
+        .into_iter()
+        .collect();
+    with_world_view(vec![both], Conclusion::Exhausted, |wv| {
+        let refusal = wv.materialize().expect_err("the member is refused");
+        assert!(refusal.to_string().contains("literals"), "{refusal}");
     });
 }
 

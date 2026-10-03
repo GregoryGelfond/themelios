@@ -261,20 +261,28 @@ impl<'a> WorldView<'a> {
 
     /// Drain the world view into an engine-free [`Snapshot`] (docs/design/query.md
     /// §2.3): read every member and hold them as owned data whose reads are then
-    /// infallible and repeatable. **Refuses** a world view whose search did not
-    /// close the space, or whose members were already streamed — a `Snapshot` is
-    /// complete and non-empty by construction, so a partial or non-exhausted view
-    /// must not pass as one. The gate is the solve tier's own completeness refusal,
-    /// carried as its [`Fault`], so a truncated search cannot be laundered into a
-    /// complete snapshot. **Refuses** too a member holding an atom and its
-    /// contrary: no answer set does, so the backend broke its contract — a
-    /// [`Fault::adapter_bug`] — and every reading's partition rests on answer-set
-    /// consistency, so it is checked here rather than trusted. Cost: O(members) to
-    /// drain; the check looks up each strongly negated atom's contrary — a copy of
-    /// its arguments and an `O(log m)` lookup in its `m`-atom member; plus a clone
-    /// of the scenario.
+    /// infallible and repeatable. A `Snapshot` is complete and non-empty by
+    /// construction, so a partial or non-exhausted view must not pass as one: the
+    /// gate is the solve tier's own completeness refusal, carried as its
+    /// [`Fault`], so a truncated search cannot be laundered into a complete
+    /// snapshot. **Refuses** a search that did not close the space
+    /// (`Presupposition::Unclosed`, naming its truncation) and a handle whose
+    /// members were already streamed (`Presupposition::Taken`), at the request
+    /// locus; a search that faulted, with the engine's own fault; and a member
+    /// whose answer set holds anything but literals, or an atom beside its
+    /// contrary — no answer set does, so the backend broke its contract, a
+    /// [`Fault::adapter_bug`] — since every reading's partition rests on both, so
+    /// they are checked here rather than trusted, the literals first, as
+    /// consistency reads only function symbols. Cost: the drain; one test per
+    /// symbol and one contrary lookup per strongly negated atom of each member —
+    /// `O(Σ|M| log |M|)` over the members — plus a clone of the scenario.
     pub fn materialize(mut self) -> Result<Snapshot, Fault> {
         let members = self.models.all_members()?;
+        if members.iter().any(|member| !member.is_set_of_literals()) {
+            return Err(Fault::adapter_bug(
+                "the backend yielded a model holding something other than literals",
+            ));
+        }
         if members.iter().any(|member| !member.is_consistent()) {
             return Err(Fault::adapter_bug(
                 "the backend yielded a model holding an atom and its contrary",
@@ -936,20 +944,23 @@ fn materialised(determination: Determination<'_>, inconsistent: &str) -> Result<
 pub trait AgentReading {
     /// Solve once and materialise the consistent world view into an engine-free
     /// [`Snapshot`] (docs/design/query.md §2.3): the cache the other readings are
-    /// each a shorthand for, exposed so many questions cost one solve. **Refuses** a
-    /// program with no answer set, or a search that did not close — there is no world
-    /// view to snapshot — carrying why at the [`Fault`]'s locus.
+    /// each a shorthand for, exposed so many questions cost one solve. It solves
+    /// afresh, so it never meets a streamed handle: it **refuses** a program with no
+    /// answer set (`Presupposition::NoAnswerSet`), and otherwise as
+    /// [`WorldView::materialize`] does — a search that did not close
+    /// (`Presupposition::Unclosed`, naming its truncation), a search that faulted,
+    /// or a member that is not a consistent set of literals.
     fn snapshot(&mut self) -> Result<Snapshot, Fault>;
 
     /// A scenario-scoped [`Snapshot`] (docs/design/query.md §2.2, §2.7): solve once
     /// under `scenario` — the agent's `solve_assuming` — and materialise, so every
     /// reading off it ranges over the scenario's models: the scoped form of every
     /// reading, as `solve_assuming` is of `solve`. **Refuses** over a backend that
-    /// does not declare `assumptions` — a scenario needs `solve_assuming` —
-    /// with [`Fault::unsupported`] at the request locus, and otherwise as
-    /// [`snapshot`](AgentReading::snapshot) does: no answer set under the scenario,
-    /// or a search that did not close. Cost: one `solve_assuming`, then `Θ(|W|)` to
-    /// materialise.
+    /// does not declare `assumptions` — a scenario needs `solve_assuming` — as
+    /// unsupported (`Presupposition::Unsupported`, naming the capability), and
+    /// otherwise as [`snapshot`](AgentReading::snapshot) does under its scenario: a
+    /// scenario that admits no answer set is `Presupposition::NoAnswerSet`. Cost:
+    /// one `solve_assuming`, then `Θ(|W|)` to materialise.
     fn snapshot_assuming(&mut self, scenario: &Scenario) -> Result<Snapshot, Fault>;
 
     /// The three-valued [`Answer`] to a ground `query` over the agent's world view
