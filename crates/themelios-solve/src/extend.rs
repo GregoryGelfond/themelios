@@ -20,9 +20,10 @@
 //! `Facts` is a bound — consumed as `impl Facts`, never boxed — and `Extract`
 //! is a constructor on the value it builds, never an object.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
-use themelios_program::{AnswerSet, Symbol};
+use themelios_program::Symbol;
 
 use crate::contract::Locus;
 
@@ -80,10 +81,10 @@ pub trait Function {
 /// A ground-time fault an `@`-function raises (docs/design/solve.md §7.1):
 /// typed, with a locus. The function names the condition — the call is
 /// refused, or a limit was reached — and the backend that dispatched the
-/// call names the place, lowering the fault into a
-/// [`Fault`](crate::contract::Fault) at the call's own statement (§5.4); so
-/// a ground fault carries a [`Locus`] and a message, and no source label of
-/// its own. Non-exhaustive: a field is a new field, not a migration. Owned
+/// call names the place, lowering the fault into
+/// [`Fault::program`](crate::contract::Fault::program) naming the call's own
+/// statement (§5.4); so a ground fault carries a [`Locus`] and a message, and
+/// no source label of its own. Non-exhaustive: a field is a new field, not a migration. Owned
 /// plain data.
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -167,30 +168,32 @@ impl std::error::Error for TheoryFault {}
 
 // ---- Read-time extraction (§9) ----
 
-/// An answer set, or a projection of one, read into a user-defined Rust
-/// value (docs/design/solve.md §9): the read-time inverse of [`Facts`]
-/// (§7.3), over the same conversion pillar — the `FromSymbol` that reads an
-/// `@`-function's argument reads an answer set's atom. A constructor on the
-/// value it builds, not an object: `Sized`, so a reader names the type and
-/// extracts. Reserved until read-time extraction is implemented: the derived
-/// implementation and its failure report on a non-matching atom, an
-/// [`ExtractError`], are defined with it. Cost: `Θ(atoms read)`.
+/// A set of symbols read into a user-defined Rust value (docs/design/solve.md
+/// §9) — a model's answer set (`model.atoms()`) or what the program displays
+/// (`model.shown().symbols()`, §5.1), the choice the caller's, named at the
+/// call: the read-time inverse of [`Facts`] (§7.3), over the same conversion
+/// pillar — the `FromSymbol` that reads an `@`-function's argument reads a
+/// set's symbol. A constructor on the value it builds, not an object: `Sized`,
+/// so a reader names the type and extracts. Reserved until read-time
+/// extraction is implemented: the derived implementation and its failure
+/// report on a non-matching symbol, an [`ExtractError`], are defined with it.
+/// Cost: `Θ(symbols read)`.
 pub trait Extract: Sized {
-    /// The value the answer set denotes, or the error that refuses it.
-    fn extract(answer_set: &AnswerSet) -> Result<Self, ExtractError>;
+    /// The value the symbols denote, or the error that refuses them.
+    fn extract(symbols: &BTreeSet<Symbol>) -> Result<Self, ExtractError>;
 }
 
-/// The failure of an extraction (docs/design/solve.md §9): an atom of the
-/// answer set that does not match the value's shape. Non-exhaustive: the
-/// offending atom and its codec failure join when read-time extraction is
-/// implemented; until then the error is declared, and empty, so the surface
-/// it belongs to is shaped by it already.
+/// The failure of an extraction (docs/design/solve.md §9): a symbol of the set
+/// read that does not match the value's shape. Non-exhaustive: the offending
+/// symbol and its codec failure join when read-time extraction is implemented;
+/// until then the error is declared, and empty, so the surface it belongs to
+/// is shaped by it already.
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ExtractError {}
 
 /// How an extraction error renders while it carries no detail of its own.
-const EXTRACT_ERROR: &str = "the answer set does not match the value's shape";
+const EXTRACT_ERROR: &str = "the symbols do not match the value's shape";
 
 impl fmt::Display for ExtractError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

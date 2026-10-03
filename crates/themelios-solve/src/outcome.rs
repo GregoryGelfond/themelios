@@ -884,6 +884,25 @@ pub struct Optimum {
     pub(crate) _levels: (),
 }
 
+/// A step of the improving trajectory (docs/design/solve.md §5.2): one model
+/// the search found and retained, with its levels in the objectives' own terms
+/// — one completed result, published only once the backend has retained it.
+/// Not proven optimal, and never convertible into an [`Optimum`], so a
+/// best-found cannot pose as proven (§5.3). No public constructor: its door
+/// lands with `optimize`'s, beside `Optimum`'s, where the levels' type is fixed
+/// for both. Cost: one model conversion at the step it is published.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Incumbent {
+    model: Model,
+}
+
+impl Incumbent {
+    /// The retained model, its whole answer set (§5.1). Total; O(1).
+    pub fn model(&self) -> &Model {
+        &self.model
+    }
+}
+
 /// The run handle `optimize` returns (docs/design/solve.md §5.2): the same
 /// resolution register as [`Solved`] — `determination`/`into_determination`/
 /// `conclusion` — specialised with `optimum`/`trajectory` in place of the
@@ -916,11 +935,12 @@ impl<'a> Optimized<'a> {
         None
     }
 
-    /// The improving sequence, each step a `Result` so a mid-search engine
-    /// fault surfaces at the step — `Some` iff the request asked for it
+    /// The improving sequence of [`Incumbent`]s — best-found models, typed
+    /// apart from the proven optimum — each step a `Result` so a mid-search
+    /// engine fault surfaces at the step; `Some` iff the request asked for it
     /// (docs/design/solve.md §5.3). Reserved until optimization is realised;
     /// answers `None` meanwhile.
-    pub fn trajectory(&mut self) -> Option<impl Iterator<Item = Result<Optimum, Fault>> + '_> {
+    pub fn trajectory(&mut self) -> Option<impl Iterator<Item = Result<Incumbent, Fault>> + '_> {
         None::<std::iter::Empty<_>>
     }
 
@@ -2514,6 +2534,17 @@ mod tests {
     }
 
     // ---- The optimization register (§5.2, §5.3) ----
+
+    #[test]
+    fn an_incumbent_reads_back_its_retained_model() {
+        // Built here, where its door will be: a step of the trajectory holds the
+        // model the search retained, its whole answer set.
+        let model = Model::of(singleton(1));
+        let incumbent = Incumbent {
+            model: model.clone(),
+        };
+        assert_eq!(incumbent.model(), &model);
+    }
 
     /// An optimization handle over `sets`, ending `terminal` — the register's
     /// laws are `Solved`'s, over the same live run.

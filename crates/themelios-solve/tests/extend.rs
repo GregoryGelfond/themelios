@@ -7,6 +7,7 @@
 //! request fault; and a reader extracts a value from an answer set, the
 //! inverse of `Facts`.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::Debug;
 
@@ -14,7 +15,7 @@ use themelios_program::{AnswerSet, Name, Sign, Symbol};
 use themelios_solve::bridge::{Door, GroundProgram};
 use themelios_solve::contract::{Backend, Capabilities, Capability, Fault, Locus, SolveRequest};
 use themelios_solve::extend::{Extract, ExtractError, Facts, Function, GroundFault};
-use themelios_solve::outcome::Solved;
+use themelios_solve::outcome::{Model, Solved};
 
 /// The edge relation's predicate name.
 const EDGE: &str = "edge";
@@ -101,8 +102,8 @@ impl Function for Successor {
 struct AtomCount(usize);
 
 impl Extract for AtomCount {
-    fn extract(answer_set: &AnswerSet) -> Result<Self, ExtractError> {
-        Ok(AtomCount(answer_set.len()))
+    fn extract(symbols: &BTreeSet<Symbol>) -> Result<Self, ExtractError> {
+        Ok(AtomCount(symbols.len()))
     }
 }
 
@@ -207,4 +208,16 @@ fn a_reader_extracts_a_value_from_an_answer_set() {
     // The inverse of `Facts`: what a value denotes, read back as a value.
     let model: AnswerSet = Edges(PATH.to_vec()).facts().collect();
     assert_eq!(AtomCount::extract(&model), Ok(AtomCount(PATH.len())));
+}
+
+#[test]
+fn a_reader_extracts_from_what_a_model_displays() {
+    // The display is a set of symbols too, named at the call: here it holds
+    // the answer set's atoms and one displayed term.
+    let atoms: AnswerSet = Edges(PATH.to_vec()).facts().collect();
+    let model = Model::of(atoms).with_terms([Symbol::number(42)]);
+    assert_eq!(
+        AtomCount::extract(model.shown().symbols()),
+        Ok(AtomCount(PATH.len() + 1))
+    );
 }
