@@ -273,3 +273,64 @@ pub fn with_faulting_world_view<R>(f: impl FnOnce(WorldView<'_>) -> R) -> R {
         _ => panic!("the fixture yields a consistent world view"),
     }
 }
+
+/// A backend's enumeration whose models carry terms only an engine evaluates —
+/// `#show t : body.`'s — then a closed search.
+struct Displayed {
+    models: std::vec::IntoIter<(AnswerSet, Vec<Symbol>)>,
+    ended: bool,
+}
+
+impl Run for Displayed {
+    fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+        if let Some((atoms, terms)) = self.models.next() {
+            Some(Ok(Model::of(atoms).with_terms(terms)))
+        } else {
+            self.ended = true;
+            None
+        }
+    }
+
+    fn conclusion(&self) -> Option<Conclusion> {
+        self.ended.then_some(Conclusion::Exhausted)
+    }
+}
+
+/// A backend whose program displays something other than its answer sets: each
+/// model with its terms, under the show rule of the program's directives.
+pub struct Displaying {
+    models: Vec<(AnswerSet, Vec<Symbol>)>,
+    show: ShowRule,
+}
+
+impl Backend for Displaying {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default()
+    }
+
+    fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
+        Ok(Solved::running(
+            Box::new(Displayed {
+                models: self.models.clone().into_iter(),
+                ended: false,
+            }),
+            Scenario::default(),
+            self.show.clone(),
+        ))
+    }
+
+    fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
+        Ok(())
+    }
+}
+
+/// Build an agent over a backend whose models display their terms under `show`,
+/// its search closed, and hand it to `f`.
+pub fn with_displaying_agent<R>(
+    models: Vec<(AnswerSet, Vec<Symbol>)>,
+    show: ShowRule,
+    f: impl FnOnce(&mut Agent<Displaying>) -> R,
+) -> R {
+    let mut agent = Agent::new(Program::empty(), Displaying { models, show });
+    f(&mut agent)
+}

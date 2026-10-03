@@ -148,6 +148,31 @@ fn a_reading_over_a_witnessed_but_unclosed_search_refuses() {
     });
 }
 
+#[test]
+fn entails_over_an_inconsistent_program_refuses_with_no_answer_set() {
+    with_agent(vec![], Conclusion::Exhausted, |agent| {
+        let refusal = agent.entails(&lit("a")).expect_err("no world view to read");
+        assert!(
+            refused_for(&refusal, Presupposition::NoAnswerSet),
+            "{refusal:?}"
+        );
+    });
+}
+
+#[test]
+fn bindings_over_a_truncated_search_refuse_naming_the_truncation() {
+    with_agent(vec![], Conclusion::Budget, |agent| {
+        let pattern = BindingPattern::of(var_pattern()).expect("a binding pattern");
+        let refusal = agent
+            .bindings(&pattern)
+            .expect_err("an undecided program has no world view");
+        assert!(
+            refused_for(&refusal, Presupposition::Unclosed(Truncation::Budget)),
+            "{refusal:?}"
+        );
+    });
+}
+
 /// `p(X, _)` — an anonymous position, which names no binding.
 fn anonymous_atom() -> Atom {
     Atom {
