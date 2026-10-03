@@ -358,11 +358,13 @@ pub trait Rewrite {
 /// statements. Total; `O(output)`.
 pub fn rewrite(program: Program, rewriter: &mut impl Rewrite) -> Program {
     let mut result = Program::default();
-    for (key, carrier) in program.into_statements() {
-        let origin = carrier.provenance().clone();
-        let statement = rewriter.rewrite_statement(carrier.into_value());
-        let stamped = WithProvenance::new(statement, stamp(origin, rewriter.tag()));
-        result.ingest_into(key, stamped);
+    for (key, statements) in program.into_runs() {
+        let rewritten = statements.into_iter().map(|carrier| {
+            let (value, origin) = carrier.into_parts();
+            let statement = rewriter.rewrite_statement(value);
+            WithProvenance::new(statement, stamp(origin, rewriter.tag()))
+        });
+        result.ingest_run(&key, rewritten);
     }
     result
 }
@@ -834,15 +836,13 @@ pub fn unpool(program: &Program) -> Program {
     let tag = TransformTag::new("unpool");
     let mut result = Program::default();
     for part in program.parts() {
-        for carrier in part.statements() {
+        let unpooled = part.statements().flat_map(|carrier| {
             let provenance = stamp(carrier.provenance().clone(), tag.clone());
-            for statement in unpool_statement(carrier.get().clone()) {
-                result.ingest_into(
-                    part.key().clone(),
-                    WithProvenance::new(statement, provenance.clone()),
-                );
-            }
-        }
+            unpool_statement(carrier.get().clone())
+                .into_iter()
+                .map(move |statement| WithProvenance::new(statement, provenance.clone()))
+        });
+        result.ingest_run(part.key(), unpooled);
     }
     result
 }

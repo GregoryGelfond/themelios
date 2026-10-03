@@ -393,31 +393,49 @@ impl Program {
         self.parts.values().flat_map(Part::statements)
     }
 
-    /// Every statement, owned, paired with the key of the part it belongs to — the
-    /// consuming complement to [`statements`](Program::statements), for a by-value rewrite
-    /// that rebuilds the program part by part (§9).
-    pub(crate) fn into_statements(
+    /// Each part's key and statements, owned, in `PartKey` order — the consuming complement
+    /// to [`parts`](Program::parts), for a by-value rewrite that rebuilds the program part by
+    /// part, each part one run (§9). O(1) per part.
+    pub(crate) fn into_runs(
         self,
-    ) -> impl Iterator<Item = (PartKey, WithProvenance<Statement>)> {
-        self.parts.into_iter().flat_map(|(key, part)| {
-            part.statements
-                .into_iter()
-                .map(move |statement| (key.clone(), statement))
-        })
+    ) -> impl Iterator<Item = (PartKey, BTreeSet<WithProvenance<Statement>>)> {
+        self.parts
+            .into_values()
+            .map(|part| (part.key, part.statements))
     }
 
     /// Admit a statement into the named part through the one ingest door (§6.3),
-    /// opening the part with its first statement when it is not yet present — the
-    /// part-structured door the raise lifts a `#program` delimiter into (§4.1, §8).
-    /// `base` is seeded at construction; every other part is opened by a statement
-    /// joining it. Crate-internal: the public doors are `of` and `of_nodes` (§7) and the
-    /// raise (§8).
+    /// opening the part with its first statement when it is not yet present — the door
+    /// for a statement that carries its own key, as `of_keyed_nodes`' do. `base` is seeded
+    /// at construction; every other part is opened by a statement joining it.
+    /// Crate-internal: the public doors are `of` and `of_nodes` (§7) and the raise (§8).
     pub(crate) fn ingest_into(&mut self, key: PartKey, statement: WithProvenance<Statement>) {
-        let part = self.parts.entry(key.clone()).or_insert_with(|| Part {
+        ingest(&mut self.part_entry(key).statements, statement);
+    }
+
+    /// Admit a run of statements into one part through the one ingest door (§6.3), looking
+    /// the part up once for the run rather than once per statement — the collection's door
+    /// for the raise, which shares one part key across a `#program` delimiter's statements
+    /// (§8), and for the rewrites, which rebuild part by part. O(key) once, then each
+    /// statement's ingest.
+    pub(crate) fn ingest_run(
+        &mut self,
+        key: &PartKey,
+        statements: impl IntoIterator<Item = WithProvenance<Statement>>,
+    ) {
+        let part = self.part_entry(key.clone());
+        for statement in statements {
+            ingest(&mut part.statements, statement);
+        }
+    }
+
+    /// The part named `key`, opened empty when it is not yet present (§4.1). O(key · log
+    /// parts).
+    fn part_entry(&mut self, key: PartKey) -> &mut Part {
+        self.parts.entry(key.clone()).or_insert_with(|| Part {
             key,
             statements: BTreeSet::new(),
-        });
-        ingest(&mut part.statements, statement);
+        })
     }
 }
 
@@ -445,11 +463,12 @@ fn ingest(set: &mut BTreeSet<WithProvenance<Statement>>, statement: WithProvenan
 pub(crate) fn merge_insert<T: Ord>(set: &mut BTreeSet<WithProvenance<T>>, node: WithProvenance<T>) {
     let admitted = match set.take(&node) {
         Some(existing) => {
-            let provenance = existing
-                .provenance()
-                .clone()
-                .merge(node.provenance().clone());
-            WithProvenance::new(node.into_value(), provenance)
+            // The union moves the accumulated provenance and extends it with the newcomer's —
+            // large with small — so a run of n content-equal nodes costs O(n log n), not the
+            // Θ(n²) of cloning the accumulation at every collision.
+            let (_, accumulated) = existing.into_parts();
+            let (value, provenance) = node.into_parts();
+            WithProvenance::new(value, accumulated.merge(provenance))
         }
         None => node,
     };

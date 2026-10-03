@@ -120,6 +120,45 @@ fn repeated_elements(size: usize) -> Fixture {
     }
 }
 
+/// `size` copies of one fact: one statement kept, every origin unioned into it.
+fn repeated_statements(size: usize) -> Fixture {
+    Fixture {
+        name: "repeated_statements",
+        size,
+        statements: size,
+        merged: 1,
+        source: "a. ".repeat(size),
+    }
+}
+
+/// A part of `size` formals over `size` distinct facts.
+fn wide_part(size: usize) -> Fixture {
+    let formals: Vec<String> = (1..=size).map(|i| format!("f{i}")).collect();
+    let mut source = format!("#program p({}).\n", formals.join(", "));
+    for i in 1..=size {
+        write!(source, "a{i}. ").expect("writing to a String");
+    }
+    Fixture {
+        name: "wide_part",
+        size,
+        statements: size,
+        merged: size,
+        source,
+    }
+}
+
+/// The rule `p :- q, …, q.` with `size` copies of its body literal: one statement, one body
+/// element.
+fn repeated_body_literals(size: usize) -> Fixture {
+    Fixture {
+        name: "repeated_body_literals",
+        size,
+        statements: 1,
+        merged: 1,
+        source: format!("p :- {}.", vec!["q"; size].join(", ")),
+    }
+}
+
 /// Refuse a malformed fixture before measuring any operation on it.
 fn checked_parse(fixture: &Fixture) -> Parse<ast::Program> {
     let source = Source::new(SourceId::new(0), fixture.source.clone()).expect("source admits");
@@ -170,6 +209,12 @@ fn main() {
         structured(1_000),
         repeated_elements(1_000),
         repeated_elements(16_000),
+        repeated_statements(1_000),
+        repeated_statements(16_000),
+        wide_part(1_000),
+        wide_part(16_000),
+        repeated_body_literals(1_000),
+        repeated_body_literals(16_000),
     ] {
         measure(&mut criterion, &fixture);
     }

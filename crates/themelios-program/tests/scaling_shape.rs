@@ -28,13 +28,15 @@
 //! in the ratio.
 
 use std::collections::BTreeSet;
+use std::fmt::Write;
 use std::time::Instant;
 
 use themelios_program::program::{Atom, PartKey, Program, Rule, Statement};
-use themelios_program::provenance::WithProvenance;
+use themelios_program::provenance::{TransformTag, WithProvenance};
 use themelios_program::render::render;
 use themelios_program::symbol::{Name, Sign, Symbol, VarName};
 use themelios_program::term::{Term, Variable};
+use themelios_program::transform::{Rewrite, rewrite};
 use themelios_program::unify::{mgu, signature_range};
 use themelios_syntax::dialect::Dialect;
 
@@ -734,5 +736,122 @@ fn raising_a_choice_of_merged_repeats_is_near_linear() {
     assert!(
         ratio < LINEAR_CEILING * RATIO_SCALE,
         "the merged repeats' median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} elements; the near-linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+// ---- the collection: a merge that moves, one part lookup per run (§6.3, §8) ----
+
+/// `count` copies of the fact `a.` — content-equal statements with distinct origins.
+fn repeated_facts(count: usize) -> String {
+    "a. ".repeat(count)
+}
+
+/// The rule `p :- q, q, …, q.` with `count` copies of the body literal `q` — content-equal body
+/// elements with distinct origins.
+fn repeated_body_literals(count: usize) -> String {
+    format!("p :- {}.", vec!["q"; count].join(", "))
+}
+
+/// `#program p(f1, …, fk).` followed by `k` distinct facts — a part as wide as it is long.
+fn wide_part(width: usize) -> String {
+    let formals: Vec<String> = (1..=width).map(|i| format!("f{i}")).collect();
+    let mut source = format!("#program p({}).\n", formals.join(", "));
+    for i in 1..=width {
+        write!(source, "a{i}. ").expect("writing to a String");
+    }
+    source
+}
+
+/// A rewrite that changes nothing but the tag.
+struct Unchanged;
+impl Rewrite for Unchanged {
+    fn tag(&self) -> TransformTag {
+        TransformTag::new("unchanged")
+    }
+}
+
+/// The base statement count for the collection's shapes; the large case is SIZE_RATIO more.
+const STATEMENTS: usize = 512;
+
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
+#[test]
+fn raising_repeated_statements_is_near_linear() {
+    // Each collision unions the newcomer's one origin into the accumulated provenance by move,
+    // O(log k); cloning the accumulated provenance at every collision is Θ(n²).
+    let small = repeated_facts(STATEMENTS);
+    let big = repeated_facts(STATEMENTS * SIZE_RATIO);
+    let ratio = median_ratio(
+        || time_once(|| drop(std::hint::black_box(raise_text(&small)))),
+        || time_once(|| drop(std::hint::black_box(raise_text(&big)))),
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "repeated statements' median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} statements; the near-linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
+#[test]
+fn raising_a_body_of_repeated_literals_is_near_linear() {
+    // A rule body is a set collected through the same merge as the statements: each repeated
+    // literal unions its one origin into the accumulation by move, O(log k); cloning the
+    // accumulation at every collision is Θ(n²) over n repeats.
+    let small = repeated_body_literals(STATEMENTS);
+    let big = repeated_body_literals(STATEMENTS * SIZE_RATIO);
+    let ratio = median_ratio(
+        || time_once(|| drop(std::hint::black_box(raise_text(&small)))),
+        || time_once(|| drop(std::hint::black_box(raise_text(&big)))),
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "a body of repeated literals' median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} literals; the near-linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
+#[test]
+fn raising_statements_under_a_wide_part_is_near_linear() {
+    // The part is looked up once per run of statements sharing it; cloning and comparing its
+    // key per statement is Θ(n·m), quadratic when the part is as wide as it is long.
+    let small = wide_part(STATEMENTS);
+    let big = wide_part(STATEMENTS * SIZE_RATIO);
+    let ratio = median_ratio(
+        || time_once(|| drop(std::hint::black_box(raise_text(&small)))),
+        || time_once(|| drop(std::hint::black_box(raise_text(&big)))),
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "a wide part's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} statements and formals; the near-linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
+#[test]
+fn rewriting_statements_under_a_wide_part_is_near_linear() {
+    let small = raise_text(&wide_part(STATEMENTS)).into_program();
+    let big = raise_text(&wide_part(STATEMENTS * SIZE_RATIO)).into_program();
+    let ratio = median_ratio(
+        || time_once(|| drop(std::hint::black_box(rewrite(small.clone(), &mut Unchanged)))),
+        || time_once(|| drop(std::hint::black_box(rewrite(big.clone(), &mut Unchanged)))),
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "rewriting a wide part's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} statements and formals; the near-linear shape allows at most x{LINEAR_CEILING}"
     );
 }
