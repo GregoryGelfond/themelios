@@ -46,7 +46,7 @@ const LOCI: [Locus; 5] = [
 ];
 
 /// The capabilities a refusal or a report names, in declaration order.
-const CAPABILITIES: [Capability; 9] = [
+const CAPABILITIES: [Capability; 10] = [
     Capability::Optimization,
     Capability::NativeConsequences,
     Capability::Assumptions,
@@ -56,6 +56,7 @@ const CAPABILITIES: [Capability; 9] = [
     Capability::TimeBudget,
     Capability::Functions,
     Capability::Propagators,
+    Capability::GroundProgram,
 ];
 
 /// `text` raised as the source `id` names, so its statements carry parsed
