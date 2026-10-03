@@ -40,6 +40,12 @@ fn map_maps_content_and_carries_provenance_through() {
     assert_eq!(mapped.provenance(), &provenance);
 }
 
+#[test]
+fn into_value_gives_up_the_carrier_s_content() {
+    let carrier = WithProvenance::new(vec![1, 2, 3], Provenance::from(Origin::Constructed));
+    assert_eq!(carrier.into_value(), vec![1, 2, 3]);
+}
+
 fn any_provenance() -> impl Strategy<Value = Provenance> {
     let origin = prop_oneof![
         Just(Origin::Constructed),
