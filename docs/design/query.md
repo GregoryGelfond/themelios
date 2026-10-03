@@ -1,6 +1,6 @@
 # themelios-query — design of record
 
-2026-09-03, revised through 2026-10-02 (§5). The design of record, which the build follows; §5 records
+2026-09-03, revised through 2026-10-03 (§5). The design of record, which the build follows; §5 records
 each revision. This is the normative design for `themelios-query`, the **query tier** — the engine-free
 epistemic reading over the solve tier's outcomes and the program tier's patterns. It is the solve-stage
 sibling of `solve.md` exactly as `analysis.md` is the program-stage sibling of `program.md`:
@@ -181,24 +181,23 @@ pub trait AgentReading {   // impl'd for `Agent<B>` (solve.md §6); solves once,
     /// The Gelfond–Kahl three-valued reading of a ground query (drives the engine, then reads; §2.7).
     fn answer(&mut self, q: &Query) -> Result<Answer, Fault>;
     fn entails(&mut self, q: &Query) -> Result<bool, Fault>;       // §2.6
-    fn bindings(&mut self, pat: &Atom) -> Result<Bindings, Fault>; // §2.5; the refusal is flattened — note below
+    fn bindings(&mut self, pat: &Atom) -> Result<Bindings, Fault>; // §2.5; its refusal typed — note below
     fn snapshot(&mut self) -> Result<Snapshot, Fault>;             // §2.7 — solve once + materialise (whole program)
     /// A scenario-scoped `Snapshot` (§2.7): `solve_assuming` once, then materialise, so every reading off
     /// it ranges over the scenario's models. REQUIRES the backend's `assumptions` capability (a scenario
-    /// needs `solve_assuming`) — otherwise `Fault::unsupported()` at `Locus::Request`; else the same
-    /// refusals as `snapshot` (no answer set under the scenario, or an unclosed search). Cost: one
-    /// `solve_assuming`, then `Θ(|W|)` to materialise.
+    /// needs `solve_assuming`) — otherwise `Fault::unsupported(Capability::Assumptions)` (solve.md §5.4);
+    /// else the same refusals as `snapshot` (no answer set under the scenario, or an unclosed search). Cost:
+    /// one `solve_assuming`, then `Θ(|W|)` to materialise.
     fn snapshot_assuming(&mut self, s: &Scenario) -> Result<Snapshot, Fault>;
 }
 impl Snapshot {            // the engine-free form — the same reading over materialised data, infallible
     pub fn answer(&self, q: &Query) -> Answer;
 }
-// NAMED DEPARTURE (§1.3): the agent's `bindings` returns `Result<Bindings, Fault>` — the query-owned
-// `NotABindingPattern` (§2.3) is folded into the `Fault`'s message text, because `Fault` (solve.md §5.4)
-// carries a message, not a source chain. So on the AGENT path the `AnonymousPosition` / `NonDenoting` /
-// `Pooled` distinction is legible only as prose, where §1.3 asks for typed data; the typed refusal
-// survives intact on `Snapshot::bindings` (§2.3). Carrying it typed on the agent (a `Fault` with a source,
-// or a `Result<Bindings, ReadingRefusal>`) is a reserved refinement.
+// The agent's `bindings` returns `Result<Bindings, Fault>`: a pattern it refuses is a Request fault naming
+// `Presupposition::NotABindingPattern` (solve.md §5.4), carrying the query-owned `NotABindingPattern` (§2.3)
+// whole as its typed cause (`Fault::caused_by`). So a consumer on the AGENT path matches the kind and
+// downcasts the cause for its arm — `AnonymousPosition`, or the program tier's `NotAPattern` with its
+// `NonDenoting` / `Pooled` reason — the same typed value `Snapshot::bindings` returns directly (§2.3).
 ```
 
 - An **atomic or literal** query is two cautious-membership checks (`q` entailed → `Yes`; contrary
@@ -326,8 +325,8 @@ Properties and cost:
   `members` stream (**`&mut self`**, each item a `Result<_, Fault>`) — matching `solve.md`'s `Solved`
   (compile-time serialisation by the borrow checker, no interior mutability). The epistemic readings that
   drive the engine are the **agent's** (`&mut self -> Result<_, Fault>`, §2.7), giving every refusal a
-  home in `Fault` — `Locus` telling an engine fault from the rest, which are told apart by message (the
-  named departure below): each solves once, so a reading is a self-contained call and the `&mut self`
+  home in `Fault` — `Locus` telling an engine fault from the rest, and a Request fault's presupposition
+  telling those apart (below): each solves once, so a reading is a self-contained call and the `&mut self`
   borrow is the "no reasoning while mutating" lock (solve.md §6.1). Because a reading does not borrow a
   live `WorldView`, there is no live-handle re-entrancy to refuse — holding a `members` stream is a `&mut`
   borrow that cannot overlap another use of the same handle, the borrow checker forbidding it at compile
@@ -338,14 +337,17 @@ Properties and cost:
   `optimize` lands, is valid only once the exhaustion gate finds the optimum *proven* and the optimal
   set exhausted.
 
-NAMED DEPARTURE (§1.3): the reading path's refusals are flattened into `Fault`. `materialize`, and the
-agent's `answer`/`entails`/`bindings`/`snapshot`/`snapshot_assuming`, refuse an inconsistent program, a
-search that did not close the space, a spent handle, and a member holding an atom and its contrary alike as
-a `Fault`, told apart by message — the violating member by `Locus::Adapter` too — where §1.3 asks for typed
-data; the solve tier types the completeness refusal (`NotExhausted`), and this tier erases it. A typed
-reading refusal — a closed sum over those arms, with `From` into `Fault` for the caller who wants `?` and
-no more — is reserved to the first consumer that must case-split on them, elenctic's verdict classifier
-(§4), with which it is designed.
+**The reading path's refusals are typed in the fault** (`solve.md` §5.4). `materialize`, and the agent's
+`answer`/`entails`/`bindings`/`snapshot`/`snapshot_assuming`, refuse at the request locus, each naming the
+presupposition that failed — an inconsistent program, or a scenario that admits no answer set
+(`Presupposition::NoAnswerSet`); a search that did not close the space (`Presupposition::Unclosed`, with
+the truncation it reached, so the solve tier's typed completeness refusal keeps its kind across the
+conversion); a handle whose members were already streamed (`Presupposition::Taken`); a pattern the reading
+refuses (`Presupposition::NotABindingPattern`, its own refusal the cause, §2.2) — and refuse a member
+holding an atom and its contrary, or anything but literals, at the adapter locus, a backend's bug, while a
+search that faulted surfaces the engine's own fault. So a consumer tells them apart by matching
+`Fault::refused`, never by the message — elenctic's verdict classifier (§4) among them, which reads these
+presuppositions rather than a sum of this tier's own.
 
 ### 2.4 Cautious and brave consequences
 
@@ -668,7 +670,12 @@ it.
    (§2.4). `materialize` also refuses a member whose answer set is not a set of literals
    (`Model::is_set_of_literals`), a check of the answer set's content as the backend contract, the display
    being kept apart by its own type (§2.3), and the assurance gains the answer-set law (§4).
-12. **The live handle is not complete** (2026-10-02). A `Snapshot` is non-empty like the live handle it came
-   from, and complete because `materialize`'s gate requires it; the live handle's completeness is a
-   drain-dependent report, never a property it has (§2.3). The status line names this the design of record
-   the build follows.
+12. **The live handle is not complete, and the reading path's refusals are typed** (2026-10-02/03). A
+   `Snapshot` is non-empty like the live handle it came from, and complete because `materialize`'s gate
+   requires it; the live handle's completeness is a drain-dependent report, never a property it has (§2.3).
+   The reading path's refusals are the solve tier's typed Request faults, each naming the presupposition
+   that failed — no answer set, an unclosed search with its truncation, a streamed handle, a refused binding
+   pattern carrying the query-owned refusal whole as its typed cause — so the two named departures that
+   flattened them into messages are retired: the agent's `bindings` keeps its typed refusal (§2.2), and the
+   reading path's refusals are matched rather than read (§2.3); an unsupported scoped reading names its
+   capability (§2.2). The status line names this the design of record the build follows.
