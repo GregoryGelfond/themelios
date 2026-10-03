@@ -1,12 +1,13 @@
 //! Aggregates and optimization (docs/design/program.md §4.7): the function and set
 //! aggregates with their guards, the position-typed head-versus-body elements, and
-//! `#minimize`/`#maximize`. An aggregate's elements are a set (§4); the terms within
-//! an element are a sequence. Position is in the type, not a runtime tag: a
+//! `#minimize`/`#maximize`. A function aggregate's elements are a set (§4), a set
+//! aggregate's are counted (§4.4); the terms within an element are a sequence. Position is in the type, not a runtime tag: a
 //! `FunctionAggregate` holds body elements and a `HeadAggregate` holds head elements,
 //! so a body aggregate cannot hold a head element (§4.5's unrepresentability, §4.7).
 
 use std::collections::BTreeSet;
 
+use super::counted::{Counted, Identified, Identity};
 use super::rule::{Condition, ConditionalLiteral, Literal, Relation};
 use crate::provenance::WithProvenance;
 use crate::term::Term;
@@ -193,11 +194,11 @@ impl HasGuards for HeadAggregate {
 }
 
 /// A set (cardinality) aggregate (grammar §5.3): two guards over set elements — the body
-/// `{ … }` form (§4.7). Its elements are a set (§4).
+/// `{ … }` form (§4.7). Its elements are counted (§4.4).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct SetAggregate {
     left_guard: Option<WithProvenance<Guard>>,
-    elements: BTreeSet<WithProvenance<SetElement>>,
+    elements: Counted<SetElement>,
     right_guard: Option<WithProvenance<Guard>>,
 }
 
@@ -211,17 +212,15 @@ impl SetAggregate {
     ) -> SetAggregate {
         SetAggregate {
             left_guard: left_guard.map(WithProvenance::constructed),
-            elements: elements
-                .into_iter()
-                .map(WithProvenance::constructed)
-                .collect(),
+            elements: Counted::from_elements(elements.into_iter().map(WithProvenance::constructed)),
             right_guard: right_guard.map(WithProvenance::constructed),
         }
     }
 
-    /// A set aggregate over already-provenanced elements and guards, unioning provenance on
-    /// any content collision (§6.3) — the raise's door for a body set form (§4.4, §8),
-    /// carrying each element's and guard's parsed origin (§6.2). O(elements).
+    /// A set aggregate over already-provenanced elements and guards, through the counted
+    /// constructor, which merges a by-content repeat, unioning its provenance, and keeps a
+    /// by-occurrence one (§4.4) — the raise's door for a body set form (§4.4, §8), carrying
+    /// each element's and guard's parsed origin (§6.2). O(elements · log elements).
     pub(crate) fn from_nodes(
         left_guard: Option<WithProvenance<Guard>>,
         elements: impl IntoIterator<Item = WithProvenance<SetElement>>,
@@ -229,12 +228,12 @@ impl SetAggregate {
     ) -> SetAggregate {
         SetAggregate {
             left_guard,
-            elements: super::merge_collect(elements),
+            elements: Counted::from_elements(elements),
             right_guard,
         }
     }
 
-    /// The elements — a set, each with its provenance.
+    /// The elements — counted, in `Ord` order, each with its provenance (§4.4).
     pub fn elements(&self) -> impl Iterator<Item = &WithProvenance<SetElement>> {
         self.elements.iter()
     }
@@ -329,6 +328,22 @@ pub enum SetElement {
     Literal(Literal),
     /// A conditional literal.
     ConditionalLiteral(ConditionalLiteral),
+}
+
+impl SetElement {
+    /// Its literal's identity (§4.4, §4.7) — a conditional literal's literal's. Total; O(1).
+    pub fn identity(&self) -> Identity {
+        match self {
+            SetElement::Literal(literal) => literal.identity(),
+            SetElement::ConditionalLiteral(conditional) => conditional.literal.identity(),
+        }
+    }
+}
+
+impl Identified for SetElement {
+    fn identity(&self) -> Identity {
+        SetElement::identity(self)
+    }
 }
 
 /// Optimization by `#minimize`/`#maximize` (grammar §5.7). The direction is a tag; the
@@ -528,12 +543,13 @@ impl HeadAggregate {
 }
 
 impl SetAggregate {
+    /// Rebuilt through the counted constructor after the map, as a choice is (§5.1, §4.4).
     pub(crate) fn canonicalize(self) -> SetAggregate {
         SetAggregate {
             left_guard: self.left_guard.map(|guard| guard.map(Guard::canonicalize)),
-            elements: super::merge_collect(
+            elements: Counted::from_elements(
                 self.elements
-                    .into_iter()
+                    .into_entries()
                     .map(|element| element.map(SetElement::canonicalize)),
             ),
             right_guard: self.right_guard.map(|guard| guard.map(Guard::canonicalize)),

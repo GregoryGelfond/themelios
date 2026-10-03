@@ -1,7 +1,8 @@
-//! Laws of aggregates and optimization (docs/design/program.md §4.7): the elements
-//! are a set, `HasGuards` reads both guards for either aggregate form, the head and
-//! body elements are distinct types, and an element canonicalizes its terms at the
-//! door.
+//! Laws of aggregates and optimization (docs/design/program.md §4.7): a function
+//! aggregate's and an optimize statement's elements are a set (a set aggregate's are
+//! counted, §4.4, and held in tests/counted_laws.rs), `HasGuards` reads both guards for
+//! either aggregate form, the head and body elements are distinct types, and an element
+//! canonicalizes its terms at the door.
 
 use themelios_program::program::{
     AggregateFunction, Arguments, Atom, BodyAggregateElement, Condition, DefaultNegation,

@@ -5,8 +5,9 @@
 
 use themelios_base::source::{Source, SourceId};
 use themelios_program::program::{
-    Arguments, Atom, Body, Choice, ChoiceElement, Comparison, Condition, DefaultNegation, Head,
-    Identity, Literal, LiteralInner, Program, Relation, Rule, Statement,
+    Aggregate, Arguments, Atom, Body, BodyElement, Choice, ChoiceElement, Comparison, Condition,
+    ConditionalLiteral, DefaultNegation, Head, Identity, Literal, LiteralInner, Program, Relation,
+    Rule, SetAggregate, SetElement, Statement,
 };
 use themelios_program::provenance::{Origin, WithProvenance};
 use themelios_program::raise::raise;
@@ -324,6 +325,124 @@ fn canonicalizing_a_choice_merges_atom_elements_it_makes_equal() {
 #[test]
 fn a_kept_repeat_renders_and_raises_back() {
     let program = raised("1 { #true; #true } 1.");
+    let text = render(&program, Dialect::Clingo).expect("renders");
+    assert_eq!(raised(&text), program);
+}
+
+// ---- set aggregates (§4.7) ----
+
+/// A rule's one body set aggregate.
+fn set_aggregate_of(rule: &Rule) -> SetAggregate {
+    let sets: Vec<SetAggregate> = rule
+        .body()
+        .get()
+        .elements()
+        .filter_map(|element| match element.get() {
+            BodyElement::Aggregate {
+                aggregate: Aggregate::Set(set),
+                ..
+            } => Some(set.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sets.len(), 1, "the rule has one set aggregate");
+    sets[0].clone()
+}
+
+fn true_set_element() -> SetElement {
+    SetElement::Literal(literal(DefaultNegation::None, LiteralInner::True))
+}
+
+fn atom_set_element(predicate: &str) -> SetElement {
+    SetElement::Literal(atom_literal_named(predicate))
+}
+
+#[test]
+fn a_set_element_takes_its_literal_s_identity() {
+    assert_eq!(true_set_element().identity(), Identity::ByOccurrence);
+    let conditional = SetElement::ConditionalLiteral(ConditionalLiteral {
+        literal: atom_literal_named("a"),
+        condition: Condition::empty(),
+    });
+    assert_eq!(conditional.identity(), Identity::ByContent);
+}
+
+#[test]
+fn a_constructed_set_aggregate_keeps_a_repeated_boolean_element() {
+    let set = SetAggregate::new(None, [true_set_element(), true_set_element()], None);
+    assert_eq!(set.elements().count(), 2);
+}
+
+#[test]
+fn a_constructed_set_aggregate_merges_a_repeated_atom_element() {
+    let set = SetAggregate::new(None, [atom_set_element("a"), atom_set_element("a")], None);
+    assert_eq!(set.elements().count(), 1);
+}
+
+#[test]
+fn a_raised_set_aggregate_keeps_a_repeated_comparison_element() {
+    let program = raised("a :- { X < 3 : p(X); X < 3 : p(X) } = 4.");
+    assert_eq!(set_aggregate_of(&only_rule(&program)).elements().count(), 2);
+}
+
+#[test]
+fn unpool_keeps_a_repeat_it_makes_in_a_set_aggregate() {
+    let unpooled = unpool(&raised("a :- { #true : p(1; 1) } = 2."));
+    assert_eq!(
+        set_aggregate_of(&only_rule(&unpooled)).elements().count(),
+        2
+    );
+}
+
+#[test]
+fn substitution_keeps_a_repeat_it_makes_in_a_set_aggregate() {
+    let rule = only_rule(&raised("a(X) :- q(X), { #true : p(X); #true : p(1) } = 2."));
+    let binding = mgu(&atom("p", vec![var("X")]), &atom("p", vec![num(1)]))
+        .expect("a pattern")
+        .expect("unifiable");
+    assert_eq!(
+        set_aggregate_of(&substitute(rule, &binding))
+            .elements()
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn canonicalizing_a_set_aggregate_merges_atom_elements_it_makes_equal() {
+    // As for a choice: `p((1))` and `p(1)` meet only once the pool collapses (§5.1, §4.4).
+    let element = |atom: Atom| {
+        SetElement::Literal(literal(
+            DefaultNegation::None,
+            LiteralInner::Atom(WithProvenance::constructed(atom)),
+        ))
+    };
+    let pooled = Atom {
+        sign: Sign::Positive,
+        name: name("p"),
+        arguments: Arguments::Pooled(vec![vec![num(1)]]),
+    };
+    let set = SetAggregate::new(
+        None,
+        [element(pooled), element(atom("p", vec![num(1)]))],
+        None,
+    );
+    assert_eq!(
+        set.elements().count(),
+        2,
+        "the two differ until canonicalized"
+    );
+    let body = BodyElement::Aggregate {
+        negation: DefaultNegation::None,
+        aggregate: Aggregate::Set(set),
+    };
+    let program = Program::of([Rule::new(atom("a", vec![]), body)]);
+    assert_eq!(set_aggregate_of(&only_rule(&program)).elements().count(), 1);
+}
+
+#[test]
+fn a_kept_set_aggregate_repeat_renders_and_raises_back() {
+    let program = raised("a :- { #true; #true } = 2.");
     let text = render(&program, Dialect::Clingo).expect("renders");
     assert_eq!(raised(&text), program);
 }
