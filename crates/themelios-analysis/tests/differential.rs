@@ -87,11 +87,13 @@ fn authority_safe(program: &str) -> bool {
 
 /// A raise that faithfully represents the program — no diagnostic marking a *lossy* reading (a
 /// best-effort partial the value could not fully represent) of text the **authority itself admits**.
-/// Today the one such kind is a truncated *theory*-atom argument-list pool (`PooledArgumentList`,
-/// program §8): the grounder unpools `&t(a; b)` into distinct theory atoms, but this tier defers
-/// theory terms to the solve stage (§7, program §4.9) and reads only the first alternative, so safety
-/// and finiteness of that reading are not the grounder's. The composed verdict fails closed on it —
-/// agreeing with the grounder — pending the solve stage. An *ordinary*-atom argument-list pool
+/// Two kinds are such. A truncated *theory*-atom argument-list pool (`PooledArgumentList`, program
+/// §8): the grounder unpools `&t(a; b)` into distinct theory atoms, but this tier defers theory
+/// terms to the solve stage (§7, program §4.9) and reads only the first alternative, so safety and
+/// finiteness of that reading are not the grounder's — the composed verdict fails closed on it,
+/// agreeing with the grounder, pending the solve stage. And a `#script` block repeated within its
+/// part (`RepeatedScript`, program §6.3): the authority runs each block, the merged program runs
+/// it once, so the reading is not the authority's program. An *ordinary*-atom argument-list pool
 /// `p(X; a)` raises faithfully and `unpool` (program §9) eliminates it before this reads it, so it is
 /// not lossy and draws a genuine comparison. The *other* `LowerErrorKind`s do not arise here: each
 /// marks input the authority **refuses** at admission (a recovered/incomplete construct, a malformed or
@@ -100,10 +102,12 @@ fn authority_safe(program: &str) -> bool {
 /// drawn on it. `LowerErrorKind` is `#[non_exhaustive]`: a future lossy kind reachable from admitted text
 /// must join this gate (the obligation is recorded on the enum, program tier).
 fn raised_faithfully(lowered: &Raised) -> bool {
-    !lowered
-        .diagnostics()
-        .iter()
-        .any(|error| matches!(error.kind(), LowerErrorKind::PooledArgumentList))
+    !lowered.diagnostics().iter().any(|error| {
+        matches!(
+            error.kind(),
+            LowerErrorKind::PooledArgumentList | LowerErrorKind::RepeatedScript { .. }
+        )
+    })
 }
 
 /// This tier's safety verdict for a program of concrete syntax (§5). A theory rule raises

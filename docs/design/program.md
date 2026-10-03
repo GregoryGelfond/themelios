@@ -901,9 +901,10 @@ expanding the pool to two occurrences before it numbers them.
 A value that merged a by-occurrence repeat would denote another program, so the
 elements are held in one structure that applies the rule, a **`Counted<T>`**: a
 `Vec` in `Ord` order whose one constructor, `Counted::from_elements`, reads each
-element's identity. A by-content element merges with an equal entry, the
-provenances unioned as a set's members' are (§6.3); a by-occurrence element is kept
-beside any equal entry, with its own provenance. Every door that builds elements —
+element's identity. A by-content element merges with an equal entry — the
+later-written copy's content kept, as a set's merge keeps it, and the provenances
+unioned (§6.3); a by-occurrence element is kept beside any equal entry, with its own
+provenance. Every door that builds elements —
 the raise, construction, substitution, the rewrites, `unpool` — hands its elements
 to that constructor, so the count is kept by the structure, as the statement-level
 merge is (§6.3), not by each door's care.
@@ -913,7 +914,7 @@ authority's, and the razor settles the first: a repeated atom element is one tup
 to the grounder, so keeping the repeat would draw a distinction nothing consumes and
 make `{ a; a }` and `{ a }` unequal for no reading's sake — a uniform multiset is
 faithful, and finer than the logic. A repeated *statement* is §6.3's: the program
-stays a set of statements, with the one exception that section names.
+stays a set of statements, with the two exceptions that section names.
 
 ```rust
 /// Whether a repeat of an element is the same element (`ByContent`) or another (`ByOccurrence`) —
@@ -1509,9 +1510,9 @@ law is structural, not a discipline that could be forgotten:
 
 The union is taken at the granularity of the **ingested node** — the rule or statement
 merged — and does not recurse into a content-equal collision's *nested* nodes: two
-statements equal up to provenance are one content, and the surviving copy's atom- and
-element-level provenance is what stands; the superseded duplicate's nested provenance is
-not merged into it. The cost is `O(facts)` per collision, and no consumer reads a
+statements equal up to provenance are one content, the surviving copy is the
+later-written one, and its atom- and element-level provenance is what stands; the
+superseded duplicate's nested provenance is not merged into it. The cost is `O(facts)` per collision, and no consumer reads a
 superseded duplicate's nested origins *from the set* — a consumer whose semantics
 distinguish source statements by their nested origins reads them from the occurrence
 stream (§8), before this merge — so a deep per-node union would change that cost model to
@@ -1523,12 +1524,12 @@ set-shaped child, and a repeated by-content element of a counted one, is one con
 with its provenances unioned, while a by-occurrence element is never merged with an
 equal entry — the program counts it — so each keeps its own provenance.
 
-**A repeated statement is one statement, with one exception.** A rule, a weak
+**A repeated statement is one statement, with two exceptions.** A rule, a weak
 constraint, an optimize statement, or a `#show`, `#external`, or `#defined` directive
 written twice means what it means once, and the authority includes a repeated
 `#include` once, with a warning (`libgringo/src/input/nongroundparser.cc`,
 `report_included`), so the program is a set of statements and the merge loses
-nothing. The exception is a global definition (`Statement::is_global_definition`,
+nothing. The first exception is a global definition (`Statement::is_global_definition`,
 §4.2). The authority binds a `#const` and a `#theory` by name, each in one table for
 the whole program (`libgringo/src/term.cc`, `Defines::add`;
 `libgringo/src/input/program.cc`, `Program::add`), and a second definition of a name
@@ -1540,7 +1541,12 @@ The diagnosis is needed only within one part — the scope of the set's merge, s
 content-equal statements under different parts stay distinct (§4.1), render twice,
 and are rejected alike — and only for the content-equal repeat: a same-name
 definition with different content is kept, rendered beside the first, and rejected
-alike.
+alike. The second exception is a `#script` block. The authority runs each block where it
+reads it (`libgringo/src/input/programbuilder.cc`, `NongroundProgramBuilder::script`), so
+a content-equal block repeated within a part runs twice there and once in the merged
+program — a different program wherever the script keeps state at module level — and the
+raise diagnoses it likewise (`RepeatedScript`, §8), within one part and for the
+content-equal repeat only.
 
 The equality (not mere containment) is the safety half: a consumer that maps a
 node's references back to their sources — an explanation tool citing a rule's
@@ -1880,7 +1886,9 @@ records (§4.4); the elements of a choice, a set aggregate, and a theory atom ar
 raised one entry per source element and kept counted (§4.4, §4.9), so a repeat the
 authority counts survives the raise; a global definition (§4.2) repeated
 content-equal within one part is diagnosed at the repeat, a `RepeatedDefinition`,
-since the authority rejects a redefinition the set would merge silently (§6.3); a `#const`
+since the authority rejects a redefinition the set would merge silently (§6.3), and a
+`#script` block repeated content-equal within one part likewise, a `RepeatedScript`, since
+the authority runs each block where it reads it (§6.3); a `#const`
 value is checked against the constant-term subset (grammar §5.9) and carried as an
 unevaluated term (§4.8); a maximal ground
 constructor term is collapsed by canonicalization (§5.1); an **ordinary atom's
@@ -2631,7 +2639,8 @@ with what it proves and what it cannot (spec §10.2).
     `unpool` — and is
     order-insensitive (`1 { #true; #true } 1.` is two elements, `{ a; a }` one, a
     theory atom's repeated element two); a global definition repeated within one part
-    raises with a `RepeatedDefinition` diagnostic, and a repeated rule with none;
+    raises with a `RepeatedDefinition` diagnostic, a `#script` block with a
+    `RepeatedScript`, and a repeated rule with none;
     `Program` equality is canonical-form equality up to provenance; `Ord`/`Eq`/`Hash` are one content
     projection — mutually consistent, a total order, and in agreement with a
     **derived twin** on shallow generated values (the mirror differential, which
@@ -2967,3 +2976,9 @@ evolution with its argument, not a drift.
   program handed through those doors to a backend, never an engine format (§17,
   solve.md §10.2); the occurrence stream gains its second consumer, Door A, which
   admits a parse as its occurrences (§8).
+- **Which copy a merge keeps, and the repeated script (§4.4, §6.3, §8, §16).** A merge keeps
+  the later-written copy's content, its nested provenance with it, and unions the copies'
+  provenance — stated where the code had pinned it unstated (§4.4, §6.3). A `#script` block
+  is the second statement the set may not merge: the authority runs each block where it
+  reads it, so a content-equal block repeated within a part is diagnosed at the repeat
+  (`RepeatedScript`, §6.3, §8), a lossy reading of text the authority admits.
