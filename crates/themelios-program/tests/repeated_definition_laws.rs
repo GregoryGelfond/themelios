@@ -150,3 +150,15 @@ fn a_script_with_other_content_is_not_diagnosed() {
     let text = "#script (python) pass #end. #script (python) x = 1 #end.";
     assert!(script_repeats(&raised(text)).is_empty());
 }
+
+#[test]
+fn the_script_diagnostic_names_the_first_block() {
+    let text = "#script (python) pass #end. #script (python) pass #end.";
+    let diagnostic = raised(text).diagnostics()[0].to_diagnostic();
+    let secondary: Vec<Location> = diagnostic
+        .secondary()
+        .iter()
+        .map(|label| label.location)
+        .collect();
+    assert_eq!(secondary, vec![at(0, 27)]);
+}
