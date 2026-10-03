@@ -11,6 +11,7 @@
 //! public surface is re-exported here.
 
 mod aggregate;
+mod counted;
 mod directive;
 mod rule;
 
@@ -19,6 +20,7 @@ pub use aggregate::{
     HasGuards, HeadAggregate, HeadAggregateElement, Optimize, OptimizeElement, SetAggregate,
     SetElement, Weight, weight,
 };
+pub use counted::Identity;
 pub use directive::{
     Const, ConstPolicy, Defined, Edge, External, Heuristic, Include, IncludeTarget, Project,
     Script, Show, TheoryAtom, TheoryAtomDefinition, TheoryAtomGuardDefinition, TheoryDefinition,
@@ -414,7 +416,8 @@ fn ingest(set: &mut BTreeSet<WithProvenance<Statement>>, statement: WithProvenan
 /// content-equal node already present (§6.3) — a raw `BTreeSet::insert` of a content-equal
 /// node keeps the existing one and drops the newcomer's provenance, and its symmetric
 /// `collect` keeps the first and drops the rest. Generic, so the one merge rule serves the
-/// statement set and every set-shaped child a canonicalization re-collects (§6.2).
+/// statement set and every set-shaped child a canonicalization re-collects (§6.2) — a
+/// counted child merges through its own constructor (§4.4).
 pub(crate) fn merge_insert<T: Ord>(set: &mut BTreeSet<WithProvenance<T>>, node: WithProvenance<T>) {
     let admitted = match set.take(&node) {
         Some(existing) => {
@@ -431,7 +434,8 @@ pub(crate) fn merge_insert<T: Ord>(set: &mut BTreeSet<WithProvenance<T>>, node: 
 
 /// Collect provenance-carrying nodes into a set through [`merge_insert`], so a content-equal
 /// collision **unions** provenance rather than dropping it (§6.3). The set-shaped children's
-/// canonicalization re-collect uses this, not a raw `collect`.
+/// canonicalization re-collect uses this, not a raw `collect`; a counted child uses its own
+/// constructor (§4.4).
 pub(crate) fn merge_collect<T: Ord>(
     nodes: impl IntoIterator<Item = WithProvenance<T>>,
 ) -> BTreeSet<WithProvenance<T>> {

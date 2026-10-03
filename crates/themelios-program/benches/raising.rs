@@ -23,7 +23,10 @@ use themelios_syntax::parse::{Parse, parse};
 struct Fixture {
     name: &'static str,
     size: usize,
+    /// The statements the source writes — the occurrences the raise keeps.
     statements: usize,
+    /// The statements the program keeps after the set merges content-equal ones.
+    merged: usize,
     source: String,
 }
 
@@ -41,6 +44,7 @@ fn chain(size: usize) -> Fixture {
         name: "chain",
         size,
         statements: size + 2,
+        merged: size + 2,
         source,
     }
 }
@@ -62,6 +66,7 @@ fn producer_chain(size: usize) -> Fixture {
         name: "producer_chain",
         size,
         statements: 2 * size - 1,
+        merged: 2 * size - 1,
         source,
     }
 }
@@ -76,6 +81,7 @@ fn facts(size: usize) -> Fixture {
         name: "facts",
         size,
         statements: size,
+        merged: size,
         source,
     }
 }
@@ -90,6 +96,26 @@ fn structured(size: usize) -> Fixture {
         name: "structured",
         size,
         statements: size,
+        merged: size,
+        source,
+    }
+}
+
+/// One choice of `size` boolean elements, every one a kept repeat (§4.4).
+fn repeated_elements(size: usize) -> Fixture {
+    let mut source = String::from("1 { ");
+    for i in 0..size {
+        if i > 0 {
+            source.push_str("; ");
+        }
+        source.push_str("#true");
+    }
+    source.push_str(" } 1.\n");
+    Fixture {
+        name: "repeated_elements",
+        size,
+        statements: 1,
+        merged: 1,
         source,
     }
 }
@@ -101,7 +127,7 @@ fn checked_parse(fixture: &Fixture) -> Parse<ast::Program> {
     assert!(parsed.diagnostics().is_empty(), "fixture parses cleanly");
     let direct = raise(&parsed);
     assert!(direct.diagnostics().is_empty(), "fixture raises cleanly");
-    assert_eq!(direct.program().statements().count(), fixture.statements);
+    assert_eq!(direct.program().statements().count(), fixture.merged);
     let occurrences = raise_occurrences(&parsed);
     assert!(occurrences.diagnostics().is_empty());
     assert_eq!(occurrences.occurrences().len(), fixture.statements);
@@ -142,6 +168,8 @@ fn main() {
         producer_chain(700),
         facts(2_000),
         structured(1_000),
+        repeated_elements(1_000),
+        repeated_elements(16_000),
     ] {
         measure(&mut criterion, &fixture);
     }

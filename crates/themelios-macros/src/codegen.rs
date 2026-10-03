@@ -698,8 +698,9 @@ fn located_compile_error(src: &MacroSource, range: TextRange, message: &str) -> 
 /// hand-spelled constructors builds, structurally equal up to and including provenance
 /// (§16). An empty block is `Program::empty()`, the named empty case `Program::of` cannot
 /// infer an element type for (program §7.1). A statement family no construction macro builds
-/// (an aggregate or choice head, a body aggregate, a `#program` delimiter, a directive with
-/// no macro) is [`codegen_statement`]'s located compile error, inherited here.
+/// (a weak constraint, a `#program` delimiter, a directive with no macro) is
+/// [`codegen_statement`]'s located compile error, inherited here; a choice or aggregate head
+/// and a body aggregate are built, as any rule's parts are (program §4.4, §4.7).
 pub(crate) fn codegen_program(program: &ast::Program, src: &MacroSource) -> TokenStream {
     let statements: Vec<TokenStream> = program
         .statements()

@@ -129,7 +129,7 @@ fn program_text() -> impl Strategy<Value = String> {
         Just("b."),
         Just("a."), // a content-equal duplicate that merges
         Just("1{#true}1."),
-        Just("1{#true;#true}1."), // content-equal, unequal nested counts
+        Just("1{#true;#true}1."), // a kept repeat: content, not a merge (§4.4)
         Just("#program step(t)."),
         Just("p(t)."),
         Just("1 { ."), // a malformed line

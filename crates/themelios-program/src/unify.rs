@@ -235,8 +235,10 @@ fn assemble(rebuild: Rebuild, mut children: Vec<Term>) -> Term {
 
 /// Apply a substitution to a rule — every **ordinary term** the rule carries in its head
 /// and body is resolved, the rule rebuilt preserving each carrier's provenance (§6.2) and
-/// routed through the ingest-door canonicalization (§5.1), which re-folds the boolean heads
-/// and re-merges the set-shaped children a substitution can make content-equal. A theory
+/// routed through the ingest-door canonicalization (§5.1), which re-folds the boolean heads,
+/// re-merges the set-shaped children a substitution can make content-equal, and rebuilds the
+/// counted children through their constructor, which merges a by-content repeat and keeps a
+/// by-occurrence one (§4.4). A theory
 /// atom's *ordinary-term* arguments and its elements' ordinary conditions are substituted;
 /// its **theory terms** are a distinct peer algebra (§4.9) this structural surface (§9.3)
 /// does not descend. Total; `O(output)`.
