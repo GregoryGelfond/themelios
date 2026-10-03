@@ -109,8 +109,10 @@ impl LowerError {
 /// rejects, not a lossy reading, so it is no such kind;
 /// [`RepeatedScript`](LowerErrorKind::RepeatedScript) is one — the authority admits the repeated
 /// block and runs it twice, where the merged program runs it once — and so is
-/// [`NumberOutOfRange`](LowerErrorKind::NumberOutOfRange), which the authority admits and wraps
-/// into the width; both join the gate.
+/// [`NumberOutOfRange`](LowerErrorKind::NumberOutOfRange), which the pinned authority admits,
+/// wrapped into the width: its lexer computes a numeral in a machine `int`
+/// (`libgringo/gringo/lexerstate.hh`, `LexerState::clingo_number`), an observation of
+/// clingo 5.8.2 scoped to that version (program §3.1). Both join the gate.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum LowerErrorKind {
