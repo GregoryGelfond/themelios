@@ -2690,9 +2690,12 @@ with what it proves and what it cannot (spec §10.2).
   constraint) and `a. #minimize{1@0 : a; 1@0 : a}.` (an optimize element). It witnesses the
   authority's counting on the seeded shapes only: both halves are read from the
   authority's source (§4.4), version-scoped claims like every engine claim (spec
-  §5.2), and an engine upgrade re-runs the seeds. A theory atom's repeat
-  (`&sum{x; x}`) is pinned here structurally; its meaning is the theory's, so the
-  engine that evaluates the theory checks it (solve.md §13.2).
+  §5.2), and an engine upgrade re-runs the seeds. Beside the seeds stand the
+  redefinition witnesses: the authority refuses a content-equal `#const` repeated
+  within a part, the source the raise diagnoses (§6.3, §8), and accepts the program
+  with one. A theory atom's repeat (`&sum{x; x}`) is pinned here structurally; its
+  meaning is the theory's, so the engine that evaluates the theory checks it
+  (solve.md §13.2).
 - **The depth proof** (subprocess, spec §10.1): on a stated stack, a term nested far
   beyond any real program is constructed, canonicalized, compared, hashed,
   rendered, substituted into, evaluated, and dropped, and every walk survives — the
