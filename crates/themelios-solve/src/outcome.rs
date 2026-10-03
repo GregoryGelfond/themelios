@@ -202,9 +202,26 @@ pub struct Model {
     /// The symbols the program's term directives display in this model — the
     /// half of the display only an engine evaluates.
     terms: BTreeSet<Symbol>,
-    /// The display, where it differs from the answer set.
-    display: Option<BTreeSet<Symbol>>,
+    /// What the model holds of its display beyond its answer set.
+    display: Displayed,
     theory: TheoryAssignments,
+}
+
+/// What a model holds of its display beyond its answer set (§5.1): nothing
+/// where the display is the answer set; else the displayed symbols, marked by
+/// whether a restricting rule selected them — so a run's derivation reuses the
+/// display a model built outside a run already holds, deriving it once.
+#[derive(Clone, Debug)]
+enum Displayed {
+    /// The display is the answer set — nothing is stored, and every term is
+    /// one of its atoms.
+    AnswerSet,
+    /// The answer set with the terms — the display under no restricting
+    /// directive — where some term is not one of its atoms.
+    Unrestricted(BTreeSet<Symbol>),
+    /// The atoms a restricting rule shows, with the terms, where that differs
+    /// from the answer set.
+    Restricted(BTreeSet<Symbol>),
 }
 
 impl Model {
@@ -215,7 +232,7 @@ impl Model {
         Model {
             atoms,
             terms: BTreeSet::new(),
-            display: None,
+            display: Displayed::AnswerSet,
             theory: TheoryAssignments::default(),
         }
     }
@@ -224,15 +241,16 @@ impl Model {
     /// directives display in it, the half of the display only an engine
     /// evaluates (§5.1). A model built outside a run displays its answer set
     /// and its terms; a run's derives its display under the program's show
-    /// rule as it streams. O(|terms| log |terms|), and the union with the
-    /// answer set where any term is given.
+    /// rule as it streams. `O(|terms| log (|terms| + |M|))`, and the union with
+    /// the answer set, `O(|M| + |terms|)`, where some term is not one of its
+    /// atoms.
     #[must_use]
     pub fn with_terms(self, terms: impl IntoIterator<Item = Symbol>) -> Model {
         Model {
             terms: terms.into_iter().collect(),
             ..self
         }
-        .displayed(&ShowRule::default())
+        .unrestricted()
     }
 
     /// The model's answer set — what every reading reads. Total; O(1).
@@ -245,7 +263,10 @@ impl Model {
     /// own, which no reading consults. Total; O(1).
     pub fn shown(&self) -> Shown<'_> {
         Shown {
-            symbols: self.display.as_ref().unwrap_or(&self.atoms),
+            symbols: match &self.display {
+                Displayed::AnswerSet => &self.atoms,
+                Displayed::Unrestricted(symbols) | Displayed::Restricted(symbols) => symbols,
+            },
         }
     }
 
@@ -290,22 +311,54 @@ impl Model {
 
     /// This model, its display derived under `rule` (§5.1): the atoms the rule
     /// shows together with the terms, stored only where that differs from the
-    /// answer set — so where the rule shows every atom and no term is
-    /// displayed, nothing is stored. One allocation-free lookup per atom, then
-    /// the terms' union: `O(|M| log |M|)`.
+    /// answer set. A display already derived under no restricting directive is
+    /// kept where the rule restricts nothing and filtered in place where it
+    /// does, so a model built with its terms pays no second derivation. One
+    /// allocation-free lookup per atom, then the terms' union:
+    /// `O(|M| log |M|)`.
     pub(crate) fn displayed(mut self, rule: &ShowRule) -> Model {
-        if rule.shows_every_atom() && self.terms.is_empty() {
-            self.display = None;
-            return self;
+        if rule.shows_every_atom() {
+            return match self.display {
+                Displayed::Restricted(_) => self.unrestricted(),
+                Displayed::AnswerSet | Displayed::Unrestricted(_) => self,
+            };
         }
-        let mut display: BTreeSet<Symbol> = self
-            .atoms
-            .iter()
-            .filter(|atom| rule.shows(atom))
-            .cloned()
-            .collect();
-        display.extend(self.terms.iter().cloned());
-        self.display = (display != self.atoms).then_some(display);
+        let display = match std::mem::replace(&mut self.display, Displayed::AnswerSet) {
+            // The answer set with the terms: an atom stays where the rule
+            // shows it, and a term stays.
+            Displayed::Unrestricted(mut display) => {
+                display.retain(|symbol| self.terms.contains(symbol) || rule.shows(symbol));
+                display
+            }
+            Displayed::AnswerSet | Displayed::Restricted(_) => {
+                let mut display: BTreeSet<Symbol> = self
+                    .atoms
+                    .iter()
+                    .filter(|atom| rule.shows(atom))
+                    .cloned()
+                    .collect();
+                display.extend(self.terms.iter().cloned());
+                display
+            }
+        };
+        self.display = if display == self.atoms {
+            Displayed::AnswerSet
+        } else {
+            Displayed::Restricted(display)
+        };
+        self
+    }
+
+    /// This model, its display derived under no restricting directive: the
+    /// answer set with the terms, stored only where some term is not one of
+    /// its atoms. `O(|terms| log |M|)`, and the union, `O(|M| + |terms|)`,
+    /// where one is not.
+    fn unrestricted(mut self) -> Model {
+        self.display = if self.terms.is_subset(&self.atoms) {
+            Displayed::AnswerSet
+        } else {
+            Displayed::Unrestricted(self.atoms.union(&self.terms).cloned().collect())
+        };
         self
     }
 }
@@ -342,6 +395,8 @@ impl ShowRule {
     /// The rule of `directives`: a term directive restricts nothing; `#show.`
     /// and a signature directive restrict the atoms to the signatures listed,
     /// sign-sensitively, a strongly negated signature listed in its own right.
+    /// One map entry and one set insertion per directive: `O(d log d)` over
+    /// `d` directives.
     pub fn of<'p>(directives: impl IntoIterator<Item = &'p Show>) -> ShowRule {
         let mut restricted: Option<BTreeMap<Name, BTreeSet<(Sign, u32)>>> = None;
         for directive in directives {
@@ -1712,6 +1767,11 @@ mod tests {
         assert!(rule.shows_every_atom());
     }
 
+    #[test]
+    fn the_rule_of_no_directive_shows_any_atom() {
+        assert!(ShowRule::default().shows(&atom("p")));
+    }
+
     /// A run yielding one model, then reporting its search closed.
     struct OneModel(Option<Model>);
 
@@ -1748,14 +1808,17 @@ mod tests {
 
     #[test]
     fn a_model_of_a_program_without_directives_stores_no_display() {
-        assert!(streamed(ShowRule::default(), &[]).display.is_none());
+        assert!(matches!(
+            streamed(ShowRule::default(), &[]).display,
+            Displayed::AnswerSet
+        ));
     }
 
     #[test]
     fn a_display_equal_to_the_answer_set_is_not_stored() {
         // `q. #show q/0.` — the rule shows every true atom there is.
         let model = streamed(showing_constant(Sign::Positive, "q"), &[]);
-        assert!(model.display.is_none());
+        assert!(matches!(model.display, Displayed::AnswerSet));
     }
 
     fn solved_with(run: Box<dyn Run>) -> Solved<'static> {

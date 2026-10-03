@@ -5,8 +5,11 @@
 
 use std::collections::BTreeSet;
 
-use themelios_program::symbol::{Name, Sign, Symbol};
-use themelios_solve::outcome::Model;
+use themelios_program::program::Show;
+use themelios_program::symbol::{Name, Sign, Signature, Symbol};
+use themelios_solve::agent::Scenario;
+use themelios_solve::contract::Fault;
+use themelios_solve::outcome::{Conclusion, Model, Run, ShowRule, Solved};
 
 /// The ground constant `name`, under `sign`.
 fn signed(name: &str, sign: Sign) -> Symbol {
@@ -21,6 +24,35 @@ fn constant(name: &str) -> Symbol {
 /// The set of `symbols`.
 fn set(symbols: impl IntoIterator<Item = Symbol>) -> BTreeSet<Symbol> {
     symbols.into_iter().collect()
+}
+
+/// The rule of `#show name/0.`.
+fn showing(name: &str) -> ShowRule {
+    let name = Name::new(name).expect("a valid identifier");
+    ShowRule::of([&Show::Signature(Signature {
+        sign: Sign::Positive,
+        name,
+        arity: 0,
+    })])
+}
+
+/// A run that yields one model, then reports its search closed.
+struct OneModel(Option<Model>);
+
+impl Run for OneModel {
+    fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+        self.0.take().map(Ok)
+    }
+
+    fn conclusion(&self) -> Option<Conclusion> {
+        self.0.is_none().then_some(Conclusion::Exhausted)
+    }
+}
+
+/// `model` as a run under `rule` streams it — the core's derivation.
+fn streamed(model: Model, rule: ShowRule) -> Model {
+    let mut solved = Solved::running(Box::new(OneModel(Some(model))), Scenario::default(), rule);
+    solved.models().next().expect("a model").expect("no fault")
 }
 
 #[test]
@@ -85,4 +117,31 @@ fn a_term_equal_to_an_atom_leaves_the_model_equal_to_one_without_it() {
     let plain = Model::of(set([constant("q")]));
     let redundant = Model::of(set([constant("q")])).with_terms([constant("q")]);
     assert_eq!(plain, redundant);
+}
+
+#[test]
+fn a_model_restreamed_under_no_restricting_directive_displays_its_atoms_and_terms() {
+    // `q. #show. #show p : q.` streams the display {p}; streamed again under no
+    // restricting directive, the model displays {p, q}.
+    let built = Model::of(set([constant("q")])).with_terms([constant("p")]);
+    let hidden = streamed(built, ShowRule::of([&Show::All]));
+    let shown = streamed(hidden, ShowRule::default());
+    assert_eq!(
+        shown.shown().symbols(),
+        &set([constant("p"), constant("q")])
+    );
+}
+
+#[test]
+fn a_model_restreamed_under_another_restricting_rule_displays_what_it_selects() {
+    // `#show q/0.` over {q, r} with the term p streams {p, q}; streamed again
+    // under `#show r/0.`, the model displays {p, r} — the atom the first rule
+    // hid, which the second shows, among them.
+    let built = Model::of(set([constant("q"), constant("r")])).with_terms([constant("p")]);
+    let first = streamed(built, showing("q"));
+    let second = streamed(first, showing("r"));
+    assert_eq!(
+        second.shown().symbols(),
+        &set([constant("p"), constant("r")])
+    );
 }

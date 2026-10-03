@@ -515,7 +515,8 @@ impl Model {
     pub fn of(atoms: AnswerSet) -> Model;             // the backend's construction door: no displayed term, no assignment
     pub fn with_terms(self, terms: impl IntoIterator<Item = Symbol>) -> Model;
         // the symbols the program's term directives display in this model — the half of the display only
-        // an engine evaluates (below); O(|terms| log |terms|)
+        // an engine evaluates (below); O(|terms| log (|terms| + |M|)), and the union with the answer set,
+        // O(|M| + |terms|), where some term is not one of its atoms
     pub fn atoms(&self) -> &AnswerSet;                // the answer set — what every reading reads
     pub fn shown(&self) -> Shown<'_>;                 // the display the core derives, a type of its own — no reading
                                                       // consults it
@@ -531,7 +532,7 @@ impl Model {
 /// where the directives in force include no restricting directive (a signature form, or `#show.`), else
 /// the atoms of the signatures those list. A backend builds it from the directives it holds
 /// (program.md §4.8's `Show`) and hands it to the core with its run (§5.2); the core applies it, so the
-/// rule has one implementation and no backend applies it. O(directives).
+/// rule has one implementation and no backend applies it. O(d log d) over its d directives.
 pub struct ShowRule { /* every atom, or the listed signatures */ }
 impl ShowRule {
     pub fn of<'p>(directives: impl IntoIterator<Item = &'p Show>) -> ShowRule;
@@ -618,7 +619,9 @@ carrying one at `lower`, with a Program fault naming the directive (§5.4). The 
 those lowered and not since `reset`, whatever their part: the pinned authority reads a restricting
 directive when it parses it (`libgringo/src/input/programbuilder.cc`, `showsig`), and grounds a term
 directive with its part. A program without directives displays its answer set and its models store
-nothing more; a model built outside a run displays its answer set and its terms. An adapter that lowers
+nothing more; a model built outside a run displays its answer set and its terms, a display the core's
+derivation reuses rather than derives again — kept where the rule restricts nothing, filtered in place where
+it does. An adapter that lowers
 none of the restricting directives, and no `#project` (§5.2), leaves every atom in its engine's
 consequence search (§4.1).
 
@@ -2378,3 +2381,6 @@ necessity where it is declared.
    attribution's membership, a Request fault's presupposition, and the backend's own state kept across a
    refused `lower`, a failed grounding, and a `reset` (§13.1). The status line names this the design of
    record the build follows.
+16. **Reconciliations with the built boundary** (2026-10-03). The costs of `Model::with_terms` and
+    `ShowRule::of` are stated as the code pays them, and a run's derivation reuses the display a model built
+    with its terms already holds, so a model's display is derived once (§5.1).
