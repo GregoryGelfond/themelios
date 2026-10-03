@@ -37,8 +37,8 @@ fn raised_occurrences(text: &str) -> Occurrences {
     raise_occurrences(&parse(&source, Dialect::Clingo))
 }
 
-/// The number of `Parsed` origins on a rule's choice-head boolean elements — the source
-/// occurrence count the merge would shed (§8, §6.3).
+/// The number of `Parsed` origins on each of a rule's choice-head boolean elements — one per
+/// entry, since the authority counts each occurrence (§4.4).
 fn boolean_origin_counts(statement: &Statement) -> Vec<usize> {
     let Statement::Rule(rule) = statement else {
         return Vec::new();
@@ -618,9 +618,9 @@ fn occurrences_are_one_per_source_statement_in_source_order() {
 }
 
 #[test]
-fn occurrences_preserve_per_rule_boolean_element_counts_the_merge_sheds() {
-    // 1{#true}1. counts one occurrence; 1{#true;#true}1. counts two (§8). The merged
-    // Program holds one content; the occurrence stream keeps both counts.
+fn content_unequal_choices_stay_two_statements() {
+    // 1{#true}1. has one boolean element; 1{#true;#true}1. has two, each an occurrence of its
+    // own (§4.4) — so the two rules differ in content, and the program keeps both.
     let text = "1{#true}1.\n1{#true;#true}1.";
     let occ = raised_occurrences(text);
     let counts: Vec<Vec<usize>> = occ
@@ -630,16 +630,15 @@ fn occurrences_preserve_per_rule_boolean_element_counts_the_merge_sheds() {
         .collect();
     assert_eq!(
         counts,
-        vec![vec![1], vec![2]],
-        "each source rule keeps its own count"
+        vec![vec![1], vec![1, 1]],
+        "each element keeps its own occurrence"
     );
 
-    // The merged program collapses them to one content-equal statement.
     let merged = raised(text);
     assert_eq!(
         merged.program().statements().count(),
-        1,
-        "the set merges the two content-equal rules to one"
+        2,
+        "the set keeps the two content-unequal rules"
     );
 }
 
@@ -657,10 +656,10 @@ fn reversing_the_source_reverses_the_occurrences() {
         .iter()
         .map(|o| boolean_origin_counts(o.statement().get()))
         .collect();
-    assert_eq!(f, vec![vec![1], vec![2]]);
+    assert_eq!(f, vec![vec![1], vec![1, 1]]);
     assert_eq!(
         r,
-        vec![vec![2], vec![1]],
+        vec![vec![1, 1], vec![1]],
         "reversed source reverses occurrence order"
     );
 }
@@ -777,7 +776,7 @@ fn a_malformed_program_delimiter_leaves_the_active_part_unchanged() {
 fn into_raised_equals_raise_program_and_diagnostics() {
     for text in [
         "a. b. a.",                           // a duplicate that merges
-        "1{#true}1.\n1{#true;#true}1.",       // content-equal, unequal nested counts
+        "1{#true}1.\n1{#true;#true}1.",       // two statements now: the repeat is content (§4.4)
         "#program step(t).\np(t). q.\n1 { .", // parts + a malformed statement
     ] {
         let source = Source::new(SourceId::new(0), text.to_owned()).expect("admits");
@@ -829,13 +828,13 @@ fn an_occurrences_location_is_correct_after_leading_utf8_and_comments() {
 }
 
 #[test]
-fn duplicate_elements_within_one_rule_carry_one_element_with_the_occurrence_count() {
-    // The two content-equal `#true` elements collapse to one element on the occurrence's
-    // canonical statement, whose provenance unions both parsed origins — count two (§6.3, §8).
+fn a_repeated_boolean_element_is_two_entries_each_with_its_occurrence() {
+    // The authority numbers each `#true` element by its occurrence, so the occurrence's
+    // canonical statement keeps two entries, each with its own parsed origin (§4.4, §8).
     let occ = raised_occurrences("1{#true;#true}1.");
     assert_eq!(
         boolean_origin_counts(occ.occurrences()[0].statement().get()),
-        vec![2]
+        vec![1, 1]
     );
 }
 

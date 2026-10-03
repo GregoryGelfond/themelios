@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 
 use super::aggregate::{Aggregate, Guard, HeadAggregate, Weight};
+use super::counted::{Counted, Identified, Identity};
 use super::directive::TheoryAtom;
 use crate::provenance::WithProvenance;
 use crate::symbol::{Name, Sign};
@@ -48,6 +49,20 @@ pub enum LiteralInner {
     True,
     /// `#false`.
     False,
+}
+
+impl Literal {
+    /// How a counted collection identifies an element over this literal (§4.4): an atom,
+    /// under any default negation, by content; a comparison or a boolean constant by
+    /// occurrence, as the authority numbers them. Total; O(1).
+    pub fn identity(&self) -> Identity {
+        match &self.inner {
+            LiteralInner::Atom(_) => Identity::ByContent,
+            LiteralInner::Comparison(_) | LiteralInner::True | LiteralInner::False => {
+                Identity::ByOccurrence
+            }
+        }
+    }
 }
 
 /// An atom (grammar §5.2): a strong sign, a predicate name, and an argument list that
@@ -332,12 +347,12 @@ impl DisjunctionElement {
     }
 }
 
-/// A choice head (grammar §5.3): two optional guards over a set of conditioned literals,
+/// A choice head (grammar §5.3): two optional guards over counted conditioned literals,
 /// `1 { a; b } 2` (§4.4).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct Choice {
     left_guard: Option<WithProvenance<Guard>>,
-    elements: BTreeSet<WithProvenance<ChoiceElement>>,
+    elements: Counted<ChoiceElement>,
     right_guard: Option<WithProvenance<Guard>>,
 }
 
@@ -351,17 +366,15 @@ impl Choice {
     ) -> Choice {
         Choice {
             left_guard: left_guard.map(WithProvenance::constructed),
-            elements: elements
-                .into_iter()
-                .map(WithProvenance::constructed)
-                .collect(),
+            elements: Counted::from_elements(elements.into_iter().map(WithProvenance::constructed)),
             right_guard: right_guard.map(WithProvenance::constructed),
         }
     }
 
-    /// A choice over already-provenanced elements and guards, unioning provenance on any
-    /// content collision (§6.3) — the raise's door for a head set form (§4.4, §8),
-    /// carrying each element's and guard's parsed origin (§6.2). O(elements).
+    /// A choice over already-provenanced elements and guards, through the counted
+    /// constructor, which merges a by-content repeat, unioning its provenance, and keeps a
+    /// by-occurrence one (§4.4) — the raise's door for a head set form (§4.4, §8), carrying
+    /// each element's and guard's parsed origin (§6.2). O(elements · log elements).
     pub(crate) fn from_nodes(
         left_guard: Option<WithProvenance<Guard>>,
         elements: impl IntoIterator<Item = WithProvenance<ChoiceElement>>,
@@ -369,7 +382,7 @@ impl Choice {
     ) -> Choice {
         Choice {
             left_guard,
-            elements: super::merge_collect(elements),
+            elements: Counted::from_elements(elements),
             right_guard,
         }
     }
@@ -384,7 +397,7 @@ impl Choice {
         self.right_guard.as_ref()
     }
 
-    /// The elements — a set, each with its provenance (§6.2).
+    /// The elements — counted, in `Ord` order, each with its provenance (§4.4).
     pub fn elements(&self) -> impl Iterator<Item = &WithProvenance<ChoiceElement>> {
         self.elements.iter()
     }
@@ -411,6 +424,17 @@ impl ChoiceElement {
     /// The condition.
     pub fn condition(&self) -> &Condition {
         &self.condition
+    }
+
+    /// Its literal's identity (§4.4). Total; O(1).
+    pub fn identity(&self) -> Identity {
+        self.literal.identity()
+    }
+}
+
+impl Identified for ChoiceElement {
+    fn identity(&self) -> Identity {
+        ChoiceElement::identity(self)
     }
 }
 
@@ -777,12 +801,15 @@ impl Disjunction {
 }
 
 impl Choice {
+    /// Rebuilt through the counted constructor after the map, never mapped in place:
+    /// canonicalization can move an element in `Ord` and make two by-content entries equal
+    /// (§5.1, §4.4).
     pub(crate) fn canonicalize(self) -> Choice {
         Choice {
             left_guard: self.left_guard.map(|guard| guard.map(Guard::canonicalize)),
-            elements: super::merge_collect(
+            elements: Counted::from_elements(
                 self.elements
-                    .into_iter()
+                    .into_entries()
                     .map(|element| element.map(ChoiceElement::canonicalize)),
             ),
             right_guard: self.right_guard.map(|guard| guard.map(Guard::canonicalize)),

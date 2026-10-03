@@ -672,3 +672,67 @@ fn part_wise_access_is_logarithmic_in_the_parts() {
         "part access's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{LOG_SIZE_RATIO} more parts; the O(log parts) shape allows at most x{LOG_CEILING}"
     );
 }
+
+// ---- the counted constructor and the collection (§4.4, §6.3, §8) ----
+
+/// The source `1 { e; e; … } 1.` with `count` copies of the element `e`.
+fn repeated_choice(element: &str, count: usize) -> String {
+    let mut source = String::from("1 { ");
+    for i in 0..count {
+        if i > 0 {
+            source.push_str("; ");
+        }
+        source.push_str(element);
+    }
+    source.push_str(" } 1.");
+    source
+}
+
+fn raise_text(text: &str) -> themelios_program::raise::RaisedSource {
+    themelios_program::raise::raise_str(text, Dialect::Clingo).expect("the source admits")
+}
+
+/// The base count of repeated elements; the large case is SIZE_RATIO more.
+const REPEATS: usize = 1_000;
+
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
+#[test]
+fn raising_a_choice_of_kept_repeats_is_near_linear() {
+    // `Counted::from_elements` sorts once and makes one adjacent pass (§4.4): O(n log n). A
+    // constructor that scanned its entries for an equal one at every insert would be Θ(n²).
+    let small = repeated_choice("#true", REPEATS);
+    let big = repeated_choice("#true", REPEATS * SIZE_RATIO);
+    let ratio = median_ratio(
+        || time_once(|| drop(std::hint::black_box(raise_text(&small)))),
+        || time_once(|| drop(std::hint::black_box(raise_text(&big)))),
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "the kept repeats' median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} elements; the near-linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
+#[test]
+fn raising_a_choice_of_merged_repeats_is_near_linear() {
+    // Each merge unions the newcomer's one origin into the accumulated provenance by move,
+    // O(log k); a merge that cloned the accumulated provenance would be Θ(n²) over n repeats.
+    let small = repeated_choice("a", REPEATS);
+    let big = repeated_choice("a", REPEATS * SIZE_RATIO);
+    let ratio = median_ratio(
+        || time_once(|| drop(std::hint::black_box(raise_text(&small)))),
+        || time_once(|| drop(std::hint::black_box(raise_text(&big)))),
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "the merged repeats' median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} elements; the near-linear shape allows at most x{LINEAR_CEILING}"
+    );
+}

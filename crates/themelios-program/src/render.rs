@@ -4,11 +4,11 @@
 //! the simple one — binary operators and intervals fully parenthesized, so the tree's
 //! grouping is carried in the text with no precedence to re-derive on the way back; a
 //! nullary function bare; a one-element tuple keeping the comma that distinguishes it from
-//! a grouped term; the set-shaped children in `Ord` order (§4); and, within a part, the
-//! globally-gathered directives `#const` and `#theory` in a fixed leading block before the
-//! rest (§10). A single applied-form printer serves a function term and an atom, so the two
-//! cannot drift. One value refuses:
-//! a string whose value the chosen dialect cannot spell (grammar §4.4/§6.2/§9).
+//! a grouped term; the set-shaped children in `Ord` order (§4), and the counted ones in `Ord`
+//! order with every entry written (§4.4); and, within a part, the globally-gathered
+//! directives `#const` and `#theory` in a fixed leading block before the rest (§10). A single
+//! applied-form printer serves a function term and an atom, so the two cannot drift. One value
+//! refuses: a string whose value the chosen dialect cannot spell (grammar §4.4/§6.2/§9).
 //!
 //! The walk down the structural spine — program to statement to head and body to literal
 //! and atom — is a bounded recursion (§13): those layers do not self-nest, so the depth is
@@ -306,8 +306,8 @@ fn render_disjunction(
     Ok(())
 }
 
-/// A choice head (grammar §5.3): guards over a `Ord`-ordered set of conditioned literals,
-/// `1 { a; b } 2` — the set form with guards, in head position (§4.4).
+/// A choice head (grammar §5.3): guards over its counted conditioned literals in `Ord` order,
+/// every entry written, `1 { a; b } 2` — the set form with guards, in head position (§4.4).
 fn render_choice(out: &mut String, choice: &Choice, dialect: Dialect) -> Result<(), Unspellable> {
     render_left_guard(out, choice.left_guard(), dialect)?;
     out.push('{');
@@ -1483,9 +1483,10 @@ fn push_u32(out: &mut String, value: u32) {
 
 // ---- the set-shaped brace body, shared by the aggregates and the choice (§4) ----
 
-/// Render a set-shaped brace body's elements in `Ord` order, semicolon-separated with the
-/// grammar's inner spacing — `{}` empty, `{ e1; e2 }` otherwise (grammar §5.3). The one shape
-/// the choice and the three aggregates share (§4.7).
+/// Render a set-shaped brace body's elements in `Ord` order — every entry, a counted
+/// collection's kept repeats included (§4.4) — semicolon-separated with the grammar's inner
+/// spacing: `{}` empty, `{ e1; e2 }` otherwise (grammar §5.3). The one shape the choice and the
+/// three aggregates share (§4.7).
 fn render_set_body<T>(
     out: &mut String,
     elements: &[&T],

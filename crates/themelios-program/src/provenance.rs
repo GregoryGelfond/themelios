@@ -59,6 +59,12 @@ impl<T> WithProvenance<T> {
         self.value
     }
 
+    /// The value and its provenance, owned — the door to a union that moves rather than
+    /// clones, for the counted constructor and the set merge (§6.3). Crate-internal. O(1).
+    pub(crate) fn into_parts(self) -> (T, Provenance) {
+        (self.value, self.provenance)
+    }
+
     /// Rewrite the content, carrying the provenance through unchanged — the transform
     /// surface's workhorse (§6.2, §9.1).
     #[must_use]

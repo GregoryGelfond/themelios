@@ -20,11 +20,11 @@ use themelios_program::program::{
     Aggregate, AggregateFunction, Atom, Body, BodyAggregateElement, BodyElement, Choice,
     ChoiceElement, Comparison, Condition, ConditionalLiteral, Const, ConstPolicy, DefaultNegation,
     Defined, Direction, Disjunction, DisjunctionElement, Edge, External, FunctionAggregate, Guard,
-    Head, HeadAggregate, HeadAggregateElement, Heuristic, Include, IncludeTarget, Literal,
-    LiteralInner, Optimize, OptimizeElement, Part, PartKey, Program, Project, Query, Relation,
-    Rule, Script, SetAggregate, SetElement, Show, Statement, TheoryAtom, TheoryAtomDefinition,
-    TheoryAtomGuardDefinition, TheoryDefinition, TheoryElement, TheoryGuard, TheoryOccurrence,
-    TheoryOperator, TheoryOperatorArity, TheoryOperatorDefinition, TheoryTerm,
+    Head, HeadAggregate, HeadAggregateElement, Heuristic, Identity, Include, IncludeTarget,
+    Literal, LiteralInner, Optimize, OptimizeElement, Part, PartKey, Program, Project, Query,
+    Relation, Rule, Script, SetAggregate, SetElement, Show, Statement, TheoryAtom,
+    TheoryAtomDefinition, TheoryAtomGuardDefinition, TheoryDefinition, TheoryElement, TheoryGuard,
+    TheoryOccurrence, TheoryOperator, TheoryOperatorArity, TheoryOperatorDefinition, TheoryTerm,
     TheoryTermDefinition, TheoryTermParts, WeakConstraint, Weight,
 };
 use themelios_program::provenance::{
@@ -97,6 +97,7 @@ fn every_public_value_type_is_owned_plain_data() {
     assert_owned_plain_data::<DisjunctionElement>();
     assert_owned_plain_data::<Choice>();
     assert_owned_plain_data::<ChoiceElement>();
+    assert_owned_plain_data::<Identity>();
 
     // The aggregate family (§4.7).
     assert_owned_plain_data::<Aggregate>();
