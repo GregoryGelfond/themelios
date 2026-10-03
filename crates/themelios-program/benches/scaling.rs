@@ -6,7 +6,9 @@
 //! door canonicalizing one level, §7.1); `mgu` over a deep ground symbol against its non-ground twin (the near-linear
 //! decision §11.1/§15 promises, the case a monolithic ground representation would make
 //! quadratic) and over two non-ground terms; a match against an answer set via
-//! `signature_range` (O(log n + k), §11.3); and part-wise access (O(log parts), §4.1). A
+//! `signature_range` (O(log n + k), §11.3); part-wise access (O(log parts), §4.1); and the
+//! rewrites — `rewrite` and `unpool` over a part as wide as it is long and over a deep term,
+//! each linear (§8, §9.1). A
 //! human reads the real curve and its constants here when tuning; the checks hold only the
 //! machine-independent shape (spec §10.2). Run with `cargo bench`.
 

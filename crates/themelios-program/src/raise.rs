@@ -9,9 +9,10 @@
 //!
 //! Its statement half lowers a parsed program in two steps. Each statement is lowered, in
 //! source order, with its part and its provenance — the occurrence stream
-//! [`raise_occurrences`] returns — and lowering diagnoses a global definition repeated
-//! content-equal within its part ([`LowerErrorKind::RepeatedDefinition`]), since the authority
-//! rejects the redefinition the set would merge (§6.3). The occurrences are then collected into
+//! [`raise_occurrences`] returns — and lowering diagnoses the two statements the set may not
+//! merge, repeated content-equal within their part (§6.3): a global definition
+//! ([`LowerErrorKind::RepeatedDefinition`]), whose redefinition the authority rejects, and a
+//! `#script` block ([`LowerErrorKind::RepeatedScript`]), which the authority runs again. The occurrences are then collected into
 //! the part-structured set, one part lookup per run of statements sharing a part ([`raise`],
 //! [`Occurrences::into_raised`]). [`raise_source`] and [`raise_str`] parse and raise in one
 //! call.
@@ -107,7 +108,9 @@ impl LowerError {
 /// [`RepeatedDefinition`](LowerErrorKind::RepeatedDefinition) marks text the authority
 /// rejects, not a lossy reading, so it is no such kind;
 /// [`RepeatedScript`](LowerErrorKind::RepeatedScript) is one — the authority admits the repeated
-/// block and runs it twice, where the merged program runs it once — so it joins the gate.
+/// block and runs it twice, where the merged program runs it once — and so is
+/// [`NumberOutOfRange`](LowerErrorKind::NumberOutOfRange), which the authority admits and wraps
+/// into the width; both join the gate.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum LowerErrorKind {
