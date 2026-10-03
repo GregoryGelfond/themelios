@@ -31,6 +31,16 @@ fn the_query_prelude_coexists_with_the_program_prelude() {
     // The driving vocabulary resolves bare from the solve prelude beside it.
     let _: Option<Determination<'static>> = None;
     let _: Option<Model> = None;
+    let _: Option<Incumbent> = None;
+    let _: Option<ShowRule> = None;
+    let _: Option<Shown<'static>> = None;
+    let _: Option<Refused<'static>> = None;
+    let _: Option<Presupposition> = None;
+    let _: Option<Capability> = None;
+    let _: Option<Admitted> = None;
+    let _: Option<NotAdmitted> = None;
+    let _: Option<GroundRule> = None;
+    let _: Option<Grain> = None;
 
     // The program IR resolves bare from the program prelude — every spelling
     // the program and syntax tiers share, each with no `E0659` beside the
