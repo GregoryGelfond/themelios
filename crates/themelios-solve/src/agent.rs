@@ -13,7 +13,7 @@ use crate::contract::{
 };
 use crate::extend::Facts;
 use crate::outcome::{
-    Consequences, Determination, Model, NativeAnswer, NotExhausted, Optimized, Solved, Stopped,
+    Consequences, Determination, NativeAnswer, NotExhausted, Optimized, Solved, Stopped,
 };
 use themelios_program::program::{Arguments, Part, PartKey};
 use themelios_program::{Atom, Program, Rule, Statement, Symbol, Term, WithProvenance};
@@ -335,14 +335,15 @@ impl<B: Backend> Agent<B> {
     /// readings, unscoped or over a scenario's models. The native door computes
     /// them in one solve, over a request carrying the scenario, and the core
     /// gates its answer; the derived door folds the enumerated CONSISTENT world
-    /// view — `solve`'s, or `solve_assuming`'s under a scenario — so the two doors
-    /// range over the same models, and answer and refuse alike (the free
-    /// differential, query.md §2.4). The consistency
+    /// view — `solve`'s, or `solve_assuming`'s under a scenario — as its models
+    /// stream through the exhaustion gate, one resident beside the accumulator,
+    /// never the collection; so the two doors range over the same models, and
+    /// answer and refuse alike (the free differential, query.md §2.4). The consistency
     /// gate is load-bearing: a fold over no models is no consequence set — `⋂`
     /// over none is undefined, and an empty cautious set would say the program
     /// forces nothing, of a program that has no model — so an inconsistent program
-    /// refuses (query.md §2.3), while a consistent one's complete collection holds
-    /// the model that witnessed it. Both range over all stable models: the question `solve`
+    /// refuses (query.md §2.3), while a consistent one's stream yields the model
+    /// that witnessed it. Both range over all stable models: the question `solve`
     /// asks ignores any objective, and an optimization's consequences range over
     /// its optimal set instead (solve.md §5.2).
     fn consequences(
@@ -375,11 +376,10 @@ impl<B: Backend> Agent<B> {
                         .solve_assuming(scenario, &SolveRequest::default())?,
                 };
                 match solved.into_determination() {
-                    Determination::Consistent(mut models) => {
-                        let members = models.all_members()?;
-                        Ok(Consequences::fold(mode, members.iter().map(Model::atoms))
-                            .expect("a consistent search's collection holds its witness"))
-                    }
+                    // Folded as the models stream, one resident at a time.
+                    Determination::Consistent(mut models) => Ok(models
+                        .fold_members(mode)?
+                        .expect("a consistent search's collection holds its witness")),
                     Determination::Inconsistent(_) => Err(no_answer_set(scenario)),
                     // A truncated search refuses in the native door's words
                     // whether or not it saw a model, since a native answer
@@ -1039,7 +1039,7 @@ mod ask_laws {
 
     use crate::bridge::GroundProgram;
     use crate::contract::{Capabilities, Refused};
-    use crate::outcome::{AnswerSet, Conclusion, Run, ShowRule, Truncation};
+    use crate::outcome::{AnswerSet, Conclusion, Model, Run, ShowRule, Truncation};
 
     /// Whether `fault` refused the request for the presupposition `expected`.
     fn refused_for(fault: &Fault, expected: Presupposition) -> bool {

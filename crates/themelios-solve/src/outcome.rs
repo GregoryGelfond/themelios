@@ -648,11 +648,24 @@ impl LiveRun<'_> {
         }
     }
 
-    /// The exhaustion gate, shared by `Solved::all_models` and
-    /// `Models::all_members` (docs/design/solve.md §5.3): a complete collection
-    /// ONLY from an untouched handle whose search closed the space; refuses
-    /// otherwise, keeping a mid-stream fault as the cause.
+    /// The exhaustion gate, shared by `Solved::all_models`,
+    /// `Models::all_members`, and the derived consequences' fold
+    /// (docs/design/solve.md §5.3): a complete collection ONLY from an
+    /// untouched handle whose search closed the space; refuses otherwise,
+    /// keeping a mid-stream fault as the cause.
     fn drain_complete(&mut self) -> Result<Vec<Model>, NotExhausted> {
+        let mut all = Vec::new();
+        self.drain_each(&mut |model| all.push(model))?;
+        Ok(all)
+    }
+
+    /// The exhaustion gate, its members handed to `each` as they stream, one
+    /// at a time — so a consumer that folds them holds one model, never the
+    /// collection (§5.2) — and its verdict after the last: `Ok` only where the
+    /// search closed the space from an untouched handle. A refusal comes after
+    /// members were handed over, so a consumer discards what it built from
+    /// them.
+    fn drain_each(&mut self, each: &mut dyn FnMut(Model)) -> Result<(), NotExhausted> {
         // A search that has faulted cannot yield a complete collection — refuse
         // with the remembered fault, the cause preserved on every attempt and named
         // before touched-ness, since the fault is why the collection is gone; and
@@ -663,10 +676,9 @@ impl LiveRun<'_> {
         if self.drain != DrainState::Fresh {
             return Err(NotExhausted::already_taken());
         }
-        let mut all = Vec::new();
         loop {
             match self.next() {
-                Some(Ok(model)) => all.push(model),
+                Some(Ok(model)) => each(model),
                 Some(Err(fault)) => {
                     // Models were pulled and dropped: the handle is no longer
                     // untouched, so a re-drain refuses rather than returning a
@@ -684,7 +696,7 @@ impl LiveRun<'_> {
             return Err(NotExhausted::faulted(fault));
         }
         if self.conclusion() == Some(Conclusion::Exhausted) {
-            return Ok(all);
+            return Ok(());
         }
         match self.conclusion().and_then(Truncation::of) {
             Some(truncation) => Err(NotExhausted::not_closed(truncation)),
@@ -1078,7 +1090,7 @@ pub(crate) trait RunAccess {
     fn stream_next(&mut self) -> Option<Result<Model, Fault>>;
     fn is_exhausted(&self) -> bool;
     fn scenario(&self) -> &Scenario;
-    fn drain_complete(&mut self) -> Result<Vec<Model>, NotExhausted>;
+    fn drain_each(&mut self, each: &mut dyn FnMut(Model)) -> Result<(), NotExhausted>;
 }
 
 impl RunAccess for LiveRun<'_> {
@@ -1093,8 +1105,8 @@ impl RunAccess for LiveRun<'_> {
     fn scenario(&self) -> &Scenario {
         &self.scenario
     }
-    fn drain_complete(&mut self) -> Result<Vec<Model>, NotExhausted> {
-        LiveRun::drain_complete(self)
+    fn drain_each(&mut self, each: &mut dyn FnMut(Model)) -> Result<(), NotExhausted> {
+        LiveRun::drain_each(self, each)
     }
 }
 
@@ -1160,7 +1172,36 @@ impl<'a> Models<'a> {
     /// gate, §5.3), so the query tier's `materialize` cannot launder a partial
     /// set as complete (query.md §3.2).
     pub fn all_members(&mut self) -> Result<Vec<Model>, NotExhausted> {
-        self.access().drain_complete()
+        let mut all = Vec::new();
+        self.access().drain_each(&mut |model| all.push(model))?;
+        Ok(all)
+    }
+
+    /// The cautious (⋂) or brave (⋃) consequences of the complete collection,
+    /// folded as its members stream through the exhaustion gate — the
+    /// accumulator and one member resident, never the collection — and refused
+    /// as [`Models::all_members`] refuses, the partial fold discarded.
+    /// `None` only over no member, which a consistent search's untouched
+    /// handle never yields. Cost: `Θ(|W|)` members folded, each `O(|M| log |M|)`.
+    pub(crate) fn fold_members(
+        &mut self,
+        mode: Mode,
+    ) -> Result<Option<Consequences>, NotExhausted> {
+        let mut folded: Option<AnswerSet> = None;
+        self.access().drain_each(&mut |model| {
+            let member = model.atoms;
+            folded = Some(match folded.take() {
+                None => member,
+                Some(mut symbols) => {
+                    match mode {
+                        Mode::Cautious => symbols.retain(|symbol| member.contains(symbol)),
+                        Mode::Brave => symbols.extend(member),
+                    }
+                    symbols
+                }
+            });
+        })?;
+        Ok(folded.map(|symbols| Consequences { symbols, mode }))
     }
 
     /// Whether the search closed the space — the `WorldView::is_exhausted` analog
@@ -1279,6 +1320,8 @@ pub struct Measurement {}
 mod tests {
     use super::*;
     use crate::contract::Refused;
+    use std::cell::Cell;
+    use std::rc::Rc;
     use themelios_program::program::Show;
     use themelios_program::{Name, Signature, Term};
 
@@ -1887,6 +1930,51 @@ mod tests {
     fn all_models_yields_when_the_space_closed() {
         let mut solved = solved_over(vec![singleton(0), singleton(1)], Conclusion::Exhausted);
         assert_eq!(solved.all_models().unwrap().len(), 2);
+    }
+
+    /// A run of `count` models that counts its pulls in `pulled`, then reports
+    /// its search closed.
+    struct CountingRun {
+        pulled: Rc<Cell<usize>>,
+        count: usize,
+    }
+
+    impl Run for CountingRun {
+        fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+            let pulled = self.pulled.get();
+            if pulled == self.count {
+                return None;
+            }
+            self.pulled.set(pulled + 1);
+            let symbol = i32::try_from(pulled).expect("a small count");
+            Some(Ok(Model::of(singleton(symbol))))
+        }
+
+        fn conclusion(&self) -> Option<Conclusion> {
+            (self.pulled.get() == self.count).then_some(Conclusion::Exhausted)
+        }
+    }
+
+    #[test]
+    fn the_gated_drain_hands_each_member_over_before_it_pulls_the_next() {
+        // A drain that collected before handing over would hand the first
+        // member over with every member already pulled.
+        let pulled = Rc::new(Cell::new(0));
+        let mut live = live_with(Box::new(CountingRun {
+            pulled: Rc::clone(&pulled),
+            count: 3,
+        }));
+        let mut handed = 0;
+        live.drain_each(&mut |_| {
+            handed += 1;
+            assert_eq!(
+                pulled.get(),
+                handed,
+                "the drain pulled ahead of its consumer"
+            );
+        })
+        .expect("the search closed the space");
+        assert_eq!(handed, 3);
     }
 
     #[test]
