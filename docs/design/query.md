@@ -494,7 +494,10 @@ keeps the construction side acyclic too, §2.3). `cautious`/`brave` are the agen
 type being the solve tier's. Each of these **solves once**, then reads — an owned answer, freely composed
 — rather than borrowing and draining a live `WorldView`; that is why the readings are not on the live
 handle (§2.2, §2.3). A `Snapshot` (from `materialize`) mirrors them infallibly over materialised data,
-for a reading that must outlive its engine or cross a service boundary.
+for a reading that must outlive its engine or cross a service boundary. The readings take no options —
+each solves over the default request — so a budgeted reading is a composition: the agent's `solve_with`
+under the budget, `WorldView::of` over the models its determination yields, and `materialize` to a
+`Snapshot` read infallibly (solve.md §6.3).
 
 **Under a scenario, the same surface repeats with the `_assuming` suffix** — the epistemic sibling of
 `solve_assuming`, so a reading under a hypothesis is as first-class as a solve under one. The
@@ -701,3 +704,6 @@ it.
    is: `Snapshot::bindings` is infallible as its siblings are, and the agent checks the pattern before it
    solves, refusing only as `snapshot` does (§2.1, §2.2, §2.3, §2.5, §2.6); an unsupported scoped reading
    names its capability (§2.2). The status line names this the design of record the build follows.
+13. **The budgeted reading's path** (2026-10-03). The readings take no options, each solving over the
+   default request, so a budgeted reading is stated as the composition through the agent's `solve_with`,
+   `WorldView::of`, and `materialize` (§2.7, solve.md §6.3).
