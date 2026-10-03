@@ -7,15 +7,17 @@
 //! machinery through the contract.
 
 use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use themelios_base::span::{ByteOffset, Location};
+use themelios_base::span::{ByteOffset, Location, Span};
 use themelios_program::program::Part;
 use themelios_program::raise::raise_str;
 use themelios_program::{
     Dialect, Name, Origin, Program, Provenance, Sign, SourceId, Statement, Symbol, WithProvenance,
 };
 use themelios_solve::agent::{Assumption, Scenario};
-use themelios_solve::bridge::{Door, GroundProgram};
+use themelios_solve::bridge::{Door, GroundProgram, NotAdmitted};
 use themelios_solve::conformance::{self, Breach, Check, ConformanceReport, Skip, Verdict};
 use themelios_solve::contract::{
     Backend, Cancel, Capabilities, Capability, ConsequenceRequest, ConsequenceSupport, Fault,
@@ -79,6 +81,17 @@ const UNSAFE: &str = "a. p(X).";
 /// solve ignores it, are `{}` and `{a}`; its optimum is `{}`.
 const OBJECTIVE: &str = "{ a }. #minimize { 1 : a }.";
 
+/// A fact other than `a.`, then a fact over a variable nothing binds: refused
+/// at lowering, after its prefix `b.`.
+const PREFIXED_UNSAFE: &str = "b. p(X).";
+
+/// The fact a rebuild replaces `a.` with.
+const REBUILT: &str = "b.";
+
+/// The fact over a variable nothing binds, alone: the statement a refusal of
+/// the unsafe programs names.
+const UNSAFE_FACT: &str = "p(X).";
+
 /// How the stub answers a program.
 enum Answers {
     /// These answer sets, known independently of any engine.
@@ -88,8 +101,14 @@ enum Answers {
     Displaying(Vec<AnswerSet>, Vec<Symbol>),
     /// `{a, b}` while the external `a` is assigned true, `{}` otherwise.
     External,
-    /// None: no grounder can instantiate the program, so lowering it is refused.
-    Unsafe,
+    /// None: no grounder can instantiate the program, so lowering it is
+    /// refused — after `prefix`, the source of the statements before the one
+    /// refused, which a stub keeping a refused prefix keeps.
+    Unsafe { prefix: &'static str },
+    /// `{p(r) | r}` for the results `r` of the latest registered `@`-function
+    /// called on these numbers; the call's fault, or no function to call,
+    /// fails the grounding.
+    Calls(Vec<i32>),
 }
 
 /// Every program the suite loads, with its answers — the corpus and the
@@ -153,7 +172,11 @@ fn table() -> Vec<(&'static str, Program, Answers)> {
             known(vec![set([atom("p", [], Sign::Negative)])]),
         ),
         (EXTERNAL, Answers::External),
-        (UNSAFE, Answers::Unsafe),
+        (UNSAFE, Answers::Unsafe { prefix: "a." }),
+        (PREFIXED_UNSAFE, Answers::Unsafe { prefix: REBUILT }),
+        (REBUILT, known(vec![set([constant("b")])])),
+        ("p(@fault).", Answers::Calls(Vec::new())),
+        ("p(@echo(1)).", Answers::Calls(vec![1])),
     ]
     .into_iter()
     .map(|(source, answers)| (source, program(source), answers))
@@ -177,17 +200,6 @@ fn positive_of(symbol: &Symbol) -> Option<Symbol> {
     }
 }
 
-/// Where each statement of `program` was parsed.
-fn parsed_locations(program: &Program) -> impl Iterator<Item = Location> + '_ {
-    program
-        .statements()
-        .flat_map(|node| node.provenance().origins())
-        .filter_map(|origin| match origin {
-            Origin::Parsed(location) => Some(*location),
-            _ => None,
-        })
-}
-
 /// The offset, within the unsafe program's text, of its atom over a variable
 /// nothing binds.
 fn unsafe_offset() -> ByteOffset {
@@ -197,18 +209,25 @@ fn unsafe_offset() -> ByteOffset {
     ByteOffset::new(u32::try_from(at).expect("a short text"))
 }
 
-/// The unsafe program's statement whose parsed location does — or, with
-/// `unsafe_one` false, does not — hold the atom over a variable nothing binds.
+/// The statement of `program` that is — or, with `unsafe_one` false, is not —
+/// the fact over a variable nothing binds, found by its content, so a program
+/// built in Rust is read as one raised from text is.
 fn statement_of(program: &Program, unsafe_one: bool) -> &WithProvenance<Statement> {
+    let unsafe_fact = program_text_statement(UNSAFE_FACT);
     program
         .statements()
-        .find(|node| {
-            node.provenance().origins().any(|origin| {
-                matches!(origin, Origin::Parsed(location)
-                    if location.span.contains(unsafe_offset()) == unsafe_one)
-            })
-        })
-        .expect("each of the unsafe program's statements is located")
+        .find(|node| (node.get() == &unsafe_fact) == unsafe_one)
+        .expect("each unsafe program holds its unsafe fact and a statement beside it")
+}
+
+/// The one statement `source` raises to.
+fn program_text_statement(source: &str) -> Statement {
+    program(source)
+        .statements()
+        .next()
+        .expect("the source raises to a statement")
+        .get()
+        .clone()
 }
 
 /// A program fault refusing `statement`, as a backend refusing the unsafe
@@ -223,20 +242,27 @@ fn located_refusal(program: &Program) -> Fault {
     refusal_of(statement_of(program, true))
 }
 
-/// The same refusal of the program's other statement, the leading fact — as an
-/// adapter mapping its engine's error to the wrong statement raises it.
+/// The same refusal of the program's other statement — as an adapter mapping
+/// its engine's error to the wrong statement raises it.
 fn mislocated_refusal(program: &Program) -> Fault {
     refusal_of(statement_of(program, false))
 }
 
 /// The same refusal of the unsafe statement, placed at its offsets in a source
 /// the program is not — as an adapter reporting every location in its own text
-/// raises it.
+/// raises it, a statement built in Rust included.
 fn refusal_in_another_source(program: &Program) -> Fault {
     let statement = statement_of(program, true);
-    let Location { span, .. } = parsed_locations(program)
-        .find(|location| location.span.contains(unsafe_offset()))
-        .expect("the unsafe statement is located");
+    let span = statement
+        .provenance()
+        .origins()
+        .find_map(|origin| match origin {
+            Origin::Parsed(location) => Some(location.span),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            Span::new(unsafe_offset(), unsafe_offset()).expect("an empty span is ordered")
+        });
     let elsewhere = Origin::Parsed(Location {
         source: SourceId::new(ANOTHER_SOURCE),
         span,
@@ -244,6 +270,28 @@ fn refusal_in_another_source(program: &Program) -> Fault {
     refusal_of(&WithProvenance::new(
         statement.get().clone(),
         Provenance::from(elsewhere),
+    ))
+}
+
+/// The refusal of a statement built in Rust at a location fabricated for it —
+/// in the unsafe program's own source, at its unsafe offset — as an adapter
+/// that invents a span raises it; a parsed statement is refused faithfully.
+fn fabricated_refusal(program: &Program) -> Fault {
+    let statement = statement_of(program, true);
+    let parsed = statement
+        .provenance()
+        .origins()
+        .any(|origin| matches!(origin, Origin::Parsed(_)));
+    if parsed {
+        return refusal_of(statement);
+    }
+    let invented = Origin::Parsed(Location {
+        source: SourceId::new(ANOTHER_SOURCE),
+        span: Span::new(unsafe_offset(), unsafe_offset()).expect("an empty span is ordered"),
+    });
+    refusal_of(&WithProvenance::new(
+        statement.get().clone(),
+        Provenance::from(invented),
     ))
 }
 
@@ -434,6 +482,39 @@ enum Flaw {
     ForgetsATerm,
     /// Adds the number 1 to its first model's answer set.
     YieldsANumber,
+    /// Refuses the unsafe program as a program fault naming no statement.
+    NamesNoStatement,
+    /// Refuses the unsafe program built in Rust at a location it fabricates.
+    LocatesABuiltStatement,
+    /// Keeps the program a rebuild replaced beside the program rebuilt.
+    KeepsTheReplacedProgram,
+    /// Keeps a refused program's prefix, the statements before the one its
+    /// lowering refuses.
+    AddsOnARefusedLower,
+    /// Answers after a failed grounding, as though it needed no rebuild.
+    ForgetsItNeedsARebuild,
+    /// Refuses the next method after a grounding failed within its
+    /// single-shot solve, as though it needed a rebuild it has none of.
+    RefusesAfterAFailedSolve,
+    /// Forgets its registered functions at a reset.
+    LosesRegistrationsOnReset,
+    /// Refuses an undeclared function's registration without naming the
+    /// capability.
+    RefusesUnsupportedVaguely,
+    /// Accepts a multi-shot grounding whose `@`-function faults.
+    AcceptsAFaultingGrounding,
+    /// Answers a single-shot solve whose grounding's `@`-function faults.
+    AnswersAFaultingSolve,
+    /// Carries a cancellation pulled during one run to the next.
+    CarriesACancellation,
+    /// Exposes a ground program while needing its rebuild.
+    ObservesWhileNeedingARebuild,
+    /// Refuses while needing its rebuild, naming another presupposition.
+    MisnamesItsRebuild,
+    /// Declares functions, yet refuses every registration at the engine.
+    RefusesDeclaredFunctions,
+    /// Refuses the reset that rebuilds it after a failed grounding.
+    RefusesTheRebuildingReset,
     /// Refuses the program no grounder can instantiate at the engine locus.
     RefusesTheUnsafeProgramOffItsLocus,
     /// Accepts the program no grounder can instantiate.
@@ -535,6 +616,16 @@ impl Cancel for Unheeded {
     fn cancel(&self) {}
 }
 
+/// A cancellation primitive that cuts nothing short now and stops the next run
+/// instead — a pull carried past the run it was pulled during.
+struct Carried(Arc<AtomicBool>);
+
+impl Cancel for Carried {
+    fn cancel(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
 /// A backend answering the suite from its table, honouring exactly what it
 /// declares unless its flaw says otherwise.
 struct Stub {
@@ -553,6 +644,22 @@ struct Stub {
     grounds_at: GroundsAt,
     /// That program's refusal, lowered but not yet grounded.
     pending_refusal: Option<Fault>,
+    /// Whether a grounding failed since the last reset — the one state that
+    /// changes what every method does (docs/design/solve.md §4.1).
+    needs_rebuild: bool,
+    /// The programs the last reset or replacing lower cleared, which a stub
+    /// keeping the replaced program restores.
+    cleared: Vec<usize>,
+    /// The `@`-functions registered, kept across a reset and a replacing
+    /// lower; an `@`-call reaches the latest, the stub having no names to
+    /// dispatch by.
+    functions: Vec<Box<dyn Function>>,
+    /// Whether a grounding failed within a single-shot solve, under the flaw
+    /// that then refuses the next method.
+    failed_solve: bool,
+    /// A cancellation pulled and carried to the next run, under the flaw that
+    /// carries it.
+    carried: Arc<AtomicBool>,
     /// The last scoped solve's scenario, which a leaking stub keeps.
     leaked: Scenario,
 }
@@ -569,6 +676,11 @@ impl Stub {
             nothing: GroundProgram::default(),
             grounds_at: GroundsAt::Lowering,
             pending_refusal: None,
+            needs_rebuild: false,
+            cleared: Vec::new(),
+            functions: Vec::new(),
+            failed_solve: false,
+            carried: Arc::new(AtomicBool::new(false)),
             leaked: Scenario::default(),
         }
     }
@@ -592,9 +704,25 @@ impl Stub {
     /// the suite lowers — the fact `a.`, then the rule over it.
     fn answer_sets(&self) -> Result<Vec<AnswerSet>, Fault> {
         let (source, mut sets) = match self.loaded[..] {
-            [index] => (self.table[index].0, self.known(index)),
+            [index] => (self.table[index].0, self.known(index)?),
             [fact, rule] if self.table[fact].0 == "a." && self.table[rule].0 == RULE => {
                 ("a. b :- a.", vec![set([constant("a"), constant("b")])])
+            }
+            // A flawed stub keeps one program beside another: facts, so their
+            // answer sets unite.
+            [first, second]
+                if matches!(
+                    self.flaw,
+                    Flaw::AddsOnARefusedLower | Flaw::KeepsTheReplacedProgram
+                ) =>
+            {
+                let mut united = AnswerSet::new();
+                for index in [first, second] {
+                    for set in self.known(index)? {
+                        united.extend(set);
+                    }
+                }
+                ("", vec![united])
             }
             [] => return Err(Fault::engine("no program is loaded")),
             _ => return Err(Fault::engine("several programs have accumulated")),
@@ -624,6 +752,78 @@ impl Stub {
         Ok(sets)
     }
 
+    /// Hold the table's program at `index` as lowered: beside what a
+    /// multi-shot stub accumulated, or in place of what a single-shot one held,
+    /// recorded as cleared.
+    fn keep(&mut self, index: usize) {
+        if self.capabilities.multi_shot && self.flaw != Flaw::ReplacesWhatItLowers {
+            self.loaded.push(index);
+        } else {
+            self.cleared = std::mem::replace(&mut self.loaded, vec![index]);
+        }
+    }
+
+    /// The refusal a stub needing its rebuild owes at every method that
+    /// touches its program or runs a search — unless it forgets the state. A
+    /// stub refusing after a failed single-shot solve refuses the next such
+    /// method too, then recovers.
+    fn rebuild_owed(&mut self) -> Result<(), Fault> {
+        let owed = (self.needs_rebuild && self.flaw != Flaw::ForgetsItNeedsARebuild)
+            || std::mem::take(&mut self.failed_solve);
+        if owed && self.flaw == Flaw::MisnamesItsRebuild {
+            return Err(Fault::request(
+                "the stub needs a rebuild",
+                Presupposition::NotLive,
+            ));
+        }
+        if owed {
+            Err(Fault::request(
+                "the stub needs a rebuild",
+                Presupposition::NeedsRebuild,
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// The answer set of the table's call program at `index`: the latest
+    /// registered function called on `arguments`, each result `r` a fact
+    /// `p(r)`; its fault, or no function to call, refuses the call's statement.
+    fn called(&self, index: usize, arguments: &[i32]) -> Result<AnswerSet, Fault> {
+        // A stub forgetting its failed grounding answers as though it held none.
+        if self.needs_rebuild && self.flaw == Flaw::ForgetsItNeedsARebuild {
+            return Ok(AnswerSet::new());
+        }
+        let statement = self.table[index]
+            .1
+            .statements()
+            .next()
+            .expect("a call program holds its call")
+            .clone();
+        let function = self
+            .functions
+            .last()
+            .ok_or_else(|| Fault::program("no @-function is registered to call", &statement))?;
+        let arguments: Vec<Symbol> = arguments.iter().copied().map(Symbol::number).collect();
+        let results = function
+            .call(&arguments)
+            .map_err(|fault| Fault::program(fault.to_string(), &statement))?;
+        Ok(results
+            .into_iter()
+            .map(|result| atom("p", [result], Sign::Positive))
+            .collect())
+    }
+
+    /// The call programs loaded, grounded: the first call's refusal, if any.
+    fn ground_calls(&self) -> Result<(), Fault> {
+        for &index in &self.loaded {
+            if let Answers::Calls(arguments) = &self.table[index].2 {
+                self.called(index, arguments)?;
+            }
+        }
+        Ok(())
+    }
+
     /// The terms each model of the loaded program displays — none for a stub
     /// that forgets them.
     fn terms(&self) -> Vec<Symbol> {
@@ -651,16 +851,17 @@ impl Stub {
     }
 
     /// The answer sets of the table's program at `index`.
-    fn known(&self, index: usize) -> Vec<AnswerSet> {
-        match &self.table[index].2 {
+    fn known(&self, index: usize) -> Result<Vec<AnswerSet>, Fault> {
+        Ok(match &self.table[index].2 {
             Answers::Known(sets) | Answers::Displaying(sets, _) => sets.clone(),
             Answers::External => vec![if self.a_holds {
                 set([constant("a"), constant("b")])
             } else {
                 set([])
             }],
-            Answers::Unsafe => Vec::new(),
-        }
+            Answers::Unsafe { .. } => Vec::new(),
+            Answers::Calls(arguments) => vec![self.called(index, arguments)?],
+        })
     }
 
     /// The handle over `sets`, ranging over `scenario`: every set when the stub
@@ -725,7 +926,9 @@ impl Stub {
             );
         }
         let concludes = sets.is_empty() || self.flaw != Flaw::LeavesItsSearchOpen;
-        let terminal = if sets.is_empty() && self.flaw == Flaw::LeavesTheSearchUndecided {
+        let terminal = if self.carried.swap(false, Ordering::SeqCst) {
+            Conclusion::Interrupted
+        } else if sets.is_empty() && self.flaw == Flaw::LeavesTheSearchUndecided {
             Conclusion::Budget
         } else if !sets.is_empty() && self.flaw == Flaw::LeavesTheSpaceOpen {
             Conclusion::Target
@@ -790,6 +993,7 @@ impl Backend for Stub {
     }
 
     fn solve(&mut self, request: &SolveRequest) -> Result<Solved<'_>, Fault> {
+        self.rebuild_owed()?;
         if request.time.is_some()
             && !self.capabilities.budgets.time
             && self.flaw != Flaw::AnswersAnUndeclaredTimedSolve
@@ -821,7 +1025,19 @@ impl Backend for Stub {
         if request.time.is_some() && self.flaw == Flaw::MisanswersATimedSolve {
             return Ok(self.enumerate(vec![set([constant("stranger")])], Scenario::default()));
         }
-        let mut sets = self.answer_sets()?;
+        // A single-shot stub grounds within its solve: a failed grounding fails
+        // the solve and leaves the stub ready, unless its flaw then refuses
+        // everything.
+        let mut sets = match self.answer_sets() {
+            Ok(sets) => sets,
+            Err(_) if self.flaw == Flaw::AnswersAFaultingSolve => vec![AnswerSet::new()],
+            Err(fault) => {
+                if self.flaw == Flaw::RefusesAfterAFailedSolve {
+                    self.failed_solve = true;
+                }
+                return Err(fault);
+            }
+        };
         if self.flaw == Flaw::LeaksTheScenario {
             sets.retain(|set| admits(&self.leaked, set));
         }
@@ -834,6 +1050,7 @@ impl Backend for Stub {
     }
 
     fn lower(&mut self, door: Door<'_>) -> Result<(), Fault> {
+        self.rebuild_owed()?;
         let lowered = door.program();
         if self.flaw == Flaw::RefusesDoorA && matches!(door, Door::Parsed(_)) {
             return Err(Fault::engine("the stub lowers Door B alone"));
@@ -853,15 +1070,28 @@ impl Backend for Stub {
             return Err(Fault::engine("the stub lowers no rule over a fact"));
         }
         let mut pending = None;
-        if matches!(self.table[index].2, Answers::Unsafe) {
+        if let Answers::Unsafe { prefix } = self.table[index].2 {
             match self.flaw {
                 Flaw::AcceptsTheUnsafeProgram => {}
                 Flaw::RefusesTheUnsafeProgramOffItsLocus => {
                     return Err(Fault::engine("a variable nothing binds"));
                 }
+                Flaw::NamesNoStatement => {
+                    return Err(Fault::from(NotAdmitted::Lowering(Box::new([]))));
+                }
                 Flaw::LocatesTheFaultElsewhere => return Err(mislocated_refusal(lowered)),
                 Flaw::LocatesTheFaultInAnotherSource => {
                     return Err(refusal_in_another_source(lowered));
+                }
+                Flaw::LocatesABuiltStatement => return Err(fabricated_refusal(lowered)),
+                Flaw::AddsOnARefusedLower if self.grounds_at == GroundsAt::Lowering => {
+                    let kept = self
+                        .table
+                        .iter()
+                        .position(|(source, _, _)| *source == prefix)
+                        .expect("a refused program's prefix is in the table");
+                    self.keep(kept);
+                    return Err(located_refusal(lowered));
                 }
                 _ if self.grounds_at == GroundsAt::Lowering => {
                     return Err(located_refusal(lowered));
@@ -869,21 +1099,21 @@ impl Backend for Stub {
                 _ => pending = Some(located_refusal(lowered)),
             }
         }
-        if self.capabilities.multi_shot && self.flaw != Flaw::ReplacesWhatItLowers {
-            self.loaded.push(index);
-        } else {
-            self.loaded = vec![index];
+        self.keep(index);
+        if self.flaw == Flaw::KeepsTheReplacedProgram && self.table[index].0 == REBUILT {
+            let kept = std::mem::take(&mut self.cleared);
+            self.loaded.splice(0..0, kept);
         }
         self.pending_refusal = pending;
         Ok(())
     }
 
     fn ground_program(&self) -> Option<&GroundProgram> {
-        matches!(
+        let exposes = matches!(
             self.flaw,
             Flaw::ExposesAnEmptyGroundProgram | Flaw::ExposesAnUndeclaredObserver
-        )
-        .then_some(&self.nothing)
+        ) || (self.flaw == Flaw::ObservesWhileNeedingARebuild && self.needs_rebuild);
+        exposes.then_some(&self.nothing)
     }
 
     fn interrupt(&self) -> Option<Box<dyn Cancel>> {
@@ -892,7 +1122,13 @@ impl Backend for Stub {
             Flaw::OffersAnUndeclaredInterrupt => true,
             _ => self.capabilities.cancellation,
         };
-        offered.then(|| Box::new(Unheeded) as Box<dyn Cancel>)
+        offered.then(|| {
+            if self.flaw == Flaw::CarriesACancellation {
+                Box::new(Carried(Arc::clone(&self.carried))) as Box<dyn Cancel>
+            } else {
+                Box::new(Unheeded) as Box<dyn Cancel>
+            }
+        })
     }
 
     fn solve_assuming(
@@ -900,6 +1136,7 @@ impl Backend for Stub {
         scenario: &Scenario,
         request: &SolveRequest,
     ) -> Result<Solved<'_>, Fault> {
+        self.rebuild_owed()?;
         let answers = match self.flaw {
             Flaw::AnswersUndeclaredAssumptions => true,
             Flaw::RefusesDeclaredAssumptions => false,
@@ -971,14 +1208,21 @@ impl Backend for Stub {
     }
 
     fn ground(&mut self, _parts: &[Part], _options: &GroundOptions) -> Result<(), Fault> {
-        if self.capabilities.multi_shot || self.flaw == Flaw::AnswersAnUndeclaredGround {
-            Ok(())
-        } else {
-            Err(Fault::unsupported(Capability::MultiShot))
+        self.rebuild_owed()?;
+        if !self.capabilities.multi_shot && self.flaw != Flaw::AnswersAnUndeclaredGround {
+            return Err(Fault::unsupported(Capability::MultiShot));
         }
+        if self.flaw == Flaw::AcceptsAFaultingGrounding {
+            return Ok(());
+        }
+        // A grounding that fails is never accepted: it leaves the stub needing
+        // its rebuild.
+        self.ground_calls()
+            .inspect_err(|_| self.needs_rebuild = true)
     }
 
     fn assign_external(&mut self, external: Symbol, value: TruthValue) -> Result<(), Fault> {
+        self.rebuild_owed()?;
         if !self.capabilities.multi_shot {
             return Err(Fault::unsupported(Capability::MultiShot));
         }
@@ -1013,28 +1257,54 @@ impl Backend for Stub {
     }
 
     fn reset(&mut self) -> Result<(), Fault> {
+        if self.flaw == Flaw::RefusesTheRebuildingReset && self.needs_rebuild {
+            // Its state forgotten with the refusal, so later loads proceed.
+            self.needs_rebuild = false;
+            return Err(Fault::engine(
+                "the stub cannot reset after a failed grounding",
+            ));
+        }
         match (self.capabilities.multi_shot, self.flaw) {
             (true, Flaw::RefusesTheReset) => Err(Fault::engine("the stub cannot reset")),
-            (true, Flaw::ResetsNothing) => Ok(()),
+            // It keeps what was lowered; the rebuild state is no program.
+            (true, Flaw::ResetsNothing) => {
+                self.needs_rebuild = false;
+                Ok(())
+            }
             (false, Flaw::AnswersAnUndeclaredReset) | (true, _) => {
-                self.loaded.clear();
+                self.cleared = std::mem::take(&mut self.loaded);
                 self.a_holds = false;
                 self.pending_refusal = None;
+                self.needs_rebuild = false;
+                if self.flaw == Flaw::LosesRegistrationsOnReset {
+                    self.functions.clear();
+                }
                 Ok(())
             }
             (false, _) => Err(Fault::unsupported(Capability::MultiShot)),
         }
     }
 
-    fn register_function(&mut self, _function: Box<dyn Function>) -> Result<(), Fault> {
+    fn register_function(&mut self, function: Box<dyn Function>) -> Result<(), Fault> {
+        self.rebuild_owed()?;
+        if self.flaw == Flaw::RefusesDeclaredFunctions {
+            return Err(Fault::engine("the stub cannot register functions"));
+        }
         if self.capabilities.functions || self.flaw == Flaw::AnswersUndeclaredFunctions {
+            self.functions.push(function);
             Ok(())
+        } else if self.flaw == Flaw::RefusesUnsupportedVaguely {
+            Err(Fault::request(
+                "the stub cannot register functions",
+                Presupposition::NotLive,
+            ))
         } else {
             Err(Fault::unsupported(Capability::Functions))
         }
     }
 
     fn register_propagator(&mut self, _propagator: Box<dyn Propagator>) -> Result<(), Fault> {
+        self.rebuild_owed()?;
         if self.capabilities.propagators || self.flaw == Flaw::AnswersUndeclaredPropagators {
             Ok(())
         } else {
@@ -1047,6 +1317,7 @@ impl Backend for Stub {
         mode: Mode,
         request: &ConsequenceRequest,
     ) -> Result<NativeAnswer, Fault> {
+        self.rebuild_owed()?;
         if self.capabilities.native_consequences != ConsequenceSupport::Native {
             return Err(Fault::unsupported(Capability::NativeConsequences));
         }
@@ -1232,6 +1503,15 @@ fn a_deciding_backend_honouring_assumptions_conforms() {
 }
 
 #[test]
+fn a_multi_shot_backend_with_functions_alone_conforms() {
+    // Its failed grounding is probed at the methods it declares, and only those.
+    let mut capabilities = only(Capability::MultiShot);
+    capabilities.functions = true;
+    let report = report(capabilities, Flaw::Faithful);
+    assert!(report.is_conformant(), "{report}");
+}
+
+#[test]
 fn a_backend_realising_every_capability_it_declares_conforms() {
     let report = report(realising(), Flaw::Faithful);
     assert!(report.is_conformant(), "{report}");
@@ -1378,8 +1658,9 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
     use Breach::{Accepted, Misanswered, Mislocated, Refused};
     use Capability as C;
     use Check::{
-        Capability as Declared, Display as Displayed, ExhaustionIsEarned as Earned,
-        FaultLoci as Faults, GroundProgramIsFaithful as Ground, OutcomeCorrectness as Outcome,
+        BackendState as State, Capability as Declared, Display as Displayed,
+        ExhaustionIsEarned as Earned, FaultLoci as Faults, GroundProgramIsFaithful as Ground,
+        OutcomeCorrectness as Outcome, RebuildLeavesNothingBehind as Rebuild,
     };
     let table: Vec<Expectation> = vec![
         (
@@ -1535,6 +1816,91 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             vec![(Outcome, Misanswered)],
         ),
         (
+            Flaw::NamesNoStatement,
+            enumerating(),
+            vec![(Faults, Mislocated)],
+        ),
+        (
+            Flaw::LocatesABuiltStatement,
+            enumerating(),
+            vec![(Faults, Mislocated)],
+        ),
+        (
+            Flaw::KeepsTheReplacedProgram,
+            enumerating(),
+            vec![(Rebuild, Misanswered)],
+        ),
+        (
+            Flaw::KeepsTheReplacedProgram,
+            realising(),
+            vec![(Rebuild, Misanswered)],
+        ),
+        (
+            Flaw::AddsOnARefusedLower,
+            only(Capability::Functions),
+            vec![(State, Misanswered)],
+        ),
+        (
+            Flaw::AddsOnARefusedLower,
+            realising(),
+            vec![(State, Misanswered)],
+        ),
+        (
+            Flaw::ForgetsItNeedsARebuild,
+            realising(),
+            vec![(State, Accepted)],
+        ),
+        (
+            Flaw::RefusesAfterAFailedSolve,
+            only(Capability::Functions),
+            vec![(State, Refused)],
+        ),
+        (
+            Flaw::LosesRegistrationsOnReset,
+            realising(),
+            vec![(State, Refused)],
+        ),
+        (
+            Flaw::RefusesUnsupportedVaguely,
+            enumerating(),
+            vec![(Declared(C::Functions), Mislocated)],
+        ),
+        (
+            Flaw::AcceptsAFaultingGrounding,
+            realising(),
+            vec![(State, Accepted)],
+        ),
+        (
+            Flaw::AnswersAFaultingSolve,
+            only(Capability::Functions),
+            vec![(State, Accepted)],
+        ),
+        (
+            Flaw::CarriesACancellation,
+            realising(),
+            vec![(Rebuild, Misanswered)],
+        ),
+        (
+            Flaw::ObservesWhileNeedingARebuild,
+            realising(),
+            vec![(State, Misanswered)],
+        ),
+        (
+            Flaw::MisnamesItsRebuild,
+            realising(),
+            vec![(State, Mislocated)],
+        ),
+        (
+            Flaw::RefusesDeclaredFunctions,
+            only(Capability::Functions),
+            vec![(Declared(C::Functions), Refused)],
+        ),
+        (
+            Flaw::RefusesTheRebuildingReset,
+            realising(),
+            vec![(State, Refused)],
+        ),
+        (
             Flaw::RefusesTheUnsafeProgramOffItsLocus,
             enumerating(),
             vec![(Faults, Mislocated)],
@@ -1671,11 +2037,13 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
         ),
         (
             // Every program after the first piles onto it, so every check that
-            // reloads fails with outcome correctness.
+            // reloads fails with outcome correctness — and a failed grounding's
+            // program outlives the reset that rebuilds.
             Flaw::ResetsNothing,
             realising(),
             vec![
                 (Outcome, Refused),
+                (State, Refused),
                 (Declared(C::NativeConsequences), Refused),
                 (Declared(C::Assumptions), Refused),
                 (Declared(C::Externals), Refused),
