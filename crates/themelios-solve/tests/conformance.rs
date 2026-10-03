@@ -23,7 +23,7 @@ use themelios_solve::contract::{
 };
 use themelios_solve::extend::{Function, Propagator};
 use themelios_solve::outcome::{
-    AnswerSet, Conclusion, Consequences, Model, NativeAnswer, Run, Solved, Truncation,
+    AnswerSet, Conclusion, Consequences, Model, NativeAnswer, Run, ShowRule, Solved, Truncation,
 };
 
 // ---- The table a stub answers the suite from ----
@@ -603,6 +603,7 @@ impl Stub {
                     yielded: 0,
                 }),
                 scenario,
+                ShowRule::default(),
             );
         }
         if self.flaw == Flaw::FaultsMidStream && !sets.is_empty() {
@@ -612,6 +613,7 @@ impl Stub {
                     fault: Some(Fault::engine("the stub's engine died mid-search")),
                 }),
                 scenario,
+                ShowRule::default(),
             );
         }
         if self.flaw == Flaw::FaultsBeforeAModel && !sets.is_empty() {
@@ -623,6 +625,7 @@ impl Stub {
                     )),
                 }),
                 scenario,
+                ShowRule::default(),
             );
         }
         if self.flaw == Flaw::YieldsPastItsEnd && !sets.is_empty() {
@@ -633,6 +636,7 @@ impl Stub {
                     ended: false,
                 }),
                 scenario,
+                ShowRule::default(),
             );
         }
         let concludes = sets.is_empty() || self.flaw != Flaw::LeavesItsSearchOpen;
@@ -658,6 +662,7 @@ impl Stub {
                 ended: false,
             }),
             scenario,
+            ShowRule::default(),
         )
     }
 }
@@ -697,6 +702,7 @@ impl Backend for Stub {
                             fault: Some(refusal),
                         }),
                         Scenario::default(),
+                        ShowRule::default(),
                     ));
                 }
                 GroundsAt::Lowering => {}

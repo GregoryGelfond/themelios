@@ -15,7 +15,9 @@ use themelios_query::WorldView;
 use themelios_solve::agent::{Agent, Scenario};
 use themelios_solve::bridge::{Door, GroundProgram};
 use themelios_solve::contract::{Backend, Capabilities, Fault, SolveRequest};
-use themelios_solve::outcome::{AnswerSet, Conclusion, Determination, Model, Run, Solved};
+use themelios_solve::outcome::{
+    AnswerSet, Conclusion, Determination, Model, Run, ShowRule, Solved,
+};
 
 /// The ground constant `name`.
 pub fn atom(name: &str) -> Symbol {
@@ -82,6 +84,7 @@ impl Backend for Fixed {
                 ended: false,
             }),
             Scenario::default(),
+            ShowRule::default(),
         ))
     }
 
@@ -128,6 +131,7 @@ impl Backend for Hypothetical {
                 ended: false,
             }),
             Scenario::default(),
+            ShowRule::default(),
         ))
     }
 
@@ -149,6 +153,7 @@ impl Backend for Hypothetical {
                 ended: false,
             }),
             scenario.clone(),
+            ShowRule::default(),
         ))
     }
 
@@ -245,6 +250,7 @@ impl Backend for Faulting {
                 faulted: false,
             }),
             Scenario::default(),
+            ShowRule::default(),
         ))
     }
 

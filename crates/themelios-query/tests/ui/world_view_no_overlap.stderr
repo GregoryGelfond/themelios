@@ -1,9 +1,9 @@
 error[E0499]: cannot borrow `world_view` as mutable more than once at a time
-  --> tests/ui/world_view_no_overlap.rs:67:18
+  --> tests/ui/world_view_no_overlap.rs:68:18
    |
-66 |     let first = world_view.members();
+67 |     let first = world_view.members();
    |                 ---------- first mutable borrow occurs here
-67 |     let second = world_view.members();
+68 |     let second = world_view.members();
    |                  ^^^^^^^^^^ second mutable borrow occurs here
-68 |     let _ = (first, second);
+69 |     let _ = (first, second);
    |              ----- first borrow later used here

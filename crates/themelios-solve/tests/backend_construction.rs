@@ -10,7 +10,9 @@ use themelios_program::symbol::{Name, Sign, Symbol};
 use themelios_solve::agent::{Agent, Scenario};
 use themelios_solve::bridge::{Door, GroundProgram};
 use themelios_solve::contract::{Backend, Capabilities, Fault, SolveRequest};
-use themelios_solve::outcome::{AnswerSet, Conclusion, Determination, Model, Run, Solved};
+use themelios_solve::outcome::{
+    AnswerSet, Conclusion, Determination, Model, Run, ShowRule, Solved,
+};
 
 /// The ground constant `name`, a member of an answer set.
 fn atom(name: &str) -> Symbol {
@@ -68,6 +70,7 @@ impl Backend for Fixed {
                 ended: false,
             }),
             Scenario::default(),
+            ShowRule::default(),
         ))
     }
 
