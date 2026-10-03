@@ -1,20 +1,22 @@
 //! The knowledge-base modification loop (docs/design/solve.md §6.2): asserting
 //! and retracting statements against the owned knowledge base, with the
 //! retraction realisation disclosed at assertion, a stale or foreign handle
-//! refused rather than silently obeyed, and the engine left to the ask step.
+//! refused rather than silently obeyed, the engine left to the ask step, and
+//! the loop's recovery from a refused grounding — the knowledge intact, a
+//! refused replay refusing every later step until a replay succeeds.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use themelios_program::program::Part;
 use themelios_program::{Atom, Name, Program, Sign, Statement, Symbol};
-use themelios_solve::agent::{Agent, RetractionClass};
+use themelios_solve::agent::{Agent, RetractionClass, Scenario};
 use themelios_solve::bridge::{Door, GroundProgram};
 use themelios_solve::contract::{
     Backend, Capabilities, Fault, GroundOptions, Presupposition, Refused, SolveRequest, TruthValue,
 };
 use themelios_solve::extend::Facts;
-use themelios_solve::outcome::Solved;
+use themelios_solve::outcome::{Conclusion, Model, Run, ShowRule, Solved};
 
 // ---- a recording backend the laws inspect ----
 
@@ -37,11 +39,27 @@ struct Records {
 }
 
 /// A backend that records what it is asked and never actually solves — the laws
-/// drive the loop and read the record, they do not read models.
+/// drive the loop and read the record, they do not read models. Every question
+/// is answered by a search that closes at once with no model; while `refusing`
+/// is on, every grounding is refused.
 struct Recorder {
     externals: bool,
     multi_shot: bool,
     records: Rc<RefCell<Records>>,
+    refusing: Rc<Cell<bool>>,
+}
+
+/// A search that closes the space at once, with no model.
+struct Closed;
+
+impl Run for Closed {
+    fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+        None
+    }
+
+    fn conclusion(&self) -> Option<Conclusion> {
+        Some(Conclusion::Exhausted)
+    }
 }
 
 impl Backend for Recorder {
@@ -53,7 +71,11 @@ impl Backend for Recorder {
     }
 
     fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
-        Err(Fault::engine("the recorder answers no question"))
+        Ok(Solved::running(
+            Box::new(Closed),
+            Scenario::default(),
+            ShowRule::default(),
+        ))
     }
 
     fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
@@ -68,9 +90,10 @@ impl Backend for Recorder {
     }
 
     fn ground(&mut self, parts: &[Part], _options: &GroundOptions) -> Result<(), Fault> {
-        if parts
-            .iter()
-            .any(|part| part.key().name == identifier(REFUSED_PART))
+        if self.refusing.get()
+            || parts
+                .iter()
+                .any(|part| part.key().name == identifier(REFUSED_PART))
         {
             return Err(Fault::engine("the recorder grounds no such part"));
         }
@@ -108,8 +131,22 @@ fn agent_over(
         externals,
         multi_shot,
         records: Rc::clone(&records),
+        refusing: Rc::new(Cell::new(false)),
     };
     (Agent::new(program, backend), records)
+}
+
+/// An agent over an empty knowledge base and a multi-shot recorder, with the
+/// switch that, while on, makes the recorder refuse every grounding.
+fn agent_with_a_switchable_part() -> (Agent<Recorder>, Rc<Cell<bool>>) {
+    let refusing = Rc::new(Cell::new(false));
+    let backend = Recorder {
+        externals: NO_EXTERNALS,
+        multi_shot: MULTI_SHOT,
+        records: Rc::new(RefCell::new(Records::default())),
+        refusing: Rc::clone(&refusing),
+    };
+    (Agent::new(Program::empty(), backend), refusing)
 }
 
 fn identifier(name: &str) -> Name {
@@ -601,4 +638,43 @@ fn forget_scales_linearly_with_the_fact_count() {
          {large}ns for {} — a rebuild per member is the quadratic to avoid",
         PROBE_FACTS * SIZE_RATIO,
     );
+}
+
+// ---- recovery from a refused grounding (§6.2) ----
+
+#[test]
+fn a_refused_replay_refuses_every_later_step_at_the_same_part() {
+    let (mut agent, refusing) = agent_with_a_switchable_part();
+    agent
+        .ground(&[part("step")])
+        .expect("the part grounds while the switch is off");
+    refusing.set(true);
+    assert!(
+        agent.solve().is_err(),
+        "the replay of the grounded part is refused"
+    );
+    assert!(agent.solve().is_err(), "and refused again at the next step");
+}
+
+#[test]
+fn the_agent_recovers_once_the_part_grounds_again() {
+    let (mut agent, refusing) = agent_with_a_switchable_part();
+    agent.ground(&[part("step")]).expect("the part grounds");
+    refusing.set(true);
+    assert!(agent.solve().is_err(), "the replay is refused");
+    refusing.set(false);
+    assert!(
+        agent.solve().is_ok(),
+        "the next step's rebuild succeeds, and the step with it"
+    );
+}
+
+#[test]
+fn a_failed_grounding_leaves_the_knowledge_intact() {
+    let (mut agent, refusing) = agent_with_a_switchable_part();
+    agent.assert(fact("a")).expect("assert succeeds");
+    let before = agent.knowledge().clone();
+    refusing.set(true);
+    assert!(agent.ground(&[part("step")]).is_err());
+    assert_eq!(agent.knowledge(), &before);
 }
