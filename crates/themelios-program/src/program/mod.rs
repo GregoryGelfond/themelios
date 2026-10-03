@@ -74,6 +74,30 @@ pub enum Statement {
     Query(Query),
 }
 
+impl Statement {
+    /// A **global definition** — a `#const` or a `#theory` (§4.2): a statement the authority
+    /// gathers before it instantiates anything, so its position is free (the render's leading
+    /// block, §10), and binds by name at most once, so a repeat is a redefinition (§6.3, §8).
+    /// The one classification both read. Total; O(1).
+    pub fn is_global_definition(&self) -> bool {
+        match self {
+            Statement::Const(_) | Statement::TheoryDefinition(_) => true,
+            Statement::Rule(_)
+            | Statement::WeakConstraint(_)
+            | Statement::Optimize(_)
+            | Statement::Show(_)
+            | Statement::Project(_)
+            | Statement::Defined(_)
+            | Statement::Edge(_)
+            | Statement::Heuristic(_)
+            | Statement::External(_)
+            | Statement::Include(_)
+            | Statement::Script(_)
+            | Statement::Query(_) => false,
+        }
+    }
+}
+
 // ---- The statement coercion class closes by a rule (§4.2, §7.1) ----
 //
 // For every statement family `X`: `From<X> for Statement`, its variant wrapped as built.

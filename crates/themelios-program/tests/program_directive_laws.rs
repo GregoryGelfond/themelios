@@ -4,12 +4,16 @@
 //! unevaluated term, and the opaque regions (`#script`, `#include`) are carried but never
 //! acted on.
 
+use std::collections::BTreeSet;
+
 use themelios_program::program::{
-    Const, ConstPolicy, Defined, Include, IncludeTarget, Script, TheoryAtom, TheoryElement,
-    TheoryGuard, TheoryOperator, TheoryTerm,
+    Const, ConstPolicy, Defined, Include, IncludeTarget, Program, Script, Statement, TheoryAtom,
+    TheoryDefinition, TheoryElement, TheoryGuard, TheoryOperator, TheoryTerm,
 };
+use themelios_program::raise::raise_str;
 use themelios_program::symbol::{Name, Sign, Signature, Symbol};
 use themelios_program::term::{BinaryOp, Term, Variable};
+use themelios_syntax::dialect::Dialect;
 
 fn name(text: &str) -> Name {
     Name::new(text).expect("identifier")
@@ -17,6 +21,21 @@ fn name(text: &str) -> Name {
 
 fn num(n: i32) -> Term {
     Term::Symbolic(Symbol::Number(n))
+}
+
+/// Raise a whole program under the clingo dialect, refusing a fixture that does not parse
+/// and raise cleanly.
+fn raised(text: &str) -> Program {
+    let raised = raise_str(text, Dialect::Clingo).expect("the source admits");
+    assert!(
+        raised.syntax_diagnostics().is_empty(),
+        "fixture parses cleanly: {text}"
+    );
+    assert!(
+        raised.lowering_diagnostics().is_empty(),
+        "fixture raises cleanly: {text}"
+    );
+    raised.into_program()
 }
 
 #[test]
@@ -113,4 +132,35 @@ fn defined_carries_a_signature() {
         },
     };
     assert_eq!(defined.signature.arity, 2);
+}
+
+// ---- the global definitions (§4.2) ----
+
+#[test]
+fn a_constant_is_a_global_definition() {
+    let constant = Statement::from(Const::new(name("n"), num(1), None));
+    assert!(constant.is_global_definition());
+}
+
+#[test]
+fn a_theory_definition_is_a_global_definition() {
+    let theory = Statement::from(TheoryDefinition {
+        name: name("t"),
+        terms: BTreeSet::new(),
+        atoms: BTreeSet::new(),
+    });
+    assert!(theory.is_global_definition());
+}
+
+#[test]
+fn no_other_statement_is_a_global_definition() {
+    let program = raised(
+        "a. :- b. :~ a. [1@0] #minimize { 1@0 : a }. #show a/0. #project a/0. #defined a/0. \
+         #edge (a, b). #heuristic a. [1, level] #external a. #include \"x.lp\".",
+    );
+    assert!(
+        program
+            .statements()
+            .all(|node| !node.get().is_global_definition())
+    );
 }
