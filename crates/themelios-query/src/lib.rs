@@ -666,6 +666,41 @@ impl From<NotAPattern> for NotABindingPattern {
     }
 }
 
+/// The input to [`Snapshot::bindings`] and the agent's `bindings` (docs/design/query.md §2.1,
+/// §2.5): an open pattern this tier's partition policy accepts — a well-formed pattern
+/// (program.md §11.2) with every position named. A `BindingPattern` that exists is one every
+/// reading accepts, so `bindings` never fails on pattern validity and the agent checks the
+/// pattern before it pays for a solve — the policy made a type, as [`Query`] is for a ground
+/// query.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BindingPattern {
+    atom: Atom,
+}
+
+impl BindingPattern {
+    /// Accept `atom` as a binding pattern, or refuse it, set-independently (§2.5). The anonymous
+    /// check runs first: an anonymous position (`p(X, _)`, at any depth) — well formed to the
+    /// unifier, but naming no binding — is [`AnonymousPosition`], taking precedence for an atom
+    /// that is also a non-pattern; a non-denoting or pooled argument is the program tier's
+    /// [`NotAPattern`], carried. Cost: one self-unification, linear in the atom.
+    ///
+    /// [`AnonymousPosition`]: NotABindingPattern::AnonymousPosition
+    pub fn of(atom: Atom) -> Result<BindingPattern, NotABindingPattern> {
+        if has_anonymous_position(&atom) {
+            return Err(NotABindingPattern::AnonymousPosition);
+        }
+        // The program tier's `mgu` refuses a pool and a non-denoting argument alike (§3.1); a
+        // pattern that self-unifies unifies against every ground candidate without refusal.
+        mgu(&atom, &atom)?;
+        Ok(BindingPattern { atom })
+    }
+
+    /// The pattern's atom. O(1).
+    pub fn atom(&self) -> &Atom {
+        &self.atom
+    }
+}
+
 impl Snapshot {
     /// The engine-free snapshot of `members`, ranging over `scenario` — the value
     /// [`WorldView::materialize`] drains into (docs/design/query.md §2.3).
@@ -765,49 +800,36 @@ impl Snapshot {
     /// instances of `pat`'s own sign some member holds; an instance only whose
     /// *contrary* is bravely present is listed under the contrary pattern, not here).
     /// The trichotomy of [`answer`](Snapshot::answer), carried to a pattern's
-    /// instances. Infallible over the materialised members once the pattern is accepted.
-    ///
-    /// **Refuses**, set-independently, a `pat` that is not a binding pattern (docs/
-    /// design/query.md §2.5). The anonymous check runs first: an anonymous position
-    /// (`p(X, _)`, at any depth) — well formed to the unifier, but naming no binding —
-    /// is [`AnonymousPosition`], taking precedence for an atom that is also a
-    /// non-pattern; a non-denoting or pooled argument is the program tier's
-    /// [`NotAPattern`], carried. Cost: the cautious and brave folds, then, per cell, an
-    /// `O(log n + k)` block scan with each candidate unified at a cost linear in its size.
-    ///
-    /// [`AnonymousPosition`]: NotABindingPattern::AnonymousPosition
-    pub fn bindings(&self, pat: &Atom) -> Result<Bindings, NotABindingPattern> {
-        // An anonymous `_` names no binding to key the partition on, so a reading over
-        // the named variables' binding is ill-posed; refuse it here, before any
-        // matching, as this tier's own refusal (§2.5).
-        if has_anonymous_position(pat) {
-            return Err(NotABindingPattern::AnonymousPosition);
-        }
-        // Classify the pattern once, up front and set-independently, so a non-pattern
-        // refuses before the folds — the program tier's `mgu` refuses a pool and a
-        // non-denoting argument alike (§3.1).
-        mgu(pat, pat)?;
+    /// instances. Infallible: a [`BindingPattern`] that exists is one this reading accepts,
+    /// its refusals made when it was built. Cost: the cautious and brave folds, then, per
+    /// cell, an `O(log n + k)` block scan with each candidate unified at a cost linear in its
+    /// size.
+    pub fn bindings(&self, pat: &BindingPattern) -> Bindings {
         // The cautious (⋂) and brave (⋃) consequences — the derived reading a
         // snapshot folds (§2.4), the ground the partition is read off — borrowed as
         // the symbol sets they are.
         let (cautious, brave) = (self.cautious(), self.brave());
         // `yes`: the instances present in every member.
-        let yes: BTreeSet<Symbol> = matched_in(pat, cautious.as_set())?.into_iter().collect();
+        let yes: BTreeSet<Symbol> = instances_in(pat, cautious.as_set()).into_iter().collect();
         // `no`: the instances whose contrary is cautiously entailed, reported with the
         // pattern's sign (the contrary of each matched contrary). Disjoint from the
         // brave domain of `pat` by answer-set consistency (no member holds both `g`
         // and `-g`), so it never re-enters `unknown`.
-        let no: BTreeSet<Symbol> = matched_in(&contrary_pattern(pat), cautious.as_set())?
+        // The contrary of an accepted pattern is accepted: it differs only in sign.
+        let contrary_of = BindingPattern {
+            atom: contrary_pattern(pat.atom()),
+        };
+        let no: BTreeSet<Symbol> = instances_in(&contrary_of, cautious.as_set())
             .iter()
             .map(contrary)
             .collect();
         // `unknown`: the brave domain, less the settled. `yes ⊆ brave` (⋂ ⊆ ⋃), so
         // this subtraction is the whole of the disjointness the partition owes.
-        let unknown: BTreeSet<Symbol> = matched_in(pat, brave.as_set())?
+        let unknown: BTreeSet<Symbol> = instances_in(pat, brave.as_set())
             .into_iter()
             .filter(|instance| !yes.contains(instance))
             .collect();
-        Ok(Bindings { yes, no, unknown })
+        Bindings { yes, no, unknown }
     }
 }
 
@@ -819,7 +841,7 @@ impl Snapshot {
 /// sign is carried through unchanged. `O(the symbol's size)` — each argument is
 /// copied.
 ///
-/// The building block of `matched_in`, through which the bindings partition
+/// The building block of `instances_in`, through which the bindings partition
 /// (§2.5) reaches it.
 pub(crate) fn lift(symbol: &Symbol) -> Option<Atom> {
     match symbol {
@@ -842,8 +864,8 @@ pub(crate) fn lift(symbol: &Symbol) -> Option<Atom> {
 /// Whether any argument position of `pattern` bears an anonymous variable `_`, at
 /// any depth (docs/design/query.md §2.5). The scan is deep — a `_` nested in a
 /// compound argument (`p(f(_))`) counts — because an anonymous variable anywhere
-/// names no binding, so [`Snapshot::bindings`] cannot attribute an instance to it
-/// and refuses the pattern. Ground `Symbolic` leaves hold no variable and are not
+/// names no binding, so a reading cannot attribute an instance to it and
+/// [`BindingPattern::of`] refuses the pattern. Ground `Symbolic` leaves hold no variable and are not
 /// descended. Iterative; O(pattern nodes).
 fn has_anonymous_position(pattern: &Atom) -> bool {
     pattern
@@ -855,33 +877,28 @@ fn has_anonymous_position(pattern: &Atom) -> bool {
 /// The ground *instances* of `pattern` in `set` — the matched symbols, since
 /// [`Snapshot::bindings`] partitions instances, not substitutions (docs/design/
 /// query.md §2.5, §3.1). The candidates are the contiguous block of symbols sharing
-/// `pattern`'s signature — `set.range(signature_range(pattern))`, an `O(log n + k)`
-/// scan of the `k` candidates, not the whole `n`-member set, each then lifted and
-/// unified at a cost linear in its own size and the pattern's. Reuse, not
-/// reinvention: the unifier, the signature range, and the forced occurs-check are the
-/// program tier's; only enumerating the candidates is this tier's.
+/// the pattern's signature — `set.range(signature_range(..))`, an `O(log n + k)` scan of
+/// the `k` candidates, not the whole `n`-member set, each then lifted and unified at a
+/// cost linear in its own size and the pattern's. Reuse, not reinvention: the unifier,
+/// the signature range, and the forced occurs-check are the program tier's; only
+/// enumerating the candidates is this tier's.
 ///
-/// Refusal is *set-independent*. A `pattern` that is not a pattern is an `Err`,
-/// and the same `Err`, whether or not `set` holds a same-signature member: it is
-/// classified once per scan, up front, by self-unifying `pattern` — the program
-/// tier's own `mgu` refuses a pool and a non-denoting argument (a variable-bearing
-/// arithmetic term, an undefined or out-of-range ground operation, an interval, a
-/// pooled argument, an unevaluated `@`-call, §3.1) alike — never incidentally by a
-/// `mgu` reached only when the candidate block is non-empty. That classification
-/// runs before `signature_range`, whose value on a pool is the empty range
-/// `#sup..=#inf` that `BTreeSet::range` would panic on (`start > end`), so the
-/// panic is unreachable. *Cannot decide* is never *no match*.
-pub(crate) fn matched_in(pattern: &Atom, set: &AnswerSet) -> Result<Vec<Symbol>, NotAPattern> {
-    mgu(pattern, pattern)?;
-    let mut out = Vec::new();
-    for candidate in set.range(signature_range(pattern)) {
-        if let Some(atom) = lift(candidate)
-            && mgu(pattern, &atom)?.is_some()
-        {
-            out.push(candidate.clone());
-        }
-    }
-    Ok(out)
+/// The pattern self-unified when it was built ([`BindingPattern::of`]), so it is neither
+/// pooled nor non-denoting: its signature range is a real range — a pool's would be the
+/// empty `#sup..=#inf` that `BTreeSet::range` panics on — and no unification against a
+/// lifted, ground candidate refuses. *Cannot decide* never arises here.
+pub(crate) fn instances_in(pattern: &BindingPattern, set: &AnswerSet) -> Vec<Symbol> {
+    let atom = pattern.atom();
+    set.range(signature_range(atom))
+        .filter(|candidate| {
+            lift(candidate).is_some_and(|ground| {
+                mgu(atom, &ground)
+                    .expect("a binding pattern self-unified when built, and a lifted candidate is ground, so unification does not refuse")
+                    .is_some()
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 /// The engine-free snapshot a resolved question's world view materialises into
@@ -943,11 +960,9 @@ pub trait AgentReading {
     fn entails(&mut self, query: &Query) -> Result<bool, Fault>;
 
     /// The three-valued [`Bindings`] of an open `pat` over the agent's world view
-    /// (docs/design/query.md §2.5). Refuses as [`snapshot`](AgentReading::snapshot)
-    /// does, and additionally when `pat` is not a binding pattern (an anonymous
-    /// position or a non-pattern) — surfaced as a request [`Fault`], the locus a
-    /// non-pattern asked for lives at (§2.5).
-    fn bindings(&mut self, pat: &Atom) -> Result<Bindings, Fault>;
+    /// (docs/design/query.md §2.5). Refuses only as [`snapshot`](AgentReading::snapshot)
+    /// does: the pattern was checked when it was built, before any solve.
+    fn bindings(&mut self, pat: &BindingPattern) -> Result<Bindings, Fault>;
 }
 
 impl<B: Backend> AgentReading for Agent<B> {
@@ -975,19 +990,8 @@ impl<B: Backend> AgentReading for Agent<B> {
         Ok(self.snapshot()?.entails(query))
     }
 
-    fn bindings(&mut self, pat: &Atom) -> Result<Bindings, Fault> {
-        self.snapshot()?.bindings(pat).map_err(|refusal| {
-            // A `Fault` carries text only, and the refusal's `Display` names the
-            // category (per Rust convention) while its `source()` carries the
-            // program tier's specific reason — which term does not denote. Fold that
-            // reason into the message so the facade caller does not lose it.
-            let mut message = refusal.to_string();
-            if let Some(source) = std::error::Error::source(&refusal) {
-                message.push_str(": ");
-                message.push_str(&source.to_string());
-            }
-            Fault::request(message)
-        })
+    fn bindings(&mut self, pat: &BindingPattern) -> Result<Bindings, Fault> {
+        Ok(self.snapshot()?.bindings(pat))
     }
 }
 
@@ -1232,6 +1236,12 @@ mod matching {
     use proptest::prelude::*;
     use themelios_program::symbol::{Name, Sign, VarName};
 
+    /// The instances of `atom` in `set`, its binding pattern built first — the matcher over
+    /// an accepted pattern, or the refusal made at construction.
+    fn matched(atom: &Atom, set: &AnswerSet) -> Result<Vec<Symbol>, NotABindingPattern> {
+        Ok(instances_in(&BindingPattern::of(atom.clone())?, set))
+    }
+
     /// A 0-ary constant symbol.
     fn constant(name: &str) -> Symbol {
         Symbol::function(
@@ -1330,7 +1340,7 @@ mod matching {
         let symbol = applied("p", [constant("a")]);
         let atom = lift(&symbol).expect("a function symbol lifts to an atom");
         let set: AnswerSet = [symbol.clone()].into_iter().collect();
-        assert_eq!(matched_in(&atom, &set), Ok(vec![symbol]));
+        assert_eq!(matched(&atom, &set), Ok(vec![symbol]));
     }
 
     #[test]
@@ -1345,8 +1355,8 @@ mod matching {
         };
         let set: AnswerSet = [applied("p", [constant("a")])].into_iter().collect();
         assert!(matches!(
-            matched_in(&pooled, &set),
-            Err(NotAPattern::Pooled)
+            matched(&pooled, &set),
+            Err(NotABindingPattern::NotAPattern(NotAPattern::Pooled))
         ));
     }
 
@@ -1362,8 +1372,7 @@ mod matching {
         ]
         .into_iter()
         .collect();
-        let matches =
-            matched_in(&pattern("p", vec![ground(constant("a"))]), &set).expect("a pattern");
+        let matches = matched(&pattern("p", vec![ground(constant("a"))]), &set).expect("a pattern");
         assert_eq!(matches, vec![applied("p", [constant("a")])]);
     }
 
@@ -1379,7 +1388,7 @@ mod matching {
         ]
         .into_iter()
         .collect();
-        let matches = matched_in(&pattern("p", vec![var("X")]), &set).expect("a pattern");
+        let matches = matched(&pattern("p", vec![var("X")]), &set).expect("a pattern");
         assert_eq!(
             matches,
             vec![applied("p", [constant("a")]), applied("p", [constant("b")])],
@@ -1399,7 +1408,7 @@ mod matching {
         ]
         .into_iter()
         .collect();
-        let matches = matched_in(&pattern("p", vec![var("X")]), &set).expect("a pattern");
+        let matches = matched(&pattern("p", vec![var("X")]), &set).expect("a pattern");
         assert_eq!(
             matches.len(),
             3,
@@ -1413,24 +1422,25 @@ mod matching {
         // the same — NonDenoting, never a quiet empty match — whether the set holds
         // a same-signature member, a different one, or none. The classification is
         // set-independent, not a side effect of the candidate block being non-empty.
-        let interval = pattern(
-            "p",
-            vec![Term::Interval {
-                lower: Box::new(num(1)),
-                upper: Box::new(num(3)),
-            }],
-        );
+        let one_to_three = Term::Interval {
+            lower: Box::new(num(1)),
+            upper: Box::new(num(3)),
+        };
+        let interval = pattern("p", vec![one_to_three.clone()]);
         let with_same_signature: AnswerSet = [applied("p", [constant("a")])].into_iter().collect();
         let with_other_signature: AnswerSet = [applied("q", [constant("a")])].into_iter().collect();
         let empty = AnswerSet::new();
-        let refusal = matched_in(&interval, &empty);
-        assert!(
-            matches!(refusal, Err(NotAPattern::NonDenoting { .. })),
-            "an interval pattern is a non-denoting refusal, not a match",
+        let refusal = matched(&interval, &empty);
+        assert_eq!(
+            refusal,
+            Err(NotABindingPattern::NotAPattern(NotAPattern::NonDenoting {
+                term: one_to_three,
+            })),
+            "an interval pattern is a non-denoting refusal naming the interval, not a match",
         );
         for set in [&with_same_signature, &with_other_signature] {
             assert_eq!(
-                matched_in(&interval, set),
+                matched(&interval, set),
                 refusal,
                 "the refusal is identical whichever members the set holds",
             );
@@ -1454,7 +1464,7 @@ mod matching {
             name: Name::new("p").expect("a valid identifier"),
             arguments: Arguments::Single(vec![var("X")]),
         };
-        let matches = matched_in(&pattern, &set).expect("a pattern");
+        let matches = matched(&pattern, &set).expect("a pattern");
         assert_eq!(
             matches.len(),
             1,
@@ -1517,7 +1527,7 @@ mod matching {
             let pat = pattern("p", vec![ground(nested(depth))]);
             time_once(|| {
                 for _ in 0..REPEAT {
-                    let found = matched_in(&pat, &set).expect("a pattern");
+                    let found = matched(&pat, &set).expect("a pattern");
                     std::hint::black_box(&found);
                 }
             })
@@ -1547,7 +1557,7 @@ mod matching {
             let set: AnswerSet = members.iter().map(|&(pred, a)| sym(pred, a)).collect();
             let pat = pattern(&format!("p{pat_pred}"), vec![ground(arg(pat_arg))]);
             prop_assert_eq!(
-                matched_in(&pat, &set).expect("a pattern"),
+                matched(&pat, &set).expect("a pattern"),
                 full_scan(&pat, &set)
             );
         }
@@ -1565,7 +1575,7 @@ mod matching {
             let set: AnswerSet = members.iter().map(|&(pred, a)| sym(pred, a)).collect();
             let pat = pattern(&format!("p{pat_pred}"), vec![var("X")]);
             prop_assert_eq!(
-                matched_in(&pat, &set).expect("a pattern"),
+                matched(&pat, &set).expect("a pattern"),
                 full_scan(&pat, &set)
             );
         }
@@ -1577,6 +1587,11 @@ mod bindings {
     use super::*;
     use proptest::prelude::*;
     use themelios_program::symbol::{Name, Sign, VarName};
+
+    /// The binding pattern of `atom`, which the fixture knows to be one.
+    fn binding(atom: Atom) -> BindingPattern {
+        BindingPattern::of(atom).expect("a binding pattern")
+    }
 
     /// The 0-ary positive constant `name` — an argument value.
     fn constant(name: &str) -> Symbol {
@@ -1667,7 +1682,7 @@ mod bindings {
             ]),
         };
         assert!(matches!(
-            three_cell_world().bindings(&pattern),
+            BindingPattern::of(pattern),
             Err(NotABindingPattern::AnonymousPosition),
         ));
     }
@@ -1681,7 +1696,7 @@ mod bindings {
             [Term::anonymous()],
         );
         assert!(matches!(
-            three_cell_world().bindings(&pattern(nested)),
+            BindingPattern::of(pattern(nested)),
             Err(NotABindingPattern::AnonymousPosition),
         ));
     }
@@ -1695,7 +1710,7 @@ mod bindings {
             upper: Box::new(Term::Symbolic(Symbol::number(3))),
         };
         assert!(matches!(
-            three_cell_world().bindings(&pattern(interval)),
+            BindingPattern::of(pattern(interval)),
             Err(NotABindingPattern::NotAPattern(_)),
         ));
     }
@@ -1741,9 +1756,7 @@ mod bindings {
 
     #[test]
     fn yes_holds_the_cautiously_entailed_instances() {
-        let bindings = three_cell_world()
-            .bindings(&var_pattern("p", "X"))
-            .expect("a binding pattern");
+        let bindings = three_cell_world().bindings(&binding(var_pattern("p", "X")));
         let yes: BTreeSet<Symbol> = bindings.yes().cloned().collect();
         assert_eq!(
             yes,
@@ -1754,9 +1767,7 @@ mod bindings {
 
     #[test]
     fn no_holds_the_instances_whose_contrary_is_cautiously_entailed() {
-        let bindings = three_cell_world()
-            .bindings(&var_pattern("p", "X"))
-            .expect("a binding pattern");
+        let bindings = three_cell_world().bindings(&binding(var_pattern("p", "X")));
         let no: BTreeSet<Symbol> = bindings.no().cloned().collect();
         assert_eq!(
             no,
@@ -1767,9 +1778,7 @@ mod bindings {
 
     #[test]
     fn unknown_holds_the_brave_domain_less_the_settled() {
-        let bindings = three_cell_world()
-            .bindings(&var_pattern("p", "X"))
-            .expect("a binding pattern");
+        let bindings = three_cell_world().bindings(&binding(var_pattern("p", "X")));
         let unknown: BTreeSet<Symbol> = bindings.unknown().cloned().collect();
         assert_eq!(
             unknown,
@@ -1790,9 +1799,7 @@ mod bindings {
                 atom_symbol("p", "b", Sign::Positive),
             ]),
         ]);
-        let bindings = world
-            .bindings(&var_pattern("p", "X"))
-            .expect("a binding pattern");
+        let bindings = world.bindings(&binding(var_pattern("p", "X")));
         let yes: BTreeSet<Symbol> = bindings.yes().cloned().collect();
         let no: BTreeSet<Symbol> = bindings.no().cloned().collect();
         let unknown: BTreeSet<Symbol> = bindings.unknown().cloned().collect();
@@ -1823,7 +1830,7 @@ mod bindings {
                 VarName::new("X").expect("a valid variable name"),
             )]),
         };
-        let bindings = world.bindings(&negative).expect("a binding pattern");
+        let bindings = world.bindings(&binding(negative));
         let yes: BTreeSet<Symbol> = bindings.yes().cloned().collect();
         let no: BTreeSet<Symbol> = bindings.no().cloned().collect();
         assert_eq!(
@@ -1866,8 +1873,7 @@ mod bindings {
             });
             let world = snapshot(members);
             let bindings = world
-                .bindings(&var_pattern("p", "X"))
-                .expect("a binding pattern");
+                .bindings(&binding(var_pattern("p", "X")));
             let yes: BTreeSet<Symbol> = bindings.yes().cloned().collect();
             let no: BTreeSet<Symbol> = bindings.no().cloned().collect();
             let unknown: BTreeSet<Symbol> = bindings.unknown().cloned().collect();
@@ -1906,8 +1912,7 @@ mod bindings {
                 .collect();
             let world = snapshot(members.clone());
             let bindings = world
-                .bindings(&signed_var_pattern("p", "X", sign))
-                .expect("a binding pattern");
+                .bindings(&binding(signed_var_pattern("p", "X", sign)));
             let yes: BTreeSet<Symbol> = bindings.yes().cloned().collect();
             let no: BTreeSet<Symbol> = bindings.no().cloned().collect();
             let unknown: BTreeSet<Symbol> = bindings.unknown().cloned().collect();
