@@ -11,7 +11,7 @@ use criterion::{BenchmarkId, Criterion};
 use themelios_program::{AnswerSet, Atom, Name, Program, Sign, Symbol, Term};
 use themelios_query::{AgentReading, BindingPattern, Snapshot};
 use themelios_solve::agent::{Agent, Scenario};
-use themelios_solve::bridge::{Door, GroundProgram};
+use themelios_solve::bridge::Door;
 use themelios_solve::contract::{Backend, Capabilities, Fault, SolveRequest};
 use themelios_solve::outcome::{Conclusion, Model, Run, ShowRule, Solved};
 
@@ -58,10 +58,6 @@ impl Backend for Holding {
 
     fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
         Ok(())
-    }
-
-    fn ground_program(&self) -> Option<&GroundProgram> {
-        None
     }
 }
 

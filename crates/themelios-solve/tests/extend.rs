@@ -12,7 +12,7 @@ use std::error::Error;
 use std::fmt::Debug;
 
 use themelios_program::{AnswerSet, Name, Sign, Symbol};
-use themelios_solve::bridge::{Door, GroundProgram};
+use themelios_solve::bridge::Door;
 use themelios_solve::contract::{Backend, Capabilities, Capability, Fault, Locus, SolveRequest};
 use themelios_solve::extend::{Extract, ExtractError, Facts, Function, GroundFault};
 use themelios_solve::outcome::{Model, Solved};
@@ -64,10 +64,6 @@ impl Backend for Undeclared {
 
     fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
         Err(Fault::engine("this backend lowers nothing"))
-    }
-
-    fn ground_program(&self) -> Option<&GroundProgram> {
-        None
     }
 }
 

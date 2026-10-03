@@ -8,7 +8,7 @@
 use themelios_program::program::Program;
 use themelios_program::symbol::{Name, Sign, Symbol};
 use themelios_solve::agent::{Agent, Scenario};
-use themelios_solve::bridge::{Door, GroundProgram};
+use themelios_solve::bridge::Door;
 use themelios_solve::contract::{Backend, Capabilities, Fault, SolveRequest};
 use themelios_solve::outcome::{
     AnswerSet, Conclusion, Determination, Model, Run, ShowRule, Solved,
@@ -76,10 +76,6 @@ impl Backend for Fixed {
 
     fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
         Ok(())
-    }
-
-    fn ground_program(&self) -> Option<&GroundProgram> {
-        None
     }
 }
 

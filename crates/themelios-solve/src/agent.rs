@@ -1037,7 +1037,6 @@ mod ask_laws {
     use super::*;
     use std::collections::BTreeSet;
 
-    use crate::bridge::GroundProgram;
     use crate::contract::{Capabilities, Refused};
     use crate::outcome::{AnswerSet, Conclusion, Model, Run, ShowRule, Truncation};
 
@@ -1121,10 +1120,6 @@ mod ask_laws {
             Ok(())
         }
 
-        fn ground_program(&self) -> Option<&GroundProgram> {
-            None
-        }
-
         fn solve_assuming(
             &mut self,
             scenario: &Scenario,
@@ -1187,10 +1182,6 @@ mod ask_laws {
 
         fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
             Ok(())
-        }
-
-        fn ground_program(&self) -> Option<&GroundProgram> {
-            None
         }
 
         fn consequences_native(
@@ -1351,10 +1342,6 @@ mod ask_laws {
         fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
             Ok(())
         }
-
-        fn ground_program(&self) -> Option<&GroundProgram> {
-            None
-        }
     }
 
     #[test]
@@ -1417,10 +1404,6 @@ mod ask_laws {
 
         fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
             Ok(())
-        }
-
-        fn ground_program(&self) -> Option<&GroundProgram> {
-            None
         }
     }
 
@@ -1563,10 +1546,6 @@ mod ask_laws {
             Ok(())
         }
 
-        fn ground_program(&self) -> Option<&GroundProgram> {
-            None
-        }
-
         fn solve_assuming(
             &mut self,
             scenario: &Scenario,
@@ -1665,10 +1644,6 @@ mod ask_laws {
             Ok(())
         }
 
-        fn ground_program(&self) -> Option<&GroundProgram> {
-            None
-        }
-
         fn solve_assuming(
             &mut self,
             scenario: &Scenario,
@@ -1703,10 +1678,6 @@ mod ask_laws {
 
         fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
             Err(Fault::engine("the lowering was paid for"))
-        }
-
-        fn ground_program(&self) -> Option<&GroundProgram> {
-            None
         }
     }
 

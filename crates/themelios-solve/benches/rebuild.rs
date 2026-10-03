@@ -10,7 +10,7 @@ use criterion::{BatchSize, BenchmarkId, Criterion};
 
 use themelios_program::{Atom, Name, Program, Rule, Statement, Symbol, Term};
 use themelios_solve::agent::Agent;
-use themelios_solve::bridge::{Door, GroundProgram};
+use themelios_solve::bridge::Door;
 use themelios_solve::contract::{Backend, Capabilities, Fault, SolveRequest};
 use themelios_solve::outcome::Solved;
 
@@ -31,10 +31,6 @@ impl Backend for Idle {
 
     fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
         Ok(())
-    }
-
-    fn ground_program(&self) -> Option<&GroundProgram> {
-        None
     }
 }
 
