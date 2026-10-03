@@ -132,7 +132,9 @@ fn program_text() -> impl Strategy<Value = String> {
         Just("1{#true;#true}1."), // a kept repeat: content, not a merge (§4.4)
         Just("#program step(t)."),
         Just("p(t)."),
-        Just("1 { ."), // a malformed line
+        Just("1 { ."),         // a malformed line
+        Just("#const n = 1."), // twice: a repeated definition in one part
+        Just("#const n = 1."),
     ];
     prop::collection::vec(line, 0..8).prop_map(|lines| lines.join("\n"))
 }

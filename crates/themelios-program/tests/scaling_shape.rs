@@ -855,3 +855,35 @@ fn rewriting_statements_under_a_wide_part_is_near_linear() {
         "rewriting a wide part's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} statements and formals; the near-linear shape allows at most x{LINEAR_CEILING}"
     );
 }
+
+// ---- the repeated-definition check (§6.3, §8) ----
+
+/// `count` distinct constants in `base` — every definition checked, none repeated.
+fn distinct_constants(count: usize) -> String {
+    let mut source = String::new();
+    for i in 0..count {
+        write!(source, "#const c{i} = {i}. ").expect("writing to a String");
+    }
+    source
+}
+
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
+#[test]
+fn checking_many_definitions_is_near_linear() {
+    // One ordered-map entry per definition, O(log d); a pairwise scan of the part's
+    // definitions would be Θ(d²).
+    let small = distinct_constants(STATEMENTS);
+    let big = distinct_constants(STATEMENTS * SIZE_RATIO);
+    let ratio = median_ratio(
+        || time_once(|| drop(std::hint::black_box(raise_text(&small)))),
+        || time_once(|| drop(std::hint::black_box(raise_text(&big)))),
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "checking definitions' median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} definitions; the near-linear shape allows at most x{LINEAR_CEILING}"
+    );
+}

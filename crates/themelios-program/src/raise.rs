@@ -16,7 +16,8 @@
 //! on an explicit work list rather than the call stack, so a deep term fragment raises
 //! without overflow (§13).
 
-use std::collections::BTreeSet;
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -65,8 +66,9 @@ impl<T: AstNode<Language = Asp>> Reads for Parse<T> {
 }
 
 /// A located diagnostic the raise emits when a recovered fragment holds a term the
-/// value cannot represent (program §8): the offending region, by span, and its kind.
-/// Owned plain data (`Send + Sync + 'static`); the kinds the statement and directive
+/// value cannot represent, or holds text the authority rejects that the set would merge
+/// into a program it accepts (program §6.3, §8): the offending region, by span, and its
+/// kind. Owned plain data (`Send + Sync + 'static`); the kinds the statement and directive
 /// raise add join the enum later, which is why it is `#[non_exhaustive]`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LowerError {
@@ -93,6 +95,8 @@ impl LowerError {
 /// represent — of text the grounder itself admits must join the analysis differential's
 /// faithful-raise gate (`raised_faithfully`), or a truncated reading is trusted again, the
 /// failure [`PooledArgumentList`](LowerErrorKind::PooledArgumentList) exists to end.
+/// [`RepeatedDefinition`](LowerErrorKind::RepeatedDefinition) marks text the authority
+/// rejects, not a lossy reading, so it is no such kind.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum LowerErrorKind {
@@ -121,6 +125,14 @@ pub enum LowerErrorKind {
     /// silence, so a consumer that gates on a clean raise does not trust safety or finiteness of
     /// the truncated theory reading.
     PooledArgumentList,
+    /// A global definition repeated content-equal within its part (§6.3): text the authority
+    /// rejects as a redefinition, which the set would merge into a program it accepts — so the
+    /// raise refuses to let the merge change the program's meaning. Located at the repeat's
+    /// name; `first` is the first definition's name.
+    RepeatedDefinition {
+        /// Where the first definition's name sits.
+        first: Location,
+    },
 }
 
 impl LowerErrorKind {
@@ -156,6 +168,10 @@ impl LowerErrorKind {
                 DiagnosticId::new("program", "pooled-argument-list"),
                 "a theory atom's pooled argument list is read only as its first alternative",
             ),
+            LowerErrorKind::RepeatedDefinition { .. } => (
+                DiagnosticId::new("program", "repeated-definition"),
+                "this definition repeats one earlier in its part, which the authority rejects",
+            ),
         }
     }
 }
@@ -171,10 +187,10 @@ impl ToDiagnostic for LowerError {
     /// The lowering diagnostic in base's normal form (base §6.5): the `program`-space
     /// identity, its headline, and the offending region as the primary label — the
     /// syntax tier's diagnostics and these share one model, so a consumer renders both
-    /// alike (§8).
+    /// alike (§8). A repeated definition also points at the first definition.
     fn to_diagnostic(&self) -> Diagnostic {
         let (id, message) = self.kind.report();
-        Diagnostic::new(
+        let diagnostic = Diagnostic::new(
             id,
             Severity::Error,
             message.to_owned(),
@@ -183,7 +199,15 @@ impl ToDiagnostic for LowerError {
                 message: None,
             },
         )
-        .expect("a lowering diagnostic's headline is never empty")
+        .expect("a lowering diagnostic's headline is never empty");
+        if let LowerErrorKind::RepeatedDefinition { first } = self.kind {
+            diagnostic.with_secondary(Label {
+                location: first,
+                message: Some("first defined here".to_owned()),
+            })
+        } else {
+            diagnostic
+        }
     }
 }
 
@@ -736,6 +760,7 @@ fn lower_each(parse: &Parse<ast::Program>) -> (Vec<Lowered>, Vec<LowerError>) {
     let mut lowered = Vec::new();
     let mut batch = Vec::new();
     let mut part = Arc::new(base_key());
+    let mut definitions = Definitions::opening(&part);
     for statement in parse.tree().statements() {
         if let ast::Statement::ProgramPart(directive) = &statement {
             match part_key(directive) {
@@ -753,6 +778,16 @@ fn lower_each(parse: &Parse<ast::Program>) -> (Vec<Lowered>, Vec<LowerError>) {
         // stays in source order and holds every lowering diagnostic.
         let mut diagnostics = Vec::new();
         if let Some(raised) = raise_one(&statement, parse, &mut diagnostics) {
+            if raised.is_global_definition() {
+                let location = definition_location(&statement, parse);
+                let canonical = crate::program::canonicalize_statement(raised.clone());
+                if let Some(first) = definitions.repeat_of(&part, canonical, location) {
+                    diagnostics.push(LowerError {
+                        location,
+                        kind: LowerErrorKind::RepeatedDefinition { first },
+                    });
+                }
+            }
             let provenance = statement_provenance(&statement, parse);
             batch.extend(diagnostics.iter().cloned());
             lowered.push(Lowered {
@@ -765,6 +800,64 @@ fn lower_each(parse: &Parse<ast::Program>) -> (Vec<Lowered>, Vec<LowerError>) {
         }
     }
     (lowered, batch)
+}
+
+/// The global definitions seen so far, part by part (§6.3), the active part's held apart so a
+/// run of definitions under one part never compares its key. A switch of part parks the active
+/// map under its key first — so a part re-opened under a fresh `Arc` over an equal key finds
+/// what it parked — then takes the new part's, O(key · log parts) per switch; a definition
+/// costs one ordered-map entry, O(log d) comparisons of canonical statements.
+struct Definitions {
+    active: (Arc<PartKey>, BTreeMap<Statement, Location>),
+    parked: BTreeMap<Arc<PartKey>, BTreeMap<Statement, Location>>,
+}
+
+impl Definitions {
+    /// No definition seen yet, with `part` — the one a parse opens in (§4.1) — active.
+    fn opening(part: &Arc<PartKey>) -> Definitions {
+        Definitions {
+            active: (Arc::clone(part), BTreeMap::new()),
+            parked: BTreeMap::new(),
+        }
+    }
+
+    /// Record a global definition of `part` at `location`, or — if a content-equal one is
+    /// already recorded there — answer where the first sits.
+    fn repeat_of(
+        &mut self,
+        part: &Arc<PartKey>,
+        definition: Statement,
+        location: Location,
+    ) -> Option<Location> {
+        if !Arc::ptr_eq(&self.active.0, part) {
+            let (key, seen) =
+                std::mem::replace(&mut self.active, (Arc::clone(part), BTreeMap::new()));
+            self.parked.insert(key, seen);
+            self.active.1 = self.parked.remove(part).unwrap_or_default();
+        }
+        match self.active.1.entry(definition) {
+            Entry::Occupied(first) => Some(*first.get()),
+            Entry::Vacant(slot) => {
+                slot.insert(location);
+                None
+            }
+        }
+    }
+}
+
+/// Where a definition's name sits — the location a repeated definition is reported at — or the
+/// statement's own span where it has no name token.
+fn definition_location(statement: &ast::Statement, parse: &Parse<ast::Program>) -> Location {
+    let name = match statement {
+        ast::Statement::Const(constant) => constant.name(),
+        ast::Statement::TheoryDefinition(theory) => theory.name(),
+        _ => None,
+    };
+    let range = name.map_or_else(
+        || statement.syntax().text_range(),
+        |name| name.syntax().text_range(),
+    );
+    parse.location(range)
 }
 
 /// Lower a parsed program to a [`Program`], under the parse's own dialect (§8). Total:
