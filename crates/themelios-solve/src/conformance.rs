@@ -1696,7 +1696,7 @@ mod tests {
 
     use crate::bridge::{Grain, GroundProgram, GroundRule};
     use crate::contract::Capabilities;
-    use crate::outcome::{Model, Run};
+    use crate::outcome::{Model, Run, ShowRule};
     use themelios_program::Provenance;
 
     #[test]
@@ -1929,7 +1929,11 @@ mod tests {
         }
 
         fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
-            Ok(Solved::running(Box::new(Closed), Scenario::default()))
+            Ok(Solved::running(
+                Box::new(Closed),
+                Scenario::default(),
+                ShowRule::default(),
+            ))
         }
 
         fn lower(&mut self, door: Door<'_>) -> Result<(), Fault> {

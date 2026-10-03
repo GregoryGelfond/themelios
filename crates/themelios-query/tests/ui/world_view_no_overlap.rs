@@ -7,7 +7,7 @@ use themelios_program::program::Program;
 use themelios_solve::agent::{Agent, Scenario};
 use themelios_solve::bridge::{Door, GroundProgram};
 use themelios_solve::contract::{Backend, Capabilities, Fault, SolveRequest};
-use themelios_solve::outcome::{AnswerSet, Conclusion, Determination, Model, Run, Solved};
+use themelios_solve::outcome::{AnswerSet, Conclusion, Determination, Model, Run, ShowRule, Solved};
 use themelios_query::WorldView;
 
 // A backend with one model over a closed space — a consistent world view.
@@ -45,6 +45,7 @@ impl Backend for OneModel {
                 ended: false,
             }),
             Scenario::default(),
+ShowRule::default(),
         ))
     }
 

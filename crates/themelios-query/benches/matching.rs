@@ -13,7 +13,7 @@ use themelios_query::{AgentReading, BindingPattern, Snapshot};
 use themelios_solve::agent::{Agent, Scenario};
 use themelios_solve::bridge::{Door, GroundProgram};
 use themelios_solve::contract::{Backend, Capabilities, Fault, SolveRequest};
-use themelios_solve::outcome::{Conclusion, Model, Run, Solved};
+use themelios_solve::outcome::{Conclusion, Model, Run, ShowRule, Solved};
 
 /// The symbol depths the curve is read over.
 const DEPTHS: [usize; 4] = [1_000, 2_000, 4_000, 8_000];
@@ -49,7 +49,11 @@ impl Backend for Holding {
         let run = One {
             member: Some(self.member.clone()),
         };
-        Ok(Solved::running(Box::new(run), Scenario::default()))
+        Ok(Solved::running(
+            Box::new(run),
+            Scenario::default(),
+            ShowRule::default(),
+        ))
     }
 
     fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {

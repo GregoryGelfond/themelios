@@ -12,16 +12,19 @@
 //! search is a value, what the search did establish, never an error and never
 //! "no". The answer set itself is the program tier's [`AnswerSet`],
 //! re-exported so the program, solve, and query tiers speak one answer-set
-//! vocabulary; a [`Model`] — the unit every stream yields — is an answer set
-//! with the theory assignment a theory-evaluating backend supplies, empty
+//! vocabulary; a [`Model`] — the unit every stream yields — carries its whole
+//! answer set, the display the core derives from the program's [`ShowRule`] as
+//! the model streams — a type of its own, [`Shown`], which no reading consults
+//! — and the theory assignment a theory-evaluating backend supplies, empty
 //! otherwise.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::agent::{Assumption, Scenario};
 use crate::contract::{Fault, Mode, Presupposition};
 pub use themelios_program::AnswerSet;
-use themelios_program::{Sign, Symbol};
+use themelios_program::program::Show;
+use themelios_program::{Name, Sign, Symbol};
 
 // ---- The closed distinctions (§5.1) ----
 
@@ -180,34 +183,70 @@ impl Partial {
 // ---- Models, optima, consequences (§5.2) ----
 
 /// One model of the program (docs/design/solve.md §5.1) — the unit every
-/// stream yields and every complete collection holds: its answer set, and the
-/// theory assignment a backend evaluating theory atoms supplies with it (§5.4)
-/// — empty for a backend that evaluates none. The readings read the answer
-/// set; the assignment rides beside it, never laundered into atoms. Cost: the
-/// answer set by value and, for a backend evaluating no theory, an empty
-/// assignment — nothing per model beyond the answer set. The
-/// assignment-bearing construction door lands with the theory assignments' own
-/// constructors, when a theory-evaluating backend is built (§11.1).
+/// stream yields and every complete collection holds: its answer set, every
+/// literal true in it; what the program displays of it by its `#show`
+/// directives, which the core derives ([`Model::shown`]); and the theory
+/// assignment a backend evaluating theory atoms supplies with it (§5.4) — empty
+/// for a backend that evaluates none. The readings read the answer set and only
+/// it; the display and the assignment ride beside it, never laundered into
+/// atoms. Cost: the answer set by value; the display stored only where it
+/// differs from the answer set; and, for a backend evaluating no theory, an
+/// empty assignment — so a model of a program without directives carries
+/// nothing beyond its answer set. Equality compares the display by content.
+/// The assignment-bearing construction door lands with the theory assignments'
+/// own constructors, when a theory-evaluating backend is built (§11.1).
 #[non_exhaustive]
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Debug)]
 pub struct Model {
     atoms: AnswerSet,
+    /// The symbols the program's term directives display in this model — the
+    /// half of the display only an engine evaluates.
+    terms: BTreeSet<Symbol>,
+    /// The display, where it differs from the answer set.
+    display: Option<BTreeSet<Symbol>>,
     theory: TheoryAssignments,
 }
 
 impl Model {
-    /// The model whose answer set is `atoms`, with no theory assignment — the
-    /// backend's construction door (docs/design/solve.md §5.1). O(1).
+    /// The model whose answer set is `atoms`, with no displayed term and no
+    /// theory assignment — the backend's construction door
+    /// (docs/design/solve.md §5.1). O(1).
     pub fn of(atoms: AnswerSet) -> Model {
         Model {
             atoms,
+            terms: BTreeSet::new(),
+            display: None,
             theory: TheoryAssignments::default(),
         }
+    }
+
+    /// This model, displaying `terms` — the symbols the program's term
+    /// directives display in it, the half of the display only an engine
+    /// evaluates (§5.1). A model built outside a run displays its answer set
+    /// and its terms; a run's derives its display under the program's show
+    /// rule as it streams. O(|terms| log |terms|), and the union with the
+    /// answer set where any term is given.
+    #[must_use]
+    pub fn with_terms(self, terms: impl IntoIterator<Item = Symbol>) -> Model {
+        Model {
+            terms: terms.into_iter().collect(),
+            ..self
+        }
+        .displayed(&ShowRule::default())
     }
 
     /// The model's answer set — what every reading reads. Total; O(1).
     pub fn atoms(&self) -> &AnswerSet {
         &self.atoms
+    }
+
+    /// What the model displays — the core's derivation from the answer set,
+    /// the program's show rule, and the displayed terms (§5.1): a type of its
+    /// own, which no reading consults. Total; O(1).
+    pub fn shown(&self) -> Shown<'_> {
+        Shown {
+            symbols: self.display.as_ref().unwrap_or(&self.atoms),
+        }
     }
 
     /// The theory assignment that satisfied the model's theory atoms — empty
@@ -236,6 +275,142 @@ impl Model {
             )),
             _ => false,
         })
+    }
+
+    /// Whether every member of the answer set is a literal — a function
+    /// symbol, as every member of an answer set is (§5.1); a number, a string,
+    /// a tuple, `#inf`, or `#sup` is not one. Necessary, not sufficient: no
+    /// check of a set's content establishes that it is an answer set of the
+    /// program. Total; O(|M|).
+    pub fn is_set_of_literals(&self) -> bool {
+        self.atoms
+            .iter()
+            .all(|symbol| matches!(symbol, Symbol::Function { .. }))
+    }
+
+    /// This model, its display derived under `rule` (§5.1): the atoms the rule
+    /// shows together with the terms, stored only where that differs from the
+    /// answer set — so where the rule shows every atom and no term is
+    /// displayed, nothing is stored. One allocation-free lookup per atom, then
+    /// the terms' union: `O(|M| log |M|)`.
+    pub(crate) fn displayed(mut self, rule: &ShowRule) -> Model {
+        if rule.shows_every_atom() && self.terms.is_empty() {
+            self.display = None;
+            return self;
+        }
+        let mut display: BTreeSet<Symbol> = self
+            .atoms
+            .iter()
+            .filter(|atom| rule.shows(atom))
+            .cloned()
+            .collect();
+        display.extend(self.terms.iter().cloned());
+        self.display = (display != self.atoms).then_some(display);
+        self
+    }
+}
+
+impl PartialEq for Model {
+    /// The answer sets, the displays by content, and the assignments — a
+    /// stored display equal to the answer set is no different from none.
+    fn eq(&self, other: &Model) -> bool {
+        self.atoms == other.atoms
+            && self.shown().symbols() == other.shown().symbols()
+            && self.theory == other.theory
+    }
+}
+
+impl Eq for Model {}
+
+/// A program's show rule (docs/design/solve.md §5.1): which of a model's atoms
+/// its `#show` directives display — every atom where the directives in force
+/// include no restricting directive (a signature form, or `#show.`), else the
+/// atoms of the signatures those list. A backend builds it from the directives
+/// it holds and hands it to the core with its run; the core applies it, so the
+/// rule has one implementation. `Default` is the rule of no directive: every
+/// atom. O(directives · log directives) to build.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct ShowRule {
+    /// `None` where no restricting directive is in force; else each listed
+    /// name's signs and arities, keyed by name so a lookup borrows the atom's
+    /// name and allocates nothing — the rule runs over every atom of every
+    /// model while a restricting directive is in force.
+    restricted: Option<BTreeMap<Name, BTreeSet<(Sign, u32)>>>,
+}
+
+impl ShowRule {
+    /// The rule of `directives`: a term directive restricts nothing; `#show.`
+    /// and a signature directive restrict the atoms to the signatures listed,
+    /// sign-sensitively, a strongly negated signature listed in its own right.
+    pub fn of<'p>(directives: impl IntoIterator<Item = &'p Show>) -> ShowRule {
+        let mut restricted: Option<BTreeMap<Name, BTreeSet<(Sign, u32)>>> = None;
+        for directive in directives {
+            match directive {
+                Show::All => {
+                    restricted.get_or_insert_with(BTreeMap::new);
+                }
+                Show::Signature(signature) => {
+                    restricted
+                        .get_or_insert_with(BTreeMap::new)
+                        .entry(signature.name.clone())
+                        .or_default()
+                        .insert((signature.sign, signature.arity));
+                }
+                Show::Term(_) | Show::TermBody { .. } => {}
+            }
+        }
+        ShowRule { restricted }
+    }
+
+    /// Whether the rule displays `atom`: one lookup by the atom's borrowed
+    /// name, then one of its sign and arity — O(log names · name + log forms),
+    /// with no allocation.
+    pub(crate) fn shows(&self, atom: &Symbol) -> bool {
+        let Some(names) = &self.restricted else {
+            return true;
+        };
+        let Symbol::Function {
+            name,
+            arguments,
+            sign,
+        } = atom
+        else {
+            return false;
+        };
+        // An atom of more arguments than a signature's arity counts is shown by
+        // no signature.
+        u32::try_from(arguments.len()).is_ok_and(|arity| {
+            names
+                .get(name)
+                .is_some_and(|forms| forms.contains(&(*sign, arity)))
+        })
+    }
+
+    /// Whether the rule displays every atom — no restricting directive in
+    /// force. O(1).
+    pub(crate) fn shows_every_atom(&self) -> bool {
+        self.restricted.is_none()
+    }
+}
+
+/// What a model displays (§5.1): a view of its own type over the displayed
+/// symbols — not an `AnswerSet`, so a position that takes one does not take it;
+/// its symbols reach such a position only through [`Shown::symbols`], written
+/// at the call.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Shown<'m> {
+    symbols: &'m BTreeSet<Symbol>,
+}
+
+impl<'m> Shown<'m> {
+    /// The displayed atoms and terms. O(1).
+    pub fn symbols(self) -> &'m BTreeSet<Symbol> {
+        self.symbols
+    }
+
+    /// Whether `symbol` is displayed. O(log n).
+    pub fn contains(self, symbol: &Symbol) -> bool {
+        self.symbols.contains(symbol)
     }
 }
 
@@ -313,6 +488,9 @@ pub(crate) struct LiveRun<'a> {
     // survives an inspecting read (the borrowing resolver) keeps reporting the
     // fault rather than forgetting it once its pending item is taken.
     faulted: Option<Fault>,
+    // The show rule of the directives the backend holds, under which the core
+    // derives each streamed model's display (§5.1).
+    show: ShowRule,
 }
 
 /// The trichotomy a live run reads off, before each arm is wrapped with its
@@ -344,7 +522,7 @@ impl LiveRun<'_> {
                 }
             }
         }
-        item
+        item.map(|result| result.map(|model| model.displayed(&self.show)))
     }
 
     /// The next model, yielding the one-model `lookahead` first so no member
@@ -671,11 +849,13 @@ impl<'a> Solved<'a> {
     /// enumeration `run`, ranging over `scenario`, into the solved handle a
     /// backend's [`solve`](crate::contract::Backend::solve) — or
     /// [`solve_assuming`](crate::contract::Backend::solve_assuming) — returns, with
-    /// nothing yet pulled. The core drives the run and classifies the trichotomy
-    /// over it (§5.1), so a backend supplies only its enumeration and the terminal
+    /// nothing yet pulled, under `show`, the show rule of the directives the
+    /// backend holds: the core derives each streamed model's display from it
+    /// (§5.1). The core drives the run and classifies the trichotomy over it
+    /// (§5.1), so a backend supplies only its enumeration and the terminal
     /// [`Conclusion`]; it never constructs the [`Determination`], so it cannot pose
     /// an empty or truncated search as consistent. O(1).
-    pub fn running(run: Box<dyn Run + 'a>, scenario: Scenario) -> Solved<'a> {
+    pub fn running(run: Box<dyn Run + 'a>, scenario: Scenario, show: ShowRule) -> Solved<'a> {
         Solved {
             live: LiveRun {
                 current: run,
@@ -684,6 +864,7 @@ impl<'a> Solved<'a> {
                 drain: DrainState::Fresh,
                 witnessed: false,
                 faulted: None,
+                show,
             },
         }
     }
@@ -1026,7 +1207,8 @@ pub struct Measurement {}
 mod tests {
     use super::*;
     use crate::contract::Refused;
-    use themelios_program::Name;
+    use themelios_program::program::Show;
+    use themelios_program::{Name, Signature, Term};
 
     /// The closed set of conclusions, each beside its rendering.
     const CONCLUSIONS: [(Conclusion, &str); 4] = [
@@ -1452,16 +1634,114 @@ mod tests {
         assert_eq!(*model.assignment(), TheoryAssignments::default());
     }
 
-    /// A live run over `run`, ranging over the empty scenario.
+    /// A live run over `run`, ranging over the empty scenario, of a program
+    /// with no `#show` directive.
     fn live_with(run: Box<dyn Run>) -> LiveRun<'static> {
-        LiveRun {
-            current: run,
-            scenario: Scenario::default(),
-            lookahead: None,
-            drain: DrainState::Fresh,
-            witnessed: false,
-            faulted: None,
+        live_showing(run, ShowRule::default())
+    }
+
+    /// A live run over `run`, ranging over the empty scenario, under the show
+    /// rule `show`.
+    fn live_showing(run: Box<dyn Run>, show: ShowRule) -> LiveRun<'static> {
+        Solved::running(run, Scenario::default(), show).live
+    }
+
+    // ---- The show rule and the display (§5.1) ----
+
+    /// The positive ground constant `name`.
+    fn atom(name: &str) -> Symbol {
+        Symbol::function(Name::new(name).expect("an identifier"), [], Sign::Positive)
+    }
+
+    /// The rule of the one directive `#show sign name/0.`.
+    fn showing_constant(sign: Sign, name: &str) -> ShowRule {
+        ShowRule::of([&Show::Signature(Signature {
+            sign,
+            name: Name::new(name).expect("an identifier"),
+            arity: 0,
+        })])
+    }
+
+    #[test]
+    fn show_nothing_shows_no_atom() {
+        assert!(!ShowRule::of([&Show::All]).shows(&atom("a")));
+    }
+
+    #[test]
+    fn a_strongly_negated_signature_shows_its_negation() {
+        assert!(showing_constant(Sign::Negative, "p").shows(&negated("p")));
+    }
+
+    #[test]
+    fn a_strongly_negated_signature_hides_its_positive_atom() {
+        assert!(!showing_constant(Sign::Negative, "p").shows(&atom("p")));
+    }
+
+    #[test]
+    fn a_signature_hides_another_arity() {
+        let unary = Symbol::function(
+            Name::new("p").expect("an identifier"),
+            [Symbol::number(1)],
+            Sign::Positive,
+        );
+        assert!(!showing_constant(Sign::Positive, "p").shows(&unary));
+    }
+
+    #[test]
+    fn a_restricting_rule_hides_a_number() {
+        assert!(!ShowRule::of([&Show::All]).shows(&Symbol::number(1)));
+    }
+
+    #[test]
+    fn a_term_directive_restricts_nothing() {
+        let rule = ShowRule::of([&Show::Term(Term::from(atom("p")))]);
+        assert!(rule.shows_every_atom());
+    }
+
+    /// A run yielding one model, then reporting its search closed.
+    struct OneModel(Option<Model>);
+
+    impl Run for OneModel {
+        fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+            self.0.take().map(Ok)
         }
+        fn conclusion(&self) -> Option<Conclusion> {
+            self.0.is_none().then_some(Conclusion::Exhausted)
+        }
+    }
+
+    /// The model `rule` streams from the model of atoms `{q}` and `terms`.
+    fn streamed(rule: ShowRule, terms: &[Symbol]) -> Model {
+        let model = Model::of([atom("q")].into_iter().collect()).with_terms(terms.iter().cloned());
+        let mut live = live_showing(Box::new(OneModel(Some(model))), rule);
+        live.next().expect("a model").expect("no fault")
+    }
+
+    #[test]
+    fn show_nothing_streams_only_the_displayed_terms() {
+        // `q. #show. #show p : q.` — the answer set {q}, the display {p}.
+        let model = streamed(ShowRule::of([&Show::All]), &[atom("p")]);
+        let expected: BTreeSet<Symbol> = [atom("p")].into_iter().collect();
+        assert_eq!(model.shown().symbols(), &expected);
+    }
+
+    #[test]
+    fn the_rule_of_no_directive_streams_every_atom_and_term() {
+        let model = streamed(ShowRule::default(), &[atom("p")]);
+        let expected: BTreeSet<Symbol> = [atom("p"), atom("q")].into_iter().collect();
+        assert_eq!(model.shown().symbols(), &expected);
+    }
+
+    #[test]
+    fn a_model_of_a_program_without_directives_stores_no_display() {
+        assert!(streamed(ShowRule::default(), &[]).display.is_none());
+    }
+
+    #[test]
+    fn a_display_equal_to_the_answer_set_is_not_stored() {
+        // `q. #show q/0.` — the rule shows every true atom there is.
+        let model = streamed(showing_constant(Sign::Positive, "q"), &[]);
+        assert!(model.display.is_none());
     }
 
     fn solved_with(run: Box<dyn Run>) -> Solved<'static> {

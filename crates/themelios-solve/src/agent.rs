@@ -1020,7 +1020,7 @@ mod ask_laws {
 
     use crate::bridge::GroundProgram;
     use crate::contract::{Capabilities, Refused};
-    use crate::outcome::{AnswerSet, Conclusion, Run, Truncation};
+    use crate::outcome::{AnswerSet, Conclusion, Run, ShowRule, Truncation};
 
     /// Whether `fault` refused the request for the presupposition `expected`.
     fn refused_for(fault: &Fault, expected: Presupposition) -> bool {
@@ -1075,6 +1075,7 @@ mod ask_laws {
                 ended: false,
             }),
             scenario,
+            ShowRule::default(),
         )
     }
 
@@ -1324,6 +1325,7 @@ mod ask_laws {
                     ended: false,
                 }),
                 Scenario::default(),
+                ShowRule::default(),
             ))
         }
 
@@ -1387,7 +1389,11 @@ mod ask_laws {
         }
 
         fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
-            Ok(Solved::running(Box::new(Faulting), Scenario::default()))
+            Ok(Solved::running(
+                Box::new(Faulting),
+                Scenario::default(),
+                ShowRule::default(),
+            ))
         }
 
         fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
@@ -1555,6 +1561,7 @@ mod ask_laws {
                         ended: false,
                     }),
                     scenario.clone(),
+                    ShowRule::default(),
                 ));
             }
             Ok(solved_over(sets, scenario.clone()))
