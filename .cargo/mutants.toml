@@ -13,6 +13,11 @@
 # that discriminate the mutants are unaffected.
 no_default_features = true
 
+# The workspace denies `unused` and `dead_code`, so a mutant that empties a body leaves its
+# parameters or a helper unused and fails to compile — counted unviable, its behaviour never
+# tested. Capping lints in the mutated build lets such a mutant compile and meet the laws.
+cap_lints = true
+
 # A floor under the auto-set (5x baseline) test timeout.
 minimum_test_timeout = 20
 
@@ -59,6 +64,14 @@ exclude_re = [
     # `scale-proofs` off and ignores the depth proof; a sweep with the depth proof on (a
     # memory-capped runner) kills it. Excluded as held-out, not as equivalent.
     "symbol\\.rs:453:9: delete match arm Symbol::Tuple\\(elements\\) in take_children",
+    # `collect_runs` batches consecutive statements that share their part's `Arc`. Forcing the
+    # guard false makes every statement a run of its own: the same program, so no law tells
+    # them apart, but each statement pays the part's lookup and key clone again — quadratic in a
+    # part as wide as it is long. The wide-part tripwire
+    # (`raising_statements_under_a_wide_part_is_near_linear`, tests/scaling_shape.rs) kills it
+    # in the default suite; it survives only this run, whose `no_default_features` holds the
+    # scaling proofs out. Excluded as held-out, not as equivalent.
+    "raise\\.rs:912:35: replace match guard Arc::ptr_eq\\(key, &part\\) with false in collect_runs",
 
     # ---- The syntax tier (stage 2): equivalent mutants ----
     # The peek cache (`self.peeked`) is set to None on every `bump`, `set_mode`,
