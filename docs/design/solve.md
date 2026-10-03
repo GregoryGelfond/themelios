@@ -417,7 +417,9 @@ backend has no `reset` and grounds within each solve: a refusal its check makes 
 before it, the backend ready; a grounding that fails fails its solve and leaves the lowered program as it was;
 and an engine refusal past `lower`'s check leaves every other method that touches the engine refusing, as
 above, until a `lower` replaces the program. The agent recovers by its rebuild (§6.2); a caller driving the
-backend directly rebuilds what it still wants.
+backend directly rebuilds what it still wants. Whether a multi-shot backend's search covers what is lowered
+but not yet grounded the contract does not yet say: the agent and the conformance suite solve straight after
+`lower`, and the first multi-shot adapter settles it with its engine in hand (§11.1).
 
 The law is uniform by decision. A backend whose engine could undo a failed grounding still refuses until its
 rebuild, so a client's recovery is one path on every backend — the rebuild the agent already performs — and a
@@ -2383,4 +2385,7 @@ necessity where it is declared.
    record the build follows.
 16. **Reconciliations with the built boundary** (2026-10-03). The costs of `Model::with_terms` and
     `ShowRule::of` are stated as the code pays them, and a run's derivation reuses the display a model built
-    with its terms already holds, so a model's display is derived once (§5.1).
+    with its terms already holds, so a model's display is derived once (§5.1). The contract's silence on
+    whether a multi-shot backend searches what is lowered but not yet grounded is recorded, with the
+    presumption the agent and the conformance suite make until the first multi-shot adapter settles it
+    (§4.1, §11.1).

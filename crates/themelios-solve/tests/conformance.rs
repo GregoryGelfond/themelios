@@ -585,6 +585,9 @@ enum Flaw {
     AnswersAnUndeclaredReset,
     /// Answers `ground` without declaring multi-shot solving.
     AnswersAnUndeclaredGround,
+    /// Declares multi-shot solving, yet refuses to ground a program that
+    /// calls no `@`-function.
+    RefusesACallFreeGrounding,
     /// Declares multi-shot solving, yet accepts assigning an atom that is not
     /// external.
     AcceptsANonExternal,
@@ -1241,6 +1244,16 @@ impl Backend for Stub {
         }
         if self.flaw == Flaw::AcceptsAFaultingGrounding {
             return Ok(());
+        }
+        if self.flaw == Flaw::RefusesACallFreeGrounding
+            && !self
+                .loaded
+                .iter()
+                .any(|&index| matches!(self.table[index].2, Answers::Calls(_)))
+        {
+            return Err(Fault::engine(
+                "the stub grounds only a program that calls an @-function",
+            ));
         }
         // A grounding that fails is never accepted: it leaves the stub needing
         // its rebuild.
@@ -1925,6 +1938,13 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             Flaw::MisnamesItsRebuild,
             realising(),
             vec![(State, Mislocated)],
+        ),
+        (
+            // A check solves what it lowers, grounding nothing it does not
+            // name, so only multi-shot honesty's grounding finds the refusal.
+            Flaw::RefusesACallFreeGrounding,
+            realising(),
+            vec![(Declared(C::MultiShot), Refused)],
         ),
         (
             // Past the rebuild it owes, the native door reaches the faulting
