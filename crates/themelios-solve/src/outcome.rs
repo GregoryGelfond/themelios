@@ -603,10 +603,10 @@ impl LiveRun<'_> {
         // before touched-ness, since the fault is why the collection is gone; and
         // without draining, so a handle that pulled nothing is not marked touched.
         if let Some(fault) = self.faulted.clone() {
-            return Err(NotExhausted::faulted(self.conclusion(), fault));
+            return Err(NotExhausted::faulted(fault));
         }
         if self.drain != DrainState::Fresh {
-            return Err(NotExhausted::already_taken(self.conclusion()));
+            return Err(NotExhausted::already_taken());
         }
         let mut all = Vec::new();
         loop {
@@ -617,7 +617,7 @@ impl LiveRun<'_> {
                     // untouched, so a re-drain refuses rather than returning a
                     // collection missing them.
                     self.drain = DrainState::Touched;
-                    return Err(NotExhausted::faulted(self.conclusion(), fault));
+                    return Err(NotExhausted::faulted(fault));
                 }
                 None => break,
             }
@@ -626,7 +626,7 @@ impl LiveRun<'_> {
         // A run that ended without concluding: `pull` recorded the breach, and it
         // is the refusal's cause, as a fault the run yielded would be.
         if let Some(fault) = self.faulted.clone() {
-            return Err(NotExhausted::faulted(self.conclusion(), fault));
+            return Err(NotExhausted::faulted(fault));
         }
         if self.conclusion() == Some(Conclusion::Exhausted) {
             return Ok(all);
@@ -636,7 +636,7 @@ impl LiveRun<'_> {
             // A run that ended without concluding broke the run protocol (§5.2):
             // `pull` recorded that breach as its fault, read above, so the arm
             // states the invariant — the breach's adapter fault either way.
-            None => Err(NotExhausted::faulted(self.conclusion(), unconcluded())),
+            None => Err(NotExhausted::faulted(unconcluded())),
         }
     }
 }
@@ -696,22 +696,19 @@ pub struct NotExhausted {
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum Incompleteness {
     /// The handle's models were already streamed.
-    Taken(Option<Conclusion>),
+    Taken,
     /// The search ended short of the space, at this truncation.
     Unclosed(Truncation),
-    /// The search faulted; the fault is the cause.
-    Faulted {
-        conclusion: Option<Conclusion>,
-        cause: Fault,
-    },
+    /// The search faulted, reaching no conclusion; the fault is the cause.
+    Faulted(Fault),
 }
 
 impl NotExhausted {
     /// The handle's stream was already touched, so a complete collection is no
     /// longer available from it.
-    pub(crate) fn already_taken(conclusion: Option<Conclusion>) -> NotExhausted {
+    pub(crate) fn already_taken() -> NotExhausted {
         NotExhausted {
-            reason: Incompleteness::Taken(conclusion),
+            reason: Incompleteness::Taken,
         }
     }
 
@@ -724,9 +721,9 @@ impl NotExhausted {
 
     /// The search faulted — mid-stream, or by ending against the run protocol
     /// — and the fault is the cause.
-    pub(crate) fn faulted(conclusion: Option<Conclusion>, cause: Fault) -> NotExhausted {
+    pub(crate) fn faulted(cause: Fault) -> NotExhausted {
         NotExhausted {
-            reason: Incompleteness::Faulted { conclusion, cause },
+            reason: Incompleteness::Faulted(cause),
         }
     }
 }
@@ -741,7 +738,7 @@ impl From<NotExhausted> for Fault {
     /// anonymous error (docs/design/solve.md §5.1, §5.3, §5.4).
     fn from(refusal: NotExhausted) -> Fault {
         match refusal.reason {
-            Incompleteness::Taken(_) => Fault::request(
+            Incompleteness::Taken => Fault::request(
                 "the models were already taken from this handle, so a complete world view is unavailable",
                 Presupposition::Taken,
             ),
@@ -749,7 +746,7 @@ impl From<NotExhausted> for Fault {
                 format!("the search did not close the space: {truncation}"),
                 Presupposition::Unclosed(truncation),
             ),
-            Incompleteness::Faulted { cause, .. } => cause,
+            Incompleteness::Faulted(cause) => cause,
         }
     }
 }
@@ -776,13 +773,13 @@ impl std::fmt::Display for NotExhausted {
     /// Why the collection is unavailable, as the reason says.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.reason {
-            Incompleteness::Taken(_) => f.write_str(
+            Incompleteness::Taken => f.write_str(
                 "the models were already taken from this handle; a complete collection is unavailable",
             ),
             Incompleteness::Unclosed(truncation) => {
                 write!(f, "{truncation}; a complete collection is unavailable")
             }
-            Incompleteness::Faulted { .. } => {
+            Incompleteness::Faulted(_) => {
                 f.write_str("the search faulted; a complete collection is unavailable")
             }
         }
@@ -793,8 +790,8 @@ impl std::error::Error for NotExhausted {
     /// The fault the search raised, where it faulted.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.reason {
-            Incompleteness::Faulted { cause, .. } => Some(cause),
-            Incompleteness::Taken(_) | Incompleteness::Unclosed(_) => None,
+            Incompleteness::Faulted(cause) => Some(cause),
+            Incompleteness::Taken | Incompleteness::Unclosed(_) => None,
         }
     }
 }
@@ -1273,10 +1270,7 @@ mod tests {
     fn a_faulted_refusal_converts_to_its_cause() {
         // Locus, message, and bug bit — not laundered into a request error.
         let cause = Fault::engine("a distinctive underlying failure");
-        assert_eq!(
-            Fault::from(NotExhausted::faulted(None, cause.clone())),
-            cause
-        );
+        assert_eq!(Fault::from(NotExhausted::faulted(cause.clone())), cause);
     }
 
     #[test]
@@ -1296,7 +1290,7 @@ mod tests {
 
     #[test]
     fn a_refusal_of_a_taken_handle_names_the_taken_presupposition() {
-        let taken = Fault::from(NotExhausted::already_taken(None));
+        let taken = Fault::from(NotExhausted::already_taken());
         assert!(matches!(
             taken.refused(),
             Refused::Request(Presupposition::Taken)
@@ -1342,7 +1336,7 @@ mod tests {
 
     #[test]
     fn a_faulted_refusal_says_the_search_faulted() {
-        let refusal = NotExhausted::faulted(None, Fault::engine("the engine died"));
+        let refusal = NotExhausted::faulted(Fault::engine("the engine died"));
         assert!(refusal.to_string().contains("faulted"), "{refusal}");
     }
 
@@ -1858,7 +1852,7 @@ mod tests {
     fn a_fault_during_the_drain_becomes_the_refusals_cause() {
         let mut solved = solved_with(Box::new(MidFaultRun::new(vec![singleton(0)])));
         let refusal = solved.all_models().unwrap_err();
-        assert!(matches!(refusal.reason, Incompleteness::Faulted { .. }));
+        assert!(matches!(refusal.reason, Incompleteness::Faulted(_)));
     }
 
     #[test]
@@ -2207,13 +2201,7 @@ mod tests {
     fn a_run_that_ends_without_a_conclusion_refuses_a_complete_collection() {
         let mut solved = solved_with(Box::new(SilentRun));
         let refusal = solved.all_models().unwrap_err();
-        assert!(matches!(
-            refusal.reason,
-            Incompleteness::Faulted {
-                conclusion: None,
-                ..
-            }
-        ));
+        assert!(matches!(refusal.reason, Incompleteness::Faulted(_)));
     }
 
     #[test]
@@ -2300,7 +2288,7 @@ mod tests {
         for _ in 0..2 {
             assert!(matches!(
                 solved.all_models().unwrap_err().reason,
-                Incompleteness::Faulted { .. }
+                Incompleteness::Faulted(_)
             ));
         }
     }
