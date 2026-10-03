@@ -103,12 +103,25 @@ impl Query {
     pub fn any(parts: impl IntoIterator<Item = Query>) -> Query;  // disjunction (∨), evaluated per-model §2.2
 }
 /// `Query::of`'s two refusal arms, distinguished so a consumer can classify a query form (elenctic's
-/// classifier does, §4): a well-formed pattern that is not ground — ask its bindings (§2.5) — and a term
-/// that is not a pattern at all (a non-denoting interval / pool / arithmetic-with-variable, program.md
-/// §11.2), which carries the program tier's `NotAPattern` as its `source()`.
+/// classifier does, §4): a well-formed pattern that is not ground — build its `BindingPattern` and ask its
+/// bindings (§2.5) — and a term that is not a pattern at all (a non-denoting interval / pool /
+/// arithmetic-with-variable, program.md §11.2), which carries the program tier's `NotAPattern` as its
+/// `source()`.
 #[non_exhaustive] pub enum NotAQuery { NotGround { term: Term }, NotAPattern(NotAPattern) }
 
-// A pattern is a signed `Atom` (program.md §11.2); the query tier reuses it directly — no new type.
+// The input to `bindings` (§2.5): an open pattern the tier's partition policy accepts — a well-formed pattern
+// (program.md §11.2) with every position named. Construction REFUSES the rest, in `NotABindingPattern`'s two
+// arms (§2.3): a non-denoting term, and an anonymous position. So a `BindingPattern` that EXISTS is one every
+// reading accepts: `bindings` never fails on pattern validity, and the agent's reading checks its pattern
+// before it pays for a solve.
+pub struct BindingPattern { /* a signed atom — a well-formed pattern, every position named */ }
+impl BindingPattern {
+    pub fn of(atom: Atom) -> Result<Self, NotABindingPattern>;   // the tier's policy, made a type
+    pub fn atom(&self) -> &Atom;
+}
+
+// A pattern is a signed `Atom` (program.md §11.2) — the mechanism, the program tier's, which this tier
+// reuses; a `BindingPattern` is this tier's policy over it, made a type as `Query` is for a ground query.
 pub use themelios_program::Atom;
 ```
 
@@ -181,7 +194,7 @@ pub trait AgentReading {   // impl'd for `Agent<B>` (solve.md §6); solves once,
     /// The Gelfond–Kahl three-valued reading of a ground query (drives the engine, then reads; §2.7).
     fn answer(&mut self, q: &Query) -> Result<Answer, Fault>;
     fn entails(&mut self, q: &Query) -> Result<bool, Fault>;       // §2.6
-    fn bindings(&mut self, pat: &Atom) -> Result<Bindings, Fault>; // §2.5; its refusal typed — note below
+    fn bindings(&mut self, pat: &BindingPattern) -> Result<Bindings, Fault>; // §2.5; refuses as `snapshot`
     fn snapshot(&mut self) -> Result<Snapshot, Fault>;             // §2.7 — solve once + materialise (whole program)
     /// A scenario-scoped `Snapshot` (§2.7): `solve_assuming` once, then materialise, so every reading off
     /// it ranges over the scenario's models. REQUIRES the backend's `assumptions` capability (a scenario
@@ -193,11 +206,9 @@ pub trait AgentReading {   // impl'd for `Agent<B>` (solve.md §6); solves once,
 impl Snapshot {            // the engine-free form — the same reading over materialised data, infallible
     pub fn answer(&self, q: &Query) -> Answer;
 }
-// The agent's `bindings` returns `Result<Bindings, Fault>`: a pattern it refuses is a Request fault naming
-// `Presupposition::NotABindingPattern` (solve.md §5.4), carrying the query-owned `NotABindingPattern` (§2.3)
-// whole as its typed cause (`Fault::caused_by`). So a consumer on the AGENT path matches the kind and
-// downcasts the cause for its arm — `AnonymousPosition`, or the program tier's `NotAPattern` with its
-// `NonDenoting` / `Pooled` reason — the same typed value `Snapshot::bindings` returns directly (§2.3).
+// The agent's `bindings` takes a `BindingPattern` (§2.1): its pattern was checked when it was built, before
+// the agent solves, so the reading refuses only as `snapshot` does, and the pattern's own refusal is the
+// typed `NotABindingPattern` its constructor returns — on the agent path as on a `Snapshot`.
 ```
 
 - An **atomic or literal** query is two cautious-membership checks (`q` entailed → `Yes`; contrary
@@ -272,17 +283,18 @@ impl Snapshot {
     pub fn is_exhausted(&self) -> bool;                           // a snapshot is complete
     pub fn scenario(&self) -> &Scenario;
     pub fn answer(&self, q: &Query) -> Answer;                    // §2.2
-    pub fn bindings(&self, pat: &Atom) -> Result<Bindings, NotABindingPattern>; // §2.5 — a query-owned refusal (below)
+    pub fn bindings(&self, pat: &BindingPattern) -> Bindings;     // §2.5 — infallible: its pattern checked
     pub fn entails(&self, q: &Query) -> bool;                     // §2.6
 }
-/// The `bindings` refusal — the program tier's `NotAPattern` (a non-denoting term) *plus* the query tier's
-/// own partition policy: an anonymous position (`p(X,_)`) is a well-formed pattern to the mgu (`_` denotes;
-/// it matches anything) but is refused HERE, not laundered into `NonDenoting`. The reason is a policy
-/// nudge toward NAMED bindings: `_` names no binding, and a fresh named variable yields the same ground
-/// instances, so nothing is lost. (The both-sides hazard is real at the *substitution* level — a
+/// `BindingPattern::of`'s refusal — the program tier's `NotAPattern` (a non-denoting term) *plus* the query
+/// tier's own partition policy: an anonymous position (`p(X,_)`) is a well-formed pattern to the mgu (`_`
+/// denotes; it matches anything) but is refused HERE, not laundered into `NonDenoting`. The reason is a
+/// policy nudge toward NAMED bindings: `_` names no binding, and a fresh named variable yields the same
+/// ground instances, so nothing is lost. (The both-sides hazard is real at the *substitution* level — a
 /// substitution `{X=a}` with `_` projected away could be cautiously-yes and cautiously-no through
 /// different `_`-fillers — but `Bindings` holds ground *instances* (§2.5), each of which lands in exactly
-/// one cell, so it is not the built instance partition that breaks.) `query.md` §3.1 keeps matching apart from policy.
+/// one cell, so it is not the built instance partition that breaks.) `query.md` §3.1 keeps matching apart
+/// from policy.
 #[non_exhaustive] pub enum NotABindingPattern { NotAPattern(NotAPattern), AnonymousPosition }
 ```
 
@@ -337,17 +349,24 @@ Properties and cost:
   `optimize` lands, is valid only once the exhaustion gate finds the optimum *proven* and the optimal
   set exhausted.
 
-**The reading path's refusals are typed in the fault** (`solve.md` §5.4). `materialize`, and the agent's
-`answer`/`entails`/`bindings`/`snapshot`/`snapshot_assuming`, refuse at the request locus, each naming the
-presupposition that failed — an inconsistent program, or a scenario that admits no answer set
-(`Presupposition::NoAnswerSet`); a search that did not close the space (`Presupposition::Unclosed`, with
-the truncation it reached, so the solve tier's typed completeness refusal keeps its kind across the
-conversion); a handle whose members were already streamed (`Presupposition::Taken`); a pattern the reading
-refuses (`Presupposition::NotABindingPattern`, its own refusal the cause, §2.2) — and refuse a member
-holding an atom and its contrary, or anything but literals, at the adapter locus, a backend's bug, while a
-search that faulted surfaces the engine's own fault. So a consumer tells them apart by matching
-`Fault::refused`, never by the message — elenctic's verdict classifier (§4) among them, which reads these
-presuppositions rather than a sum of this tier's own.
+**The reading path's refusals are typed in the fault** (`solve.md` §5.4), each naming the presupposition
+that failed, site by site:
+
+- `materialize` refuses a search that did not close the space (`Presupposition::Unclosed`, with the
+  truncation it reached, so the solve tier's typed completeness refusal keeps its kind across the
+  conversion) and a handle whose members were already streamed (`Presupposition::Taken`), at the request
+  locus; a member holding an atom and its contrary, or anything but literals, at the adapter locus, a
+  backend's bug; and a search that faulted, with the engine's own fault. It never meets an inconsistent
+  program: a `WorldView` that exists is non-empty.
+- The agent's `snapshot` solves afresh, so it never meets `Taken`: it refuses an inconsistent program
+  (`Presupposition::NoAnswerSet`), and otherwise as `materialize` does.
+- `snapshot_assuming` refuses as `snapshot` does under its scenario — a scenario that admits no answer set is
+  `NoAnswerSet` — and an undeclared `assumptions` as unsupported (§2.2).
+- `answer`, `entails`, and `bindings` each solve once and refuse as `snapshot` does; `bindings`' pattern was
+  checked at its construction (§2.1).
+
+So a consumer tells them apart by matching `Fault::refused`, never by the message — elenctic's verdict
+classifier (§4) among them, which reads these presuppositions rather than a sum of this tier's own.
 
 ### 2.4 Cautious and brave consequences
 
@@ -413,7 +432,8 @@ says so, or it reads as exhaustive and teaches the very misreading it exists to 
 whose *contrary* alone is bravely present (its `answer` is `Unknown`, but only `-g` is ever mentioned) is
 **not** listed here; it appears under the **contrary pattern**'s `unknown` — "mentions" is the
 pattern's own sign, settled. Cost: on a `Snapshot`, `yes`/`no` are cautious-set reads and `unknown` is
-bounded by the brave domain; the **agent**'s `bindings` materialises the world view first (`Θ(|W|)`,
+bounded by the brave domain; the **agent**'s `bindings`, its pattern checked at construction before that
+cost is paid (§2.1), materialises the world view first (`Θ(|W|)`,
 §2.2).
 
 ### 2.6 The ASP-Core-2 cautious query — a dialect-scoped derivation
@@ -448,12 +468,13 @@ same seam `answer` names.
 
 **The non-ground query is answered by substitution.** The ASP-Core-2 query admits variables
 (`q(X)?`, grammar §6.1), and the standard answers a non-ground query by *substitution* — the set of
-cautiously entailed instances, not a boolean. That answer is **`bindings(pat)?.yes()`** (§2.5): the
+cautiously entailed instances, not a boolean. That answer is **`bindings(&pattern)?.yes()`**, over the
+pattern's `BindingPattern` (§2.1, §2.5): the
 cautiously-entailed instances of the pattern *are* the standard's cautious substitution answer, under
 the same `Yes` vs `(No ∪ Unknown)` projection `entails` draws for the ground case (an instance is in
 `yes()` iff its `answer` is `Yes`, never the three-valued partition mistaken for the two-valued cautious
-answer). So witness 20 is served for both shapes — `entails` for a ground query, `bindings(pat)?.yes()`
-for a non-ground one — and the query surface is silent on neither.
+answer). So witness 20 is served for both shapes — `entails` for a ground query,
+`bindings(&pattern)?.yes()` for a non-ground one — and the query surface is silent on neither.
 
 ### 2.7 The dual face
 
@@ -674,8 +695,9 @@ it.
    `Snapshot` is non-empty like the live handle it came from, and complete because `materialize`'s gate
    requires it; the live handle's completeness is a drain-dependent report, never a property it has (§2.3).
    The reading path's refusals are the solve tier's typed Request faults, each naming the presupposition
-   that failed — no answer set, an unclosed search with its truncation, a streamed handle, a refused binding
-   pattern carrying the query-owned refusal whole as its typed cause — so the two named departures that
-   flattened them into messages are retired: the agent's `bindings` keeps its typed refusal (§2.2), and the
-   reading path's refusals are matched rather than read (§2.3); an unsupported scoped reading names its
-   capability (§2.2). The status line names this the design of record the build follows.
+   that failed — no answer set, an unclosed search with its truncation, a streamed handle — stated site by
+   site, so the two named departures that flattened them into messages are retired (§2.3). A binding pattern
+   is refused at its construction, `BindingPattern::of`, the tier's partition policy made a type as `Query`
+   is: `Snapshot::bindings` is infallible as its siblings are, and the agent checks the pattern before it
+   solves, refusing only as `snapshot` does (§2.1, §2.2, §2.3, §2.5, §2.6); an unsupported scoped reading
+   names its capability (§2.2). The status line names this the design of record the build follows.
