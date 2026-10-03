@@ -337,13 +337,7 @@ impl Program {
     /// and the raise (§8); this names the door they build on.
     pub fn of_nodes(statements: impl IntoIterator<Item = WithProvenance<Statement>>) -> Program {
         let mut program = Program::default();
-        let base = program
-            .parts
-            .get_mut(&base_key())
-            .expect("`Default` seeds the base part");
-        for statement in statements {
-            ingest(&mut base.statements, statement);
-        }
+        program.ingest_run(&base_key(), statements);
         program
     }
 
@@ -432,8 +426,8 @@ impl Program {
     /// The part named `key`, opened empty when it is not yet present (§4.1). O(key · log
     /// parts).
     fn part_entry(&mut self, key: PartKey) -> &mut Part {
-        self.parts.entry(key.clone()).or_insert_with(|| Part {
-            key,
+        self.parts.entry(key).or_insert_with_key(|key| Part {
+            key: key.clone(),
             statements: BTreeSet::new(),
         })
     }

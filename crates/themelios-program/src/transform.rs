@@ -386,8 +386,8 @@ fn rewrite_owned_carrier<R, T>(
 where
     R: Rewrite + ?Sized,
 {
-    let origin = carrier.provenance().clone();
-    let content = f(r, carrier.into_value());
+    let (value, origin) = carrier.into_parts();
+    let content = f(r, value);
     WithProvenance::new(content, stamp(origin, r.tag()))
 }
 
