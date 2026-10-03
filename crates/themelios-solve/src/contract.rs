@@ -3,12 +3,14 @@
 //! reads.
 //!
 //! The [`Backend`] trait (§4.1, §4.3) is the sole crossing between the
-//! engine-free core and any engine: four methods required of every backend —
-//! the declaration, the solve, the bridge, and the ground-program observer —
-//! and, beyond them, methods required exactly when the matching capability
-//! bit is declared, each provided with a default that refuses naming the
-//! [`Capability`] it needed, so an undeclared capability is a typed refusal at
-//! the seam, never a compile burden and never a silent degrade (§4.1).
+//! engine-free core and any engine: three methods required of every backend —
+//! the declaration, the solve, and the bridge — and, beyond them, methods
+//! required exactly when the matching capability bit is declared, each
+//! provided with a default that refuses naming the [`Capability`] it needed,
+//! or, for the cancellation primitive and the ground-program observer, answers
+//! `None` — so an undeclared capability is a typed refusal or an honest
+//! absence at the seam, never a compile burden and never a silent degrade
+//! (§4.1).
 //!
 //! The capability declaration (§4.1) is a closed set of bits and enums a
 //! backend answers for itself, read before a request is paid for: a request
@@ -53,8 +55,8 @@ use crate::outcome::{NativeAnswer, Optimized, Solved, Truncation};
 /// consequences by enumeration (§4.2) and blame (§5.4) — are the core's, over
 /// this surface, never a backend author's.
 ///
-/// Four methods are required of every backend: [`capabilities`], [`solve`],
-/// [`lower`], and [`ground_program`]. The design marks the rest required
+/// Three methods are required of every backend: [`capabilities`], [`solve`],
+/// and [`lower`]. The design marks the rest required
 /// exactly when the matching capability bit is declared — `optimize` under
 /// `optimization`; `solve_assuming` under `assumptions`; `ground`,
 /// `assign_external`, and `reset` under `multi_shot`; `register_function`
@@ -65,7 +67,8 @@ use crate::outcome::{NativeAnswer, Optimized, Solved, Truncation};
 /// request surface, never a silent degrade (§4.1) — with no method to write
 /// for a capability it lacks. The remaining methods are provided outright and
 /// overridden by a capable engine: [`interrupt`], `None` unless the backend
-/// cancels; [`consequences_native`], refusing unless the backend has the
+/// cancels; [`ground_program`], `None` unless the backend declares the
+/// observer; [`consequences_native`], refusing unless the backend has the
 /// native door.
 ///
 /// Usable as a trait object: the core holds any engine behind this one door.
@@ -95,9 +98,20 @@ pub trait Backend {
     /// `lower`.
     fn lower(&mut self, door: Door<'_>) -> Result<(), Fault>;
 
-    /// Required. The ground program the backend exposes — the committed
-    /// observer (§10.4); `None` when it has none to expose.
-    fn ground_program(&self) -> Option<&GroundProgram>;
+    /// Provided. The ground program the backend exposes — the observer, a
+    /// declared capability (§10.4): overridden exactly when
+    /// `capabilities().ground_program`, so a backend that does not declare it
+    /// writes nothing and inherits the default `None`. What a declaring
+    /// backend exposes is complete or absent: `Some` holds the ground program
+    /// as the grounder emitted it, from every grounding that finished since the
+    /// last `reset` or replacing `lower`; `None` before any has finished, after
+    /// a `reset` or a replacing `lower` until the next one finishes, and while
+    /// the backend needs a rebuild — never a prefix or a failed grounding's
+    /// partial output. The conformance suite (§13.1) holds the declaration and
+    /// the attribution's membership.
+    fn ground_program(&self) -> Option<&GroundProgram> {
+        None
+    }
 
     /// Provided. The engine's cancellation primitive, to cut an in-flight
     /// solve short from another thread — `Some` exactly when
@@ -238,7 +252,7 @@ pub trait Cancel: Send + Sync {
 /// a migration.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "the eight bits are distinct capabilities, each gating its own method of the \
+    reason = "the nine bits are distinct capabilities, each gating its own method of the \
               contract (docs/design/solve.md §4.1); folding them into one field would obscure \
               the declaration a consumer reads, not clarify it"
 )]
@@ -277,6 +291,10 @@ pub struct Capabilities {
     pub cancellation: bool,
     /// Which budgets the backend enforces (§6.3).
     pub budgets: BudgetSupport,
+    /// Whether the backend exposes the complete ground program — the observer,
+    /// `ground_program` (§10.4) — so an explanation client learns before it
+    /// lowers whether the backend serves it.
+    pub ground_program: bool,
 }
 
 /// Which path a consequence request takes (docs/design/solve.md §4.2): the
@@ -322,10 +340,11 @@ pub struct BudgetSupport {
 /// names the one a request needed ([`Fault::unsupported`], §5.4) and a
 /// conformance report the one it checked (§13.1). A refusal names one of the six
 /// whose method refuses — optimization, native consequences, assumptions,
-/// multi-shot, functions, propagators; undeclared cancellation answers `None`
-/// instead, and externals and the time budget name checks, never refusals: a
-/// budget nothing realises refuses with [`Presupposition::UnrealisableBudget`]
-/// (§6.3). Non-exhaustive, growing with [`Capabilities`].
+/// multi-shot, functions, propagators; undeclared cancellation and the observer
+/// answer `None` instead, and externals and the time budget name checks, never
+/// refusals: a budget nothing realises refuses with
+/// [`Presupposition::UnrealisableBudget`] (§6.3). Non-exhaustive, growing with
+/// [`Capabilities`].
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Capability {
@@ -349,6 +368,8 @@ pub enum Capability {
     Functions,
     /// Running custom propagators — `register_propagator` (§8).
     Propagators,
+    /// Exposing the ground program — `ground_program` (§10.4).
+    GroundProgram,
 }
 
 impl Capabilities {
@@ -368,6 +389,7 @@ impl Capabilities {
             Capability::TimeBudget => self.budgets.time,
             Capability::Functions => self.functions,
             Capability::Propagators => self.propagators,
+            Capability::GroundProgram => self.ground_program,
         }
     }
 }
@@ -386,6 +408,7 @@ impl fmt::Display for Capability {
             Capability::TimeBudget => "a time budget",
             Capability::Functions => "@-functions",
             Capability::Propagators => "propagators",
+            Capability::GroundProgram => "the ground program",
         })
     }
 }
@@ -907,10 +930,6 @@ mod tests {
         fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
             Err(Fault::engine("this backend lowers nothing"))
         }
-
-        fn ground_program(&self) -> Option<&GroundProgram> {
-            None
-        }
     }
 
     #[test]
@@ -945,7 +964,10 @@ mod tests {
     }
 
     #[test]
-    fn a_backend_with_nothing_lowered_exposes_no_ground_program() {
+    fn a_backend_without_the_observer_exposes_no_ground_program() {
+        // The provided default: a backend that does not declare the observer
+        // writes nothing and answers nothing (§10.4).
+        assert!(!Nothing.capabilities().ground_program);
         assert!(Nothing.ground_program().is_none());
     }
 }

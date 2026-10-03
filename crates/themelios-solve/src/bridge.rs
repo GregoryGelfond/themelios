@@ -13,8 +13,10 @@
 use std::fmt;
 
 use themelios_base::diagnostic::{Diagnostic, Severity, ToDiagnostic};
+use themelios_program::program::PartKey;
+use themelios_program::provenance::WithProvenance;
 use themelios_program::raise::{LowerError, Occurrences, StatementOccurrence, raise_occurrences};
-use themelios_program::{Origin, Program};
+use themelios_program::{Program, Statement};
 use themelios_syntax::{Parse, SyntaxError, ast};
 
 /// The entry values a backend lowers (docs/design/solve.md §10.2): a parse the
@@ -142,97 +144,168 @@ impl fmt::Display for NotAdmitted {
 
 impl std::error::Error for NotAdmitted {}
 
-/// The ground program a backend exposes (§10.4): the machine-IR of §1.1 as a
-/// first-class, engine-free value — plain data, not FFI — carrying `Origin`
-/// provenance on every ground rule, the anchor through which an explanation
-/// client attributes answer-set atoms back to source. A committed capability
-/// of the contract (`Backend::ground_program`, §4.1), not a reserved seam:
-/// an adapter produces it faithfully beside its lowering, and the conformance
-/// suite checks that it does (§13.1).
+/// A ground program, as §10.4's law holds it (docs/design/solve.md §10.4) —
+/// engine-free data, the machine-IR of §1.1, the anchor through which an
+/// explanation client attributes answer-set atoms back to source. It holds each
+/// statement its rules were instantiated from once and whole, with its part and
+/// its provenance: the program's statements, or a parse's occurrences at the
+/// per-occurrence grain ([`Grain`]). Each ground rule names its statement
+/// within it, so a merged statement's every origin reaches its rules, two
+/// content-equal statements under different parts stay apart, and no rule
+/// clones its statement. The part is the statement's as declared, `step(t)`;
+/// the instance a grounding gave it belongs to the fuller observer the reserved
+/// seams carry (§14). Cost: the statements and their parts' keys once,
+/// Θ(program), and one index per rule.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct GroundProgram {
-    pub(crate) rules: Vec<GroundRule>,
-}
-
-/// One ground rule of a [`GroundProgram`], carrying the `Origin` of the
-/// statement it was instantiated from (§10.4). Its ground head and body join
-/// when the observer is realised; the provenance is the part every reader of
-/// the value needs first.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct GroundRule {
-    pub(crate) origin: Origin,
+    grain: Grain,
+    statements: Vec<(PartKey, WithProvenance<Statement>)>,
+    rules: Vec<GroundRule>,
 }
 
 impl GroundProgram {
-    /// The ground rules, in the order they were produced.
-    pub fn rules(&self) -> impl Iterator<Item = &GroundRule> + '_ {
-        self.rules.iter()
+    /// The in-crate construction door, for the crate's own tests: the public
+    /// one lands with the observer that produces it (§11.1), as `Incumbent`'s
+    /// lands with `optimize`.
+    #[cfg(test)]
+    pub(crate) fn of(
+        grain: Grain,
+        statements: Vec<(PartKey, WithProvenance<Statement>)>,
+        rules: Vec<GroundRule>,
+    ) -> GroundProgram {
+        GroundProgram {
+            grain,
+            statements,
+            rules,
+        }
+    }
+
+    /// Each ground rule with the part and the statement it was instantiated
+    /// from, in the order produced. A rule naming no statement — which the
+    /// crate's own construction never builds — yields nothing. O(1) per rule.
+    pub fn rules(
+        &self,
+    ) -> impl Iterator<Item = (&GroundRule, &PartKey, &WithProvenance<Statement>)> + '_ {
+        self.rules.iter().filter_map(|rule| {
+            self.statements
+                .get(rule.statement)
+                .map(|(part, statement)| (rule, part, statement))
+        })
+    }
+
+    /// What a rule's statement is: a statement of the program, or an
+    /// occurrence of the parse. O(1).
+    pub fn grain(&self) -> Grain {
+        self.grain
     }
 }
 
+/// One ground rule of a [`GroundProgram`] (§10.4). Its ground head and body
+/// join with the observer that produces them (§11.1); today it names its
+/// statement, by position among its program's.
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GroundRule {
+    statement: usize,
+}
+
 impl GroundRule {
-    /// The provenance of the statement this rule was instantiated from
-    /// (§10.4).
-    pub fn origin(&self) -> &Origin {
-        &self.origin
+    /// A rule naming the statement at `statement` among its program's — for
+    /// the crate's own tests, as [`GroundProgram`]'s construction is.
+    #[cfg(test)]
+    pub(crate) fn naming(statement: usize) -> GroundRule {
+        GroundRule { statement }
     }
+}
+
+/// What a ground rule's statement is (§10.4): a statement of the program
+/// lowered, merged as the set merges it, or an occurrence of the parse, its
+/// nested provenance intact.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Grain {
+    /// A statement of the program lowered.
+    #[default]
+    Statement,
+    /// An occurrence of the parse admitted at Door A.
+    Occurrence,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use themelios_program::Origin;
-    use themelios_program::provenance::TransformTag;
+    use themelios_program::{Atom, Name, Rule};
 
-    /// The transformation a rewritten rule names.
-    const REWRITE: &str = "rewrite";
-
-    fn constructed() -> GroundRule {
-        GroundRule {
-            origin: Origin::Constructed,
+    /// A part key with no formals.
+    fn key(name: &str) -> PartKey {
+        PartKey {
+            name: Name::new(name).expect("a valid identifier"),
+            formals: Vec::new(),
         }
     }
 
-    fn rewritten() -> GroundRule {
-        GroundRule {
-            origin: Origin::Transformed(TransformTag::new(REWRITE)),
-        }
+    /// The fact `name.`, built in Rust.
+    fn fact(name: &str) -> WithProvenance<Statement> {
+        WithProvenance::constructed(Statement::from(Rule::fact(Atom::constant(
+            Name::new(name).expect("a valid identifier"),
+        ))))
     }
 
     #[test]
-    fn a_constructed_ground_rule_round_trips_its_origin() {
-        assert_eq!(constructed().origin(), &Origin::Constructed);
-    }
-
-    #[test]
-    fn a_ground_program_yields_its_rules_in_order() {
-        let program = GroundProgram {
-            rules: vec![constructed(), rewritten()],
-        };
-        let origins: Vec<&Origin> = program.rules().map(GroundRule::origin).collect();
+    fn a_ground_program_yields_each_rule_with_its_part_and_statement_in_order() {
+        let program = GroundProgram::of(
+            Grain::Statement,
+            vec![(key("base"), fact("a")), (key("step"), fact("b"))],
+            vec![GroundRule::naming(1), GroundRule::naming(0)],
+        );
+        let read: Vec<(&PartKey, &Statement)> = program
+            .rules()
+            .map(|(_, part, statement)| (part, statement.get()))
+            .collect();
         assert_eq!(
-            origins,
+            read,
             [
-                &Origin::Constructed,
-                &Origin::Transformed(TransformTag::new(REWRITE))
+                (&key("step"), fact("b").get()),
+                (&key("base"), fact("a").get())
             ]
         );
     }
 
     #[test]
-    fn a_ground_rule_is_plain_data() {
-        let rule = rewritten();
-        assert_eq!(rule.clone(), rule);
-        assert_ne!(rule, constructed());
-        assert!(format!("{rule:?}").contains(REWRITE), "{rule:?}");
+    fn rules_naming_one_statement_share_it() {
+        let program = GroundProgram::of(
+            Grain::Statement,
+            vec![(key("base"), fact("a"))],
+            vec![GroundRule::naming(0), GroundRule::naming(0)],
+        );
+        let statements: Vec<&WithProvenance<Statement>> =
+            program.rules().map(|(_, _, statement)| statement).collect();
+        assert!(std::ptr::eq(statements[0], statements[1]));
     }
 
     #[test]
-    fn a_ground_program_with_rules_is_plain_data() {
-        let program = GroundProgram {
-            rules: vec![constructed()],
-        };
-        assert_eq!(program.clone(), program);
-        assert_ne!(program, GroundProgram::default());
+    fn content_equal_statements_under_two_parts_stay_apart() {
+        let program = GroundProgram::of(
+            Grain::Statement,
+            vec![(key("base"), fact("a")), (key("step"), fact("a"))],
+            vec![GroundRule::naming(0), GroundRule::naming(1)],
+        );
+        let parts: Vec<&PartKey> = program.rules().map(|(_, part, _)| part).collect();
+        assert_eq!(parts, [&key("base"), &key("step")]);
+    }
+
+    #[test]
+    fn a_rule_naming_no_statement_yields_nothing() {
+        let program = GroundProgram::of(
+            Grain::Statement,
+            vec![(key("base"), fact("a"))],
+            vec![GroundRule::naming(1)],
+        );
+        assert_eq!(program.rules().count(), 0);
+    }
+
+    #[test]
+    fn a_ground_program_reports_its_grain() {
+        let program = GroundProgram::of(Grain::Occurrence, Vec::new(), Vec::new());
+        assert_eq!(program.grain(), Grain::Occurrence);
     }
 }

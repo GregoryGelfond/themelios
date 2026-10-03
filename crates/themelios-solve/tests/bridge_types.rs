@@ -6,34 +6,38 @@
 use std::fmt::Debug;
 
 use themelios_program::Symbol;
-use themelios_solve::bridge::{GroundProgram, GroundRule};
+use themelios_solve::bridge::{Grain, GroundProgram, GroundRule};
 
 /// The engine's number width at its bounds and around zero: every one a
 /// value the correspondence carries whole (docs/design/solve.md §10.5).
 const NUMBER_WIDTH_WITNESSES: [i32; 5] = [i32::MIN, -1, 0, 1, i32::MAX];
 
-fn is_plain_data<T: Clone + Eq + Debug>() {}
+fn is_plain_data<T: Send + Sync + Clone + Eq + Debug + 'static>() {}
 
 // --- the ground program ---
 
 #[test]
-fn a_default_ground_program_has_no_rules() {
+fn an_empty_ground_program_yields_no_rule() {
     assert_eq!(GroundProgram::default().rules().count(), 0);
 }
 
 #[test]
-fn a_ground_program_is_plain_data() {
-    is_plain_data::<GroundProgram>();
-    let empty = GroundProgram::default();
-    assert_eq!(empty.clone(), empty);
-    assert!(format!("{empty:?}").contains("GroundProgram"));
+fn an_empty_ground_program_holds_the_statement_grain() {
+    // The default grain: a rule's statement is a statement of the program.
+    assert_eq!(GroundProgram::default().grain(), Grain::Statement);
 }
 
 #[test]
-fn a_ground_rule_is_plain_data() {
-    // A rule is built only below the seam, so the law a consumer can state is
-    // the bounds: it clones, compares, and renders for debugging.
+fn a_ground_program_is_plain_data() {
+    // A program and its rules are built only below the seam, so the law a
+    // consumer can state is the bounds: shareable, cloned, compared, and
+    // rendered for debugging.
+    is_plain_data::<GroundProgram>();
     is_plain_data::<GroundRule>();
+    is_plain_data::<Grain>();
+    let empty = GroundProgram::default();
+    assert_eq!(empty.clone(), empty);
+    assert!(format!("{empty:?}").contains("GroundProgram"));
 }
 
 // --- the Symbol correspondence ---

@@ -38,6 +38,7 @@ fn the_empty_declaration_declares_nothing() {
     assert!(!empty.multi_shot);
     assert!(!empty.assumptions);
     assert!(!empty.cancellation);
+    assert!(!empty.ground_program);
     assert_eq!(empty.theories, TheorySupport::default());
     assert_eq!(empty.budgets, BudgetSupport::default());
 }

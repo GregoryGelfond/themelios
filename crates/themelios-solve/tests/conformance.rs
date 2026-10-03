@@ -384,8 +384,11 @@ enum Flaw {
     RefusesTheRule,
     /// Refuses every unscoped solve.
     RefusesTheSolve,
-    /// Exposes an empty ground program for every program.
+    /// Declares the observer, yet exposes an empty ground program for every
+    /// program.
     ExposesAnEmptyGroundProgram,
+    /// Exposes a ground program without declaring the observer.
+    ExposesAnUndeclaredObserver,
     /// Refuses the program no grounder can instantiate at the engine locus.
     RefusesTheUnsafeProgramOffItsLocus,
     /// Accepts the program no grounder can instantiate.
@@ -757,7 +760,11 @@ impl Backend for Stub {
     }
 
     fn ground_program(&self) -> Option<&GroundProgram> {
-        (self.flaw == Flaw::ExposesAnEmptyGroundProgram).then_some(&self.nothing)
+        matches!(
+            self.flaw,
+            Flaw::ExposesAnEmptyGroundProgram | Flaw::ExposesAnUndeclaredObserver
+        )
+        .then_some(&self.nothing)
     }
 
     fn interrupt(&self) -> Option<Box<dyn Cancel>> {
@@ -1019,7 +1026,8 @@ fn only(capability: Capability) -> Capabilities {
 }
 
 /// Every capability a stub outside the crate can realise: all but optimization,
-/// whose outcome has no public constructor.
+/// whose outcome has no public constructor, and the ground-program observer,
+/// whose carrier has none yet.
 const REALISABLE: [Capability; 8] = [
     Capability::NativeConsequences,
     Capability::Assumptions,
@@ -1030,6 +1038,14 @@ const REALISABLE: [Capability; 8] = [
     Capability::Functions,
     Capability::Propagators,
 ];
+
+/// The declaration of an enumerating backend that declares the ground-program
+/// observer.
+fn observing() -> Capabilities {
+    let mut capabilities = enumerating();
+    capabilities.ground_program = true;
+    capabilities
+}
 
 /// The declaration of a backend realising every capability a stub outside the
 /// crate can.
@@ -1173,11 +1189,11 @@ fn the_cancellation_check_is_skipped_while_no_search_can_be_cancelled() {
 }
 
 #[test]
-fn an_unexposed_ground_program_skips_its_faithfulness() {
+fn an_undeclared_observer_skips_its_faithfulness() {
     let report = report(enumerating(), Flaw::Faithful);
     assert_eq!(
         skip(&report, Check::GroundProgramIsFaithful),
-        Some(&Skip::NoGroundProgram),
+        Some(&Skip::Undeclared(Capability::GroundProgram)),
         "{report}"
     );
 }
@@ -1372,8 +1388,13 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
         ),
         (
             Flaw::ExposesAnEmptyGroundProgram,
-            enumerating(),
+            observing(),
             vec![(Ground, Misanswered)],
+        ),
+        (
+            Flaw::ExposesAnUndeclaredObserver,
+            enumerating(),
+            vec![(Declared(C::GroundProgram), Accepted)],
         ),
         (
             Flaw::RefusesTheUnsafeProgramOffItsLocus,
