@@ -27,6 +27,13 @@ use themelios_program::{Atom, Program, Rule, Statement, Symbol, Term, WithProven
 /// rather than borrowed off a stack frame, an agent is `'static` whenever its
 /// backend is, and so embeds behind a service boundary without ceremony.
 ///
+/// The agent keeps its loop's invariant — its engine level with its knowledge,
+/// or a rebuild pending — by tracking, not by reacting (§6.2): a step that
+/// fails against the engine is never accepted or replayed, and leaves the next
+/// step that touches the engine to rebuild. A grounded part whose replay is
+/// refused refuses every later such step at the same part until a replay
+/// succeeds, and the knowledge stays intact throughout.
+///
 /// Reifying a program with the installation's default engine — the `Reason`
 /// extension trait on `Program` and its `into_agent` (§6.1) — belongs to the
 /// facade crate, since it names the facade's `DefaultEngine`; this crate stays
@@ -399,10 +406,22 @@ impl<B: Backend> Agent<B> {
     /// is assigned only once grounded. On a single-shot backend `lower`
     /// replaces the program and nothing is retained, so the lowering is the
     /// whole of it. A refused step is the caller's fault, and nothing is
-    /// delegated after it. Every call rebuilds; the retained-engine
-    /// realisations the retraction classes disclose — the external toggle at
-    /// the seam, the incremental grounding of an addition — are reserved until
-    /// the retained engine is implemented. Cost: `Θ(program size + grounded
+    /// delegated after it.
+    ///
+    /// The loop's invariant — the engine level with the knowledge, or a
+    /// rebuild pending — is kept by tracking, not by reacting: any step of the
+    /// agent's own that fails against the engine leaves a rebuild pending,
+    /// whatever the fault, and only a rebuild that succeeds clears it, so the
+    /// agent reads neither a fault's locus nor `Presupposition::NeedsRebuild`
+    /// to decide. Every call rebuilds, so a rebuild is always pending and the
+    /// tracking is trivial; the pending mark takes effect with the retained
+    /// engine. A refused replay — an accepted part whose grounding now fails —
+    /// refuses this step with the knowledge intact, and every later step that
+    /// touches the engine retries the rebuild and refuses at the same part
+    /// until a replay succeeds. The retained-engine realisations the
+    /// retraction classes disclose — the external toggle at the seam, the
+    /// incremental grounding of an addition — are reserved until the retained
+    /// engine is implemented. Cost: `Θ(program size + grounded
     /// parts + assigned externals)` at the seam — a reset, one lowering
     /// (§10.1), and the replay — the re-grounding the engine's.
     fn bring_level(&mut self) -> Result<(), Fault> {
