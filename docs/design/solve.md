@@ -1178,7 +1178,9 @@ failed step is not replayed and nothing the agent accepted is lost; registration
 with the backend (§4.1), so the replay need not restore them. The agent keeps its loop's invariant — the
 engine level with its knowledge, or a rebuild pending — by tracking, not by reacting: any step of its own
 that fails against the engine leaves a rebuild pending, whatever the fault, and only a rebuild that succeeds
-clears it. So it reads neither a fault's locus nor `Presupposition::NeedsRebuild` to decide — that
+clears it. Until the agent retains its engine between steps, every step rebuilds, so a rebuild is always
+pending and the tracking is trivial; the pending mark takes effect with the retained engine. So it reads
+neither a fault's locus nor `Presupposition::NeedsRebuild` to decide — that
 presupposition's consumer is a client composing over `Backend` (§4.1) — and a refusal that needed no rebuild
 costs one, never a wrong answer. Should the replay itself be refused — an
 accepted part whose `@`-function now faults, say — the knowledge base stays intact, the backend still needs
@@ -2345,12 +2347,13 @@ necessity where it is declared.
    (`Presupposition::NeedsRebuild`) until `reset`, which keeps the registrations — on a single-shot backend,
    until a `lower` replaces the program; the law is uniform by decision, its tradeoff and the pinned
    engine's warrant stated. The agent tracks a pending rebuild — any step of its own that fails against the
-   engine leaves one pending, and only a successful rebuild clears it — and recovers by its rebuild's replay
-   at its next step; after a refused replay every later step retries and refuses at the same part until a
-   replay succeeds, the loop having no un-ground (§4.1, §6.2). The observer is optional and declared —
-   `Capabilities::ground_program`, the method a provided default, the required surface three methods — and
-   its law, at §10.4, holds the program as the grounder emitted it across the finished groundings since the
-   last `reset` or replacing `lower`, `None` otherwise and while the backend needs a rebuild, a single-shot
+   engine leaves one pending, and only a successful rebuild clears it, trivially while every step rebuilds —
+   and recovers by its rebuild's replay at its next step; after a refused replay every later step retries
+   and refuses at the same part until a replay succeeds, the loop having no un-ground (§4.1, §6.2). The
+   observer is optional and declared — `Capabilities::ground_program`, the method a provided default, the
+   required surface three methods — and its law, at §10.4, holds the program as the grounder emitted it
+   across the finished groundings since the last `reset` or replacing `lower`, `None` otherwise and while
+   the backend needs a rebuild, a single-shot
    backend's only once a solve has grounded; its carrier is the contract's — each statement held once and
    whole with its part, the program's or a parse's occurrences (`Grain`), each ground rule naming one, its
    construction door landing with the observer — and its attribution mechanism each backend's own design,
