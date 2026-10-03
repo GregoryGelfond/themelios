@@ -270,8 +270,8 @@ impl Part {
 
 /// A part-structured set of statements, giving cheap part-wise access for multi-shot use
 /// (§4.1). `base` is the implicit default part, always present — seeded at construction
-/// (`Default`, `empty`, `of`, and `of_nodes`), so `base` is total and the empty program
-/// has one form.
+/// (`Default`, `empty`, `of`, `of_nodes`, and `of_keyed_nodes`), so `base` is total and the
+/// empty program has one form.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Program {
     parts: BTreeMap<PartKey, Part>,
@@ -402,7 +402,9 @@ impl Program {
     /// opening the part with its first statement when it is not yet present — the door
     /// for a statement that carries its own key, as `of_keyed_nodes`' do. `base` is seeded
     /// at construction; every other part is opened by a statement joining it.
-    /// Crate-internal: the public doors are `of` and `of_nodes` (§7) and the raise (§8).
+    /// Crate-internal: of the public doors — `of`, `of_nodes`, and `of_keyed_nodes` (§7.1), and
+    /// the raise (§8) — only `of_keyed_nodes` comes here; the others, the raise among them,
+    /// collect through `ingest_run`.
     pub(crate) fn ingest_into(&mut self, key: PartKey, statement: WithProvenance<Statement>) {
         ingest(&mut self.part_entry(key).statements, statement);
     }
@@ -410,8 +412,8 @@ impl Program {
     /// Admit a run of statements into one part through the one ingest door (§6.3), looking
     /// the part up once for the run rather than once per statement — the collection's door
     /// for the raise, which shares one part key across a `#program` delimiter's statements
-    /// (§8), and for the rewrites, which rebuild part by part. O(key) once, then each
-    /// statement's ingest.
+    /// (§8), and for the rewrites, which rebuild part by part. O(key · log parts) once, then
+    /// each statement's ingest.
     pub(crate) fn ingest_run(
         &mut self,
         key: &PartKey,

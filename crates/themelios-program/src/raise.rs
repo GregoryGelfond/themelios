@@ -1,11 +1,20 @@
-//! The term raise (docs/design/program.md §8): the parsing relation's term half.
-//! It lowers the syntax tier's parsed term fragment (grammar §5.1) to a `term::Term`,
+//! The raise (docs/design/program.md §8): the parsing relation, from the syntax tier's tree to
+//! the value. Its term half lowers a parsed term fragment (grammar §5.1) to a `term::Term`,
 //! re-associating the flat per-precedence operator chain into the operator tree
-//! (exponentiation right-associative, everything else left), reading each string
-//! through the parse's own dialect (§8), and collapsing maximal ground constructor
-//! subterms to symbols (§5.1). Composed with the syntax tier's `parse_term_value` and
-//! `Term::evaluate` (§3.5), `parse_term_value → raise_term → evaluate → Symbol` is the
-//! string-to-symbol path a REPL or query surface wants, and this is its middle step.
+//! (exponentiation right-associative, everything else left), reading each string through the
+//! parse's own dialect (§8), and collapsing maximal ground constructor subterms to symbols
+//! (§5.1). Composed with the syntax tier's `parse_term_value` and `Term::evaluate` (§3.5),
+//! `parse_term_value → raise_term → evaluate → Symbol` is the string-to-symbol path a REPL or
+//! query surface wants, and this is its middle step.
+//!
+//! Its statement half lowers a parsed program in two steps. Each statement is lowered, in
+//! source order, with its part and its provenance — the occurrence stream
+//! [`raise_occurrences`] returns — and lowering diagnoses a global definition repeated
+//! content-equal within its part ([`LowerErrorKind::RepeatedDefinition`]), since the authority
+//! rejects the redefinition the set would merge (§6.3). The occurrences are then collected into
+//! the part-structured set, one part lookup per run of statements sharing a part ([`raise`],
+//! [`Occurrences::into_raised`]). [`raise_source`] and [`raise_str`] parse and raise in one
+//! call.
 //!
 //! The raise is **total** (§8, syntax §12.4): it never panics and never refuses by
 //! `Result`. A fragment that held no term, or ended before its construct did, raises

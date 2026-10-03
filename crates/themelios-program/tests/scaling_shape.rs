@@ -8,7 +8,12 @@
 //! atoms (the Martelli–Montanari shape a monolithic ground representation would
 //! make quadratic, §11.1), a match against an answer set logarithmic via
 //! `signature_range` (§11.3), and part-wise access logarithmic in the parts
-//! (§4.1). What they prove: the claimed class — a quadratic `mgu`, an O(n²)
+//! (§4.1). Beside them stand the raise's own shapes: the counted constructor near-linear
+//! over kept and merged repeats (§4.4); the collection near-linear in repeated statements,
+//! a body of repeated literals, and a part as wide as it is long, through the raise,
+//! `rewrite`, and `unpool` (§6.3, §8); and the repeated-definition check near-linear in
+//! definitions, in one part and across many (§6.3). What they prove: the claimed class — a
+//! quadratic `mgu`, an O(n²)
 //! equality/clone/render/traversal, a linear-scan match or part lookup. What they
 //! cannot: absolute speed, which is machine-dependent and lives in the out-of-band
 //! benches (benches/scaling.rs, spec §10.2).
