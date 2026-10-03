@@ -82,7 +82,7 @@ fn a_negated_boolean_head_is_kept_as_its_literal() {
 #[test]
 fn equality_is_strictly_finer_than_ordinary_equivalence() {
     // `{ p :- q.  q :- p. }` and the empty program share the single answer set ∅ — they
-    // are ordinarily, indeed strongly, equivalent — yet their canonical forms differ.
+    // are ordinarily, though not strongly, equivalent — yet their canonical forms differ.
     let p_from_q = Rule::new(
         positive(atom("p")),
         Body::new([BodyElement::Literal(positive(atom("q")))]),

@@ -5,9 +5,12 @@
 //! and the authority does not share it — together with `evaluate` against the
 //! authority's ground arithmetic, `Symbol` order against its printing order, canonical
 //! equality against its parse-then-unparse, the `i32` number width at the boundaries,
-//! and the answer sets two renderings ground to, confirming the leading block's lift of
-//! the globally-gathered directives (§10) grounder-neutral. Six independent-oracle
-//! checks, each with its named boundaries.
+//! the answer sets two renderings ground to, confirming the leading block's lift of the
+//! globally-gathered directives (§10) grounder-neutral, and the answer sets — every true atom,
+//! never a display — and costs a source and the render of its raise ground to, the raise's
+//! law (§2). Seven independent-oracle checks, each with its named boundaries. The last proves
+//! the law over its seeds, the repeats the value keeps and one of each merge kind, each seed
+//! one the authority accepts; it cannot prove it beyond them.
 //!
 //! Feature-gated and out of band: run through pixi, `pixi run differential-program`.
 //! What it proves: agreement with the authority on the generated cases and the
@@ -1065,6 +1068,133 @@ fn include_fixture_dir() -> PathBuf {
     fs::create_dir_all(&dir).expect("the include fixture directory is created");
     fs::write(dir.join("pure.lp"), "q.\n").expect("the include fixture writes");
     dir
+}
+
+// ---- check 7: the authority grounds a source and its render alike (§2, §16) ----
+
+/// One model as the authority reads it: its answer set, every true atom, and its cost.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+struct Grounded {
+    atoms: Vec<String>,
+    cost: Vec<i64>,
+}
+
+/// What the authority made of a program: its models, or the refusal.
+struct AnswerSets {
+    sets: Vec<Grounded>,
+    error: Option<String>,
+}
+
+fn authority_answer_sets(program: &str, cwd: &Path) -> AnswerSets {
+    let value = authority("answer_sets", program, cwd);
+    let sets = value["sets"]
+        .as_array()
+        .expect("the answer_sets mode reports its models")
+        .iter()
+        .map(|entry| Grounded {
+            atoms: entry["atoms"]
+                .as_array()
+                .expect("atoms")
+                .iter()
+                .map(|atom| atom.as_str().expect("an atom's text").to_owned())
+                .collect(),
+            cost: entry["cost"]
+                .as_array()
+                .expect("a cost vector")
+                .iter()
+                .map(|level| level.as_i64().expect("an integer cost"))
+                .collect(),
+        })
+        .collect();
+    let error = value["error"].as_str().map(str::to_owned);
+    AnswerSets { sets, error }
+}
+
+/// Seeds where the value keeps a repeat (§4.4).
+const KEEPS: &[&str] = &[
+    "1{#true;#true}1.",
+    "a :- {#true;#true}=2.",
+    "{X<3:p(X);X<3:p(X)}=4. p(1..2).",
+    "{#true:p(1;1)}=2. p(1).",
+    "{not #false; not #false}=2.",
+];
+
+/// Seeds where the value merges a repeat, one per merge kind (§4.4, §6.3).
+const MERGES: &[&str] = &[
+    "a. a.",
+    "{a; a} = 1.",
+    "b :- {a; a} = 1. a.",
+    "p :- q, q. q.",
+    "a | a.",
+    "x :- #count{1 : a; 1 : a} = 1. a.",
+    "c. b. #count{1 : a : b; 1 : a : b} = 1 :- c.",
+];
+
+/// Merge seeds whose costs are compared.
+const COSTED: &[&str] = &[
+    "a. :~ a. [1@0] :~ a. [1@0]",
+    "a. #minimize{1@0 : a; 1@0 : a}.",
+];
+
+/// The law's first disjunct over a seed the authority accepts (§2): the source and its render
+/// ground to the same answer sets, with the same costs. Each side's acceptance is asserted
+/// first, so the check cannot pass with both refused.
+fn assert_grounded_alike(source: &str, cwd: &Path) {
+    let program = raised(source, Dialect::Clingo);
+    let rendered = render(&program, Dialect::Clingo).expect("the seed renders");
+    let original = authority_answer_sets(source, cwd);
+    assert!(
+        original.error.is_none(),
+        "{source:?}: the authority refused a seed the law presupposes it accepts: {:?}",
+        original.error
+    );
+    let round = authority_answer_sets(&rendered, cwd);
+    assert!(
+        round.error.is_none(),
+        "{source:?}: the authority refused its render {rendered:?}: {:?}",
+        round.error
+    );
+    assert_eq!(
+        original.sets, round.sets,
+        "{source:?} and its render {rendered:?} ground apart"
+    );
+}
+
+#[test]
+fn a_source_and_its_render_ground_to_the_same_answer_sets() {
+    let cwd = std::env::temp_dir();
+    for source in KEEPS.iter().chain(MERGES) {
+        assert_grounded_alike(source, &cwd);
+    }
+}
+
+#[test]
+fn a_source_and_its_render_ground_to_the_same_costs() {
+    let cwd = std::env::temp_dir();
+    for source in COSTED {
+        let costs = authority_answer_sets(source, &cwd);
+        assert!(
+            !costs.sets.is_empty() && costs.sets.iter().all(|set| !set.cost.is_empty()),
+            "{source:?}: the authority reported no model or no cost, so the comparison would be vacuous"
+        );
+        assert_grounded_alike(source, &cwd);
+    }
+}
+
+#[test]
+fn the_authority_refuses_a_definition_the_raise_diagnoses() {
+    // The redefinition witness (§6.3): the raise diagnoses the repeat, so the law's precondition
+    // excludes the source, and the authority refuses it — while it would accept the merged render.
+    let cwd = std::env::temp_dir();
+    let source = "#const n = 1. #const n = 1. p(n).";
+    let refused = authority_answer_sets(source, &cwd);
+    assert!(
+        refused.error.is_some(),
+        "the authority accepted a repeated #const: {:?}",
+        refused.sets
+    );
+    let accepted = authority_answer_sets("#const n = 1. p(n).", &cwd);
+    assert!(accepted.error.is_none());
 }
 
 // ---- the harness's own spelling logic, held without the authority ----

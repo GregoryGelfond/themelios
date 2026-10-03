@@ -1,9 +1,9 @@
 """The authority's readings for the program and analysis differentials
 (docs/design/program.md §16; docs/design/analysis.md §10; docs/grammar.md §3):
-the pinned clingo 5.8.2, driven in one of six modes chosen by the first
+the pinned clingo 5.8.2, driven in one of seven modes chosen by the first
 argument, one JSON object leaving on stdout. Both tiers' tests/differential.rs
-spawn this one driver — the program tier for `parse`, `eval`, `order`, and
-`models`, the analysis tier for `safety` and `ground`. Test-only: run under the
+spawn this one driver — the program tier for `parse`, `eval`, `order`, `models`,
+and `answer_sets`, the analysis tier for `safety` and `ground`. Test-only: run under the
 pixi environment; never shipped, never imported by anything.
 
 - `parse`: the program arrives on stdin; the reply is the clingo version, whether
@@ -32,6 +32,12 @@ pixi environment; never shipped, never imported by anything.
   `models` are equal, so lifting a directive to a leading block is confirmed
   neutral (or not) by comparing the two placements' answer sets. An `#include` is
   resolved from the working directory, as in `parse`.
+- `answer_sets`: the program arrives on stdin; the authority grounds its base part
+  and reads every model's answer set — each atom true in it, never its display —
+  with the model's cost, the collection sorted, plus any refusal: the raise's law
+  (docs/design/program.md §2, §16), a source and the render of its raise grounding
+  alike. `--opt-mode=enum` with no bound enumerates every model whatever the
+  program optimizes, each reported with its cost.
 - `safety`: the program arrives on stdin; the authority grounds it and the reply
   says whether it is safe — the authority reports an unsafe variable on the
   diagnostic logger and stops grounding, so `safe` is the absence of that report.
@@ -155,6 +161,44 @@ def read_models() -> dict:
     }
 
 
+def read_answer_sets() -> dict:
+    """The authority's answer sets for the program on stdin, with their costs
+    (docs/design/program.md §2, §16): the raise's law, a source and the render of its
+    raise grounding alike. Grounds the base part and reads each model's answer set —
+    every atom true in it, never its display — with its cost, every model once:
+    `--opt-mode=enum` with no bound enumerates the models whatever the program
+    optimizes, reporting each model's cost. The collection is sorted; `error` carries
+    a refusal."""
+    program = sys.stdin.read()
+    messages: list[str] = []
+    control = clingo.Control(
+        arguments=["--models=0", "--opt-mode=enum", "--warn=none"],
+        logger=lambda code, message: messages.append(message),
+    )
+    error = None
+    sets: list[dict] = []
+    try:
+        control.add("base", [], program)
+        control.ground([("base", [])])
+        control.solve(
+            on_model=lambda model: sets.append(
+                {
+                    "atoms": sorted(str(symbol) for symbol in model.symbols(atoms=True)),
+                    "cost": list(model.cost),
+                }
+            )
+        )
+    except RuntimeError as runtime_error:
+        error = str(runtime_error)
+    sets.sort(key=lambda entry: (entry["atoms"], entry["cost"]))
+    return {
+        "version": VERSION,
+        "sets": sets,
+        "error": error,
+        "messages": messages,
+    }
+
+
 def read_safety() -> dict:
     """Whether the authority grounds the program without an unsafe-variable report
     (docs/design/analysis.md §5, §10)."""
@@ -255,6 +299,7 @@ MODES = {
     "eval": read_eval,
     "order": read_order,
     "models": read_models,
+    "answer_sets": read_answer_sets,
     "safety": read_safety,
     "ground": read_ground,
 }
