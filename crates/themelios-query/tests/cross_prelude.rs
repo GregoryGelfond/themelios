@@ -25,6 +25,7 @@ fn the_query_prelude_coexists_with_the_program_prelude() {
     // The reading vocabulary resolves bare from the query prelude, the solve
     // tier's `Consequences` one item under both globs.
     let _: Option<Answer> = None;
+    let _: Option<BindingPattern> = None;
     let _: Option<Consequences> = None;
 
     // The driving vocabulary resolves bare from the solve prelude beside it.
