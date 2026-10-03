@@ -1,5 +1,0 @@
-error[E0308]: mismatched types
- --> tests/ui/sink_atom_as_literal.rs:8:27
-  |
-8 |     let _ = sink.assume(&[AspifAtom(1)]);
-  |                           ^^^^^^^^^^^^ expected `AspifLit`, found `AspifAtom`

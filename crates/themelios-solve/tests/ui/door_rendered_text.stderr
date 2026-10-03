@@ -15,17 +15,17 @@ note: tuple variant defined here
    |     ^^^^^^^
 
 error[E0308]: mismatched types
-  --> tests/ui/door_rendered_text.rs:11:23
+  --> tests/ui/door_rendered_text.rs:11:26
    |
-11 |     let _ = Door::Ast(&rendered);
-   |             --------- ^^^^^^^^^ expected `&Parse<Program>`, found `&String`
+11 |     let _ = Door::Parsed(&rendered);
+   |             ------------ ^^^^^^^^^ expected `&Admitted`, found `&String`
    |             |
    |             arguments to this enum variant are incorrect
    |
-   = note: expected reference `&themelios_syntax::parse::Parse<themelios_syntax::ast::Program>`
+   = note: expected reference `&Admitted`
               found reference `&String`
 note: tuple variant defined here
   --> src/bridge.rs
    |
-   |     Ast(&'a Parse<ast::Program>),
-   |     ^^^
+   |     Parsed(&'a Admitted),
+   |     ^^^^^^

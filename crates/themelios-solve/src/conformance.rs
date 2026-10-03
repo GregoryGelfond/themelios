@@ -1877,9 +1877,7 @@ mod tests {
         }
 
         fn lower(&mut self, door: Door<'_>) -> Result<(), Fault> {
-            let Door::Program(program) = door else {
-                return Err(Fault::engine("the stub lowers Door B alone"));
-            };
+            let program = door.program();
             let mut origins: Vec<Origin> = match self.grounds {
                 Grounds::Nothing => Vec::new(),
                 Grounds::Faithfully | Grounds::Inventing => program

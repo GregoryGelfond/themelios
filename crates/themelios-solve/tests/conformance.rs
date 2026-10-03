@@ -715,9 +715,7 @@ impl Backend for Stub {
     }
 
     fn lower(&mut self, door: Door<'_>) -> Result<(), Fault> {
-        let Door::Program(lowered) = door else {
-            return Err(Fault::engine("the stub lowers Door B alone"));
-        };
+        let lowered = door.program();
         if self.flaw == Flaw::RefusesEveryProgram {
             return Err(Fault::engine("the stub refuses every program"));
         }
