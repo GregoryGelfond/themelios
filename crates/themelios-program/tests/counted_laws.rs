@@ -7,7 +7,7 @@ use themelios_base::source::{Source, SourceId};
 use themelios_program::program::{
     Aggregate, Arguments, Atom, Body, BodyElement, Choice, ChoiceElement, Comparison, Condition,
     ConditionalLiteral, DefaultNegation, Head, Identity, Literal, LiteralInner, Program, Relation,
-    Rule, SetAggregate, SetElement, Statement,
+    Rule, SetAggregate, SetElement, Statement, TheoryAtom, TheoryElement, TheoryTerm,
 };
 use themelios_program::provenance::{Origin, WithProvenance};
 use themelios_program::raise::raise;
@@ -443,6 +443,56 @@ fn canonicalizing_a_set_aggregate_merges_atom_elements_it_makes_equal() {
 #[test]
 fn a_kept_set_aggregate_repeat_renders_and_raises_back() {
     let program = raised("a :- { #true; #true } = 2.");
+    let text = render(&program, Dialect::Clingo).expect("renders");
+    assert_eq!(raised(&text), program);
+}
+
+// ---- theory atoms (§4.9) ----
+
+/// A rule's theory-atom head.
+fn theory_head_of(rule: &Rule) -> TheoryAtom {
+    match rule.head().get() {
+        Head::TheoryAtom(atom) => atom.clone(),
+        other => panic!("a theory-atom head, not {other:?}"),
+    }
+}
+
+fn theory_element(n: i32) -> TheoryElement {
+    TheoryElement::new([TheoryTerm::Symbolic(Symbol::Number(n))], None)
+}
+
+#[test]
+fn a_theory_element_is_counted_by_occurrence() {
+    assert_eq!(theory_element(1).identity(), Identity::ByOccurrence);
+}
+
+#[test]
+fn a_theory_atom_does_not_depend_on_its_element_order() {
+    assert_eq!(
+        TheoryAtom::new(
+            name("sum"),
+            [],
+            [theory_element(2), theory_element(1)],
+            None
+        ),
+        TheoryAtom::new(
+            name("sum"),
+            [],
+            [theory_element(1), theory_element(2)],
+            None
+        )
+    );
+}
+
+#[test]
+fn a_raised_theory_atom_keeps_a_repeated_element() {
+    let program = raised("&sum { x; x } = 4.");
+    assert_eq!(theory_head_of(&only_rule(&program)).elements().count(), 2);
+}
+
+#[test]
+fn a_kept_theory_repeat_renders_and_raises_back() {
+    let program = raised("&sum { x; x } = 4.");
     let text = render(&program, Dialect::Clingo).expect("renders");
     assert_eq!(raised(&text), program);
 }
