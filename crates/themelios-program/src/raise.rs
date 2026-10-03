@@ -779,8 +779,8 @@ struct Lowered {
 }
 
 /// Walk the parse once, lowering each source statement over the parse as `Reads` (§8): thread
-/// the `#program` part key (a malformed delimiter is diagnosed and leaves the part unchanged,
-/// raise.rs's existing rule), lower each statement with `raise_one`, and pair a `Some` result
+/// the `#program` part key (a malformed delimiter is diagnosed and leaves the part unchanged),
+/// lower each statement with `raise_one`, and pair a `Some` result
 /// with its `statement_provenance`. Returns the per-statement `Lowered` values (source order,
 /// `Some` results only) and the source-ordered batch of every lowering diagnostic — a skipped
 /// statement's and a malformed delimiter's included. `O(tree)`.
