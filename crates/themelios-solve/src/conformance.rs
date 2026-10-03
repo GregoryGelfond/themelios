@@ -29,10 +29,10 @@
 //! with none. **Fault loci:** a program the backend cannot ground is refused at
 //! the program locus, naming the statement that cannot be grounded and located
 //! within it (§5.4); assigning an atom that is not external is refused at the
-//! request locus, never the silent no-op an engine may give. **The ground
-//! program's provenance,** where the backend exposes one (§10.4): every ground
-//! rule attributed to a statement of the program it grounds, and a fact never
-//! grounded to nothing.
+//! request locus, never the silent no-op an engine may give. **The observer,**
+//! where the backend declares it (§10.4): a ground program once a grounding has
+//! finished, every ground rule naming a statement of the program lowered, and
+//! a fact never grounded to nothing.
 //!
 //! The named pathologies are unconstructible in the vocabulary (§5.3). The suite
 //! attempts the two a backend could reach at run time — a touched stream passing
@@ -54,11 +54,12 @@
 //! probe program refused fails that capability's check, though: only a backend
 //! with the capability need carry it, so no other check would.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
 use themelios_base::span::{ByteOffset, Location};
+use themelios_program::program::PartKey;
 use themelios_program::provenance::WithProvenance;
 use themelios_program::raise::{raise_source, raise_str};
 use themelios_program::{
@@ -203,9 +204,9 @@ pub enum Check {
     TruncationCannotPoseAsComplete,
     /// A cancelled search never concludes as closing the space.
     CancellationIsNotExhaustion,
-    /// Every ground rule of an exposed ground program is attributed to a
-    /// statement of the program it grounds, and a fact grounds to a rule
-    /// (§10.4).
+    /// A declared observer answers once a grounding has finished, every ground
+    /// rule naming a statement of the program lowered, and a fact grounds to a
+    /// rule (§10.4).
     GroundProgramIsFaithful,
     /// A program the backend cannot ground is refused at the program locus,
     /// naming the statement that cannot be grounded, located where it was
@@ -239,7 +240,7 @@ impl fmt::Display for Check {
                 f.write_str("a cancelled search never concludes as closing the space")
             }
             Check::GroundProgramIsFaithful => {
-                f.write_str("every ground rule is attributed to a statement of its program")
+                f.write_str("every ground rule names a statement of the program lowered")
             }
             Check::ProgramFaultIsLocated => {
                 f.write_str("a program that cannot be grounded is refused where it fails")
@@ -299,6 +300,10 @@ fn row(capability: Capability) -> Row {
             method: "a solve under a time budget",
             probe: |backend, declared, _| probe_time_budget(backend, declared),
         },
+        Capability::GroundProgram => Row {
+            method: "ground_program",
+            probe: |backend, _, _| probe_ground_program(backend),
+        },
         Capability::Functions => Row {
             method: "register_function",
             probe: |backend, _, _| respond(backend.register_function(Box::new(Echo))),
@@ -313,7 +318,7 @@ fn row(capability: Capability) -> Row {
 /// Every capability the suite probes, in the order it probes them: the
 /// extension registrations last, so no probe runs against an engine carrying
 /// another's registration.
-const CAPABILITIES: [Capability; 9] = [
+const CAPABILITIES: [Capability; 10] = [
     Capability::Optimization,
     Capability::NativeConsequences,
     Capability::Assumptions,
@@ -321,6 +326,7 @@ const CAPABILITIES: [Capability; 9] = [
     Capability::Externals,
     Capability::Cancellation,
     Capability::TimeBudget,
+    Capability::GroundProgram,
     Capability::Functions,
     Capability::Propagators,
 ];
@@ -360,8 +366,6 @@ impl fmt::Display for Verdict {
 pub enum Skip {
     /// The obligation rests on a capability the backend does not declare.
     Undeclared(Capability),
-    /// The obligation rests on a ground program the backend does not expose.
-    NoGroundProgram,
     /// The contract reserves what the check needs — the interrupt handle — so
     /// no backend can yet be driven through it.
     Reserved,
@@ -375,7 +379,6 @@ impl fmt::Display for Skip {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Skip::Undeclared(capability) => write!(f, "the backend does not declare {capability}"),
-            Skip::NoGroundProgram => f.write_str("the backend exposes no ground program"),
             Skip::Reserved => f.write_str(
                 "the contract reserves the interrupt handle, so no search can yet be cancelled through it",
             ),
@@ -983,15 +986,20 @@ fn cancellation_is_not_exhaustion(backend: &dyn Backend) -> Verdict {
     })
 }
 
-/// Where the backend exposes its ground program, every ground rule is
-/// attributed to a statement of the program it grounds (§10.4) — the provenance
-/// an explanation reads back to source, never an invented one — and a fact
-/// grounds to at least one rule, so an empty ground program cannot pass as a
-/// faithful one. (A rule nothing can support may ground to nothing, so only the
-/// fact is owed a rule.)
+/// A declared observer is faithful (§10.4): once the corpus case's solve has
+/// drained — so an engine that grounds as it searches has grounded — the
+/// observer answers `Some`; every ground rule names a member of the program
+/// lowered — a statement of the rule's part, equal in content, whose origins
+/// include the rule's statement's own, since the set merge unions them; and a
+/// fact grounds to a rule. Membership is not correctness: which statement a
+/// rule came from is checked once a rule carries its head and body. An
+/// undeclared observer binds nothing here — that its method answers `None` is
+/// the honesty check's.
 fn ground_program_is_faithful(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
-    let mut exposed = false;
-    let verdict = over_corpus(corpus, |case| {
+    if !backend.capabilities().ground_program {
+        return Verdict::Skipped(Skip::Undeclared(Capability::GroundProgram));
+    }
+    over_corpus(corpus, |case| {
         load(backend, &case.program, case.source).map_err(Shortfall::Undriven)?;
         {
             // Read the stream out, bounded, so an engine that grounds as it
@@ -1004,18 +1012,34 @@ fn ground_program_is_faithful(backend: &mut dyn Backend, corpus: &[Case]) -> Ver
             }
         }
         let Some(ground) = backend.ground_program() else {
-            return Ok(());
+            return Err(Shortfall::Broke(Failure::new(
+                Breach::Refused,
+                "declared, yet ground_program answered nothing once a grounding had finished",
+            )));
         };
-        exposed = true;
-        let origins: BTreeSet<&Origin> = case
+        let members: BTreeMap<(&PartKey, &Statement), &WithProvenance<Statement>> = case
             .program
-            .statements()
-            .flat_map(|node| node.provenance().origins())
+            .parts()
+            .flat_map(|part| {
+                part.statements()
+                    .map(move |node| ((part.key(), node.get()), node))
+            })
             .collect();
-        if ground.rules().any(|rule| !origins.contains(rule.origin())) {
+        let belongs = |part: &PartKey, statement: &WithProvenance<Statement>| {
+            members.get(&(part, statement.get())).is_some_and(|member| {
+                statement
+                    .provenance()
+                    .origins()
+                    .all(|origin| member.provenance().origins().any(|held| held == origin))
+            })
+        };
+        if ground
+            .rules()
+            .any(|(_, part, statement)| !belongs(part, statement))
+        {
             return Err(Shortfall::Broke(Failure::new(
                 Breach::Misanswered,
-                "a ground rule is attributed to no statement of the program",
+                "a ground rule names a statement that is not of the program lowered",
             )));
         }
         if case.source == FACT && ground.rules().next().is_none() {
@@ -1025,11 +1049,7 @@ fn ground_program_is_faithful(backend: &mut dyn Backend, corpus: &[Case]) -> Ver
             )));
         }
         Ok(())
-    });
-    if verdict == Verdict::Passed && !exposed {
-        return Verdict::Skipped(Skip::NoGroundProgram);
-    }
-    verdict
+    })
 }
 
 /// A program the backend cannot ground — a fact over a variable nothing binds,
@@ -1179,8 +1199,8 @@ enum Response {
     Answered,
     /// It refused, with this fault.
     Refused(Fault),
-    /// It answered nothing — `interrupt`'s honest `None` (§4.1), where another
-    /// method refuses.
+    /// It answered nothing — `interrupt`'s and the observer's honest `None`
+    /// (§4.1), where another method refuses.
     Absent,
     /// It answered, then the stream the probe read faulted, with this fault.
     Faulted(Fault),
@@ -1287,6 +1307,30 @@ fn judge(method: &str, declared: bool, response: Response) -> Verdict {
                 ),
             ))
         }
+    }
+}
+
+/// The observer's probe: ground the fact — load it, solve, and drain the stream
+/// — then read the observer, `Some` its answer and `None` its honest absence
+/// (§10.4). A step before the read that is refused leaves it unprobed.
+fn probe_ground_program(backend: &mut dyn Backend) -> Response {
+    if let Err(failure) = load_source(backend, FACT) {
+        return Response::Unprobed(failure);
+    }
+    {
+        let mut solved = match solve(backend) {
+            Ok(solved) => solved,
+            Err(failure) => return Response::Unprobed(failure),
+        };
+        match pull(&mut solved, 1) {
+            Ok(Pulled { ended: true, .. }) => {}
+            Ok(_) => return Response::Unprobed(past_the_bound()),
+            Err(fault) => return Response::Unprobed(faulted(fault)),
+        }
+    }
+    match backend.ground_program() {
+        Some(_) => Response::Answered,
+        None => Response::Absent,
     }
 }
 
@@ -1648,9 +1692,12 @@ impl Propagator for Inert {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge::{GroundProgram, GroundRule};
+    use std::collections::BTreeSet;
+
+    use crate::bridge::{Grain, GroundProgram, GroundRule};
     use crate::contract::Capabilities;
     use crate::outcome::{Model, Run};
+    use themelios_program::Provenance;
 
     #[test]
     fn every_capability_s_row_names_its_own_method() {
@@ -1797,10 +1844,10 @@ mod tests {
 
     #[test]
     fn a_skipped_verdict_renders_its_reason() {
-        let skipped = Verdict::Skipped(Skip::NoGroundProgram);
+        let skipped = Verdict::Skipped(Skip::Undeclared(Capability::GroundProgram));
         assert_eq!(
             skipped.to_string(),
-            "skipped — the backend exposes no ground program"
+            "skipped — the backend does not declare the ground program"
         );
     }
 
@@ -1808,7 +1855,6 @@ mod tests {
     fn every_skip_renders_a_distinct_reason() {
         let skips = [
             Skip::Undeclared(Capability::Cancellation),
-            Skip::NoGroundProgram,
             Skip::Reserved,
             Skip::Undriven(Failure::new(Breach::Refused, "the solve was refused")),
         ];
@@ -1834,7 +1880,7 @@ mod tests {
         assert_eq!(Echo.call(&arguments), Ok(arguments.to_vec()));
     }
 
-    // ---- The ground program's provenance, over a backend that exposes one ----
+    // ---- The observer, over a backend that declares it ----
 
     /// A search that closes the space at once, with no model.
     struct Closed;
@@ -1852,12 +1898,19 @@ mod tests {
     /// How a grounding backend builds the ground program of what it lowers.
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Grounds {
-        /// One rule per origin of the lowered program's statements.
+        /// One rule per statement of the lowered program, naming it.
         Faithfully,
-        /// Those, and one more attributed to a statement it never saw.
+        /// Those, and one more naming a statement the program never held.
         Inventing,
+        /// One rule per statement, each statement relocated to an origin the
+        /// program never had.
+        Relocating,
         /// Nothing at all.
         Nothing,
+        /// Faithfully, yet the observer answers nothing.
+        Withholding,
+        /// Faithfully, without declaring the observer.
+        Undeclared,
     }
 
     /// A backend exposing a ground program built from the program it lowered —
@@ -1869,7 +1922,10 @@ mod tests {
 
     impl Backend for Grounding {
         fn capabilities(&self) -> Capabilities {
-            Capabilities::default()
+            Capabilities {
+                ground_program: self.grounds != Grounds::Undeclared,
+                ..Capabilities::default()
+            }
         }
 
         fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
@@ -1877,28 +1933,38 @@ mod tests {
         }
 
         fn lower(&mut self, door: Door<'_>) -> Result<(), Fault> {
-            let program = door.program();
-            let mut origins: Vec<Origin> = match self.grounds {
+            let mut statements: Vec<(PartKey, WithProvenance<Statement>)> = match self.grounds {
                 Grounds::Nothing => Vec::new(),
-                Grounds::Faithfully | Grounds::Inventing => program
-                    .statements()
-                    .flat_map(|node| node.provenance().origins().cloned())
+                _ => door
+                    .program()
+                    .parts()
+                    .flat_map(|part| {
+                        part.statements()
+                            .map(|node| (part.key().clone(), node.clone()))
+                    })
                     .collect(),
             };
-            if self.grounds == Grounds::Inventing {
-                origins.push(Origin::Constructed);
+            if self.grounds == Grounds::Relocating {
+                for (_, statement) in &mut statements {
+                    *statement = WithProvenance::new(
+                        statement.get().clone(),
+                        Provenance::from(Origin::Constructed),
+                    );
+                }
             }
-            self.ground = GroundProgram {
-                rules: origins
-                    .into_iter()
-                    .map(|origin| GroundRule { origin })
-                    .collect(),
-            };
+            if self.grounds == Grounds::Inventing {
+                let invented = program_of("invented.");
+                let base = invented.base();
+                let node = base.statements().next().expect("the fact raises").clone();
+                statements.push((base.key().clone(), node));
+            }
+            let rules = (0..statements.len()).map(GroundRule::naming).collect();
+            self.ground = GroundProgram::of(Grain::Statement, statements, rules);
             Ok(())
         }
 
         fn ground_program(&self) -> Option<&GroundProgram> {
-            Some(&self.ground)
+            (self.grounds != Grounds::Withholding).then_some(&self.ground)
         }
     }
 
@@ -1911,14 +1977,23 @@ mod tests {
     }
 
     #[test]
-    fn a_ground_program_attributing_every_rule_to_a_statement_passes() {
+    fn a_ground_program_naming_statements_of_the_program_passes() {
         let verdict = ground_program_is_faithful(&mut grounding(Grounds::Faithfully), &corpus());
         assert_eq!(verdict, Verdict::Passed);
     }
 
     #[test]
-    fn a_ground_rule_attributed_to_no_statement_fails() {
+    fn a_ground_rule_naming_a_statement_the_program_never_held_fails() {
         let verdict = ground_program_is_faithful(&mut grounding(Grounds::Inventing), &corpus());
+        assert!(
+            matches!(&verdict, Verdict::Failed(failure) if failure.breach() == Breach::Misanswered),
+            "{verdict}"
+        );
+    }
+
+    #[test]
+    fn a_ground_rule_naming_a_statement_at_a_foreign_origin_fails() {
+        let verdict = ground_program_is_faithful(&mut grounding(Grounds::Relocating), &corpus());
         assert!(
             matches!(&verdict, Verdict::Failed(failure) if failure.breach() == Breach::Misanswered),
             "{verdict}"
@@ -1931,6 +2006,24 @@ mod tests {
         assert!(
             matches!(&verdict, Verdict::Failed(failure) if failure.case() == Some("a fact")),
             "{verdict}"
+        );
+    }
+
+    #[test]
+    fn a_declared_observer_answering_nothing_after_a_grounding_fails() {
+        let verdict = ground_program_is_faithful(&mut grounding(Grounds::Withholding), &corpus());
+        assert!(
+            matches!(&verdict, Verdict::Failed(failure) if failure.breach() == Breach::Refused),
+            "{verdict}"
+        );
+    }
+
+    #[test]
+    fn an_undeclared_observer_is_not_held_to_faithfulness() {
+        let verdict = ground_program_is_faithful(&mut grounding(Grounds::Undeclared), &corpus());
+        assert_eq!(
+            verdict,
+            Verdict::Skipped(Skip::Undeclared(Capability::GroundProgram))
         );
     }
 }

@@ -1,13 +1,14 @@
 //! Laws of the backend contract's surface (docs/design/solve.md §4.1, §4.2,
-//! §4.3): the required surface is four methods; every capability-gated
+//! §4.3): the required surface is three methods; every capability-gated
 //! method is provided with a default that refuses as a typed request fault,
 //! so an undeclared capability is a refusal at the seam, never a compile
-//! burden; the cancellation handle is absent unless a backend provides it;
-//! and the contract is the one door, usable as a trait object.
+//! burden; the cancellation handle and the ground-program observer are absent
+//! unless a backend provides them; and the contract is the one door, usable as
+//! a trait object.
 
 use themelios_program::{Name, Symbol};
 use themelios_solve::agent::Scenario;
-use themelios_solve::bridge::{Door, GroundProgram};
+use themelios_solve::bridge::Door;
 use themelios_solve::contract::{
     Backend, Capabilities, Capability, Fault, GroundOptions, OptimizeRequest, SolveRequest,
     TruthValue,
@@ -31,10 +32,6 @@ impl Backend for Nothing {
 
     fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
         Err(Fault::engine("this backend lowers nothing"))
-    }
-
-    fn ground_program(&self) -> Option<&GroundProgram> {
-        None
     }
 }
 
@@ -61,7 +58,7 @@ fn some_external() -> Symbol {
 
 #[test]
 fn a_backend_need_only_implement_the_required_surface() {
-    // The gated methods carry defaults, so a type implementing the four
+    // The gated methods carry defaults, so a type implementing the three
     // required methods alone is a backend: the minimality of §4.1, made a
     // test.
     fn is_a_backend<B: Backend>() {}
@@ -157,4 +154,11 @@ fn register_propagator_refuses_without_propagators() {
         nothing.register_propagator(Box::new(NoPropagator)).err(),
         Some(Fault::unsupported(Capability::Propagators))
     );
+}
+
+#[test]
+fn ground_program_answers_nothing_without_the_observer() {
+    let nothing = Nothing;
+    assert!(!nothing.capabilities().ground_program);
+    assert!(nothing.ground_program().is_none());
 }
