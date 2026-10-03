@@ -1,38 +1,50 @@
 //! The conformance suite (docs/design/solve.md §13.1): the executable suite
 //! every adapter passes. [`run`] drives a backend through the contract (§4) — a
-//! corpus of small programs whose answer sets are known independently of any
-//! engine, each capability as declared, and the pathologies the vocabulary
-//! forbids (§5.3) — and returns a [`ConformanceReport`]: typed data, one
-//! [`Verdict`] per [`Check`], a failure carrying how the backend broke the
-//! obligation, the corpus program it broke it on, and the backend's own fault,
-//! a skip carrying why the check did not bind — never prose a consumer parses
-//! (§1.3).
+//! corpus of small programs whose answer sets and displays are known
+//! independently of any engine, each lowered through both doors, each
+//! capability as declared, and the pathologies the vocabulary forbids (§5.3) —
+//! and returns a [`ConformanceReport`]: typed data, one [`Verdict`] per
+//! [`Check`] in the order the suite runs them, a failure carrying how the
+//! backend broke the obligation, the corpus program it broke it on, and the
+//! backend's own fault, a skip carrying why the check did not bind — never
+//! prose a consumer parses (§1.3).
 //!
-//! The suite checks what the compiler cannot. **Outcome correctness:** each
-//! corpus program's determination is its known one, every model it yields
-//! consistent — no atom beside its contrary — and, where the backend
-//! enumerates, its answer sets exactly its known ones, its search closing the
-//! space; every stream ends for good once it ends, its search concluded. The
-//! corpus holds the programs a shortcut semantics gets wrong: a positive loop,
-//! which completion reads with an unsupported model, the same loop constrained
-//! to hold, which completion reads as consistent, a head cycle, which shifting
-//! the disjunction reads with no model, and a choice under an objective, whose
-//! solve yields its non-optimal model too — a solve ignores any objective
-//! (§5.2). **The `enumeration`
+//! The suite checks what the compiler cannot, one obligation to a check, in
+//! the order its [`Check`] enum lists them. **Outcome correctness:** each corpus
+//! program, lowered through Door A as a parse the core admits and through Door
+//! B as a program, the two agreeing, has its known determination; every model
+//! it yields is consistent — no atom beside its contrary — and a set of
+//! literals; and, where the backend enumerates, its answer sets are exactly its
+//! known ones, its search closing the space, every stream ending for good once
+//! it ends. The corpus holds the programs a shortcut semantics gets wrong: a
+//! positive loop, which completion reads with an unsupported model, the same
+//! loop constrained to hold, which completion reads as consistent, and a head
+//! cycle, which shifting the disjunction reads with no model; a choice under an
+//! objective, whose solve yields its non-optimal model too (§5.2); programs
+//! whose `#show` directives hide atoms or display terms, whose models carry
+//! their whole answer sets whatever they display (§5.1); a projection, whose
+//! models range over every stable model whole; counted repeats, which reach the
+//! engine as written; and a tuple counted once. **The display:** each model's
+//! display is the one the program's directives select. **The `enumeration`
 //! bit's soundness obligation** (§4.1): a search concluded as closing the space
-//! yielded every answer set there is. **Capability honesty, in both directions**
-//! (§4.1, §4.2): a declared capability's method answers, and answers rightly — a
-//! provided method needs no override, so a declared bit whose method still
-//! refuses is a lie the type cannot see — and an undeclared one's refuses at the
-//! request locus, or, for `interrupt`, answers nothing, never degrading
-//! silently; the native door's answer is its known one, no model over a program
-//! with none. **Fault loci:** a program the backend cannot ground is refused at
-//! the program locus, naming the statement that cannot be grounded and located
-//! within it (§5.4); assigning an atom that is not external is refused at the
-//! request locus, never the silent no-op an engine may give. **The observer,**
-//! where the backend declares it (§10.4): a ground program once a grounding has
-//! finished, every ground rule naming a statement of the program lowered, and
-//! a fact never grounded to nothing.
+//! yielded every answer set there is. **Inconsistency is exhausted,
+//! truncation cannot pose as complete, and cancellation is not exhaustion** —
+//! the pathologies a run can attempt (below). **The observer,** where the
+//! backend declares it (§10.4): a ground program once a grounding has finished,
+//! every ground rule naming a statement of the program lowered, and a fact
+//! never grounded to nothing. **Fault loci:** a program the backend cannot
+//! ground is refused at the program locus, naming the statement that cannot be
+//! grounded and located within it (§5.4); assigning an atom that is not
+//! external is refused at the request locus, never the silent no-op an engine
+//! may give. Two obligations the order names next — a rebuild leaving nothing
+//! behind, and a backend's own state (§4.1, §6.3) — are not yet run, so the
+//! report holds no verdict for them. **Capability honesty, in both
+//! directions** (§4.1, §4.2): a declared capability's method answers, and
+//! answers rightly — a provided method needs no override, so a declared bit
+//! whose method still refuses is a lie the type cannot see — and an undeclared
+//! one's refuses at the request locus, or, for `interrupt` and the observer,
+//! answers nothing, never degrading silently; the native door's answer is its
+//! known one, no model over a program with none.
 //!
 //! The named pathologies are unconstructible in the vocabulary (§5.3). The suite
 //! attempts the two a backend could reach at run time — a touched stream passing
@@ -54,7 +66,7 @@
 //! probe program refused fails that capability's check, though: only a backend
 //! with the capability need carry it, so no other check would.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
 
@@ -65,9 +77,10 @@ use themelios_program::raise::{raise_source, raise_str};
 use themelios_program::{
     Dialect, Name, Origin, Program, Sign, Source, SourceId, Statement, Symbol,
 };
+use themelios_syntax::parse;
 
 use crate::agent::{Assumption, Scenario};
-use crate::bridge::Door;
+use crate::bridge::{Admitted, Door};
 use crate::contract::{
     Backend, Capability, ConsequenceRequest, Fault, GroundOptions, Locus, Mode, OptimizeRequest,
     Presupposition, Refused, SolveRequest, TruthValue,
@@ -97,6 +110,7 @@ pub fn run(backend: &mut dyn Backend) -> ConformanceReport {
             Check::OutcomeCorrectness,
             outcome_correctness(backend, &corpus),
         ),
+        (Check::Display, display_is_selected(backend, &corpus)),
         (
             Check::ExhaustionIsEarned,
             exhaustion_is_earned(backend, &corpus),
@@ -117,14 +131,7 @@ pub fn run(backend: &mut dyn Backend) -> ConformanceReport {
             Check::GroundProgramIsFaithful,
             ground_program_is_faithful(backend, &corpus),
         ),
-        (
-            Check::ProgramFaultIsLocated,
-            program_fault_is_located(backend),
-        ),
-        (
-            Check::NonExternalAssignmentRefuses,
-            non_external_assignment_refuses(backend),
-        ),
+        (Check::FaultLoci, fault_loci(backend)),
     ];
     // The capability probes run last: they reset the engine and register
     // extensions, which the corpus checks above must not see.
@@ -191,10 +198,13 @@ impl fmt::Display for ConformanceReport {
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Check {
-    /// Each corpus program's determination is its known one, every model it
-    /// yields consistent, and where the backend enumerates, its answer sets are
-    /// its known ones, its search closing the space.
+    /// Each corpus program, lowered through both doors, which agree, has its
+    /// known determination; every model it yields is consistent and a set of
+    /// literals; and where the backend enumerates, its answer sets are its
+    /// known ones, its search closing the space.
     OutcomeCorrectness,
+    /// Each model's display is the one the program's directives select (§5.1).
+    Display,
     /// A search concluded as closing the space yielded every answer set there
     /// is — the `enumeration` bit's soundness obligation (§4.1).
     ExhaustionIsEarned,
@@ -208,15 +218,21 @@ pub enum Check {
     /// rule naming a statement of the program lowered, and a fact grounds to a
     /// rule (§10.4).
     GroundProgramIsFaithful,
-    /// A program the backend cannot ground is refused at the program locus,
-    /// naming the statement that cannot be grounded, located where it was
-    /// written (§5.4).
-    ProgramFaultIsLocated,
-    /// Assigning a truth value to an atom that is not external refuses at the
-    /// request locus.
-    NonExternalAssignmentRefuses,
+    /// Each fault lands where it belongs (§5.4): a program the backend cannot
+    /// ground is refused at the program locus, naming the statement that cannot
+    /// be grounded, located where it was written; assigning an atom that is
+    /// not external refuses at the request locus.
+    FaultLoci,
+    /// A rebuild carries no statement, model, or cancellation of the run it
+    /// replaced into the next (§4.1, §6.3).
+    RebuildLeavesNothingBehind,
+    /// A backend's own state (§4.1): a refusal its lowering's check makes adds
+    /// nothing, a failed grounding leaves it needing its rebuild, and a
+    /// registration survives the rebuild.
+    BackendState,
     /// The capability's declaration is honest: declared, its method answers
-    /// rightly; undeclared, it refuses at the request locus (§4.1, §4.2).
+    /// rightly; undeclared, it refuses at the request locus, or answers
+    /// nothing (§4.1, §4.2).
     Capability(Capability),
 }
 
@@ -226,6 +242,9 @@ impl fmt::Display for Check {
         match self {
             Check::OutcomeCorrectness => {
                 f.write_str("each corpus program's outcome is its known one")
+            }
+            Check::Display => {
+                f.write_str("each model displays what the program's directives select")
             }
             Check::ExhaustionIsEarned => {
                 f.write_str("a search concluded as closing the space yielded every answer set")
@@ -242,11 +261,12 @@ impl fmt::Display for Check {
             Check::GroundProgramIsFaithful => {
                 f.write_str("every ground rule names a statement of the program lowered")
             }
-            Check::ProgramFaultIsLocated => {
-                f.write_str("a program that cannot be grounded is refused where it fails")
+            Check::FaultLoci => f.write_str("each fault lands where it belongs"),
+            Check::RebuildLeavesNothingBehind => {
+                f.write_str("a rebuild leaves nothing of the program it replaced")
             }
-            Check::NonExternalAssignmentRefuses => {
-                f.write_str("assigning an atom that is not external refuses")
+            Check::BackendState => {
+                f.write_str("a backend's own state follows its refusals and rebuilds")
             }
             Check::Capability(capability) => write!(f, "the declaration of {capability} is honest"),
         }
@@ -483,10 +503,15 @@ struct Case {
     name: &'static str,
     /// The program's clingo-dialect source.
     source: &'static str,
-    /// The program the source denotes.
+    /// The program the source denotes, for Door B.
     program: Program,
+    /// The source's parse, admitted, for Door A.
+    admitted: Admitted,
     /// The answer sets, sorted, so a sorted enumeration compares equal to them.
     answer_sets: Vec<AnswerSet>,
+    /// Each answer set's display, the one the program's directives select —
+    /// parallel to `answer_sets`.
+    displays: Vec<BTreeSet<Symbol>>,
 }
 
 impl Case {
@@ -512,6 +537,15 @@ fn program_under(id: SourceId, source: &str) -> Program {
     let source = Source::new(id, source.to_owned())
         .expect("a suite program is far within the coordinate limit");
     raise_source(&source, Dialect::Clingo).into_program()
+}
+
+/// The parse of `source` as the source text `id` names, admitted at Door A
+/// (§10.2). Every suite program raises without a diagnostic — a law of the
+/// suite's own — so the expects discharge invariants.
+fn admitted_under(id: SourceId, source: &str) -> Admitted {
+    let source = Source::new(id, source.to_owned())
+        .expect("a suite program is far within the coordinate limit");
+    Admitted::of(&parse(&source, Dialect::Clingo)).expect("a suite program is admitted")
 }
 
 /// The ground atom `name`, under `sign`, applied to `arguments`. A suite name is
@@ -571,9 +605,40 @@ const UNSAFE: &str = "a. p(X).";
 /// (theirs count up from zero), so a location in any of them is not its own.
 const UNSAFE_SOURCE: SourceId = SourceId::new(u32::MAX);
 
-/// The corpus: small programs whose answer sets are known independently of any
-/// engine, each raised under its own source id.
+/// A corpus entry: how a verdict names the program, its source, and its
+/// models — each answer set beside its display.
+type Entry = (
+    &'static str,
+    &'static str,
+    Vec<(AnswerSet, BTreeSet<Symbol>)>,
+);
+
+/// The corpus: small programs whose answer sets and displays are known
+/// independently of any engine, each raised and admitted under its own source
+/// id.
 fn corpus() -> Vec<Case> {
+    displaying_themselves()
+        .into_iter()
+        .chain(hiding_or_displaying())
+        .zip(0..)
+        .map(|((name, source, mut models), id)| {
+            models.sort();
+            let (answer_sets, displays) = models.into_iter().unzip();
+            Case {
+                name,
+                source,
+                program: program_under(SourceId::new(id), source),
+                admitted: admitted_under(SourceId::new(id), source),
+                answer_sets,
+                displays,
+            }
+        })
+        .collect()
+}
+
+/// The corpus programs without `#show` directives — each model displaying its
+/// answer set.
+fn displaying_themselves() -> Vec<Entry> {
     let p = |n| atom("p", [Symbol::number(n)], Sign::Positive);
     let q = |n| atom("q", [Symbol::number(n)], Sign::Positive);
     let known: Vec<(&'static str, &'static str, Vec<AnswerSet>)> = vec![
@@ -624,20 +689,76 @@ fn corpus() -> Vec<Case> {
             "a ; b. a :- b. b :- a.",
             vec![answer_set([constant("a"), constant("b")])],
         ),
+        // `#project` restricts what an engine reports, never the stable models:
+        // a solve ranges over every one, whole (§5.2).
+        (
+            "a projection",
+            "a. {b}. c. #project c/0.",
+            vec![
+                answer_set([constant("a"), constant("c")]),
+                answer_set([constant("a"), constant("b"), constant("c")]),
+            ],
+        ),
+        // Counted repeats reach the engine as written (program.md §4.4).
+        ("a kept boolean repeat", "1 { #true; #true } 1.", vec![]),
+        (
+            "a repeat made by a pool",
+            "{ #true : p(1;1) } = 2. p(1).",
+            vec![answer_set([p(1)])],
+        ),
+        // A tuple counts once however many of its conditions hold (program.md
+        // §4.7).
+        (
+            "a tuple counted once",
+            "x :- #count{ 1 : a; 1 : b } = 1. a. b.",
+            vec![answer_set([constant("a"), constant("b"), constant("x")])],
+        ),
     ];
     known
         .into_iter()
-        .zip(0..)
-        .map(|((name, source, mut answer_sets), id)| {
-            answer_sets.sort();
-            Case {
-                name,
-                source,
-                program: program_under(SourceId::new(id), source),
-                answer_sets,
-            }
+        .map(|(name, source, sets)| {
+            let models = sets.into_iter().map(|set| (set.clone(), set)).collect();
+            (name, source, models)
         })
         .collect()
+}
+
+/// The corpus programs whose `#show` directives hide atoms or display terms:
+/// each model carries its whole answer set, whatever it displays (§5.1).
+fn hiding_or_displaying() -> Vec<Entry> {
+    vec![
+        (
+            "a hidden atom",
+            "a. #show.",
+            vec![(answer_set([constant("a")]), answer_set([]))],
+        ),
+        (
+            "a choice, hidden",
+            "{a}. #show.",
+            vec![
+                (answer_set([]), answer_set([])),
+                (answer_set([constant("a")]), answer_set([])),
+            ],
+        ),
+        (
+            "a displayed term",
+            "q. #show p : q.",
+            vec![(
+                answer_set([constant("q")]),
+                answer_set([constant("p"), constant("q")]),
+            )],
+        ),
+        (
+            "a displayed term alone",
+            "q. #show. #show p : q.",
+            vec![(answer_set([constant("q")]), answer_set([constant("p")]))],
+        ),
+        (
+            "a hidden negation",
+            "-p. #show q/0.",
+            vec![(answer_set([atom("p", [], Sign::Negative)]), answer_set([]))],
+        ),
+    ]
 }
 
 // ---- Driving a backend ----
@@ -710,6 +831,22 @@ fn load(backend: &mut dyn Backend, program: &Program, source: &str) -> Result<()
     lower_program(backend, program, source)
 }
 
+/// Load `case` through Door A — its parse, admitted (§10.2) — as the whole of
+/// what the backend reasons over: the reset a multi-shot backend needs, then
+/// the parse.
+fn load_parsed(backend: &mut dyn Backend, case: &Case) -> Result<(), Failure> {
+    reset_to_load(backend)?;
+    backend
+        .lower(Door::Parsed(&case.admitted))
+        .map_err(|fault| {
+            Failure::new(
+                Breach::Refused,
+                format!("{} at Door A", refused_program(case.source)),
+            )
+            .with_fault(fault)
+        })
+}
+
 /// Load the program `source` denotes, as [`load`] does.
 fn load_source(backend: &mut dyn Backend, source: &str) -> Result<(), Failure> {
     load(backend, &program_of(source), source)
@@ -735,32 +872,45 @@ fn solve(backend: &mut dyn Backend) -> Result<Solved<'_>, Failure> {
 /// stream ended within the bound.
 struct Pulled {
     sets: Vec<AnswerSet>,
+    /// Each yielded model's display, parallel to `sets`.
+    displays: Vec<BTreeSet<Symbol>>,
     consistent: bool,
+    /// Whether every yielded model's answer set held only literals.
+    literals: bool,
     ended: bool,
 }
 
 /// Read at most one model more than `bound` — enough to see the stream end, or
 /// to see it yield past a program's answer sets — so a run that never ends is
-/// caught at the bound rather than drained forever. A mid-stream fault is the
-/// refusal.
+/// caught at the bound rather than drained forever, noting each model's
+/// display and whether each was consistent and a set of literals. A mid-stream
+/// fault is the refusal.
 fn pull(solved: &mut Solved<'_>, bound: usize) -> Result<Pulled, Fault> {
     let mut sets = Vec::new();
+    let mut displays = Vec::new();
     let mut consistent = true;
+    let mut literals = true;
     for yielded in solved.models() {
         let model = yielded?;
         if sets.len() == bound {
             return Ok(Pulled {
                 sets,
+                displays,
                 consistent,
+                literals,
                 ended: false,
             });
         }
         consistent &= model.is_consistent();
+        literals &= model.is_set_of_literals();
         sets.push(model.atoms().clone());
+        displays.push(model.shown().symbols().clone());
     }
     Ok(Pulled {
         sets,
+        displays,
         consistent,
+        literals,
         ended: true,
     })
 }
@@ -781,100 +931,177 @@ fn consistency(consistent: bool) -> &'static str {
 
 // ---- The checks ----
 
-/// Each corpus program's determination is its known one, read over no
-/// scenario; where the backend declares `enumeration`, its answer sets are
-/// exactly its known ones and its search closes the space, and where it does
-/// not, every model it yields is one of them; and the stream, once ended, stays
-/// ended, its search concluded — the live handle re-reads a spent run. A
-/// refusal to load or solve a corpus program breaks this obligation.
+/// Which door a case is lowered through (§10.2).
+#[derive(Clone, Copy)]
+enum Through {
+    /// Door A: the case's parse, admitted.
+    Parsed,
+    /// Door B: the case's program.
+    Program,
+}
+
+/// Each corpus program, lowered through both doors (§10.2), has its known
+/// determination; every model it yields is consistent — no atom beside its
+/// contrary (query.md §2.3) — and a set of literals; and, where the backend
+/// enumerates, its answer sets are its known ones, its search closing the
+/// space. The doors agree because each is held to the program's known outcome:
+/// the same determination, and, where the backend enumerates, the same answer
+/// sets — a witness-only backend may name a different witness through each.
 fn outcome_correctness(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
     let enumerates = backend.capabilities().enumeration;
     over_corpus(corpus, |case| {
-        load(backend, &case.program, case.source).map_err(Shortfall::Broke)?;
-        let mut solved = solve(backend).map_err(Shortfall::Broke)?;
-        let consistent = match solved.determination() {
-            Determination::Consistent(models) => {
-                if models.scenario().assumptions().next().is_some() {
+        observe(backend, case, Through::Program, enumerates)?;
+        observe(backend, case, Through::Parsed, enumerates)
+    })
+}
+
+/// Load `case` through the door `through` names.
+fn load_through(backend: &mut dyn Backend, case: &Case, through: Through) -> Result<(), Failure> {
+    match through {
+        Through::Program => load(backend, &case.program, case.source),
+        Through::Parsed => load_parsed(backend, case),
+    }
+}
+
+/// One door's run of `case`, held to outcome correctness's per-run obligations.
+fn observe(
+    backend: &mut dyn Backend,
+    case: &Case,
+    through: Through,
+    enumerates: bool,
+) -> Result<(), Shortfall> {
+    load_through(backend, case, through).map_err(Shortfall::Broke)?;
+    let mut solved = solve(backend).map_err(Shortfall::Broke)?;
+    let consistent = match solved.determination() {
+        Determination::Consistent(models) => {
+            if models.scenario().assumptions().next().is_some() {
+                return Err(Shortfall::Broke(Failure::new(
+                    Breach::Misanswered,
+                    "ranged a plain solve's models over a scenario",
+                )));
+            }
+            true
+        }
+        Determination::Inconsistent(_) => false,
+        Determination::Inconclusive(partial) => {
+            return Err(Shortfall::Broke(match partial.stopped() {
+                Stopped::Concluded(truncation) => Failure::new(
+                    Breach::Refused,
+                    format!("the search stopped undecided: {truncation}"),
+                ),
+                Stopped::Faulted(fault) => {
+                    Failure::new(Breach::Refused, "the search stopped at a fault, undecided")
+                        .with_fault(fault.clone())
+                }
+            }));
+        }
+    };
+    if consistent != case.is_consistent() {
+        return Err(Shortfall::Broke(Failure::new(
+            Breach::Misanswered,
+            format!(
+                "read {} where the program is {}",
+                consistency(consistent),
+                consistency(case.is_consistent()),
+            ),
+        )));
+    }
+    let Pulled {
+        sets,
+        consistent: each_consistent,
+        literals,
+        ended,
+        ..
+    } = pull(&mut solved, case.answer_sets.len())
+        .map_err(|fault| Shortfall::Broke(faulted(fault)))?;
+    if !ended {
+        return Err(Shortfall::Broke(past_the_bound()));
+    }
+    if solved.models().next().is_some() {
+        return Err(Shortfall::Broke(Failure::new(
+            Breach::Misanswered,
+            "yielded a model after its stream ended",
+        )));
+    }
+    if solved.conclusion().is_none() {
+        return Err(Shortfall::Broke(Failure::new(
+            Breach::Misanswered,
+            "ended its stream with its search still open",
+        )));
+    }
+    if !each_consistent {
+        return Err(Shortfall::Broke(Failure::new(
+            Breach::Misanswered,
+            "yielded a model holding an atom and its contrary",
+        )));
+    }
+    if !literals {
+        return Err(Shortfall::Broke(Failure::new(
+            Breach::Misanswered,
+            "yielded a model holding a symbol that is no literal",
+        )));
+    }
+    if sets
+        .iter()
+        .any(|set| case.answer_sets.binary_search(set).is_err())
+    {
+        return Err(Shortfall::Broke(Failure::new(
+            Breach::Misanswered,
+            "yielded a set that is not one of its answer sets",
+        )));
+    }
+    if enumerates {
+        let mut sorted = sets;
+        sorted.sort();
+        if sorted != case.answer_sets {
+            return Err(Shortfall::Broke(Failure::new(
+                Breach::Misanswered,
+                "enumerated sets other than exactly its answer sets",
+            )));
+        }
+        if solved.conclusion() != Some(Conclusion::Exhausted) {
+            return Err(Shortfall::Broke(Failure::new(
+                Breach::Misanswered,
+                "ended its search without closing the space",
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Each model's display is the one the program's directives select (§5.1):
+/// for every model a corpus program yields, through either door, its display
+/// is the case's known display for its answer set. A model whose answer set is
+/// not one of the program's is outcome correctness's to judge, so it leaves
+/// this check undriven.
+fn display_is_selected(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
+    over_corpus(corpus, |case| {
+        for through in [Through::Program, Through::Parsed] {
+            load_through(backend, case, through).map_err(Shortfall::Undriven)?;
+            let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
+            let Pulled {
+                sets,
+                displays,
+                ended,
+                ..
+            } = pull(&mut solved, case.answer_sets.len())
+                .map_err(|fault| Shortfall::Undriven(faulted(fault)))?;
+            if !ended {
+                return Err(Shortfall::Undriven(past_the_bound()));
+            }
+            for (set, display) in sets.iter().zip(&displays) {
+                let Ok(index) = case.answer_sets.binary_search(set) else {
+                    return Err(Shortfall::Undriven(Failure::new(
+                        Breach::Misanswered,
+                        "yielded a set that is not one of its answer sets",
+                    )));
+                };
+                if display != &case.displays[index] {
                     return Err(Shortfall::Broke(Failure::new(
                         Breach::Misanswered,
-                        "ranged a plain solve's models over a scenario",
+                        "displayed other than the program's directives select",
                     )));
                 }
-                true
-            }
-            Determination::Inconsistent(_) => false,
-            Determination::Inconclusive(partial) => {
-                return Err(Shortfall::Broke(match partial.stopped() {
-                    Stopped::Concluded(truncation) => Failure::new(
-                        Breach::Refused,
-                        format!("the search stopped undecided: {truncation}"),
-                    ),
-                    Stopped::Faulted(fault) => {
-                        Failure::new(Breach::Refused, "the search stopped at a fault, undecided")
-                            .with_fault(fault.clone())
-                    }
-                }));
-            }
-        };
-        if consistent != case.is_consistent() {
-            return Err(Shortfall::Broke(Failure::new(
-                Breach::Misanswered,
-                format!(
-                    "read {} where the program is {}",
-                    consistency(consistent),
-                    consistency(case.is_consistent()),
-                ),
-            )));
-        }
-        let Pulled {
-            mut sets,
-            consistent,
-            ended,
-        } = pull(&mut solved, case.answer_sets.len())
-            .map_err(|fault| Shortfall::Broke(faulted(fault)))?;
-        if !ended {
-            return Err(Shortfall::Broke(past_the_bound()));
-        }
-        if solved.models().next().is_some() {
-            return Err(Shortfall::Broke(Failure::new(
-                Breach::Misanswered,
-                "yielded a model after its stream ended",
-            )));
-        }
-        if solved.conclusion().is_none() {
-            return Err(Shortfall::Broke(Failure::new(
-                Breach::Misanswered,
-                "ended its stream with its search still open",
-            )));
-        }
-        if !consistent {
-            return Err(Shortfall::Broke(Failure::new(
-                Breach::Misanswered,
-                "yielded a model holding an atom and its contrary",
-            )));
-        }
-        if sets
-            .iter()
-            .any(|set| case.answer_sets.binary_search(set).is_err())
-        {
-            return Err(Shortfall::Broke(Failure::new(
-                Breach::Misanswered,
-                "yielded a set that is not one of its answer sets",
-            )));
-        }
-        if enumerates {
-            sets.sort();
-            if sets != case.answer_sets {
-                return Err(Shortfall::Broke(Failure::new(
-                    Breach::Misanswered,
-                    "enumerated sets other than exactly its answer sets",
-                )));
-            }
-            if solved.conclusion() != Some(Conclusion::Exhausted) {
-                return Err(Shortfall::Broke(Failure::new(
-                    Breach::Misanswered,
-                    "ended its search without closing the space",
-                )));
             }
         }
         Ok(())
@@ -1144,6 +1371,19 @@ fn unsafe_statement(program: &Program) -> (&WithProvenance<Statement>, Location)
             })
         })
         .expect("a raised statement is located where it was parsed")
+}
+
+/// Each fault lands where it belongs (§5.4): the program fault's sub-check and
+/// the request fault's, under one obligation — failed if either fails, passed
+/// if either passes and neither fails, skipped otherwise with the first skip.
+fn fault_loci(backend: &mut dyn Backend) -> Verdict {
+    let program = program_fault_is_located(backend);
+    let request = non_external_assignment_refuses(backend);
+    match (program, request) {
+        (failed @ Verdict::Failed(_), _) | (_, failed @ Verdict::Failed(_)) => failed,
+        (Verdict::Passed, _) | (_, Verdict::Passed) => Verdict::Passed,
+        (skipped, _) => skipped,
+    }
 }
 
 /// Assigning a truth value to an atom that is not external refuses at the
@@ -1692,8 +1932,6 @@ impl Propagator for Inert {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
-
     use crate::bridge::{Grain, GroundProgram, GroundRule};
     use crate::contract::Capabilities;
     use crate::outcome::{Model, Run, ShowRule};
@@ -1721,6 +1959,13 @@ mod tests {
         for source in sources {
             let raised = raise_str(source, Dialect::Clingo).expect("a suite program raises");
             assert!(raised.diagnostics().is_empty(), "{source}");
+        }
+    }
+
+    #[test]
+    fn a_corpus_program_has_a_display_for_each_answer_set() {
+        for case in corpus() {
+            assert_eq!(case.displays.len(), case.answer_sets.len(), "{}", case.name);
         }
     }
 

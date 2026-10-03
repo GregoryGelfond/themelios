@@ -83,6 +83,9 @@ const OBJECTIVE: &str = "{ a }. #minimize { 1 : a }.";
 enum Answers {
     /// These answer sets, known independently of any engine.
     Known(Vec<AnswerSet>),
+    /// These answer sets, each model displaying these terms — the half of the
+    /// display only an engine evaluates (docs/design/solve.md §5.1).
+    Displaying(Vec<AnswerSet>, Vec<Symbol>),
     /// `{a, b}` while the external `a` is assigned true, `{}` otherwise.
     External,
     /// None: no grounder can instantiate the program, so lowering it is refused.
@@ -122,6 +125,33 @@ fn table() -> Vec<(&'static str, Program, Answers)> {
         (CONSTRAINED_LOOP, known(vec![])),
         (RULE, known(vec![set([])])),
         (OBJECTIVE, known(vec![set([]), set([constant("a")])])),
+        (
+            "a. {b}. c. #project c/0.",
+            known(vec![
+                set([constant("a"), constant("c")]),
+                set([constant("a"), constant("b"), constant("c")]),
+            ]),
+        ),
+        ("1 { #true; #true } 1.", known(vec![])),
+        ("{ #true : p(1;1) } = 2. p(1).", known(vec![set([p(1)])])),
+        (
+            "x :- #count{ 1 : a; 1 : b } = 1. a. b.",
+            known(vec![set([constant("a"), constant("b"), constant("x")])]),
+        ),
+        ("a. #show.", known(vec![set([constant("a")])])),
+        ("{a}. #show.", known(vec![set([]), set([constant("a")])])),
+        (
+            "q. #show p : q.",
+            Answers::Displaying(vec![set([constant("q")])], vec![constant("p")]),
+        ),
+        (
+            "q. #show. #show p : q.",
+            Answers::Displaying(vec![set([constant("q")])], vec![constant("p")]),
+        ),
+        (
+            "-p. #show q/0.",
+            known(vec![set([atom("p", [], Sign::Negative)])]),
+        ),
         (EXTERNAL, Answers::External),
         (UNSAFE, Answers::Unsafe),
     ]
@@ -228,10 +258,12 @@ fn fixing_a(holds: bool) -> Scenario {
 
 // ---- The stub ----
 
-/// A scripted enumeration: the answer sets, then the search's end, concluded as
-/// `terminal` — unless it `concludes` nothing, its search left open.
+/// A scripted enumeration: the answer sets, each model displaying `terms`,
+/// then the search's end, concluded as `terminal` — unless it `concludes`
+/// nothing, its search left open.
 struct Enumeration {
     sets: std::vec::IntoIter<AnswerSet>,
+    terms: Vec<Symbol>,
     terminal: Conclusion,
     concludes: bool,
     ended: bool,
@@ -239,7 +271,10 @@ struct Enumeration {
 
 impl Run for Enumeration {
     fn next_model(&mut self) -> Option<Result<Model, Fault>> {
-        let next = self.sets.next().map(|set| Ok(Model::of(set)));
+        let next = self
+            .sets
+            .next()
+            .map(|set| Ok(Model::of(set).with_terms(self.terms.iter().cloned())));
         if next.is_none() {
             self.ended = true;
         }
@@ -299,19 +334,21 @@ impl Run for Faulting {
 }
 
 /// A search that, having ended, yields its first model once more — a stream
-/// that is not fused.
+/// that is not fused — each model displaying `terms`.
 struct Unfused {
     sets: std::vec::IntoIter<AnswerSet>,
     again: Option<AnswerSet>,
+    terms: Vec<Symbol>,
     ended: bool,
 }
 
 impl Run for Unfused {
     fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+        let model = |set| Ok(Model::of(set).with_terms(self.terms.iter().cloned()));
         if self.ended {
-            return self.again.take().map(|set| Ok(Model::of(set)));
+            return self.again.take().map(model);
         }
-        let next = self.sets.next().map(|set| Ok(Model::of(set)));
+        let next = self.sets.next().map(model);
         self.ended = next.is_none();
         next
     }
@@ -389,6 +426,14 @@ enum Flaw {
     ExposesAnEmptyGroundProgram,
     /// Exposes a ground program without declaring the observer.
     ExposesAnUndeclaredObserver,
+    /// Carries each model's display as its answer set.
+    ReadsTheDisplay,
+    /// Refuses every parse at Door A.
+    RefusesDoorA,
+    /// Omits the terms the program's directives display.
+    ForgetsATerm,
+    /// Adds the number 1 to its first model's answer set.
+    YieldsANumber,
     /// Refuses the program no grounder can instantiate at the engine locus.
     RefusesTheUnsafeProgramOffItsLocus,
     /// Accepts the program no grounder can instantiate.
@@ -563,6 +608,11 @@ impl Stub {
             }
             Flaw::ShiftsTheHeadCycle if source == HEAD_CYCLE => sets.clear(),
             Flaw::OptimizesTheSolve if source == OBJECTIVE => sets.retain(AnswerSet::is_empty),
+            Flaw::YieldsANumber => {
+                if let Some(first) = sets.first_mut() {
+                    first.insert(Symbol::number(1));
+                }
+            }
             Flaw::YieldsAnInconsistentModel => {
                 for set in &mut sets {
                     let contraries: Vec<Symbol> = set.iter().filter_map(positive_of).collect();
@@ -574,10 +624,36 @@ impl Stub {
         Ok(sets)
     }
 
+    /// The terms each model of the loaded program displays — none for a stub
+    /// that forgets them.
+    fn terms(&self) -> Vec<Symbol> {
+        match self.loaded[..] {
+            [index] if self.flaw != Flaw::ForgetsATerm => match &self.table[index].2 {
+                Answers::Displaying(_, terms) => terms.clone(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    /// The show rule of the `#show` directives the stub holds — every program
+    /// lowered since its last reset (docs/design/solve.md §5.1).
+    fn show_rule(&self) -> ShowRule {
+        ShowRule::of(
+            self.loaded
+                .iter()
+                .flat_map(|&index| self.table[index].1.statements())
+                .filter_map(|node| match node.get() {
+                    Statement::Show(show) => Some(show),
+                    _ => None,
+                }),
+        )
+    }
+
     /// The answer sets of the table's program at `index`.
     fn known(&self, index: usize) -> Vec<AnswerSet> {
         match &self.table[index].2 {
-            Answers::Known(sets) => sets.clone(),
+            Answers::Known(sets) | Answers::Displaying(sets, _) => sets.clone(),
             Answers::External => vec![if self.a_holds {
                 set([constant("a"), constant("b")])
             } else {
@@ -590,6 +666,14 @@ impl Stub {
     /// The handle over `sets`, ranging over `scenario`: every set when the stub
     /// enumerates; otherwise the first, as a witness.
     fn enumerate(&self, mut sets: Vec<AnswerSet>, scenario: Scenario) -> Solved<'static> {
+        let show = self.show_rule();
+        let terms = self.terms();
+        if self.flaw == Flaw::ReadsTheDisplay {
+            sets = sets
+                .into_iter()
+                .map(|set| display_of(set, &terms, &show))
+                .collect();
+        }
         if sets.is_empty() && self.flaw == Flaw::ReadsInconsistencyAsConsistency {
             sets.push(set([]));
         }
@@ -603,7 +687,7 @@ impl Stub {
                     yielded: 0,
                 }),
                 scenario,
-                ShowRule::default(),
+                show.clone(),
             );
         }
         if self.flaw == Flaw::FaultsMidStream && !sets.is_empty() {
@@ -613,7 +697,7 @@ impl Stub {
                     fault: Some(Fault::engine("the stub's engine died mid-search")),
                 }),
                 scenario,
-                ShowRule::default(),
+                show.clone(),
             );
         }
         if self.flaw == Flaw::FaultsBeforeAModel && !sets.is_empty() {
@@ -625,7 +709,7 @@ impl Stub {
                     )),
                 }),
                 scenario,
-                ShowRule::default(),
+                show.clone(),
             );
         }
         if self.flaw == Flaw::YieldsPastItsEnd && !sets.is_empty() {
@@ -633,10 +717,11 @@ impl Stub {
                 Box::new(Unfused {
                     again: sets.first().cloned(),
                     sets: sets.into_iter(),
+                    terms,
                     ended: false,
                 }),
                 scenario,
-                ShowRule::default(),
+                show.clone(),
             );
         }
         let concludes = sets.is_empty() || self.flaw != Flaw::LeavesItsSearchOpen;
@@ -657,14 +742,39 @@ impl Stub {
         Solved::running(
             Box::new(Enumeration {
                 sets: sets.into_iter(),
+                terms: if self.flaw == Flaw::ReadsTheDisplay {
+                    Vec::new()
+                } else {
+                    terms
+                },
                 terminal,
                 concludes,
                 ended: false,
             }),
             scenario,
-            ShowRule::default(),
+            show.clone(),
         )
     }
+}
+
+/// What `set`, displaying `terms`, displays under `show` — read through the
+/// core's own derivation, as a stub handing back its engine's display would
+/// read it.
+fn display_of(set: AnswerSet, terms: &[Symbol], show: &ShowRule) -> AnswerSet {
+    let run = Enumeration {
+        sets: vec![set].into_iter(),
+        terms: terms.to_vec(),
+        terminal: Conclusion::Exhausted,
+        concludes: true,
+        ended: false,
+    };
+    let mut solved = Solved::running(Box::new(run), Scenario::default(), show.clone());
+    solved
+        .models()
+        .next()
+        .and_then(Result::ok)
+        .map(|model| model.shown().symbols().clone())
+        .unwrap_or_default()
 }
 
 /// Whether `set` holds every assumption of `scenario` as fixed.
@@ -725,6 +835,9 @@ impl Backend for Stub {
 
     fn lower(&mut self, door: Door<'_>) -> Result<(), Fault> {
         let lowered = door.program();
+        if self.flaw == Flaw::RefusesDoorA && matches!(door, Door::Parsed(_)) {
+            return Err(Fault::engine("the stub lowers Door B alone"));
+        }
         if self.flaw == Flaw::RefusesEveryProgram {
             return Err(Fault::engine("the stub refuses every program"));
         }
@@ -1166,7 +1279,7 @@ fn a_backend_grounding_lazily_still_locates_its_refusal() {
         let report =
             conformance::run(&mut Stub::new(enumerating(), Flaw::Faithful).grounding_at(grounding));
         assert_eq!(
-            report.verdict(Check::ProgramFaultIsLocated),
+            report.verdict(Check::FaultLoci),
             Some(&Verdict::Passed),
             "{grounding:?}: {report}",
         );
@@ -1206,10 +1319,12 @@ fn an_undeclared_observer_skips_its_faithfulness() {
 
 #[test]
 fn the_non_external_refusal_binds_only_a_multi_shot_backend() {
-    let report = report(enumerating(), Flaw::Faithful);
+    // Without multi-shot solving there is no assignment to hold to its locus,
+    // so a stub that would accept a non-external atom still keeps fault loci.
+    let report = report(enumerating(), Flaw::AcceptsANonExternal);
     assert_eq!(
-        skip(&report, Check::NonExternalAssignmentRefuses),
-        Some(&Skip::Undeclared(Capability::MultiShot)),
+        report.verdict(Check::FaultLoci),
+        Some(&Verdict::Passed),
         "{report}"
     );
 }
@@ -1263,9 +1378,8 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
     use Breach::{Accepted, Misanswered, Mislocated, Refused};
     use Capability as C;
     use Check::{
-        Capability as Declared, ExhaustionIsEarned as Earned, GroundProgramIsFaithful as Ground,
-        NonExternalAssignmentRefuses as NonExternal, OutcomeCorrectness as Outcome,
-        ProgramFaultIsLocated as Located,
+        Capability as Declared, Display as Displayed, ExhaustionIsEarned as Earned,
+        FaultLoci as Faults, GroundProgramIsFaithful as Ground, OutcomeCorrectness as Outcome,
     };
     let table: Vec<Expectation> = vec![
         (
@@ -1375,7 +1489,7 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
         (
             Flaw::RefusesEveryProgram,
             enumerating(),
-            vec![(Outcome, Refused), (Located, Mislocated)],
+            vec![(Outcome, Refused), (Faults, Mislocated)],
         ),
         (
             Flaw::RefusesTheExternalProgram,
@@ -1402,25 +1516,43 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             enumerating(),
             vec![(Declared(C::GroundProgram), Accepted)],
         ),
+        // A deciding stub yields a witness alone, so a wrong answer set is
+        // outcome correctness's failure and no unseen set's.
+        (
+            Flaw::ReadsTheDisplay,
+            deciding(),
+            vec![(Outcome, Misanswered)],
+        ),
+        (Flaw::RefusesDoorA, enumerating(), vec![(Outcome, Refused)]),
+        (
+            Flaw::ForgetsATerm,
+            enumerating(),
+            vec![(Displayed, Misanswered)],
+        ),
+        (
+            Flaw::YieldsANumber,
+            deciding(),
+            vec![(Outcome, Misanswered)],
+        ),
         (
             Flaw::RefusesTheUnsafeProgramOffItsLocus,
             enumerating(),
-            vec![(Located, Mislocated)],
+            vec![(Faults, Mislocated)],
         ),
         (
             Flaw::AcceptsTheUnsafeProgram,
             enumerating(),
-            vec![(Located, Accepted)],
+            vec![(Faults, Accepted)],
         ),
         (
             Flaw::LocatesTheFaultElsewhere,
             enumerating(),
-            vec![(Located, Mislocated)],
+            vec![(Faults, Mislocated)],
         ),
         (
             Flaw::LocatesTheFaultInAnotherSource,
             enumerating(),
-            vec![(Located, Mislocated)],
+            vec![(Faults, Mislocated)],
         ),
         (
             Flaw::AnswersUndeclaredAssumptions,
@@ -1562,17 +1694,17 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
         (
             Flaw::AcceptsANonExternal,
             realising(),
-            vec![(NonExternal, Accepted)],
+            vec![(Faults, Accepted)],
         ),
         (
             Flaw::RefusesAssignmentAsUnsupported,
             realising(),
-            vec![(NonExternal, Refused), (Declared(C::Externals), Refused)],
+            vec![(Faults, Refused), (Declared(C::Externals), Refused)],
         ),
         (
             Flaw::RefusesAssignmentAtTheEngine,
             realising(),
-            vec![(NonExternal, Mislocated), (Declared(C::Externals), Refused)],
+            vec![(Faults, Mislocated), (Declared(C::Externals), Refused)],
         ),
         (
             Flaw::AssignsNoExternal,
