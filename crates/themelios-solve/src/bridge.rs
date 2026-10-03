@@ -1,6 +1,6 @@
 //! The bridge and the seam (docs/design/solve.md §10): the doors from the
-//! program IR to an engine, the aspif-level sink, the ground-program IR, and
-//! the interning contract.
+//! program IR to an engine, the typed refusal of a parse at Door A, the
+//! aspif-level sink, the ground-program IR, and the interning contract.
 //!
 //! The `Symbol` correspondence (§10.5): `themelios_program::Symbol` carries
 //! the engine's own number width (`i32`, docs/design/program.md §3.1), so no
@@ -10,8 +10,12 @@
 //! write, serialised under the single [`InterningDiscipline`] — not a free
 //! correspondence.
 
+use std::fmt;
+
+use themelios_base::diagnostic::{Diagnostic, ToDiagnostic};
+use themelios_program::raise::LowerError;
 use themelios_program::{Origin, Program};
-use themelios_syntax::{Parse, ast};
+use themelios_syntax::{Parse, SyntaxError, ast};
 
 use crate::contract::{Fault, TruthValue};
 
@@ -49,6 +53,48 @@ pub enum Door<'a> {
     /// an agent's ground-fact additions where the values are already ground.
     Aspif(&'a mut dyn AspifSource),
 }
+
+/// Why a parse was not admitted at Door A (docs/design/solve.md §10.2) —
+/// exactly one of two, typed and located, each diagnostic lowering to a base
+/// diagnostic. It reaches the caller before any backend is asked, and converts
+/// into a program fault refusing the parse, carried whole, for a caller that
+/// wants `?` (§5.4).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum NotAdmitted {
+    /// The parse is not in the language: its error-severity diagnostics.
+    Syntax(Box<[SyntaxError]>),
+    /// The parse is in the language and its raise refused: the raise's whole
+    /// batch (docs/design/program.md §8).
+    Lowering(Box<[LowerError]>),
+}
+
+impl NotAdmitted {
+    /// Either batch lowered to base diagnostics, in source order. Total;
+    /// O(diagnostics).
+    pub fn diagnostics(&self) -> Vec<Diagnostic> {
+        match self {
+            NotAdmitted::Syntax(errors) => errors.iter().map(ToDiagnostic::to_diagnostic).collect(),
+            NotAdmitted::Lowering(errors) => {
+                errors.iter().map(ToDiagnostic::to_diagnostic).collect()
+            }
+        }
+    }
+}
+
+impl fmt::Display for NotAdmitted {
+    /// Which side refused the parse, and with how many errors — each of a
+    /// raise's diagnostics is an error (docs/design/program.md §8).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (headline, count) = match self {
+            NotAdmitted::Syntax(errors) => ("the parse is not in the language", errors.len()),
+            NotAdmitted::Lowering(errors) => ("the parse did not raise cleanly", errors.len()),
+        };
+        let plural = if count == 1 { "" } else { "s" };
+        write!(f, "{headline} ({count} error{plural})")
+    }
+}
+
+impl std::error::Error for NotAdmitted {}
 
 /// A ground atom's id at the seam: the engine's `clingo_atom_t`, always
 /// greater than zero. Distinct from [`AspifLit`], so an atom cannot pass

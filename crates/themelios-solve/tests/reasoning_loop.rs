@@ -11,7 +11,7 @@ use themelios_program::{Atom, Name, Program, Sign, Statement, Symbol};
 use themelios_solve::agent::{Agent, RetractionClass};
 use themelios_solve::bridge::{Door, GroundProgram};
 use themelios_solve::contract::{
-    Backend, Capabilities, Fault, GroundOptions, Locus, SolveRequest, TruthValue,
+    Backend, Capabilities, Fault, GroundOptions, Presupposition, Refused, SolveRequest, TruthValue,
 };
 use themelios_solve::extend::Facts;
 use themelios_solve::outcome::Solved;
@@ -53,7 +53,7 @@ impl Backend for Recorder {
     }
 
     fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
-        Err(Fault::unsupported())
+        Err(Fault::engine("the recorder answers no question"))
     }
 
     fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
@@ -72,7 +72,7 @@ impl Backend for Recorder {
             .iter()
             .any(|part| part.key().name == identifier(REFUSED_PART))
         {
-            return Err(Fault::request("the recorder grounds no such part"));
+            return Err(Fault::engine("the recorder grounds no such part"));
         }
         let mut records = self.records.borrow_mut();
         records.grounded += 1;
@@ -199,16 +199,21 @@ fn a_multi_part_knowledge_base_round_trips_a_base_assertion() {
 
 // ---- a spent or foreign handle refuses ----
 
+/// Whether `fault` refused the request for the presupposition `expected`.
+fn refused_for(fault: &Fault, expected: Presupposition) -> bool {
+    matches!(fault.refused(), Refused::Request(presupposition) if presupposition == expected)
+}
+
 #[test]
-fn retract_of_a_stale_handle_refuses_at_the_request_locus() {
+fn retract_of_a_stale_handle_refuses_as_not_live() {
     let (mut agent, _records) = agent_over(Program::of([fact("a")]), NO_EXTERNALS, SINGLE_SHOT);
     let added = agent.assert(fact("b")).expect("assert succeeds");
     agent.retract(added).expect("the first retract succeeds");
     let again = agent.retract(added);
-    assert_eq!(
-        again.expect_err("the second retract refuses").locus(),
-        Locus::Request
-    );
+    assert!(refused_for(
+        &again.expect_err("the second retract refuses"),
+        Presupposition::NotLive
+    ));
 }
 
 #[test]
@@ -221,10 +226,10 @@ fn a_handle_from_another_agent_is_refused() {
         agent_over(Program::of([fact("floor")]), NO_EXTERNALS, SINGLE_SHOT);
     let issued_by_one = one.assert(fact("a")).expect("assert succeeds");
     let refused = two.retract(issued_by_one);
-    assert_eq!(
-        refused.expect_err("a foreign handle refuses").locus(),
-        Locus::Request
-    );
+    assert!(refused_for(
+        &refused.expect_err("a foreign handle refuses"),
+        Presupposition::NotLive
+    ));
     assert_eq!(two.knowledge(), &Program::of([fact("floor")]));
 }
 
@@ -235,13 +240,12 @@ fn a_handle_whose_slot_was_reused_is_refused() {
     agent.retract(first).expect("retract a frees its slot");
     let second = agent.assert(fact("b")).expect("assert b reuses the slot");
     // The reused-slot handle must not retract whatever now occupies the slot.
-    assert_eq!(
-        agent
+    assert!(refused_for(
+        &agent
             .retract(first)
-            .expect_err("the reused-slot handle refuses")
-            .locus(),
-        Locus::Request
-    );
+            .expect_err("the reused-slot handle refuses"),
+        Presupposition::NotLive
+    ));
     agent
         .retract(second)
         .expect("the live handle still retracts");
@@ -478,25 +482,21 @@ fn forget_of_a_spent_observation_refuses() {
     agent
         .forget(observation)
         .expect("the first forget succeeds");
-    assert_eq!(
-        agent
-            .forget(spent)
-            .expect_err("the second forget refuses")
-            .locus(),
-        Locus::Request
-    );
+    assert!(refused_for(
+        &agent.forget(spent).expect_err("the second forget refuses"),
+        Presupposition::Spent
+    ));
 }
 
 #[test]
 fn observe_refuses_a_fact_that_is_not_an_atom() {
     let (mut agent, _records) = agent_over(Program::empty(), NO_EXTERNALS, SINGLE_SHOT);
-    assert_eq!(
-        agent
+    assert!(refused_for(
+        &agent
             .observe(Numbers(vec![1]))
-            .expect_err("a non-atom fact refuses")
-            .locus(),
-        Locus::Request
-    );
+            .expect_err("a non-atom fact refuses"),
+        Presupposition::NotAnAtom
+    ));
 }
 
 #[test]

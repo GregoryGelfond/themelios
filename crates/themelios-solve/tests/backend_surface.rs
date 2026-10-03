@@ -9,7 +9,8 @@ use themelios_program::{Name, Symbol};
 use themelios_solve::agent::Scenario;
 use themelios_solve::bridge::{Door, GroundProgram};
 use themelios_solve::contract::{
-    Backend, Capabilities, Fault, GroundOptions, OptimizeRequest, SolveRequest, TruthValue,
+    Backend, Capabilities, Capability, Fault, GroundOptions, OptimizeRequest, SolveRequest,
+    TruthValue,
 };
 use themelios_solve::extend::{Function, GroundFault, Propagator};
 use themelios_solve::outcome::Solved;
@@ -25,11 +26,11 @@ impl Backend for Nothing {
     }
 
     fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
-        Err(Fault::unsupported())
+        Err(Fault::engine("this backend solves nothing"))
     }
 
     fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
-        Err(Fault::unsupported())
+        Err(Fault::engine("this backend lowers nothing"))
     }
 
     fn ground_program(&self) -> Option<&GroundProgram> {
@@ -96,7 +97,7 @@ fn optimize_refuses_without_optimization() {
     let mut nothing = Nothing;
     assert_eq!(
         nothing.optimize(&OptimizeRequest::default()).err(),
-        Some(Fault::unsupported())
+        Some(Fault::unsupported(Capability::Optimization))
     );
 }
 
@@ -107,7 +108,7 @@ fn solve_assuming_refuses_without_assumptions() {
         nothing
             .solve_assuming(&Scenario::default(), &SolveRequest::default())
             .err(),
-        Some(Fault::unsupported())
+        Some(Fault::unsupported(Capability::Assumptions))
     );
 }
 
@@ -116,7 +117,7 @@ fn ground_refuses_without_multi_shot() {
     let mut nothing = Nothing;
     assert_eq!(
         nothing.ground(&[], &GroundOptions::default()).err(),
-        Some(Fault::unsupported())
+        Some(Fault::unsupported(Capability::MultiShot))
     );
 }
 
@@ -127,14 +128,17 @@ fn assign_external_refuses_without_multi_shot() {
         nothing
             .assign_external(some_external(), TruthValue::True)
             .err(),
-        Some(Fault::unsupported())
+        Some(Fault::unsupported(Capability::MultiShot))
     );
 }
 
 #[test]
 fn reset_refuses_without_multi_shot() {
     let mut nothing = Nothing;
-    assert_eq!(nothing.reset().err(), Some(Fault::unsupported()));
+    assert_eq!(
+        nothing.reset().err(),
+        Some(Fault::unsupported(Capability::MultiShot))
+    );
 }
 
 #[test]
@@ -142,7 +146,7 @@ fn register_function_refuses_without_functions() {
     let mut nothing = Nothing;
     assert_eq!(
         nothing.register_function(Box::new(NoFunction)).err(),
-        Some(Fault::unsupported())
+        Some(Fault::unsupported(Capability::Functions))
     );
 }
 
@@ -151,6 +155,6 @@ fn register_propagator_refuses_without_propagators() {
     let mut nothing = Nothing;
     assert_eq!(
         nothing.register_propagator(Box::new(NoPropagator)).err(),
-        Some(Fault::unsupported())
+        Some(Fault::unsupported(Capability::Propagators))
     );
 }

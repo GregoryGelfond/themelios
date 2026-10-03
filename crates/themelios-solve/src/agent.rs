@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use crate::bridge::Door;
 use crate::contract::{
-    Backend, Cancel, Capabilities, ConsequenceRequest, ConsequenceSupport, Fault, GroundOptions,
-    Mode, OptimizeRequest, SolveRequest, TruthValue,
+    Backend, Cancel, Capabilities, Capability, ConsequenceRequest, ConsequenceSupport, Fault,
+    GroundOptions, Mode, OptimizeRequest, Presupposition, SolveRequest, TruthValue,
 };
 use crate::extend::Facts;
 use crate::outcome::{
@@ -98,7 +98,7 @@ impl<B: Backend> Agent<B> {
     /// removal there. Cost: `Θ(program size)`.
     pub fn retract(&mut self, statement: StatementId) -> Result<(), Fault> {
         if !self.ledger.is_live(statement) {
-            return Err(Fault::request("retract of a statement that is not live"));
+            return Err(not_live());
         }
         self.ledger.retire(statement);
         self.knowledge = self.ledger.rebuild();
@@ -153,7 +153,7 @@ impl<B: Backend> Agent<B> {
             return Ok(());
         }
         if members.iter().any(|&member| !self.ledger.is_live(member)) {
-            return Err(Fault::request("forget of a spent observation"));
+            return Err(spent());
         }
         for &member in &members {
             self.ledger.retire(member);
@@ -170,7 +170,7 @@ impl<B: Backend> Agent<B> {
     /// rebuild grounds them again. Refuses, retaining nothing, where the backend
     /// refuses. Cost: a rebuild, then the grounding.
     pub fn ground(&mut self, parts: &[Part]) -> Result<(), Fault> {
-        self.require(|capabilities| capabilities.multi_shot)?;
+        require(&self.backend.capabilities(), Capability::MultiShot)?;
         self.bring_level()?;
         self.backend.ground(parts, &GroundOptions::default())?;
         self.grounded.push(parts.into());
@@ -185,7 +185,7 @@ impl<B: Backend> Agent<B> {
     /// Refuses, retaining nothing, where the backend refuses. Cost: a rebuild,
     /// then the assignment.
     pub fn assign_external(&mut self, external: Symbol, value: TruthValue) -> Result<(), Fault> {
-        self.require(|capabilities| capabilities.multi_shot)?;
+        require(&self.backend.capabilities(), Capability::MultiShot)?;
         self.bring_level()?;
         self.backend.assign_external(external.clone(), value)?;
         self.assigned.insert(external, value);
@@ -215,9 +215,9 @@ impl<B: Backend> Agent<B> {
     /// §6.3): the same question under the options — the time budget the
     /// question carries, handed on the request to a backend that enforces it
     /// natively. A budget the backend does not so enforce refuses at the
-    /// request locus before anything is lowered: the core's own timer over a
-    /// cancelling backend — the realisation rule's other arm — is realised with
-    /// cancellation.
+    /// request locus, as unrealisable (§6.3), before anything is lowered: the
+    /// core's own timer over a cancelling backend — the realisation rule's
+    /// other arm — is realised with cancellation.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the options are taken by value — the design's surface (docs/design/solve.md \
@@ -225,7 +225,7 @@ impl<B: Backend> Agent<B> {
     )]
     pub fn solve_with(&mut self, options: SolveOptions) -> Result<Solved<'_>, Fault> {
         if options.time.is_some() {
-            self.require(|capabilities| capabilities.budgets.time)?;
+            realisable(&self.backend.capabilities())?;
         }
         self.bring_level()?;
         self.backend.solve(&SolveRequest { time: options.time })
@@ -251,7 +251,7 @@ impl<B: Backend> Agent<B> {
     /// at the request locus over a backend that does not declare
     /// `optimization` (§4.2), before anything is lowered.
     pub fn optimize(&mut self, request: &OptimizeRequest) -> Result<Optimized<'_>, Fault> {
-        self.require(|capabilities| capabilities.optimization)?;
+        require(&self.backend.capabilities(), Capability::Optimization)?;
         self.bring_level()?;
         self.backend.optimize(request)
     }
@@ -263,7 +263,7 @@ impl<B: Backend> Agent<B> {
     /// that does not declare `assumptions` (§4.2) — read from the declaration
     /// before the question is paid for, so a refused scenario lowers nothing.
     pub fn solve_assuming(&mut self, scenario: &Scenario) -> Result<Solved<'_>, Fault> {
-        self.require(|capabilities| capabilities.assumptions)?;
+        require(&self.backend.capabilities(), Capability::Assumptions)?;
         self.bring_level()?;
         self.backend
             .solve_assuming(scenario, &SolveRequest::default())
@@ -344,7 +344,7 @@ impl<B: Backend> Agent<B> {
         scenario: Option<&Scenario>,
     ) -> Result<Consequences, Fault> {
         if scenario.is_some() {
-            self.require(|capabilities| capabilities.assumptions)?;
+            require(&self.backend.capabilities(), Capability::Assumptions)?;
         }
         self.bring_level()?;
         match self.backend.capabilities().native_consequences {
@@ -356,7 +356,7 @@ impl<B: Backend> Agent<B> {
                     NativeAnswer::Closed(symbols) => Ok(Consequences { symbols, mode }),
                     NativeAnswer::NoModel => Err(no_answer_set(scenario)),
                     NativeAnswer::Stopped(truncation) => {
-                        Err(NotExhausted::not_closed(Some(truncation.into())).into())
+                        Err(NotExhausted::not_closed(truncation).into())
                     }
                 }
             }
@@ -379,27 +379,12 @@ impl<B: Backend> Agent<B> {
                     // cannot say; a fault stays its own cause.
                     Determination::Inconclusive(partial) => Err(match partial.stopped() {
                         Stopped::Concluded(truncation) => {
-                            NotExhausted::not_closed(Some(truncation.into())).into()
+                            NotExhausted::not_closed(truncation).into()
                         }
                         Stopped::Faulted(fault) => fault.clone(),
                     }),
                 }
             }
-        }
-    }
-
-    /// The gate every capability-gated question passes (docs/design/solve.md
-    /// §4.1, §4.2): a question beyond the backend's declaration refuses at the
-    /// request locus. The declaration is read, not the method trusted — a
-    /// backend answering a method it does not declare, or a native consequence
-    /// door handed a scenario it cannot honour, would otherwise answer in its
-    /// place, a silent degrade — and it is read before the question is paid for,
-    /// so a refused question lowers nothing. O(1).
-    fn require(&self, declared: fn(&Capabilities) -> bool) -> Result<(), Fault> {
-        if declared(&self.backend.capabilities()) {
-            Ok(())
-        } else {
-            Err(Fault::unsupported())
         }
     }
 
@@ -448,15 +433,65 @@ impl<B: Backend> Agent<B> {
     }
 }
 
+/// The refusal of a retract whose handle names nothing live in the agent's
+/// knowledge — retracted already, or another agent's (docs/design/solve.md
+/// §6.2).
+fn not_live() -> Fault {
+    Fault::request(
+        "retract of a statement that is not live",
+        Presupposition::NotLive,
+    )
+}
+
+/// The refusal of a forget whose observation is spent — forgotten already, or
+/// another agent's (docs/design/solve.md §6.2).
+fn spent() -> Fault {
+    Fault::request("forget of a spent observation", Presupposition::Spent)
+}
+
+/// The gate every capability-gated question passes (docs/design/solve.md §4.1,
+/// §4.2): a question beyond the `declaration` refuses at the request locus,
+/// naming the `capability` it needed. The declaration is read, not the method
+/// trusted — a backend answering a method it does not declare, or a native
+/// consequence door handed a scenario it cannot honour, would otherwise answer
+/// in its place, a silent degrade — and it is read before the question is paid
+/// for, so a refused question lowers nothing. A function of the declaration
+/// alone. O(1).
+fn require(declaration: &Capabilities, capability: Capability) -> Result<(), Fault> {
+    if declaration.declares(capability) {
+        Ok(())
+    } else {
+        Err(Fault::unsupported(capability))
+    }
+}
+
+/// The gate a budgeted question passes (docs/design/solve.md §6.3): a time
+/// budget the `declaration` neither enforces nor lets the core enforce refuses
+/// at the request locus, as unrealisable, before anything is lowered. A function
+/// of the declaration alone. O(1).
+fn realisable(declaration: &Capabilities) -> Result<(), Fault> {
+    if declaration.budgets.time {
+        Ok(())
+    } else {
+        Err(Fault::request(
+            "a time budget this backend neither enforces nor lets the core enforce",
+            Presupposition::UnrealisableBudget,
+        ))
+    }
+}
+
 /// The refusal of consequences over no model — `⋂`/`⋃` over the empty world
 /// view is undefined, not `∅` (query.md §2.3). Under a scenario the program may
 /// well have answer sets, just none the scenario admits, so the refusal says
 /// which.
 fn no_answer_set(scenario: Option<&Scenario>) -> Fault {
-    Fault::request(match scenario {
-        None => "no consequences: the program has no answer set",
-        Some(_) => "no consequences: the program has no answer set under the scenario",
-    })
+    Fault::request(
+        match scenario {
+            None => "no consequences: the program has no answer set",
+            Some(_) => "no consequences: the program has no answer set under the scenario",
+        },
+        Presupposition::NoAnswerSet,
+    )
 }
 
 /// The base fact a ground atom symbol denotes (docs/design/solve.md §6.2, §7.3),
@@ -480,6 +515,7 @@ fn fact_of(symbol: &Symbol) -> Result<Rule, Fault> {
         // size, and a fault message is not the place to render one.
         _ => Err(Fault::request(
             "an observed fact must be an atom, not a number, string, tuple, #inf, or #sup",
+            Presupposition::NotAnAtom,
         )),
     }
 }
@@ -983,8 +1019,16 @@ mod ask_laws {
     use std::collections::BTreeSet;
 
     use crate::bridge::GroundProgram;
-    use crate::contract::Capabilities;
+    use crate::contract::{Capabilities, Refused};
     use crate::outcome::{AnswerSet, Conclusion, Run, Truncation};
+
+    /// Whether `fault` refused the request for the presupposition `expected`.
+    fn refused_for(fault: &Fault, expected: Presupposition) -> bool {
+        matches!(fault.refused(), Refused::Request(presupposition) if presupposition == expected)
+    }
+
+    /// A search stopped at its budget, short of the space.
+    const AT_THE_BUDGET: Presupposition = Presupposition::Unclosed(Truncation::Budget);
 
     /// The answer sets of `models`, in order.
     fn atoms_of(models: &[Model]) -> Vec<AnswerSet> {
@@ -1308,14 +1352,14 @@ mod ask_laws {
             .cautious()
             .expect_err("an unexhausted world view refuses");
         assert!(
-            refusal.to_string().contains("budget"),
-            "the refusal names the budget the search hit",
+            refused_for(&refusal, AT_THE_BUDGET),
+            "the refusal names the budget the search hit: {refusal:?}",
         );
         let mut inconclusive = Agent::new(Program::empty(), Budgeted { sets: Vec::new() });
         let refusal = inconclusive
             .brave()
             .expect_err("an inconclusive search refuses");
-        assert!(refusal.to_string().contains("budget"));
+        assert!(refused_for(&refusal, AT_THE_BUDGET), "{refusal:?}");
     }
 
     /// A run that faults on its first pull, before any model.
@@ -1707,11 +1751,11 @@ mod ask_laws {
         );
         assert_eq!(
             agent.cautious_assuming(&assuming_a()),
-            Err(Fault::unsupported())
+            Err(Fault::unsupported(Capability::Assumptions))
         );
         assert_eq!(
             agent.brave_assuming(&assuming_a()),
-            Err(Fault::unsupported())
+            Err(Fault::unsupported(Capability::Assumptions))
         );
     }
 
@@ -1727,11 +1771,11 @@ mod ask_laws {
         );
         assert_eq!(
             agent.cautious_assuming(&assuming_a()),
-            Err(Fault::unsupported())
+            Err(Fault::unsupported(Capability::Assumptions))
         );
         assert_eq!(
             agent.brave_assuming(&assuming_a()),
-            Err(Fault::unsupported())
+            Err(Fault::unsupported(Capability::Assumptions))
         );
     }
 
@@ -1747,7 +1791,7 @@ mod ask_laws {
         );
         assert_eq!(
             agent.solve_assuming(&assuming_a()).err(),
-            Some(Fault::unsupported())
+            Some(Fault::unsupported(Capability::Assumptions))
         );
     }
 
@@ -1764,15 +1808,15 @@ mod ask_laws {
             let mut agent = Agent::new(Program::empty(), Unlowerable { support });
             assert_eq!(
                 agent.solve_assuming(&assuming_a()).err(),
-                Some(Fault::unsupported())
+                Some(Fault::unsupported(Capability::Assumptions))
             );
             assert_eq!(
                 agent.cautious_assuming(&assuming_a()),
-                Err(Fault::unsupported())
+                Err(Fault::unsupported(Capability::Assumptions))
             );
             assert_eq!(
                 agent.brave_assuming(&assuming_a()),
-                Err(Fault::unsupported())
+                Err(Fault::unsupported(Capability::Assumptions))
             );
         }
     }
@@ -1790,11 +1834,11 @@ mod ask_laws {
         );
         assert_eq!(
             agent.cautious_assuming(&Scenario::default()),
-            Err(Fault::unsupported())
+            Err(Fault::unsupported(Capability::Assumptions))
         );
         assert_eq!(
             agent.brave_assuming(&Scenario::default()),
-            Err(Fault::unsupported())
+            Err(Fault::unsupported(Capability::Assumptions))
         );
     }
 
@@ -1810,7 +1854,7 @@ mod ask_laws {
         );
         assert_eq!(
             agent.solve_assuming(&Scenario::default()).err(),
-            Some(Fault::unsupported())
+            Some(Fault::unsupported(Capability::Assumptions))
         );
     }
 
@@ -1824,13 +1868,17 @@ mod ask_laws {
         let refusal = agent
             .cautious_assuming(&impossible)
             .expect_err("no model under the scenario");
-        assert_eq!(refusal.locus(), crate::contract::Locus::Request);
+        assert!(
+            refused_for(&refusal, Presupposition::NoAnswerSet),
+            "{refusal:?}"
+        );
         assert!(refusal.to_string().contains("scenario"), "{refusal}");
-        assert_eq!(
-            agent
-                .brave_assuming(&impossible)
-                .map_err(|fault| fault.locus()),
-            Err(crate::contract::Locus::Request)
+        let brave = agent
+            .brave_assuming(&impossible)
+            .expect_err("no model under the scenario");
+        assert!(
+            refused_for(&brave, Presupposition::NoAnswerSet),
+            "{brave:?}"
         );
     }
 
@@ -1866,7 +1914,7 @@ mod ask_laws {
         let derived = truncated(ConsequenceSupport::DerivedByEnumeration)
             .cautious_assuming(&assuming_a())
             .expect_err("an unexhausted world view refuses");
-        assert!(native.to_string().contains("budget"), "{native}");
+        assert!(refused_for(&native, AT_THE_BUDGET), "{native:?}");
         assert_eq!(native, derived);
     }
 
@@ -1910,7 +1958,7 @@ mod ask_laws {
         let refusal = agent
             .cautious_assuming(&assuming_a())
             .expect_err("an unexhausted scoped world view refuses");
-        assert!(refusal.to_string().contains("budget"), "{refusal}");
+        assert!(refused_for(&refusal, AT_THE_BUDGET), "{refusal:?}");
     }
 
     #[test]
