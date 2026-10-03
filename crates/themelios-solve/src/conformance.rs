@@ -36,15 +36,21 @@
 //! ground is refused at the program locus, naming the statement that cannot be
 //! grounded and located within it (§5.4); assigning an atom that is not
 //! external is refused at the request locus, never the silent no-op an engine
-//! may give. Two obligations the order names next — a rebuild leaving nothing
-//! behind, and a backend's own state (§4.1, §6.3) — are not yet run, so the
-//! report holds no verdict for them. **Capability honesty, in both
-//! directions** (§4.1, §4.2): a declared capability's method answers, and
-//! answers rightly — a provided method needs no override, so a declared bit
-//! whose method still refuses is a lie the type cannot see — and an undeclared
-//! one's refuses at the request locus, or, for `interrupt` and the observer,
-//! answers nothing, never degrading silently; the native door's answer is its
-//! known one, no model over a program with none.
+//! may give — and a statement built in Rust is refused unlocated, since no
+//! span was written for it. **A rebuild leaves nothing behind** (§4.1, §6.3):
+//! no statement, model, or cancellation of the run it replaced. **A backend's
+//! own state** (§4.1): a refusal its lowering's check makes adds nothing; a
+//! failed grounding leaves a multi-shot backend refusing as needing its rebuild
+//! until the `reset` that rebuilds, and fails a single-shot backend's solve,
+//! the backend staying ready; and a registration survives the rebuild.
+//! **Capability honesty, in both directions** (§4.1, §4.2): a declared
+//! capability's method answers, and answers rightly — a provided method needs
+//! no override, so a declared bit whose method still refuses is a lie the type
+//! cannot see — and an undeclared one's refuses as unsupported, naming the
+//! capability, or, for `interrupt` and the observer, answers nothing, never
+//! degrading silently, while a budget nothing realises refuses as unrealisable;
+//! the native door's answer is its known one, no model over a program with
+//! none.
 //!
 //! The named pathologies are unconstructible in the vocabulary (§5.3). The suite
 //! attempts the two a backend could reach at run time — a touched stream passing
@@ -71,19 +77,20 @@ use std::fmt;
 use std::time::Duration;
 
 use themelios_base::span::{ByteOffset, Location};
-use themelios_program::program::PartKey;
+use themelios_program::program::{Part, PartKey};
 use themelios_program::provenance::WithProvenance;
 use themelios_program::raise::{raise_source, raise_str};
+use themelios_program::symbol::VarName;
 use themelios_program::{
-    Dialect, Name, Origin, Program, Sign, Source, SourceId, Statement, Symbol,
+    Atom, Dialect, Name, Origin, Program, Rule, Sign, Source, SourceId, Statement, Symbol, Term,
 };
 use themelios_syntax::parse;
 
 use crate::agent::{Assumption, Scenario};
 use crate::bridge::{Admitted, Door};
 use crate::contract::{
-    Backend, Capability, ConsequenceRequest, Fault, GroundOptions, Locus, Mode, OptimizeRequest,
-    Presupposition, Refused, SolveRequest, TruthValue,
+    Backend, Capabilities, Capability, ConsequenceRequest, ConsequenceSupport, Fault,
+    GroundOptions, Locus, Mode, OptimizeRequest, Presupposition, Refused, SolveRequest, TruthValue,
 };
 use crate::extend::{Function, GroundFault, Propagator};
 use crate::outcome::{
@@ -132,6 +139,11 @@ pub fn run(backend: &mut dyn Backend) -> ConformanceReport {
             ground_program_is_faithful(backend, &corpus),
         ),
         (Check::FaultLoci, fault_loci(backend)),
+        (
+            Check::RebuildLeavesNothingBehind,
+            rebuild_leaves_nothing_behind(backend),
+        ),
+        (Check::BackendState, backend_state(backend)),
     ];
     // The capability probes run last: they reset the engine and register
     // extensions, which the corpus checks above must not see.
@@ -220,8 +232,9 @@ pub enum Check {
     GroundProgramIsFaithful,
     /// Each fault lands where it belongs (§5.4): a program the backend cannot
     /// ground is refused at the program locus, naming the statement that cannot
-    /// be grounded, located where it was written; assigning an atom that is
-    /// not external refuses at the request locus.
+    /// be grounded — located where it was written, unlocated where it was
+    /// built in Rust; assigning an atom that is not external refuses naming it
+    /// as one.
     FaultLoci,
     /// A rebuild carries no statement, model, or cancellation of the run it
     /// replaced into the next (§4.1, §6.3).
@@ -231,8 +244,8 @@ pub enum Check {
     /// registration survives the rebuild.
     BackendState,
     /// The capability's declaration is honest: declared, its method answers
-    /// rightly; undeclared, it refuses at the request locus, or answers
-    /// nothing (§4.1, §4.2).
+    /// rightly; undeclared, it refuses as unsupported, naming the capability —
+    /// a budget, as unrealisable — or answers nothing (§4.1, §4.2, §6.3).
     Capability(Capability),
 }
 
@@ -600,6 +613,21 @@ const EXTERNAL: &str = "#external a. b :- a.";
 /// instantiate the second statement, so a refusal is located at it, not at the
 /// program's start.
 const UNSAFE: &str = "a. p(X).";
+
+/// A fact other than `a.`, then a fact over a variable nothing binds: the
+/// program the backend-state check has a backend refuse at its lowering's
+/// check, whose prefix a backend keeping it would show.
+const PREFIXED_UNSAFE: &str = "b. p(X).";
+
+/// The fact a rebuild replaces `a.` with: one answer set, `{b}`.
+const REBUILT: &str = "b.";
+
+/// A fact over a call of the suite's faulting `@`-function: its grounding
+/// fails.
+const FAULTING_CALL: &str = "p(@fault).";
+
+/// A fact over a call of the suite's echoing `@`-function: `{p(1)}`.
+const ECHOED_CALL: &str = "p(@echo(1)).";
 
 /// The source id the unsafe program is raised under: one no corpus program has
 /// (theirs count up from zero), so a location in any of them is not its own.
@@ -1286,22 +1314,9 @@ fn ground_program_is_faithful(backend: &mut dyn Backend, corpus: &[Case]) -> Ver
 /// within that statement's span.
 fn program_fault_is_located(backend: &mut dyn Backend) -> Verdict {
     let program = program_under(UNSAFE_SOURCE, UNSAFE);
-    if let Err(failure) = reset_to_load(backend) {
-        return Verdict::Skipped(Skip::Undriven(failure));
-    }
-    if let Err(fault) = backend.lower(Door::Program(&program)) {
-        return located(fault, &program);
-    }
-    let mut solved = match backend.solve(&SolveRequest::default()) {
-        Ok(solved) => solved,
-        Err(fault) => return located(fault, &program),
-    };
-    match solved.models().next() {
-        Some(Err(fault)) => located(fault, &program),
-        _ => Verdict::Failed(Failure::new(
-            Breach::Accepted,
-            format!("the program `{UNSAFE}`, whose variable nothing binds, was accepted"),
-        )),
+    match refusal_of_unsafe(backend, &program) {
+        Ok(fault) => located(fault, &program),
+        Err(verdict) => verdict,
     }
 }
 
@@ -1335,7 +1350,8 @@ fn located(fault: Fault, program: &Program) -> Verdict {
             .with_fault(fault),
         );
     }
-    let within = fault.diagnostics().first().is_some_and(|diagnostic| {
+    let diagnostics = fault.diagnostics();
+    let within = matches!(&diagnostics[..], [diagnostic] if {
         let at = diagnostic.primary().location;
         at.source == location.source && location.span.contains_span(at.span)
     });
@@ -1373,17 +1389,501 @@ fn unsafe_statement(program: &Program) -> (&WithProvenance<Statement>, Location)
         .expect("a raised statement is located where it was parsed")
 }
 
-/// Each fault lands where it belongs (§5.4): the program fault's sub-check and
-/// the request fault's, under one obligation — failed if either fails, passed
-/// if either passes and neither fails, skipped otherwise with the first skip.
-fn fault_loci(backend: &mut dyn Backend) -> Verdict {
-    let program = program_fault_is_located(backend);
-    let request = non_external_assignment_refuses(backend);
-    match (program, request) {
-        (failed @ Verdict::Failed(_), _) | (_, failed @ Verdict::Failed(_)) => failed,
-        (Verdict::Passed, _) | (_, Verdict::Passed) => Verdict::Passed,
-        (skipped, _) => skipped,
+/// The verdict of an obligation held through several sub-checks: the first
+/// that fails; otherwise passed if any passed; otherwise the first skip.
+fn combined(verdicts: impl IntoIterator<Item = Verdict>) -> Verdict {
+    let mut passed = false;
+    let mut skipped = None;
+    for verdict in verdicts {
+        match verdict {
+            Verdict::Failed(_) => return verdict,
+            Verdict::Passed => passed = true,
+            Verdict::Skipped(_) => {
+                skipped.get_or_insert(verdict);
+            }
+        }
     }
+    if passed {
+        Verdict::Passed
+    } else {
+        skipped.unwrap_or(Verdict::Passed)
+    }
+}
+
+/// The refusal of `program` — at its lowering, its solve, or its stream's first
+/// item, as an engine that grounds as it searches refuses — or the failure of a
+/// backend that accepted it. A refused reset before it leaves the check
+/// undriven.
+fn refusal_of_unsafe(backend: &mut dyn Backend, program: &Program) -> Result<Fault, Verdict> {
+    reset_to_load(backend).map_err(|failure| Verdict::Skipped(Skip::Undriven(failure)))?;
+    if let Err(fault) = backend.lower(Door::Program(program)) {
+        return Ok(fault);
+    }
+    let mut solved = match backend.solve(&SolveRequest::default()) {
+        Ok(solved) => solved,
+        Err(fault) => return Ok(fault),
+    };
+    match solved.models().next() {
+        Some(Err(fault)) => Ok(fault),
+        _ => Err(Verdict::Failed(Failure::new(
+            Breach::Accepted,
+            format!("the program `{UNSAFE}`, whose variable nothing binds, was accepted"),
+        ))),
+    }
+}
+
+/// The unsafe program built through the constructors: its statements carry no
+/// parsed origin. Fixed names, so the expects discharge invariants.
+fn built_unsafe() -> Program {
+    let name = |text| Name::new(text).expect("a suite name is an identifier");
+    let variable = VarName::new("X").expect("a suite variable is a variable name");
+    Program::of([
+        Statement::from(Rule::fact(Atom::constant(name("a")))),
+        Statement::from(Rule::fact(Atom::new(name("p"), [Term::variable(variable)]))),
+    ])
+}
+
+/// A Program fault refusing a statement built in Rust is unlocated (§5.4): the
+/// unsafe program built through the constructors is refused naming its unsafe
+/// statement, with no diagnostic — no span was written for it to lie within.
+fn built_fault_is_unlocated(backend: &mut dyn Backend) -> Verdict {
+    let program = built_unsafe();
+    let fault = match refusal_of_unsafe(backend, &program) {
+        Ok(fault) => fault,
+        Err(verdict) => return verdict,
+    };
+    if fault.locus() != Locus::Program {
+        return Verdict::Failed(
+            Failure::new(
+                Breach::Mislocated,
+                format!(
+                    "a built program that cannot be grounded was refused at the {} locus, not the program's",
+                    fault.locus(),
+                ),
+            )
+            .with_fault(fault),
+        );
+    }
+    let fact = Statement::from(Rule::fact(Atom::constant(
+        Name::new("a").expect("a suite name is an identifier"),
+    )));
+    let unsafe_statement = program
+        .statements()
+        .find(|node| node.get() != &fact)
+        .expect("the built program holds its unsafe fact beside the fact");
+    let names_it = matches!(
+        fault.refused(),
+        Refused::Statement(refused) if refused.get() == unsafe_statement.get()
+    );
+    if !names_it {
+        return Verdict::Failed(
+            Failure::new(
+                Breach::Mislocated,
+                "a built program that cannot be grounded was refused without naming the statement that cannot be",
+            )
+            .with_fault(fault),
+        );
+    }
+    if fault.diagnostics().is_empty() {
+        Verdict::Passed
+    } else {
+        Verdict::Failed(
+            Failure::new(
+                Breach::Mislocated,
+                "a statement built in Rust was refused at a location no source holds",
+            )
+            .with_fault(fault),
+        )
+    }
+}
+
+/// Each fault lands where it belongs (§5.4), through three sub-checks under one
+/// obligation: a Program fault names its refused statement, located within it
+/// where it was parsed; a Program fault refusing a statement built in Rust is
+/// unlocated; and a Request fault names its presupposition.
+fn fault_loci(backend: &mut dyn Backend) -> Verdict {
+    combined([
+        program_fault_is_located(backend),
+        built_fault_is_unlocated(backend),
+        non_external_assignment_refuses(backend),
+    ])
+}
+
+/// A rebuild leaves nothing behind (§4.1, §6.3): the fact `a.` lowered and
+/// solved, then a rebuild with `b.` — a second `lower` on a single-shot
+/// backend, `reset` then `lower` on a multi-shot one — solves to exactly `{b}`;
+/// and a cancellation pulled during the first run, where the backend declares
+/// one, does not stop the second.
+fn rebuild_leaves_nothing_behind(backend: &mut dyn Backend) -> Verdict {
+    verdict_of(rebuilt(backend))
+}
+
+/// The rebuild check, driven: undriven where a step before its reading
+/// cannot be.
+fn rebuilt(backend: &mut dyn Backend) -> Result<(), Shortfall> {
+    load_source(backend, FACT).map_err(Shortfall::Undriven)?;
+    let cancel = if backend.capabilities().cancellation {
+        backend.interrupt()
+    } else {
+        None
+    };
+    {
+        let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
+        if let Some(cancel) = &cancel {
+            cancel.cancel();
+        }
+        pull(&mut solved, 1).map_err(stream_fault)?;
+    }
+    load_source(backend, REBUILT).map_err(Shortfall::Undriven)?;
+    let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
+    let rebuilt = [answer_set([constant("b")])];
+    let read = pull(&mut solved, rebuilt.len()).map_err(stream_fault)?;
+    if !read.ended {
+        return Err(Shortfall::Undriven(past_the_bound()));
+    }
+    if read.sets != rebuilt {
+        return Err(
+            if strays_from(&read.sets, &[constant("a"), constant("b")]) {
+                stranger()
+            } else {
+                broke(
+                    Breach::Misanswered,
+                    "a rebuild carried something of the program it replaced into the next",
+                )
+            },
+        );
+    }
+    if solved.conclusion() == Some(Conclusion::Interrupted) {
+        return Err(broke(
+            Breach::Misanswered,
+            "a cancellation pulled during the replaced run stopped the next",
+        ));
+    }
+    Ok(())
+}
+
+/// The shortfall of an obligation broken by `breach`, as `detail` says.
+fn broke(breach: Breach, detail: &str) -> Shortfall {
+    Shortfall::Broke(Failure::new(breach, detail))
+}
+
+/// A stream's mid-read fault, leaving a check undriven.
+fn stream_fault(fault: Fault) -> Shortfall {
+    Shortfall::Undriven(faulted(fault))
+}
+
+/// The refusal of the step `step` names, breaking the obligation.
+fn refused_at(step: &'static str) -> impl FnOnce(Fault) -> Shortfall {
+    move |fault| Shortfall::Broke(Failure::new(Breach::Refused, step).with_fault(fault))
+}
+
+/// The refusal of the step `step` names, leaving the check undriven.
+fn undriven_at(step: &'static str) -> impl FnOnce(Fault) -> Shortfall {
+    move |fault| Shortfall::Undriven(Failure::new(Breach::Refused, step).with_fault(fault))
+}
+
+/// The base part of the program `source` denotes — what a multi-shot backend
+/// grounds before a solve.
+fn base_of(source: &str) -> Part {
+    program_of(source).base().clone()
+}
+
+/// Solve what is lowered — grounding `source`'s base part first on a
+/// multi-shot backend — and read it, bounded by `expected`, as exactly
+/// `expected`: a refused grounding or solve, or another answer within
+/// `vocabulary`, breaks the obligation — the latter as the caller's sentence
+/// names — while a stream that faults, runs past its bound, or strays from the
+/// vocabulary leaves it undriven.
+fn solves_to(
+    backend: &mut dyn Backend,
+    source: &str,
+    expected: &[AnswerSet],
+    vocabulary: &[Symbol],
+    otherwise: &str,
+) -> Result<(), Shortfall> {
+    if backend.capabilities().multi_shot {
+        backend
+            .ground(&[base_of(source)], &GroundOptions::default())
+            .map_err(|fault| {
+                Shortfall::Broke(
+                    Failure::new(
+                        Breach::Refused,
+                        "the grounding before the solve was refused",
+                    )
+                    .with_fault(fault),
+                )
+            })?;
+    }
+    let mut solved = solve(backend).map_err(Shortfall::Broke)?;
+    match pull(&mut solved, expected.len()) {
+        Ok(Pulled { ended: false, .. }) => Err(Shortfall::Undriven(past_the_bound())),
+        Ok(Pulled { sets, .. }) if sets == expected => Ok(()),
+        Ok(Pulled { sets, .. }) if strays_from(&sets, vocabulary) => Err(stranger()),
+        Ok(_) => Err(Shortfall::Broke(Failure::new(
+            Breach::Misanswered,
+            otherwise,
+        ))),
+        Err(fault) => Err(Shortfall::Undriven(faulted(fault))),
+    }
+}
+
+/// Whether some set of `sets` holds an atom outside `vocabulary` — the atoms
+/// of the programs a check lowers: a set no program it lowered could answer,
+/// which outcome correctness judges, so it leaves the check undriven.
+fn strays_from(sets: &[AnswerSet], vocabulary: &[Symbol]) -> bool {
+    sets.iter().flatten().any(|atom| !vocabulary.contains(atom))
+}
+
+/// The shortfall of a stream that yielded a set no program a check lowered
+/// could answer.
+fn stranger() -> Shortfall {
+    Shortfall::Undriven(Failure::new(
+        Breach::Misanswered,
+        "yielded a set that is not one of its answer sets",
+    ))
+}
+
+/// The verdict of a sub-check that `outcome` drove to its end: passed, failed
+/// where it broke, skipped where it could not be driven.
+fn verdict_of(outcome: Result<(), Shortfall>) -> Verdict {
+    match outcome {
+        Ok(()) => Verdict::Passed,
+        Err(Shortfall::Broke(failure)) => Verdict::Failed(failure),
+        Err(Shortfall::Undriven(failure)) => Verdict::Skipped(Skip::Undriven(failure)),
+    }
+}
+
+/// A refusal its lowering's check makes adds nothing (§4.1), on every backend:
+/// the fact `a.` lowered, then a program the backend refuses at its check — a
+/// fact `b.` before a fact over a variable nothing binds — and a solve reads
+/// `{a}`, so a multi-shot backend added nothing of the refused program and a
+/// single-shot one kept the program lowered before it. A backend whose check
+/// accepts the program, refusing it later, made no refusal there to hold.
+fn refused_lowering_adds_nothing(backend: &mut dyn Backend) -> Verdict {
+    if let Err(failure) = load_source(backend, FACT) {
+        return Verdict::Skipped(Skip::Undriven(failure));
+    }
+    if backend
+        .lower(Door::Program(&program_of(PREFIXED_UNSAFE)))
+        .is_ok()
+    {
+        return Verdict::Skipped(Skip::Undriven(Failure::new(
+            Breach::Accepted,
+            format!("the lowering's check accepted `{PREFIXED_UNSAFE}`, so it made no refusal"),
+        )));
+    }
+    match solves_to(
+        backend,
+        FACT,
+        &[answer_set([constant("a")])],
+        &[constant("a"), constant("b")],
+        "a refused lowering added to what was lowered before it",
+    ) {
+        Ok(()) => Verdict::Passed,
+        Err(Shortfall::Broke(failure)) if failure.breach() == Breach::Misanswered => {
+            Verdict::Failed(failure)
+        }
+        Err(Shortfall::Broke(failure) | Shortfall::Undriven(failure)) => {
+            Verdict::Skipped(Skip::Undriven(failure))
+        }
+    }
+}
+
+/// Whether `result` is the refusal a backend needing its rebuild owes: an
+/// answer, or another refusal, breaks the obligation.
+fn needs_its_rebuild<T>(result: Result<T, Fault>) -> Result<(), Shortfall> {
+    let Err(fault) = result else {
+        return Err(broke(
+            Breach::Accepted,
+            "a backend needing its rebuild answered where it owed a refusal",
+        ));
+    };
+    if let Refused::Request(Presupposition::NeedsRebuild) = fault.refused() {
+        return Ok(());
+    }
+    let misnamed = "a backend needing its rebuild refused other than as needing it";
+    Err(Shortfall::Broke(
+        Failure::new(Breach::Mislocated, misnamed).with_fault(fault),
+    ))
+}
+
+/// A failed grounding — an `@`-function that faults while grounding — leaves a
+/// multi-shot backend refusing with `Presupposition::NeedsRebuild` at every
+/// method that touches its program or runs a search, while `capabilities` and
+/// `reset` answer and its observer answers nothing, until the `reset` that
+/// rebuilds; and fails a single-shot backend's solve, the backend staying
+/// ready (§4.1). Binds a backend declaring functions.
+fn failed_grounding_needs_a_rebuild(backend: &mut dyn Backend) -> Verdict {
+    let capabilities = backend.capabilities();
+    if !capabilities.functions {
+        return Verdict::Skipped(Skip::Undeclared(Capability::Functions));
+    }
+    verdict_of(failed_grounding(backend, &capabilities))
+}
+
+/// The failed-grounding sub-check, driven.
+fn failed_grounding(
+    backend: &mut dyn Backend,
+    capabilities: &Capabilities,
+) -> Result<(), Shortfall> {
+    reset_to_load(backend).map_err(Shortfall::Undriven)?;
+    backend
+        .register_function(Box::new(Faulting))
+        .map_err(undriven_at(REGISTRATION_REFUSED))?;
+    lower_program(backend, &program_of(FAULTING_CALL), FAULTING_CALL)
+        .map_err(Shortfall::Undriven)?;
+    if capabilities.multi_shot {
+        needs_a_rebuild_after_a_failed_grounding(backend, capabilities)
+    } else {
+        ready_after_a_failed_solve(backend)
+    }
+}
+
+/// The refusal of one of the suite's own `@`-functions' registration.
+const REGISTRATION_REFUSED: &str = "the suite's function's registration was refused";
+
+/// The fact `a.`, read back: `{a}`.
+fn the_fact() -> [AnswerSet; 1] {
+    [answer_set([constant("a")])]
+}
+
+/// A single-shot backend grounds within each solve (§4.1): a solve whose
+/// grounding's `@`-function faults is refused — at the solve or its stream's
+/// first item — and the backend stays ready: a replacing `lower` of the fact
+/// `a.` solves to `{a}`.
+fn ready_after_a_failed_solve(backend: &mut dyn Backend) -> Result<(), Shortfall> {
+    let refused = match backend.solve(&SolveRequest::default()) {
+        Err(_) => true,
+        Ok(mut solved) => matches!(solved.models().next(), Some(Err(_))),
+    };
+    if !refused {
+        return Err(broke(
+            Breach::Accepted,
+            "a solve whose grounding's @-function faults was accepted",
+        ));
+    }
+    lower_program(backend, &program_of(FACT), FACT).map_err(Shortfall::Broke)?;
+    solves_to(
+        backend,
+        FACT,
+        &the_fact(),
+        &[constant("a")],
+        "after a failed grounding, the replacing program did not solve",
+    )
+}
+
+/// A multi-shot backend whose grounding failed needs its rebuild (§4.1): every
+/// method that touches its program or runs a search refuses with
+/// `Presupposition::NeedsRebuild` — those `capabilities` declares among them —
+/// its observer answers nothing, and its `reset` answers, after which the fact
+/// `a.` lowers, grounds, and solves to `{a}`.
+fn needs_a_rebuild_after_a_failed_grounding(
+    backend: &mut dyn Backend,
+    capabilities: &Capabilities,
+) -> Result<(), Shortfall> {
+    let base = [base_of(FAULTING_CALL)];
+    if backend.ground(&base, &GroundOptions::default()).is_ok() {
+        return Err(broke(
+            Breach::Accepted,
+            "a grounding whose @-function faults was accepted",
+        ));
+    }
+    let solved = backend.solve(&SolveRequest::default()).map(drop);
+    needs_its_rebuild(solved)?;
+    let lowered = backend.lower(Door::Program(&program_of(FACT)));
+    needs_its_rebuild(lowered)?;
+    let grounded = backend.ground(&base, &GroundOptions::default());
+    needs_its_rebuild(grounded)?;
+    let assigned = backend.assign_external(constant("a"), TruthValue::True);
+    needs_its_rebuild(assigned)?;
+    let registered = backend.register_function(Box::new(Echo));
+    needs_its_rebuild(registered)?;
+    if capabilities.assumptions {
+        let assumed = backend
+            .solve_assuming(&Scenario::default(), &SolveRequest::default())
+            .map(drop);
+        needs_its_rebuild(assumed)?;
+    }
+    if capabilities.native_consequences == ConsequenceSupport::Native {
+        let native = backend.consequences_native(Mode::Cautious, &ConsequenceRequest::default());
+        needs_its_rebuild(native)?;
+    }
+    if capabilities.optimization {
+        let optimized = backend.optimize(&OptimizeRequest::default()).map(drop);
+        needs_its_rebuild(optimized)?;
+    }
+    if capabilities.propagators {
+        let registered = backend.register_propagator(Box::new(Inert));
+        needs_its_rebuild(registered)?;
+    }
+    if backend.ground_program().is_some() {
+        return Err(broke(
+            Breach::Misanswered,
+            "exposed a ground program while needing its rebuild",
+        ));
+    }
+    backend
+        .reset()
+        .map_err(refused_at("the reset that rebuilds was refused"))?;
+    lower_program(backend, &program_of(FACT), FACT).map_err(Shortfall::Broke)?;
+    solves_to(
+        backend,
+        FACT,
+        &the_fact(),
+        &[constant("a")],
+        "after the rebuild, the program did not solve",
+    )
+}
+
+/// A registration survives the rebuild (§4.1): `Echo` registered, the fact
+/// `a.` lowered and solved, then a rebuild with `p(@echo(1)).` — `reset` then
+/// `lower` on a multi-shot backend, one `lower` on a single-shot one — solves
+/// to a set holding `p(1)`. Binds a backend declaring functions.
+fn registration_survives_the_rebuild(backend: &mut dyn Backend) -> Verdict {
+    if !backend.capabilities().functions {
+        return Verdict::Skipped(Skip::Undeclared(Capability::Functions));
+    }
+    verdict_of(registration_kept(backend))
+}
+
+/// The registration sub-check, driven.
+fn registration_kept(backend: &mut dyn Backend) -> Result<(), Shortfall> {
+    reset_to_load(backend).map_err(Shortfall::Undriven)?;
+    backend
+        .register_function(Box::new(Echo))
+        .map_err(undriven_at(REGISTRATION_REFUSED))?;
+    lower_program(backend, &program_of(FACT), FACT).map_err(Shortfall::Undriven)?;
+    solves_to(
+        backend,
+        FACT,
+        &the_fact(),
+        &[constant("a")],
+        "misread the fact",
+    )
+    .map_err(
+        |(Shortfall::Broke(failure) | Shortfall::Undriven(failure))| Shortfall::Undriven(failure),
+    )?;
+    load_source(backend, ECHOED_CALL).map_err(Shortfall::Broke)?;
+    let echo = atom("p", [Symbol::number(1)], Sign::Positive);
+    solves_to(
+        backend,
+        ECHOED_CALL,
+        &[answer_set([echo.clone()])],
+        &[constant("a"), echo],
+        "a registration did not survive the rebuild",
+    )
+}
+
+/// A backend's own state follows its refusals and rebuilds (§4.1), through
+/// three sub-checks under one obligation: a refusal its lowering's check makes
+/// adds nothing; a failed grounding leaves it needing its rebuild; and a
+/// registration survives the rebuild.
+fn backend_state(backend: &mut dyn Backend) -> Verdict {
+    combined([
+        refused_lowering_adds_nothing(backend),
+        failed_grounding_needs_a_rebuild(backend),
+        registration_survives_the_rebuild(backend),
+    ])
 }
 
 /// Assigning a truth value to an atom that is not external refuses at the
@@ -1417,14 +1917,18 @@ fn non_external_assignment_refuses(backend: &mut dyn Backend) -> Verdict {
                 .with_fault(fault),
             )
         }
-        Err(fault) if fault.locus() == Locus::Request => Verdict::Passed,
+        Err(fault)
+            if matches!(
+                fault.refused(),
+                Refused::Request(Presupposition::NotExternal)
+            ) =>
+        {
+            Verdict::Passed
+        }
         Err(fault) => Verdict::Failed(
             Failure::new(
                 Breach::Mislocated,
-                format!(
-                    "assigning an atom that is not external refused at the {} locus, not the request's",
-                    fault.locus(),
-                ),
+                "assigning an atom that is not external refused, though not naming it as one",
             )
             .with_fault(fault),
         ),
@@ -1475,10 +1979,20 @@ fn respond<T>(result: Result<T, Fault>) -> Response {
     }
 }
 
-/// Whether `response` is a refusal at the request locus — what an undeclared
-/// capability's method owes.
-fn refuses_at_the_request(response: &Response) -> bool {
-    matches!(response, Response::Refused(fault) if fault.locus() == Locus::Request)
+/// Whether `response` is the refusal an undeclared `capability` owes (§4.1,
+/// §6.3): unsupported, naming that capability — or, for the time budget, the
+/// budget nothing realises.
+fn refuses_as_owed(capability: Capability, response: &Response) -> bool {
+    let Response::Refused(fault) = response else {
+        return false;
+    };
+    match fault.refused() {
+        Refused::Request(Presupposition::Unsupported(named)) => named == capability,
+        Refused::Request(Presupposition::UnrealisableBudget) => {
+            capability == Capability::TimeBudget
+        }
+        _ => false,
+    }
 }
 
 /// One capability's declaration is honest (§4.1, §4.2): declared, its method
@@ -1495,11 +2009,16 @@ fn capability_is_honest(
     if capability == Capability::Externals && !declared {
         return Verdict::Skipped(Skip::Undeclared(Capability::Externals));
     }
-    judge(row.method, declared, (row.probe)(backend, declared, corpus))
+    judge(
+        capability,
+        row.method,
+        declared,
+        (row.probe)(backend, declared, corpus),
+    )
 }
 
-/// The verdict on a probe's response to a capability declared, or not.
-fn judge(method: &str, declared: bool, response: Response) -> Verdict {
+/// The verdict on a probe's response to `capability` declared, or not.
+fn judge(capability: Capability, method: &str, declared: bool, response: Response) -> Verdict {
     match (declared, response) {
         (_, Response::Unprobed(failure)) | (false, Response::ProgramRefused(failure)) => {
             Verdict::Skipped(Skip::Undriven(failure))
@@ -1528,13 +2047,13 @@ fn judge(method: &str, declared: bool, response: Response) -> Verdict {
             detail: format!("declared, yet {}", failure.detail),
             ..failure
         }),
-        (false, response) if refuses_at_the_request(&response) => Verdict::Passed,
+        (false, response) if refuses_as_owed(capability, &response) => Verdict::Passed,
         (false, Response::Refused(fault)) => Verdict::Failed(
             Failure::new(
                 Breach::Mislocated,
                 format!(
-                    "undeclared, and {method} refused at the {} locus, not the request's",
-                    fault.locus(),
+                    "undeclared, and {method} refused, though not with the refusal an undeclared \
+                     {capability} owes"
                 ),
             )
             .with_fault(fault),
@@ -1766,14 +2285,15 @@ fn probe_assumptions(backend: &mut dyn Backend) -> Response {
 /// no part answers; that a reset clears what accumulated, every corpus load
 /// holds. The assignment of an external is the externals probe's, and of a
 /// non-external its own check. Undeclared: all three multi-shot methods refuse
-/// at the request locus; the first that does not is the response.
+/// as unsupported, naming multi-shot solving; the first that does not is the
+/// response.
 fn probe_multi_shot(backend: &mut dyn Backend, declared: bool) -> Response {
     if !declared {
         let reset = respond(backend.reset());
         let ground = respond(backend.ground(&[], &GroundOptions::default()));
         let assign = respond(backend.assign_external(constant("a"), TruthValue::True));
         return [ground, assign].into_iter().fold(reset, |kept, next| {
-            if refuses_at_the_request(&kept) {
+            if refuses_as_owed(Capability::MultiShot, &kept) {
                 next
             } else {
                 kept
@@ -1882,7 +2402,7 @@ fn probe_time_budget(backend: &mut dyn Backend, declared: bool) -> Response {
         if declared {
             matches!(response, Response::Answered)
         } else {
-            refuses_at_the_request(response)
+            refuses_as_owed(Capability::TimeBudget, response)
         }
     };
     match responses.iter().position(|response| !holds(response)) {
@@ -1923,6 +2443,18 @@ impl Function for Echo {
     }
 }
 
+/// The `@`-function the suite registers to fail a grounding: it refuses every
+/// call.
+struct Faulting;
+
+impl Function for Faulting {
+    fn call(&self, _arguments: &[Symbol]) -> Result<Vec<Symbol>, GroundFault> {
+        Err(GroundFault::refused(
+            "the suite's faulting function refuses every call",
+        ))
+    }
+}
+
 /// The propagator the suite registers to probe `propagators`: it propagates
 /// nothing.
 struct Inert;
@@ -1954,7 +2486,18 @@ mod tests {
         let sources = corpus()
             .iter()
             .map(|case| case.source)
-            .chain([FACT, EVEN_LOOP, OPTIMIZATION, EXTERNAL, RULE, UNSAFE])
+            .chain([
+                FACT,
+                EVEN_LOOP,
+                OPTIMIZATION,
+                EXTERNAL,
+                RULE,
+                UNSAFE,
+                PREFIXED_UNSAFE,
+                REBUILT,
+                FAULTING_CALL,
+                ECHOED_CALL,
+            ])
             .collect::<Vec<_>>();
         for source in sources {
             let raised = raise_str(source, Dialect::Clingo).expect("a suite program raises");
