@@ -60,7 +60,8 @@ impl<T> WithProvenance<T> {
     }
 
     /// The value and its provenance, owned — the door to a union that moves rather than
-    /// clones, for the counted constructor and the set merge (§6.3). Crate-internal. O(1).
+    /// clones, for the counted constructor and the set merge (§6.3), and to a rewrite that
+    /// rebuilds a node it owns (§9.1). Crate-internal. O(1).
     pub(crate) fn into_parts(self) -> (T, Provenance) {
         (self.value, self.provenance)
     }

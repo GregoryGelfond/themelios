@@ -182,8 +182,11 @@ mod tests {
         /// Against a naive model: a by-occurrence element appears once per occurrence, a
         /// by-content element once, and the order of the input never matters.
         #[test]
-        fn the_entries_are_the_naive_count(mut probes in proptest::collection::vec(probe(), 0..24)) {
-            let counted = Counted::from_elements(probes.iter().cloned().map(WithProvenance::constructed));
+        fn the_entries_are_the_naive_count(
+            mut probes in proptest::collection::vec(probe(), 0..24)
+        ) {
+            let counted =
+                Counted::from_elements(probes.iter().cloned().map(WithProvenance::constructed));
             let mut expected: Vec<Probe> = Vec::new();
             probes.sort();
             for probe in &probes {
@@ -195,7 +198,8 @@ mod tests {
             let actual: Vec<Probe> = counted.iter().map(|entry| entry.get().clone()).collect();
             prop_assert_eq!(actual, expected);
             probes.reverse();
-            let reversed = Counted::from_elements(probes.into_iter().map(WithProvenance::constructed));
+            let reversed =
+                Counted::from_elements(probes.into_iter().map(WithProvenance::constructed));
             prop_assert_eq!(reversed, counted);
         }
     }

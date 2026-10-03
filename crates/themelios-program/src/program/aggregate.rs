@@ -1,9 +1,10 @@
 //! Aggregates and optimization (docs/design/program.md §4.7): the function and set
 //! aggregates with their guards, the position-typed head-versus-body elements, and
 //! `#minimize`/`#maximize`. A function aggregate's elements are a set (§4), a set
-//! aggregate's are counted (§4.4); the terms within an element are a sequence. Position is in the type, not a runtime tag: a
-//! `FunctionAggregate` holds body elements and a `HeadAggregate` holds head elements,
-//! so a body aggregate cannot hold a head element (§4.5's unrepresentability, §4.7).
+//! aggregate's are counted (§4.4); the terms within an element are a sequence. Position
+//! is in the type, not a runtime tag: a `FunctionAggregate` holds body elements and a
+//! `HeadAggregate` holds head elements, so a body aggregate cannot hold a head element
+//! (§4.5's unrepresentability, §4.7).
 
 use std::collections::BTreeSet;
 
@@ -70,7 +71,7 @@ pub struct FunctionAggregate {
 
 impl FunctionAggregate {
     /// A body function aggregate over the given elements, each carrying a `Constructed`
-    /// origin — and each guard likewise (§6.2). O(elements).
+    /// origin — and each guard likewise (§6.2). O(elements · log elements).
     pub fn new(
         left_guard: Option<Guard>,
         function: AggregateFunction,
@@ -90,7 +91,7 @@ impl FunctionAggregate {
 
     /// A body function aggregate over already-provenanced elements and guards, unioning
     /// provenance on any content collision (§6.3) — the raise's door, carrying each
-    /// element's and guard's parsed origin (§6.2, §8). O(elements).
+    /// element's and guard's parsed origin (§6.2, §8). O(elements · log elements).
     pub(crate) fn from_nodes(
         left_guard: Option<WithProvenance<Guard>>,
         function: AggregateFunction,
@@ -138,7 +139,7 @@ pub struct HeadAggregate {
 
 impl HeadAggregate {
     /// A head function aggregate over the given elements, each carrying a `Constructed`
-    /// origin — and each guard likewise (§6.2). O(elements).
+    /// origin — and each guard likewise (§6.2). O(elements · log elements).
     pub fn new(
         left_guard: Option<Guard>,
         function: AggregateFunction,
@@ -158,7 +159,7 @@ impl HeadAggregate {
 
     /// A head function aggregate over already-provenanced elements and guards, unioning
     /// provenance on any content collision (§6.3) — the raise's door, carrying each
-    /// element's and guard's parsed origin (§6.2, §8). O(elements).
+    /// element's and guard's parsed origin (§6.2, §8). O(elements · log elements).
     pub(crate) fn from_nodes(
         left_guard: Option<WithProvenance<Guard>>,
         function: AggregateFunction,
@@ -204,7 +205,7 @@ pub struct SetAggregate {
 
 impl SetAggregate {
     /// A set aggregate over the given elements, each carrying a `Constructed` origin —
-    /// and each guard likewise (§6.2). O(elements).
+    /// and each guard likewise (§6.2). O(elements · log elements).
     pub fn new(
         left_guard: Option<Guard>,
         elements: impl IntoIterator<Item = SetElement>,
@@ -358,7 +359,7 @@ pub struct Optimize {
 
 impl Optimize {
     /// An optimization statement over the given elements, each carrying a `Constructed`
-    /// origin (§6.2). O(elements).
+    /// origin (§6.2). O(elements · log elements).
     pub fn new(
         direction: Direction,
         elements: impl IntoIterator<Item = OptimizeElement>,
@@ -374,7 +375,7 @@ impl Optimize {
 
     /// An optimization over already-provenanced elements, unioning provenance on any
     /// content collision (§6.3) — the raise's door, carrying each element's parsed
-    /// origin (§6.2, §8). O(elements).
+    /// origin (§6.2, §8). O(elements · log elements).
     pub(crate) fn from_nodes(
         direction: Direction,
         elements: impl IntoIterator<Item = WithProvenance<OptimizeElement>>,

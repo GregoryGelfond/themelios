@@ -654,7 +654,7 @@ pub struct TheoryAtom {
 
 impl TheoryAtom {
     /// A theory atom, its ordinary-term arguments canonicalized at the door (§5.1) and
-    /// its elements carrying a `Constructed` origin (§6.2). O(size).
+    /// its elements carrying a `Constructed` origin (§6.2). O(size · log elements).
     pub fn new(
         name: Name,
         arguments: impl IntoIterator<Item = Term>,
