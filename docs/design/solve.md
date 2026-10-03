@@ -1246,7 +1246,11 @@ the core attributes the stop; and a budgeted request over a backend that declare
 request locus (`Presupposition::UnrealisableBudget`, §5.4), as does a backend handed a budget it does not
 enforce — one presupposition for the one event, whoever refuses. The conformance suite's time-budget probe
 reads this rule. The core's timer is realised with cancellation; until then a budget is honoured natively or
-refused. The core owns that timer and the
+refused. The readings take no options — the agent's consequence doors and the query tier's readings each
+solve over the default request — so a budgeted reading is a composition: `solve_with` under the budget, the
+determination it yields, `WorldView::of` over its models, and `materialize` to a `Snapshot` read infallibly
+(query.md §2.7), the path an embedder serving untrusted callers takes; reading forms that carry options are
+grown when a consumer names the need. The core owns that timer and the
 caller's handle alike — the `Interrupt` that `Agent::interrupt` returns is the core's own, which records
 its pull and forwards to the backend's `Cancel` primitive (§4.1) — so it attributes the stop over the
 run's `Interrupted`: its timer alone concludes `Budget`, a pulled caller's handle concludes `Interrupted`,
@@ -1616,7 +1620,8 @@ naming the statement it was instantiated from, with that statement's part and it
 /// apart, and no rule clones its statement. The part is the statement's as declared, `step(t)`; the instance
 /// a grounding gave it, `step(3)`, belongs to the fuller observer surface the reserved seams carry (§14). Its
 /// construction door lands with the observer that produces it (§11.1), as `Incumbent`'s lands with
-/// `optimize` (§5.2). Cost: the statements and their parts' keys once, Θ(program), which a backend that
+/// `optimize` (§5.2); ahead of it one value is constructible, `Default`'s empty ground program — what a
+/// backend declaring the observer exposes for the empty program. Cost: the statements and their parts' keys once, Θ(program), which a backend that
 /// names a statement after `lower` already retains (§5.4), and one reference per rule.
 pub struct GroundProgram { /* its statements with their parts, once each; its rules, each naming one */ }
 impl GroundProgram {
@@ -2388,4 +2393,7 @@ necessity where it is declared.
     with its terms already holds, so a model's display is derived once (§5.1). The contract's silence on
     whether a multi-shot backend searches what is lowered but not yet grounded is recorded, with the
     presumption the agent and the conformance suite make until the first multi-shot adapter settles it
-    (§4.1, §11.1).
+    (§4.1, §11.1). The readings take no options, so a budgeted reading is stated as a composition — the
+    budgeted solve, its world view, and the `Snapshot` it materialises (§6.3, query.md §2.7) — and the empty
+    ground program, `Default`, is named the one value constructible ahead of the observer's construction
+    door (§10.4).
