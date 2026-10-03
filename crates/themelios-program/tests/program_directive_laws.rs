@@ -1,7 +1,8 @@
 //! Laws of the theory atoms and body-free directives (docs/design/program.md §4.8,
-//! §4.9): a theory atom's elements are a set and its guard optional, its ordinary
-//! arguments canonicalize at the door, `#const` carries an unevaluated term, and the
-//! opaque regions (`#script`, `#include`) are carried but never acted on.
+//! §4.9): a theory atom's elements are counted, each by occurrence, and its guard is
+//! optional, its ordinary arguments canonicalize at the door, `#const` carries an
+//! unevaluated term, and the opaque regions (`#script`, `#include`) are carried but never
+//! acted on.
 
 use themelios_program::program::{
     Const, ConstPolicy, Defined, Include, IncludeTarget, Script, TheoryAtom, TheoryElement,
@@ -19,10 +20,10 @@ fn num(n: i32) -> Term {
 }
 
 #[test]
-fn a_theory_atom_s_elements_are_a_set() {
+fn a_theory_atom_keeps_a_repeated_element() {
     let element = || TheoryElement::new([TheoryTerm::Symbolic(Symbol::Number(1))], None);
     let atom = TheoryAtom::new(name("sum"), [], [element(), element()], None);
-    assert_eq!(atom.elements().count(), 1); // a duplicate element vanishes
+    assert_eq!(atom.elements().count(), 2); // every theory element counts by occurrence (§4.9)
 }
 
 #[test]

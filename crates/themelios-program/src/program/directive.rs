@@ -12,6 +12,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 
+use super::counted::{Counted, Identified, Identity};
 use super::rule::{Atom, Body, Condition};
 use crate::provenance::WithProvenance;
 use crate::symbol::{Name, Signature, Symbol};
@@ -581,8 +582,8 @@ fn push_debug_list<'a>(work: &mut Vec<DebugAct<'a>>, items: &'a [TheoryTerm]) {
 }
 
 /// A theory element (grammar §5.8): the theory terms of an element, under an optional
-/// condition (present when the `:` is, §5.4). A `FunctionAggregate`-like set member of a
-/// theory atom (§4.9).
+/// condition (present when the `:` is, §5.4). A counted member of a theory atom, every one
+/// identified by occurrence (§4.9).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct TheoryElement {
     terms: Vec<TheoryTerm>,
@@ -616,6 +617,19 @@ impl TheoryElement {
     pub(crate) fn into_parts(self) -> (Vec<TheoryTerm>, Option<Condition>) {
         (self.terms, self.condition)
     }
+
+    /// By occurrence, every one (§4.9): what a repeated element means is the theory's to say,
+    /// and a theory that counts repeats — clingcon's sum, numbering each element in its rewrite
+    /// ahead of the grounder — must meet them. Total; O(1).
+    pub fn identity(&self) -> Identity {
+        Identity::ByOccurrence
+    }
+}
+
+impl Identified for TheoryElement {
+    fn identity(&self) -> Identity {
+        TheoryElement::identity(self)
+    }
 }
 
 /// A theory atom's guard (grammar §5.8): a single operator and a theory term.
@@ -629,12 +643,12 @@ pub struct TheoryGuard {
 
 /// A theory atom (grammar §5.8): a name, optional ordinary-term arguments, optional
 /// elements, and an optional guard (§4.9). Admission against a `#theory` definition is a
-/// concern above this tier. Its elements are a set.
+/// concern above this tier. Its elements are counted, every one by occurrence (§4.9).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct TheoryAtom {
     name: Name,
     arguments: Vec<Term>,
-    elements: BTreeSet<WithProvenance<TheoryElement>>,
+    elements: Counted<TheoryElement>,
     guard: Option<TheoryGuard>,
 }
 
@@ -650,18 +664,16 @@ impl TheoryAtom {
         TheoryAtom {
             name,
             arguments: arguments.into_iter().map(Term::canonicalize).collect(),
-            elements: elements
-                .into_iter()
-                .map(WithProvenance::constructed)
-                .collect(),
+            elements: Counted::from_elements(elements.into_iter().map(WithProvenance::constructed)),
             guard,
         }
     }
 
-    /// A theory atom over already-provenanced elements, unioning provenance on any
-    /// content collision (§6.3) — the raise's door, carrying each element's parsed
-    /// origin (§6.2, §8). The ordinary-term arguments canonicalize at the ingest
-    /// door with the rest of the statement, so they are stored as read. O(size).
+    /// A theory atom over already-provenanced elements, through the counted constructor,
+    /// which keeps every repeat, a theory element counting by occurrence (§4.4, §4.9) — the
+    /// raise's door, carrying each element's parsed origin (§6.2, §8). The ordinary-term
+    /// arguments canonicalize at the ingest door with the rest of the statement, so they are
+    /// stored as read. O(size · log elements).
     pub(crate) fn from_nodes(
         name: Name,
         arguments: Vec<Term>,
@@ -671,7 +683,7 @@ impl TheoryAtom {
         TheoryAtom {
             name,
             arguments,
-            elements: super::merge_collect(elements),
+            elements: Counted::from_elements(elements),
             guard,
         }
     }
@@ -686,7 +698,7 @@ impl TheoryAtom {
         self.arguments.iter()
     }
 
-    /// The elements — a set, each with its provenance (§6.2).
+    /// The elements — counted, in `Ord` order, each with its provenance (§4.4, §4.9).
     pub fn elements(&self) -> impl Iterator<Item = &WithProvenance<TheoryElement>> {
         self.elements.iter()
     }
@@ -709,7 +721,7 @@ impl TheoryAtom {
         (
             self.name,
             self.arguments,
-            self.elements.into_iter(),
+            self.elements.into_entries(),
             self.guard,
         )
     }
@@ -1130,13 +1142,14 @@ impl External {
 // through the carrier's `map` (§6.2). Grammar-bounded, so a bounded recursion (§13).
 
 impl TheoryAtom {
+    /// Rebuilt through the counted constructor after the map, as a choice is (§5.1, §4.4).
     pub(crate) fn canonicalize(self) -> TheoryAtom {
         TheoryAtom {
             name: self.name,
             arguments: self.arguments.into_iter().map(Term::canonicalize).collect(),
-            elements: super::merge_collect(
+            elements: Counted::from_elements(
                 self.elements
-                    .into_iter()
+                    .into_entries()
                     .map(|element| element.map(TheoryElement::canonicalize)),
             ),
             guard: self.guard,
