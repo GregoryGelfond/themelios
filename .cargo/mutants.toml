@@ -1,10 +1,10 @@
 # The program tier's depth and scaling proofs sit behind the default-on `scale-proofs`
 # feature (crates/themelios-program/Cargo.toml); disabling defaults here keeps their very
 # deep and large fixtures out of the mutated build — a runaway-loop mutant on a 200,000-deep
-# value would exhaust memory before the timeout fires. The one kill these proofs add that a
-# small law input cannot — the non-equivalent survivor recorded below (`symbol.rs:453`), which
-# only a deep-tuple drop distinguishes — is the acknowledged cost of holding them out; every
-# other kill a small law input also makes. The query tier's deep-symbol match proof
+# value would exhaust memory before the timeout fires. The kills these proofs add that a small
+# law input cannot are the held-out survivors recorded below — a deep-tuple drop (`symbol.rs`)
+# and the raise's run-batching guard (`raise.rs`) — the acknowledged cost of holding them out;
+# every other kill a small law input also makes. The query tier's deep-symbol match proof
 # (crates/themelios-query/Cargo.toml) sits behind the same-named feature and is held out the
 # same way — a wall-clock ratio over a deep value, flaky under the mutation build and slow on a
 # runaway mutant. The analysis tier has no such feature: its scaling proofs use flat fixtures
@@ -25,34 +25,38 @@ minimum_test_timeout = 20
 # is a reviewed artifact: an entry without an argument is a defect,
 # and a pattern broader than its argument is a defect — so patterns
 # are added only from printed survivor descriptions at triage, never
-# authored in advance.
+# authored in advance. An entry is keyed by its file and its
+# function-qualified mutation text, with the line and column left free,
+# where that text names one mutant in its function, so it survives the
+# file's lines moving; where the text names several, the entry keeps the
+# line and column of its mutant and moves with the file.
 exclude_re = [
     # ---- The program and analysis tiers (stage 3): equivalent mutants ----
     # A component of more than one member is strongly connected, so it always has an
     # internal edge: `members.len() > 1` implies `!internal_edge_kinds.is_empty()`. The
     # mutant `len() < 1` is always false, reducing `is_recursive` to the second disjunct,
     # which agrees on every real component — no component distinguishes the two.
-    "depend\\.rs:187:28: replace > with < in Component::is_recursive",
+    "depend\\.rs:\\d+:\\d+: replace > with < in Component::is_recursive",
     # Union-by-rank is a balancing heuristic: the rank counter changes only which class
     # becomes representative, never the substitution the read-out yields, and path halving
     # keeps finds near-linear without it. No correctness law or scaling tripwire differs.
-    "unify\\.rs:1213:33: replace \\+= with \\*= in Nodes::union",
+    "unify\\.rs:\\d+:\\d+: replace \\+= with \\*= in Nodes::union",
     # Deleting the two-variable arm falls through to the bare-variable `link` arm, which
     # merges the same two classes; the read-out names each class by its Ord-least variable,
     # so which node is the representative is immaterial to the substitution (only the rank
     # bump is lost — balance, as at 1213).
-    "unify\\.rs:1234:17: delete match arm \\(Cell::Variable\\(_\\), Cell::Variable\\(_\\)\\) in Nodes::unify",
+    "unify\\.rs:\\d+:\\d+: delete match arm \\(Cell::Variable\\(_\\), Cell::Variable\\(_\\)\\) in Nodes::unify",
     # The guard chooses which nodes SEED the occurs-DFS. The original seeds every unvisited
     # representative; the mutant seeds a superset (also non-representatives and coloured
     # representatives), adding only redundant traversal — a re-entered node returns at the
     # colour check, a non-representative descends to the same representatives. The occurs
     # verdict is unchanged.
-    "unify\\.rs:1294:42: replace \\|\\| with && in Nodes::occurs_check_holds",
+    "unify\\.rs:\\d+:\\d+: replace \\|\\| with && in Nodes::occurs_check_holds",
     # `<` picks the Ord-least variable of a class; `<=` differs only when `variable ==
     # least`, where the body reassigns `least` to an equal value — a no-op — so `<=`
     # computes the identical canonical variable. (The `==` and `>` forms of this site
     # change the canonical and are killed by `the_common_variable_is_the_ord_least_of_its_class`.)
-    "unify\\.rs:1349:33: replace < with <= in Nodes::read_out",
+    "unify\\.rs:\\d+:\\d+: replace < with <= in Nodes::read_out",
 
     # ---- The program tier (stage 3): a non-equivalent survivor caught only by the held-out depth proof ----
     # `take_children` feeds the iterative `Drop` (§13). Deleting the Tuple arm makes a nested
@@ -63,7 +67,7 @@ exclude_re = [
     # default suite and CI. It survives only THIS mutation run, whose `no_default_features` turns
     # `scale-proofs` off and ignores the depth proof; a sweep with the depth proof on (a
     # memory-capped runner) kills it. Excluded as held-out, not as equivalent.
-    "symbol\\.rs:453:9: delete match arm Symbol::Tuple\\(elements\\) in take_children",
+    "symbol\\.rs:\\d+:\\d+: delete match arm Symbol::Tuple\\(elements\\) in take_children",
     # `collect_runs` batches consecutive statements that share their part's `Arc`. Forcing the
     # guard false makes every statement a run of its own: the same program, so no law tells
     # them apart, but each statement pays the part's lookup and key clone again — quadratic in a
@@ -71,7 +75,7 @@ exclude_re = [
     # (`raising_statements_under_a_wide_part_is_near_linear`, tests/scaling_shape.rs) kills it
     # in the default suite; it survives only this run, whose `no_default_features` holds the
     # scaling proofs out. Excluded as held-out, not as equivalent.
-    "raise\\.rs:912:35: replace match guard Arc::ptr_eq\\(key, &part\\) with false in collect_runs",
+    "raise\\.rs:\\d+:\\d+: replace match guard Arc::ptr_eq\\(key, &part\\) with false in collect_runs",
 
     # ---- The syntax tier (stage 2): equivalent mutants ----
     # The peek cache (`self.peeked`) is set to None on every `bump`, `set_mode`,
@@ -81,52 +85,52 @@ exclude_re = [
     # The validity filter's form is therefore immaterial on a Some cache the
     # three equalities always hold, and a miss only recomputes the same token.
     # The five mutations of that filter are behavior-equivalent.
-    "machine\\.rs:198:25: replace == with != in Parser",
-    "machine\\.rs:199:17: replace && with",
-    "machine\\.rs:199:32: replace == with != in Parser",
-    "machine\\.rs:200:17: replace && with",
-    "machine\\.rs:200:43: replace == with != in Parser",
+    "machine\\.rs:200:25: replace == with != in Parser<'s, S>::peek_token",
+    "machine\\.rs:201:17: replace && with \\|\\| in Parser<'s, S>::peek_token",
+    "machine\\.rs:201:32: replace == with != in Parser<'s, S>::peek_token",
+    "machine\\.rs:202:17: replace && with \\|\\| in Parser<'s, S>::peek_token",
+    "machine\\.rs:202:43: replace == with != in Parser<'s, S>::peek_token",
     # block_comment's `%`-line-silence advances to just past the newline; the
     # `+ 1 -> * 1` off-by-one lands on the newline itself, which the loop's
     # default arm then steps over — the same net position, the same (kind,
     # length). (The `+= -> -=` and `+ -> -` forms at this site instead loop and
     # are caught as timeouts.)
-    "lexer\\.rs:177:57: replace \\+ with \\*",
+    "lexer\\.rs:177:57: replace \\+ with \\* in block_comment",
     # string_defect's valid-escape skip (`+= 2 -> *= 2`) only advances the
     # search for the first bad escape; landing one byte short re-reads the
     # escaped character through the default arm and reports the same defect at
     # the same span.
-    "lexer\\.rs:555:49: replace \\+= with \\*=",
+    "lexer\\.rs:578:49: replace \\+= with \\*= in string_defect",
     # `leading`'s after-gap index is one past the run's last empty line; the
     # `+ 1 -> * 1` off-by-one lands on that empty-line whitespace token, which
     # is never a comment, so the set of leading comments is unchanged.
-    "attach\\.rs:323:77: replace \\+ with \\*",
+    "attach\\.rs:\\d+:\\d+: replace \\+ with \\* in leading",
     # `weighted` breaks its scan at a `:` or `]`; what follows is a CONDITION
     # node (after the colon) or the end of the annotation (after the bracket),
     # never a direct Term, so `Term::cast` skips it and the weight, priority,
     # and tuple collected are the same whether or not the scan stops there.
-    "nodes\\.rs:183:17: delete match arm SyntaxKind::COLON",
+    "nodes\\.rs:\\d+:\\d+: delete match arm SyntaxKind::COLON \\| SyntaxKind::R_BRACKET in weighted",
     # SPLICE_TERM is produced only by the macro dialect (grammar §9), never from
     # file text, so no parse reaches SpliceTerm; the accessor's token slot is
     # the trivial SPLICE and is not reachable by a parsing test.
-    "nodes\\.rs:1698:9: replace SpliceTerm::splice_token",
+    "nodes\\.rs:\\d+:\\d+: replace SpliceTerm::splice_token",
     # A theory opterm's direct children are operator tokens and theory-term
     # nodes; every direct token is a theory operator (the terms are nodes), so
     # the guard is always true and forcing it true collects the same items.
-    "nodes\\.rs:1395:48: replace match guard THEORY_OPERATOR_KINDS.contains.*with true",
+    "nodes\\.rs:\\d+:\\d+: replace match guard THEORY_OPERATOR_KINDS\\.contains\\(&token\\.kind\\(\\)\\) with true in TheoryOpTerm::items",
     # aggregate_elements' `!read` block never sees a `}`, `.`, or EOF: the
     # loop's top arm returns on those before an element is read, and a failed
     # read consumes nothing, so this recovery arm is unreachable.
-    "statements\\.rs:811:21: delete match arm SyntaxKind::R_BRACE",
+    "statements\\.rs:813:21: delete match arm SyntaxKind::R_BRACE \\| SyntaxKind::DOT \\| SyntaxKind::EOF in Parser<'_, S>::aggregate_elements",
     # For a well-formed atom-definition — the only shape the accessor reads; an
     # occurrence is mandatory (grammar §5.9) — the occurrence is the ident after
     # the last comma, and both `&&` and `||` reset at each comma and resolve to
     # it; they differ only on a malformed atom-def with no occurrence at all.
-    "nodes\\.rs:927:50: replace && with \\|\\| in AtomDefinition::occurrence",
+    "nodes\\.rs:\\d+:\\d+: replace && with \\|\\| in AtomDefinition::occurrence",
     # The script body's ERROR token directly follows the `)` — in script-body
     # mode nothing between them lexes as trivia — so `in_script_body_position`'s
     # trivia-skipping branch is never taken and its guard's value is immaterial.
-    "fusion\\.rs:174:43: replace match guard before.kind\\(\\).is_trivia\\(\\) with false",
+    "fusion\\.rs:\\d+:\\d+: replace match guard before\\.kind\\(\\)\\.is_trivia\\(\\) with false in in_script_body_position",
     # `type_name` selects the first ident in the segment after the colon via
     # `find_map(Ident::cast)`: the original skips to the colon, the mutant keeps
     # the name but `skip(1)` drops it and `find_map` skips the non-ident colon,
@@ -136,25 +140,24 @@ exclude_re = [
     # and fall-through paths both place the comma in the same tuple node — so
     # neither the counter (335) nor the guard's disjunction (600) changes the
     # tree. Verified: `p((a,,))` and `p(f(,))` parse identically under both.
-    "terms\\.rs:335:31: replace \\+= with \\*= in Parser<'_, S>::begin_operand",
-    "terms\\.rs:600:53: replace && with \\|\\| in Parser<'_, S>::operand",
+    "terms\\.rs:\\d+:\\d+: replace \\+= with \\*= in Parser<'_, S>::begin_operand",
+    "terms\\.rs:604:53: replace && with \\|\\| in Parser<'_, S>::operand",
     # The theory-loop synchronizers: on the reaching inputs — a theory element's
     # condition colon, a stray token between elements — these mutations produce
     # identical trees. Direct-checked (each applied, the full `cargo test
     # --workspace` run): all three SURVIVE, no test distinguishes them — a
     # confirmed equivalence, not a triage. The body recovery's
-    # `statement_begins()` guard once grouped here was found KILLABLE by a later
-    # check and is now covered by a regression test
-    # (`a_directive_after_a_broken_body_ends_the_body`), not excluded.
-    "terms\\.rs:840:45: replace && with \\|\\| in Parser<'_, S>::theory_synchronizes",
-    "terms\\.rs:840:53: replace == with != in Parser<'_, S>::theory_synchronizes",
-    "terms\\.rs:847:27: replace == with != in Parser<'_, S>::theory_operand",
+    # `statement_begins()` guard is not among them: a regression test
+    # (`a_directive_after_a_broken_body_ends_the_body`) kills it.
+    "terms\\.rs:\\d+:\\d+: replace && with \\|\\| in Parser<'_, S>::theory_synchronizes",
+    "terms\\.rs:\\d+:\\d+: replace == with != in Parser<'_, S>::theory_synchronizes",
+    "terms\\.rs:851:27: replace == with != in Parser<'_, S>::theory_operand",
     # `follows_a_condition`'s condition detection gives the same mode for every
     # reaching token: a separator between empty elements (204, killed by a test)
     # exercises the walk; these two branches (the child-is-element early return
     # and the previous-element predicate) do not change the reconstructed mode
     # over the corpus and the constructed theory-element shapes. Direct-checked:
     # both SURVIVE the full suite — a confirmed equivalence, not a triage.
-    "fusion\\.rs:197:24: replace == with != in follows_a_condition",
-    "fusion\\.rs:205:40: replace match guard node.kind\\(\\) == SyntaxKind::THEORY_ELEMENT with true",
+    "fusion\\.rs:251:24: replace == with != in follows_a_condition",
+    "fusion\\.rs:\\d+:\\d+: replace match guard node\\.kind\\(\\) == SyntaxKind::THEORY_ELEMENT with true in follows_a_condition",
 ]

@@ -21,7 +21,9 @@ pub enum Identity {
     ByOccurrence,
 }
 
-/// An element a counted collection holds: one that states its own identity (§4.4).
+/// An element a counted collection holds: one that states its own identity (§4.4). Crate-private
+/// so the counting rule has one author — no type outside this crate can join it — while each
+/// owner's inherent `identity` is the public reading its impl here forwards to.
 pub(crate) trait Identified: Ord {
     /// How a repeat of this element counts.
     fn identity(&self) -> Identity;

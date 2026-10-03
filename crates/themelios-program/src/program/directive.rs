@@ -1,12 +1,13 @@
-//! Theory atoms, the theory-term peer algebra, theory definitions, and the body-free
-//! directives (docs/design/program.md §4.8, §4.9). The theory term is a **distinct
+//! The directives of docs/design/program.md §4.8 — `#const`, `#defined`, `#include`,
+//! `#script`, and the body-bearing `#show`, `#project`, `#edge`, `#heuristic`, and `#external` —
+//! and the theory surface of §4.9: theory atoms, the theory-term peer algebra, and theory
+//! definitions. The theory term is a **distinct
 //! peer** of `Term` (§4.9): its operator structure is the flat sequence the grammar
 //! admits (grammar §5.8), regrouped only under a `#theory` definition (admission,
 //! above this tier). It is the fourth self-recursive family (§13), so its
 //! `Clone`/`Drop`/`Eq`/`Ord`/`Hash`/`Debug` and its `fold` are hand-written and
 //! iterative, exactly as `Term`'s. Its `Ord`, like `Term`'s, has no external
-//! authority — a consistent total order agreeing with `Eq` suffices. The Body-bearing
-//! directives (`Show`, `Project`, `Edge`, `Heuristic`, `External`) carry a `Body`.
+//! authority — a consistent total order agreeing with `Eq` suffices.
 
 use std::cmp::Ordering;
 use std::collections::BTreeSet;

@@ -68,8 +68,8 @@ fn deep_program(depth: usize) -> Program {
 const DEPTHS: [usize; 5] = [1_000, 2_000, 4_000, 8_000, 16_000];
 
 fn mgu_scaling(c: &mut Criterion) {
-    // A deep ground symbol against its non-ground twin — the case that was Θ(depth²) before the
-    // ground side was decomposed into the unification graph (§11.1). Timings should grow linearly.
+    // A deep ground symbol against its non-ground twin — the case a ground side not decomposed
+    // into the unification graph makes Θ(depth²) (§11.1). Timings should grow linearly.
     let mut ground_vs_nested = c.benchmark_group("mgu/ground_vs_nested");
     for depth in DEPTHS {
         let ground = Atom::new(

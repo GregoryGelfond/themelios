@@ -1,22 +1,26 @@
-//! Shape assertions for the checks (docs/design/program.md §15, §16): complexity
-//! shape only, held by the median over five interleaved wall-clock ratios with
-//! tolerances wide enough for any machine the checks run on — equality, clone,
-//! rendering, and traversal linear in the structure, construction of an operator chain,
-//! a function nest, and a pool nest through the doors linear in depth (each door
-//! canonicalizing one level, §7.1), multi-part construction through `of_keyed_nodes` near-linear in the
-//! parts (§7.1), `mgu` near-linear in both
-//! atoms (the Martelli–Montanari shape a monolithic ground representation would
-//! make quadratic, §11.1), a match against an answer set logarithmic via
-//! `signature_range` (§11.3), and part-wise access logarithmic in the parts
-//! (§4.1). Beside them stand the raise's own shapes: the counted constructor near-linear
-//! over kept and merged repeats (§4.4); the collection near-linear in repeated statements,
-//! a body of repeated literals, and a part as wide as it is long, through the raise,
-//! `rewrite`, and `unpool` (§6.3, §8); and the repeated-definition check near-linear in
-//! definitions, in one part and across many (§6.3). What they prove: the claimed class — a
-//! quadratic `mgu`, an O(n²)
-//! equality/clone/render/traversal, a linear-scan match or part lookup. What they
-//! cannot: absolute speed, which is machine-dependent and lives in the out-of-band
-//! benches (benches/scaling.rs, spec §10.2).
+//! Shape assertions for the checks (docs/design/program.md §15, §16): complexity shape only,
+//! held by the median over five interleaved wall-clock ratios with tolerances wide enough for
+//! any machine the checks run on. The families they hold:
+//!
+//! - the term walks — equality, clone, rendering, and traversal — linear in the structure;
+//! - construction through the doors — an operator chain, a function nest, and a pool nest —
+//!   linear in depth, each door canonicalizing one level (§7.1), and a multi-part program
+//!   through `of_keyed_nodes` near-linear in its parts (§7.1);
+//! - `mgu` near-linear in both atoms, the Martelli–Montanari shape a monolithic ground
+//!   representation would make quadratic (§11.1);
+//! - a match against an answer set, logarithmic via `signature_range` (§11.3), and part-wise
+//!   access, logarithmic in the parts (§4.1);
+//! - the counted constructor, near-linear over kept and merged repeats (§4.4);
+//! - the collection, near-linear in repeated statements, a body of repeated literals, and a
+//!   part as wide as it is long, through the raise, `rewrite`, and `unpool` (§6.3, §8), and
+//!   `unpool` and `rewrite` linear in a term's depth (§9.1);
+//! - the repeated-definition check, near-linear in definitions in one part and across many
+//!   (§6.3).
+//!
+//! What they prove: the claimed class — a quadratic `mgu`, an O(n²) walk, a linear-scan match or
+//! part lookup, a per-collision or per-statement re-walk. What they cannot: absolute speed,
+//! which is machine-dependent and lives in the out-of-band benches (benches/scaling.rs,
+//! benches/raising.rs, spec §10.2).
 //!
 //! The complement to the depth proof (tests/depth_proof.rs): that proves every walk
 //! over a value nested far past any real program *survives* a stated small stack
@@ -459,8 +463,8 @@ fn nested_atom(depth: usize) -> Atom {
 )]
 #[test]
 fn mgu_is_near_linear_in_both_atoms() {
-    // A deep ground symbol against its non-ground twin — the adversarial shape that was
-    // Θ(depth²) before the ground side was decomposed into the unification graph (§11.1).
+    // A deep ground symbol against its non-ground twin — the adversarial shape a ground side
+    // not decomposed into the unification graph makes Θ(depth²) (§11.1).
     // Near-linear: the ratio tracks the depth, not its square. Both
     // atoms unify, so the full decide-and-produce path (including reading out the
     // triangular substitution) is timed.
@@ -501,7 +505,7 @@ fn mgu_is_near_linear_in_both_atoms() {
     // That this tripwire is real — that it would catch a regression, not merely pass on
     // whatever `mgu` does — is shown by the stand-in a quadratic unifier would be. A
     // composition that resolved the whole partial substitution at each bind, or a ground
-    // representation the unifier walked without decomposing (the pre-§11.1 shape), costs
+    // representation the unifier walked without decomposing it into the graph (§11.1), costs
     // Θ(depth²): unifying `p(f(f(… a)))` with `p(f(f(… X)))` at depth d does work
     // proportional to d at each of d levels. Written as such a stand-in it would read:
     //
@@ -605,9 +609,8 @@ fn matching_an_answer_set_is_logarithmic() {
 }
 
 /// A program of `parts` parts, each a `q<i>` part holding the one fact `a`, built through
-/// `Program::of_keyed_nodes` — the public multi-part door (§7.1, §4.1). (Before that door
-/// existed this fixture went through `#program q<i>.` text and the raise; the door now builds
-/// the part structure directly.)
+/// `Program::of_keyed_nodes` — the public multi-part door (§7.1, §4.1), which builds the part
+/// structure directly.
 fn multi_part_program(parts: usize) -> Program {
     let fact = Statement::Rule(Rule::fact(Atom::constant(name("a"))));
     Program::of_keyed_nodes(
