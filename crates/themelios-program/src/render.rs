@@ -146,11 +146,17 @@ fn render_part_header(out: &mut String, part: &Part) {
     out.push_str(".\n");
 }
 
-/// A part's statements (docs/design/program.md §10): the leading block first — the
-/// position-sensitive directives that lead (see [`leads`]), in `Ord` order among themselves
+/// A part's statements (docs/design/program.md §10): the leading block first — the global
+/// definitions, [`Statement::is_global_definition`] (§4.2), in `Ord` order among themselves
 /// (so `#const` before `#theory`) — then the rest in `Ord` order (§4), one per line, each
-/// preceded by its documentation when `docs` is set. `part.statements()` yields `Ord` order,
-/// so filtering it into (the leading kinds) then (the rest) is a stable partition: it is
+/// preceded by its documentation when `docs` is set. A global definition leads because the
+/// grounder gathers it before instantiation, so its leading placement grounds identically to
+/// its authored one, and the lift restores the definitions-first convention its `Ord` position
+/// would lose (a directive sorts *below* the rules that use it, §4). `#include` does not lead:
+/// the grounder splices the included file at the directive's position, so its placement is not
+/// grounder-neutral, and it renders in `Ord` order with the rest — the set the whole-program
+/// grounder-neutrality confirmation settled (§10). `part.statements()` yields `Ord` order, so
+/// filtering it into (the leading kinds) then (the rest) is a stable partition: it is
 /// deterministic and keeps each block's mutual `Ord` order.
 fn render_part_statements(
     out: &mut String,
@@ -159,8 +165,14 @@ fn render_part_statements(
     docs: bool,
 ) -> Result<(), Unspellable> {
     let statements: Vec<&WithProvenance<Statement>> = part.statements().collect();
-    let leading = statements.iter().copied().filter(|s| leads(s.get()));
-    let rest = statements.iter().copied().filter(|s| !leads(s.get()));
+    let leading = statements
+        .iter()
+        .copied()
+        .filter(|s| s.get().is_global_definition());
+    let rest = statements
+        .iter()
+        .copied()
+        .filter(|s| !s.get().is_global_definition());
     for statement in leading.chain(rest) {
         if docs {
             render_docs(out, statement);
@@ -169,22 +181,6 @@ fn render_part_statements(
         out.push('\n');
     }
     Ok(())
-}
-
-/// Whether a statement leads its part's canonical render (docs/design/program.md §10): a
-/// position-sensitive directive whose leading placement grounds identically to its authored
-/// placement, so the lift preserves meaning. `#const` and `#theory` are gathered globally by
-/// the grounder before instantiation — their placement does not change what is grounded — so
-/// they lead, which also restores the definitions-first convention their `Ord` position would
-/// lose (a directive sorts *below* the rules that use it, §4). `#include` is deliberately not
-/// here: the grounder splices the included file at the directive's position, so its placement
-/// is *not* grounder-neutral; it renders in ordinary `Ord` order with the rest. The set is the
-/// one the whole-program grounder-neutrality confirmation settled (§10).
-fn leads(statement: &Statement) -> bool {
-    matches!(
-        statement,
-        Statement::Const(_) | Statement::TheoryDefinition(_)
-    )
 }
 
 /// A statement's documentation as leading `%!` doc-comment lines (grammar §5.11), in `Ord`
