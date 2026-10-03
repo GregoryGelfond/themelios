@@ -13,7 +13,8 @@ use std::fmt::Debug;
 
 use themelios_solve::contract::Fault;
 use themelios_solve::outcome::{
-    Conclusion, Determination, Measurement, Optimized, Optimum, Statistics, TheoryAssignments,
+    Conclusion, Determination, Incumbent, Measurement, Optimized, Optimum, Statistics,
+    TheoryAssignments,
 };
 
 // --- the resolution register (§5.2) ---
@@ -30,12 +31,29 @@ fn optimized_shares_solved_s_resolution_register() {
         let _: Option<Conclusion> = optimized.conclusion();
         if let Some(trajectory) = optimized.trajectory() {
             for step in trajectory {
-                let _: Result<Optimum, Fault> = step;
+                let _: Result<Incumbent, Fault> = step;
             }
         }
         optimized.into_determination()
     }
     let _: fn(Optimized<'_>) -> Determination<'_> = register;
+}
+
+#[test]
+fn a_trajectory_step_is_an_incumbent_never_an_optimum() {
+    // A best-found is typed apart from the proven optimum: a trajectory of
+    // incumbents is accepted where one is asked for, and an incumbent reads
+    // back its retained model, never an optimum (§5.3).
+    fn atoms_read(steps: impl Iterator<Item = Result<Incumbent, Fault>>) -> usize {
+        steps
+            .filter_map(Result::ok)
+            .map(|step| step.model().atoms().len())
+            .sum()
+    }
+    fn read(mut optimized: Optimized<'_>) -> Option<usize> {
+        optimized.trajectory().map(atoms_read)
+    }
+    let _: fn(Optimized<'_>) -> Option<usize> = read;
 }
 
 // --- the proven optimum is unconstructible (§5.3) ---
