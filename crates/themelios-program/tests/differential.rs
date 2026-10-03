@@ -9,8 +9,10 @@
 //! globally-gathered directives (§10) grounder-neutral, and the answer sets — every true atom,
 //! never a display — and costs a source and the render of its raise ground to, the raise's
 //! law (§2). Seven independent-oracle checks, each with its named boundaries. The last proves
-//! the law over its seeds, the repeats the value keeps and one of each merge kind, each seed
-//! one the authority accepts; it cannot prove it beyond them.
+//! both disjuncts of the law over its seeds — the repeats the value keeps and one of each merge
+//! kind, grounded alike with their costs where they optimize, and a seed refused alike in
+//! source and render — beside the redefinition witnesses the raise diagnoses; it cannot prove
+//! the law beyond them.
 //!
 //! Feature-gated and out of band: run through pixi, `pixi run differential-program`.
 //! What it proves: agreement with the authority on the generated cases and the

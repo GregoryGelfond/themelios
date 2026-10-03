@@ -512,6 +512,31 @@ fn a_parsed_origin_rides_every_raised_statement() {
 }
 
 #[test]
+fn a_merged_statement_keeps_the_later_copy_s_nested_provenance() {
+    // `a :- b. a :- b.` — one content; the later-written copy survives, so its body element
+    // carries the second rule's span (bytes 13..14), and the first copy's nested origin (5..6)
+    // is not merged into it (§6.3).
+    let rule = only_rule(&raised("a :- b. a :- b."));
+    let element = rule
+        .body()
+        .get()
+        .elements()
+        .next()
+        .expect("one body element");
+    let spans: Vec<(u32, u32)> = element
+        .provenance()
+        .origins()
+        .filter_map(|origin| match origin {
+            Origin::Parsed(location) => {
+                Some((location.span.start().get(), location.span.end().get()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(spans, vec![(13, 14)]);
+}
+
+#[test]
 fn content_equal_body_atoms_from_distinct_spans_union_their_provenance() {
     // `q :- p(1), p(1).` — the two identical body atoms are content-equal but
     // parsed from distinct spans; they collapse to one whose provenance unions

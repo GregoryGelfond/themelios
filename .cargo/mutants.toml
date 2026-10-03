@@ -44,7 +44,7 @@ exclude_re = [
     # Deleting the two-variable arm falls through to the bare-variable `link` arm, which
     # merges the same two classes; the read-out names each class by its Ord-least variable,
     # so which node is the representative is immaterial to the substitution (only the rank
-    # bump is lost — balance, as at 1213).
+    # bump is lost — balance, as in `Nodes::union` above).
     "unify\\.rs:\\d+:\\d+: delete match arm \\(Cell::Variable\\(_\\), Cell::Variable\\(_\\)\\) in Nodes::unify",
     # The guard chooses which nodes SEED the occurs-DFS. The original seeds every unvisited
     # representative; the mutant seeds a superset (also non-representatives and coloured

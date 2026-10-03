@@ -2612,7 +2612,8 @@ and drop (§13); the conversion `impl`s (§3.4); `subterms`/`fold`/`into_parts`;
 
 Costs, consolidated: construction, canonicalization, evaluation, rendering, and
 every walk are `O(nodes)` in time — up to the log factor of ordering a set or a
-counted collection (§4.9) — and iterative in depth (§13); equality,
+counted collection (§4.9), and the raise's check of the statements the set may not merge,
+`O(d log d)` comparisons over `d` of them (§6.3) — and iterative in depth (§13); equality,
 ordering, and hashing are `O(nodes)` and proportional to structure (spec §7.1);
 clone is linear; part-wise access is `O(log parts)`; `mgu` is near-linear in both
 atoms, deciding and producing the triangular substitution (§11.1); `substitute`
@@ -2638,9 +2639,10 @@ with what it proves and what it cannot (spec §10.2).
     constructor every door calls — the raise, construction, substitution, the rewrites,
     `unpool` — and is
     order-insensitive (`1 { #true; #true } 1.` is two elements, `{ a; a }` one, a
-    theory atom's repeated element two); a global definition repeated within one part
-    raises with a `RepeatedDefinition` diagnostic, a `#script` block with a
-    `RepeatedScript`, and a repeated rule with none;
+    theory atom's repeated element two); and, pinned by example laws
+    (`repeated_definition_laws.rs`), a global definition repeated within one part raises
+    with a `RepeatedDefinition` diagnostic, a `#script` block with a `RepeatedScript`, and a
+    repeated rule with none;
     `Program` equality is canonical-form equality up to provenance; `Ord`/`Eq`/`Hash` are one content
     projection — mutually consistent, a total order, and in agreement with a
     **derived twin** on shallow generated values (the mirror differential, which
