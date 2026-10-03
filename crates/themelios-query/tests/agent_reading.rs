@@ -12,7 +12,7 @@ use common::{answer_set, atom, atoms_of, with_agent, with_hypothetical_agent};
 use themelios_program::program::{Arguments, Atom};
 use themelios_program::symbol::{Name, Sign, Symbol, VarName};
 use themelios_program::term::Term;
-use themelios_query::{AgentReading, Answer, Query};
+use themelios_query::{AgentReading, Answer, BindingPattern, NotABindingPattern, Query};
 use themelios_solve::agent::{Assumption, Scenario};
 use themelios_solve::contract::{Fault, Locus};
 use themelios_solve::outcome::{AnswerSet, Conclusion};
@@ -91,7 +91,8 @@ fn bindings_delegates_the_partition() {
         [applied("p", "a"), applied("p", "b")].into_iter().collect(),
     ];
     with_agent(members, Conclusion::Exhausted, |agent| {
-        let bindings = agent.bindings(&var_pattern()).expect("a binding pattern");
+        let pattern = BindingPattern::of(var_pattern()).expect("a binding pattern");
+        let bindings = agent.bindings(&pattern).expect("a reading");
         let yes: Vec<_> = bindings.yes().cloned().collect();
         assert_eq!(yes, vec![applied("p", "a")], "p(a) is cautiously entailed");
     });
@@ -136,48 +137,47 @@ fn a_reading_over_a_witnessed_but_unclosed_search_refuses() {
     });
 }
 
-#[test]
-fn bindings_refuses_a_non_binding_pattern_at_the_request_locus() {
-    // An anonymous position is a query-owned refusal; the facade surfaces it as a
-    // request fault (the locus a non-pattern is asked for lives at, query.md §2.5).
-    with_agent(vec![answer_set(["a"])], Conclusion::Exhausted, |agent| {
-        let anonymous = Atom {
-            sign: Sign::Positive,
-            name: Name::new("p").expect("a valid identifier"),
-            arguments: Arguments::Single(vec![
-                Term::variable(VarName::new("X").expect("a valid variable name")),
-                Term::anonymous(),
-            ]),
-        };
-        let refusal = agent
-            .bindings(&anonymous)
-            .expect_err("an anonymous position is refused");
-        assert_eq!(refusal.locus(), Locus::Request);
-    });
+/// `p(X, _)` — an anonymous position, which names no binding.
+fn anonymous_atom() -> Atom {
+    Atom {
+        sign: Sign::Positive,
+        name: Name::new("p").expect("a valid identifier"),
+        arguments: Arguments::Single(vec![
+            Term::variable(VarName::new("X").expect("a valid variable name")),
+            Term::anonymous(),
+        ]),
+    }
+}
+
+/// `p(1..3)` — an interval names a set, so the atom is not a pattern.
+fn interval_atom() -> Atom {
+    Atom {
+        sign: Sign::Positive,
+        name: Name::new("p").expect("a valid identifier"),
+        arguments: Arguments::Single(vec![Term::Interval {
+            lower: Box::new(Term::Symbolic(Symbol::number(1))),
+            upper: Box::new(Term::Symbolic(Symbol::number(3))),
+        }]),
+    }
 }
 
 #[test]
-fn bindings_carries_the_non_pattern_reason_into_the_fault() {
-    // A non-pattern (an interval names a set) refuses at the request locus, and the
-    // facade folds the program tier's specific reason — which term does not denote —
-    // into the fault message, not only the refusal's category.
+fn a_non_pattern_is_refused_when_its_binding_pattern_is_built() {
+    let refusal = BindingPattern::of(interval_atom()).expect_err("not a pattern");
+    assert!(matches!(refusal, NotABindingPattern::NotAPattern(_)));
+}
+
+#[test]
+fn an_anonymous_position_is_refused_when_its_binding_pattern_is_built() {
+    let refusal = BindingPattern::of(anonymous_atom()).expect_err("an anonymous position");
+    assert_eq!(refusal, NotABindingPattern::AnonymousPosition);
+}
+
+#[test]
+fn the_agent_s_bindings_answer_once_the_pattern_is_built() {
     with_agent(vec![answer_set(["a"])], Conclusion::Exhausted, |agent| {
-        let interval = Atom {
-            sign: Sign::Positive,
-            name: Name::new("p").expect("a valid identifier"),
-            arguments: Arguments::Single(vec![Term::Interval {
-                lower: Box::new(Term::Symbolic(Symbol::number(1))),
-                upper: Box::new(Term::Symbolic(Symbol::number(3))),
-            }]),
-        };
-        let refusal = agent
-            .bindings(&interval)
-            .expect_err("an interval is not a pattern");
-        assert_eq!(refusal.locus(), Locus::Request);
-        assert!(
-            refusal.to_string().contains("does not denote"),
-            "the facade carries the program tier's reason, not only the category",
-        );
+        let pattern = BindingPattern::of(var_pattern()).expect("a binding pattern");
+        assert!(agent.bindings(&pattern).is_ok());
     });
 }
 

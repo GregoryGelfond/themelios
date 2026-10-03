@@ -3,9 +3,9 @@
 //!
 //! Flat here are the types a reading hands back: the epistemic [`Answer`], the
 //! three-valued [`Bindings`] of an open pattern, the solve tier's [`Consequences`],
-//! the live [`WorldView`] and its engine-free [`Snapshot`]; the program tier's
-//! [`Atom`], the pattern the readings take, which globs beside the program
-//! prelude's own as one item; and the
+//! the live [`WorldView`] and its engine-free [`Snapshot`]; the [`BindingPattern`] a
+//! `bindings` reading takes; the program tier's [`Atom`], from which a pattern is
+//! built, which globs beside the program prelude's own as one item; and the
 //! [`AgentReading`] extension trait, so a `Backend`-owning agent's `answer`,
 //! `entails`, `bindings`, `snapshot`, and `snapshot_assuming` read as inherent
 //! methods. NOT here — and
@@ -18,4 +18,6 @@
 //! `themelios_query::Query`, the tiers' standing convention for a surface that
 //! shares a spelling. The compile-lock is `tests/cross_prelude.rs`.
 
-pub use crate::{AgentReading, Answer, Atom, Bindings, Consequences, Snapshot, WorldView};
+pub use crate::{
+    AgentReading, Answer, Atom, BindingPattern, Bindings, Consequences, Snapshot, WorldView,
+};

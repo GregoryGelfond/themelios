@@ -9,7 +9,7 @@
 use criterion::{BenchmarkId, Criterion};
 
 use themelios_program::{AnswerSet, Atom, Name, Program, Sign, Symbol, Term};
-use themelios_query::{AgentReading, Snapshot};
+use themelios_query::{AgentReading, BindingPattern, Snapshot};
 use themelios_solve::agent::{Agent, Scenario};
 use themelios_solve::bridge::{Door, GroundProgram};
 use themelios_solve::contract::{Backend, Capabilities, Fault, SolveRequest};
@@ -90,16 +90,13 @@ fn deep_match(criterion: &mut Criterion) {
     for depth in DEPTHS {
         let symbol = nested(depth);
         let snapshot = snapshot_holding(&symbol);
-        let pattern = Atom::new(name("p"), [Term::from(symbol)]);
+        let pattern = BindingPattern::of(Atom::new(name("p"), [Term::from(symbol)]))
+            .expect("a ground atom is a binding pattern");
         group.bench_with_input(
             BenchmarkId::new("deep ground symbol", depth),
             &pattern,
             |bencher, pattern| {
-                bencher.iter(|| {
-                    snapshot
-                        .bindings(pattern)
-                        .expect("a ground atom is a pattern")
-                });
+                bencher.iter(|| snapshot.bindings(pattern));
             },
         );
     }
