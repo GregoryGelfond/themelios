@@ -31,8 +31,8 @@
 //! truncation cannot pose as complete, and cancellation is not exhaustion** —
 //! the pathologies a run can attempt (below). **The observer,** where the
 //! backend declares it (§10.4): a ground program once a grounding has finished,
-//! every ground rule naming a statement of the program lowered, and a fact
-//! never grounded to nothing. **Fault loci:** a program the backend cannot
+//! every ground rule naming a statement of the program lowered — through Door
+//! A, an occurrence of the parse — and a fact never grounded to nothing. **Fault loci:** a program the backend cannot
 //! ground is refused at the program locus, naming the statement that cannot be
 //! grounded and located within it (§5.4); assigning an atom that is not
 //! external is refused at the request locus, never the silent no-op an engine
@@ -819,6 +819,19 @@ fn over_corpus(corpus: &[Case], mut check: impl FnMut(&Case) -> Result<(), Short
     })
 }
 
+/// The verdict of a per-case check over the corpus, each case driven through
+/// both doors (§10.2) — its program at Door B, then its parse at Door A — and
+/// judged as [`over_corpus`] judges it.
+fn over_both_doors(
+    corpus: &[Case],
+    mut check: impl FnMut(&Case, Through) -> Result<(), Shortfall>,
+) -> Verdict {
+    over_corpus(corpus, |case| {
+        check(case, Through::Program)?;
+        check(case, Through::Parsed)
+    })
+}
+
 /// Clear what a multi-shot backend has accumulated, so the next program is the
 /// whole of what it reasons over (§6.2) — `lower` accumulates there. The
 /// refusal names the step.
@@ -977,9 +990,8 @@ enum Through {
 /// sets — a witness-only backend may name a different witness through each.
 fn outcome_correctness(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
     let enumerates = backend.capabilities().enumeration;
-    over_corpus(corpus, |case| {
-        observe(backend, case, Through::Program, enumerates)?;
-        observe(backend, case, Through::Parsed, enumerates)
+    over_both_doors(corpus, |case, through| {
+        observe(backend, case, through, enumerates)
     })
 }
 
@@ -1103,33 +1115,31 @@ fn observe(
 /// not one of the program's is outcome correctness's to judge, so it leaves
 /// this check undriven.
 fn display_is_selected(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
-    over_corpus(corpus, |case| {
-        for through in [Through::Program, Through::Parsed] {
-            load_through(backend, case, through).map_err(Shortfall::Undriven)?;
-            let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
-            let Pulled {
-                sets,
-                displays,
-                ended,
-                ..
-            } = pull(&mut solved, case.answer_sets.len())
-                .map_err(|fault| Shortfall::Undriven(faulted(fault)))?;
-            if !ended {
-                return Err(Shortfall::Undriven(past_the_bound()));
-            }
-            for (set, display) in sets.iter().zip(&displays) {
-                let Ok(index) = case.answer_sets.binary_search(set) else {
-                    return Err(Shortfall::Undriven(Failure::new(
-                        Breach::Misanswered,
-                        "yielded a set that is not one of its answer sets",
-                    )));
-                };
-                if display != &case.displays[index] {
-                    return Err(Shortfall::Broke(Failure::new(
-                        Breach::Misanswered,
-                        "displayed other than the program's directives select",
-                    )));
-                }
+    over_both_doors(corpus, |case, through| {
+        load_through(backend, case, through).map_err(Shortfall::Undriven)?;
+        let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
+        let Pulled {
+            sets,
+            displays,
+            ended,
+            ..
+        } = pull(&mut solved, case.answer_sets.len())
+            .map_err(|fault| Shortfall::Undriven(faulted(fault)))?;
+        if !ended {
+            return Err(Shortfall::Undriven(past_the_bound()));
+        }
+        for (set, display) in sets.iter().zip(&displays) {
+            let Ok(index) = case.answer_sets.binary_search(set) else {
+                return Err(Shortfall::Undriven(Failure::new(
+                    Breach::Misanswered,
+                    "yielded a set that is not one of its answer sets",
+                )));
+            };
+            if display != &case.displays[index] {
+                return Err(Shortfall::Broke(Failure::new(
+                    Breach::Misanswered,
+                    "displayed other than the program's directives select",
+                )));
             }
         }
         Ok(())
@@ -1154,14 +1164,15 @@ fn past_the_bound() -> Failure {
 }
 
 /// A search concluded as closing the space yielded every answer set there is —
-/// the `enumeration` bit's soundness obligation (§4.1). A backend that stops at
+/// the `enumeration` bit's soundness obligation (§4.1), held over every corpus
+/// program through both doors. A backend that stops at
 /// a witness, or anywhere short, must say so; every universal reading trusts an
 /// `Exhausted` conclusion. A stream that faults, or runs past its bound, has
 /// concluded nothing to judge: the case is undriven, and outcome correctness
 /// fails it.
 fn exhaustion_is_earned(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
-    over_corpus(corpus, |case| {
-        load(backend, &case.program, case.source).map_err(Shortfall::Undriven)?;
+    over_both_doors(corpus, |case, through| {
+        load_through(backend, case, through).map_err(Shortfall::Undriven)?;
         let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
         let Pulled { sets, ended, .. } = pull(&mut solved, case.answer_sets.len())
             .map_err(|fault| Shortfall::Undriven(faulted(fault)))?;
@@ -1192,10 +1203,10 @@ fn exhaustion_is_earned(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
 /// `Inconsistent ⇒ Exhausted`, the termination reading never at odds with the
 /// logical one. The core's classification reads a clean end short of the space
 /// as inconclusive, so no backend can break it; attempted all the same, over
-/// every corpus program.
+/// every corpus program through both doors.
 fn inconsistency_is_exhausted(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
-    over_corpus(corpus, |case| {
-        load(backend, &case.program, case.source).map_err(Shortfall::Undriven)?;
+    over_both_doors(corpus, |case, through| {
+        load_through(backend, case, through).map_err(Shortfall::Undriven)?;
         let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
         let inconsistent = matches!(solved.determination(), Determination::Inconsistent(_));
         if inconsistent && solved.conclusion() != Some(Conclusion::Exhausted) {
@@ -1210,13 +1221,14 @@ fn inconsistency_is_exhausted(backend: &mut dyn Backend, corpus: &[Case]) -> Ver
 
 /// A stream once touched cannot yield a complete collection (§5.3): the
 /// exhaustion gate refuses it, so a truncated search cannot pass as all the
-/// answer sets. Structural; attempted over every consistent corpus program.
+/// answer sets. Structural; attempted over every consistent corpus program
+/// through both doors.
 fn truncation_cannot_pose_as_complete(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
-    over_corpus(corpus, |case| {
+    over_both_doors(corpus, |case, through| {
         if !case.is_consistent() {
             return Ok(());
         }
-        load(backend, &case.program, case.source).map_err(Shortfall::Undriven)?;
+        load_through(backend, case, through).map_err(Shortfall::Undriven)?;
         let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
         drop(solved.models().next());
         // The gate refuses a touched handle at once, draining nothing.
@@ -1241,12 +1253,13 @@ fn cancellation_is_not_exhaustion(backend: &dyn Backend) -> Verdict {
     })
 }
 
-/// A declared observer is faithful (§10.4): once the corpus case's solve has
-/// drained — so an engine that grounds as it searches has grounded — the
-/// observer answers `Some`; every ground rule names a member of the program
-/// lowered — a statement of the rule's part, equal in content, whose origins
-/// include the rule's statement's own, since the set merge unions them; and a
-/// fact grounds to a rule. Membership is not correctness: which statement a
+/// A declared observer is faithful (§10.4): once the corpus case's solve,
+/// through either door, has drained — so an engine that grounds as it searches
+/// has grounded — the observer answers `Some`; every ground rule names a member
+/// of the program lowered — a statement of the rule's part, equal in content,
+/// whose origins include the rule's statement's own, since the set merge unions
+/// them, so an occurrence of the parse Door A carries is one at the
+/// per-occurrence grain; and a fact grounds to a rule. Membership is not correctness: which statement a
 /// rule came from is checked once a rule carries its head and body. An
 /// undeclared observer binds nothing here — that its method answers `None` is
 /// the honesty check's.
@@ -1254,8 +1267,8 @@ fn ground_program_is_faithful(backend: &mut dyn Backend, corpus: &[Case]) -> Ver
     if !backend.capabilities().ground_program {
         return Verdict::Skipped(Skip::Undeclared(Capability::GroundProgram));
     }
-    over_corpus(corpus, |case| {
-        load(backend, &case.program, case.source).map_err(Shortfall::Undriven)?;
+    over_both_doors(corpus, |case, through| {
+        load_through(backend, case, through).map_err(Shortfall::Undriven)?;
         {
             // Read the stream out, bounded, so an engine that grounds as it
             // searches has grounded before its ground program is read.
@@ -2686,10 +2699,14 @@ mod tests {
     /// How a grounding backend builds the ground program of what it lowers.
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Grounds {
-        /// One rule per statement of the lowered program, naming it.
+        /// One rule per statement of the lowered program, naming it — per
+        /// occurrence of the parse at Door A.
         Faithfully,
         /// Those, and one more naming a statement the program never held.
         Inventing,
+        /// Faithfully through Door B; through Door A, one more rule naming a
+        /// statement the program never held.
+        InventingAtDoorA,
         /// One rule per statement, each statement relocated to an origin the
         /// program never had.
         Relocating,
@@ -2725,17 +2742,34 @@ mod tests {
         }
 
         fn lower(&mut self, door: Door<'_>) -> Result<(), Fault> {
-            let mut statements: Vec<(PartKey, WithProvenance<Statement>)> = match self.grounds {
-                Grounds::Nothing => Vec::new(),
-                _ => door
-                    .program()
-                    .parts()
-                    .flat_map(|part| {
-                        part.statements()
-                            .map(|node| (part.key().clone(), node.clone()))
-                    })
-                    .collect(),
-            };
+            let parsed = matches!(door, Door::Parsed(_));
+            let (grain, mut statements): (Grain, Vec<(PartKey, WithProvenance<Statement>)>) =
+                match door {
+                    // Door A, read in source order: each occurrence its own
+                    // statement.
+                    Door::Parsed(admitted) => (
+                        Grain::Occurrence,
+                        admitted
+                            .statements()
+                            .map(|occurrence| {
+                                (occurrence.part().clone(), occurrence.statement().clone())
+                            })
+                            .collect(),
+                    ),
+                    Door::Program(program) => (
+                        Grain::Statement,
+                        program
+                            .parts()
+                            .flat_map(|part| {
+                                part.statements()
+                                    .map(|node| (part.key().clone(), node.clone()))
+                            })
+                            .collect(),
+                    ),
+                };
+            if self.grounds == Grounds::Nothing {
+                statements.clear();
+            }
             if self.grounds == Grounds::Relocating {
                 for (_, statement) in &mut statements {
                     *statement = WithProvenance::new(
@@ -2744,14 +2778,16 @@ mod tests {
                     );
                 }
             }
-            if self.grounds == Grounds::Inventing {
+            if self.grounds == Grounds::Inventing
+                || (self.grounds == Grounds::InventingAtDoorA && parsed)
+            {
                 let invented = program_of("invented.");
                 let base = invented.base();
                 let node = base.statements().next().expect("the fact raises").clone();
                 statements.push((base.key().clone(), node));
             }
             let rules = (0..statements.len()).map(GroundRule::naming).collect();
-            self.ground = GroundProgram::of(Grain::Statement, statements, rules);
+            self.ground = GroundProgram::of(grain, statements, rules);
             Ok(())
         }
 
@@ -2777,6 +2813,16 @@ mod tests {
     #[test]
     fn a_ground_rule_naming_a_statement_the_program_never_held_fails() {
         let verdict = ground_program_is_faithful(&mut grounding(Grounds::Inventing), &corpus());
+        assert!(
+            matches!(&verdict, Verdict::Failed(failure) if failure.breach() == Breach::Misanswered),
+            "{verdict}"
+        );
+    }
+
+    #[test]
+    fn a_ground_rule_inventing_a_statement_at_door_a_fails() {
+        let verdict =
+            ground_program_is_faithful(&mut grounding(Grounds::InventingAtDoorA), &corpus());
         assert!(
             matches!(&verdict, Verdict::Failed(failure) if failure.breach() == Breach::Misanswered),
             "{verdict}"

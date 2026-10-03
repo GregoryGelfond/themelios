@@ -425,6 +425,10 @@ enum Flaw {
     /// Drops one answer set of every program that has several, and still
     /// concludes that the search closed the space.
     DropsAnAnswerSet,
+    /// Drops one answer set of every program that has several when it was
+    /// lowered through Door A, and still concludes that the search closed the
+    /// space.
+    DropsAnAnswerSetAtDoorA,
     /// Without declaring enumeration, concludes that the search closed the space
     /// at its first witness.
     ClaimsExhaustionAtItsWitness,
@@ -665,6 +669,17 @@ struct Stub {
     carried: Arc<AtomicBool>,
     /// The last scoped solve's scenario, which a leaking stub keeps.
     leaked: Scenario,
+    /// The door the last program lowered came through.
+    through: Through,
+}
+
+/// The door a program came through (docs/design/solve.md §10.2).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Through {
+    /// Door A: a parse, admitted.
+    Parsed,
+    /// Door B: a program.
+    Program,
 }
 
 impl Stub {
@@ -685,6 +700,7 @@ impl Stub {
             failed_solve: false,
             carried: Arc::new(AtomicBool::new(false)),
             leaked: Scenario::default(),
+            through: Through::Program,
         }
     }
 
@@ -732,6 +748,9 @@ impl Stub {
         };
         match self.flaw {
             Flaw::DropsAnAnswerSet if sets.len() > 1 => {
+                sets.pop();
+            }
+            Flaw::DropsAnAnswerSetAtDoorA if self.through == Through::Parsed && sets.len() > 1 => {
                 sets.pop();
             }
             Flaw::SolvesByCompletion if source == POSITIVE_LOOP || source == CONSTRAINED_LOOP => {
@@ -1103,6 +1122,11 @@ impl Backend for Stub {
             }
         }
         self.keep(index);
+        self.through = if matches!(door, Door::Parsed(_)) {
+            Through::Parsed
+        } else {
+            Through::Program
+        };
         if self.flaw == Flaw::KeepsTheReplacedProgram && self.table[index].0 == REBUILT {
             let kept = std::mem::take(&mut self.cleared);
             self.loaded.splice(0..0, kept);
@@ -1670,6 +1694,13 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
     let table: Vec<Expectation> = vec![
         (
             Flaw::DropsAnAnswerSet,
+            enumerating(),
+            vec![(Outcome, Misanswered), (Earned, Misanswered)],
+        ),
+        (
+            // Through Door B the stub is faithful; through Door A, every check
+            // that reads the corpus through both doors finds the dropped set.
+            Flaw::DropsAnAnswerSetAtDoorA,
             enumerating(),
             vec![(Outcome, Misanswered), (Earned, Misanswered)],
         ),
