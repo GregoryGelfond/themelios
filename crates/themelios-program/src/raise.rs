@@ -845,13 +845,27 @@ impl Definitions {
     }
 }
 
-/// Where a definition's name sits — the location a repeated definition is reported at — or the
-/// statement's own span where it has no name token.
+/// Where a definition's name sits — the location a repeated definition is reported at. Every
+/// statement kind is named, as `raise_one` names them, so a new kind is a compile error here
+/// rather than a coarser location; a statement that names no definition, which the check never
+/// reaches, is located at its own span.
 fn definition_location(statement: &ast::Statement, parse: &Parse<ast::Program>) -> Location {
     let name = match statement {
         ast::Statement::Const(constant) => constant.name(),
         ast::Statement::TheoryDefinition(theory) => theory.name(),
-        _ => None,
+        ast::Statement::Rule(_)
+        | ast::Statement::WeakConstraint(_)
+        | ast::Statement::Optimize(_)
+        | ast::Statement::Show(_)
+        | ast::Statement::Project(_)
+        | ast::Statement::Defined(_)
+        | ast::Statement::Edge(_)
+        | ast::Statement::Heuristic(_)
+        | ast::Statement::External(_)
+        | ast::Statement::Script(_)
+        | ast::Statement::Include(_)
+        | ast::Statement::Query(_)
+        | ast::Statement::ProgramPart(_) => None,
     };
     let range = name.map_or_else(
         || statement.syntax().text_range(),

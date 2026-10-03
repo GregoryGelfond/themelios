@@ -109,3 +109,10 @@ fn the_diagnostic_names_the_first_definition() {
         .collect();
     assert_eq!(secondary, vec![at(7, 8)]);
 }
+
+#[test]
+fn a_repeated_theory_is_diagnosed_at_its_name() {
+    // The two `t`s sit at bytes 8..9 and 57..58.
+    let text = "#theory t { a { + : 1, unary }; &b/0 : a, any }. #theory t { a { + : 1, unary }; &b/0 : a, any }.";
+    assert_eq!(repeats(&raised(text)), vec![(at(57, 58), at(8, 9))]);
+}

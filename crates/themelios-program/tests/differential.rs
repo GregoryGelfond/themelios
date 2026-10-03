@@ -33,7 +33,7 @@ use serde_json::{Value, json};
 
 use themelios_base::source::{Source, SourceId};
 use themelios_program::program::{Program, Statement};
-use themelios_program::raise::raise;
+use themelios_program::raise::{LowerErrorKind, raise};
 use themelios_program::render::render;
 use themelios_program::symbol::{Name, Sign, Symbol};
 use themelios_program::term::{BinaryOp, EvalError, Term, UnaryOp};
@@ -1187,6 +1187,18 @@ fn the_authority_refuses_a_definition_the_raise_diagnoses() {
     // excludes the source, and the authority refuses it — while it would accept the merged render.
     let cwd = std::env::temp_dir();
     let source = "#const n = 1. #const n = 1. p(n).";
+    let lowered = raise(&parse(
+        &Source::new(SourceId::new(0), source.to_owned()).expect("the witness admits"),
+        Dialect::Clingo,
+    ));
+    assert!(
+        lowered
+            .diagnostics()
+            .iter()
+            .any(|error| matches!(error.kind(), LowerErrorKind::RepeatedDefinition { .. })),
+        "the raise diagnoses the repeat the authority refuses: {:?}",
+        lowered.diagnostics()
+    );
     let refused = authority_answer_sets(source, &cwd);
     assert!(
         refused.error.is_some(),

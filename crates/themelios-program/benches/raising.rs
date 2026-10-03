@@ -159,6 +159,33 @@ fn repeated_body_literals(size: usize) -> Fixture {
     }
 }
 
+/// `size` distinct constants in `base`: every one a global definition the raise checks.
+fn distinct_constants(size: usize) -> Fixture {
+    let mut source = String::new();
+    for i in 0..size {
+        write!(source, "#const c{i} = {i}. ").expect("writing to a String");
+    }
+    Fixture {
+        name: "distinct_constants",
+        size,
+        statements: size,
+        merged: size,
+        source,
+    }
+}
+
+/// One choice of `size` copies of the atom element `a`: every repeat merged into one entry
+/// by the counted constructor, each origin unioned into it (§4.4).
+fn repeated_atom_elements(size: usize) -> Fixture {
+    Fixture {
+        name: "repeated_atom_elements",
+        size,
+        statements: 1,
+        merged: 1,
+        source: format!("{{ {} }}.", vec!["a"; size].join("; ")),
+    }
+}
+
 /// Refuse a malformed fixture before measuring any operation on it.
 fn checked_parse(fixture: &Fixture) -> Parse<ast::Program> {
     let source = Source::new(SourceId::new(0), fixture.source.clone()).expect("source admits");
@@ -215,6 +242,10 @@ fn main() {
         wide_part(16_000),
         repeated_body_literals(1_000),
         repeated_body_literals(16_000),
+        distinct_constants(1_000),
+        distinct_constants(16_000),
+        repeated_atom_elements(1_000),
+        repeated_atom_elements(16_000),
     ] {
         measure(&mut criterion, &fixture);
     }
