@@ -23,7 +23,7 @@ use themelios_program::symbol::{Sign, Symbol};
 use themelios_program::term::{EvalError, Term, Variable};
 use themelios_program::unify::{NotAPattern, mgu, signature_range};
 use themelios_solve::agent::{Agent, Scenario};
-use themelios_solve::contract::{Backend, Fault, Mode};
+use themelios_solve::contract::{Backend, Fault, Mode, Presupposition};
 use themelios_solve::outcome::{Determination, Model, Models};
 
 pub mod prelude;
@@ -903,12 +903,15 @@ pub(crate) fn instances_in(pattern: &BindingPattern, set: &AnswerSet) -> Vec<Sym
 
 /// The engine-free snapshot a resolved question's world view materialises into
 /// (docs/design/query.md §2.3), or the refusal: an inconsistent program has no world
-/// view — `inconsistent` is the refusal's message — and an inconclusive search, or
-/// one that witnessed models without closing the space, carries why it stopped.
+/// view — a reading over no answer set, `inconsistent` the refusal's message — and an
+/// inconclusive search, or one that witnessed models without closing the space,
+/// carries why it stopped.
 fn materialised(determination: Determination<'_>, inconsistent: &str) -> Result<Snapshot, Fault> {
     match determination {
         Determination::Consistent(models) => WorldView::of(models).materialize(),
-        Determination::Inconsistent(_) => Err(Fault::request(inconsistent)),
+        Determination::Inconsistent(_) => {
+            Err(Fault::request(inconsistent, Presupposition::NoAnswerSet))
+        }
         Determination::Inconclusive(partial) => Err(partial.into()),
     }
 }

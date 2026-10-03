@@ -8,19 +8,18 @@
 
 use std::collections::HashSet;
 
-use themelios_base::diagnostic::Label;
 use themelios_base::span::{ByteOffset, Location};
 use themelios_program::program::Part;
 use themelios_program::raise::raise_str;
-use themelios_program::{Dialect, Name, Origin, Program, Sign, SourceId, Symbol};
+use themelios_program::{
+    Dialect, Name, Origin, Program, Provenance, Sign, SourceId, Statement, Symbol, WithProvenance,
+};
 use themelios_solve::agent::{Assumption, Scenario};
 use themelios_solve::bridge::{Door, GroundProgram};
-use themelios_solve::conformance::{
-    self, Breach, Capability, Check, ConformanceReport, Skip, Verdict,
-};
+use themelios_solve::conformance::{self, Breach, Check, ConformanceReport, Skip, Verdict};
 use themelios_solve::contract::{
-    Backend, Cancel, Capabilities, ConsequenceRequest, ConsequenceSupport, Fault, GroundOptions,
-    Locus, Mode, SolveRequest, TruthValue,
+    Backend, Cancel, Capabilities, Capability, ConsequenceRequest, ConsequenceSupport, Fault,
+    GroundOptions, Locus, Mode, Presupposition, SolveRequest, TruthValue,
 };
 use themelios_solve::extend::{Function, Propagator};
 use themelios_solve::outcome::{
@@ -168,46 +167,54 @@ fn unsafe_offset() -> ByteOffset {
     ByteOffset::new(u32::try_from(at).expect("a short text"))
 }
 
-/// A program fault at `location`, as a backend refusing the unsafe program
-/// raises it.
-fn refusal_at(location: Location) -> Fault {
-    Fault::program(
-        "a variable nothing binds",
-        Label {
-            location,
-            message: None,
-        },
-    )
+/// The unsafe program's statement whose parsed location does — or, with
+/// `unsafe_one` false, does not — hold the atom over a variable nothing binds.
+fn statement_of(program: &Program, unsafe_one: bool) -> &WithProvenance<Statement> {
+    program
+        .statements()
+        .find(|node| {
+            node.provenance().origins().any(|origin| {
+                matches!(origin, Origin::Parsed(location)
+                    if location.span.contains(unsafe_offset()) == unsafe_one)
+            })
+        })
+        .expect("each of the unsafe program's statements is located")
 }
 
-/// The refusal of the program no grounder can instantiate: a program fault at
-/// the location of its unsafe statement.
+/// A program fault refusing `statement`, as a backend refusing the unsafe
+/// program raises it.
+fn refusal_of(statement: &WithProvenance<Statement>) -> Fault {
+    Fault::program("a variable nothing binds", statement)
+}
+
+/// The refusal of the program no grounder can instantiate: a program fault
+/// refusing its unsafe statement.
 fn located_refusal(program: &Program) -> Fault {
-    let location = parsed_locations(program)
-        .find(|location| location.span.contains(unsafe_offset()))
-        .expect("the unsafe statement is located");
-    refusal_at(location)
+    refusal_of(statement_of(program, true))
 }
 
-/// The same refusal at the program's other statement, the leading fact — as an
+/// The same refusal of the program's other statement, the leading fact — as an
 /// adapter mapping its engine's error to the wrong statement raises it.
 fn mislocated_refusal(program: &Program) -> Fault {
-    let location = parsed_locations(program)
-        .find(|location| !location.span.contains(unsafe_offset()))
-        .expect("the leading fact is located");
-    refusal_at(location)
+    refusal_of(statement_of(program, false))
 }
 
-/// The same refusal at the unsafe statement's offsets in a source the program
-/// is not — as an adapter reporting every location in its own text raises it.
+/// The same refusal of the unsafe statement, placed at its offsets in a source
+/// the program is not — as an adapter reporting every location in its own text
+/// raises it.
 fn refusal_in_another_source(program: &Program) -> Fault {
+    let statement = statement_of(program, true);
     let Location { span, .. } = parsed_locations(program)
         .find(|location| location.span.contains(unsafe_offset()))
         .expect("the unsafe statement is located");
-    refusal_at(Location {
+    let elsewhere = Origin::Parsed(Location {
         source: SourceId::new(ANOTHER_SOURCE),
         span,
-    })
+    });
+    refusal_of(&WithProvenance::new(
+        statement.get().clone(),
+        Provenance::from(elsewhere),
+    ))
 }
 
 /// A source id no suite program is raised under.
@@ -669,7 +676,10 @@ impl Backend for Stub {
             && !self.capabilities.budgets.time
             && self.flaw != Flaw::AnswersAnUndeclaredTimedSolve
         {
-            return Err(Fault::unsupported());
+            return Err(Fault::request(
+                "the stub enforces no time budget",
+                Presupposition::UnrealisableBudget,
+            ));
         }
         if self.flaw == Flaw::RefusesTheSolve {
             return Err(Fault::engine("the stub refuses to solve"));
@@ -706,7 +716,7 @@ impl Backend for Stub {
 
     fn lower(&mut self, door: Door<'_>) -> Result<(), Fault> {
         let Door::Program(lowered) = door else {
-            return Err(Fault::unsupported());
+            return Err(Fault::engine("the stub lowers Door B alone"));
         };
         if self.flaw == Flaw::RefusesEveryProgram {
             return Err(Fault::engine("the stub refuses every program"));
@@ -775,13 +785,16 @@ impl Backend for Stub {
             if self.flaw == Flaw::RefusesUndeclaredAssumptionsAtTheEngine {
                 return Err(Fault::engine("the stub cannot assume"));
             }
-            return Err(Fault::unsupported());
+            return Err(Fault::unsupported(Capability::Assumptions));
         }
         if request.time.is_some()
             && !self.capabilities.budgets.time
             && self.flaw != Flaw::AnswersAnUndeclaredTimedScopedSolve
         {
-            return Err(Fault::unsupported());
+            return Err(Fault::request(
+                "the stub enforces no time budget",
+                Presupposition::UnrealisableBudget,
+            ));
         }
         let request_scenario = scenario;
         let all = self.answer_sets()?;
@@ -837,20 +850,27 @@ impl Backend for Stub {
         if self.capabilities.multi_shot || self.flaw == Flaw::AnswersAnUndeclaredGround {
             Ok(())
         } else {
-            Err(Fault::unsupported())
+            Err(Fault::unsupported(Capability::MultiShot))
         }
     }
 
     fn assign_external(&mut self, external: Symbol, value: TruthValue) -> Result<(), Fault> {
         if !self.capabilities.multi_shot {
-            return Err(Fault::unsupported());
+            return Err(Fault::unsupported(Capability::MultiShot));
         }
         match self.flaw {
-            Flaw::RefusesAssignmentAsUnsupported => return Err(Fault::unsupported()),
+            Flaw::RefusesAssignmentAsUnsupported => {
+                return Err(Fault::unsupported(Capability::MultiShot));
+            }
             Flaw::RefusesAssignmentAtTheEngine => {
                 return Err(Fault::engine("the stub cannot assign"));
             }
-            Flaw::AssignsNoExternal => return Err(Fault::request("the stub assigns nothing")),
+            Flaw::AssignsNoExternal => {
+                return Err(Fault::request(
+                    "the stub assigns nothing",
+                    Presupposition::NotExternal,
+                ));
+            }
             _ => {}
         }
         // The external program's `a` is the one external atom in the table.
@@ -861,7 +881,10 @@ impl Backend for Stub {
         } else if self.flaw == Flaw::AcceptsANonExternal {
             Ok(())
         } else {
-            Err(Fault::request("the atom is not external"))
+            Err(Fault::request(
+                "the atom is not external",
+                Presupposition::NotExternal,
+            ))
         }
     }
 
@@ -875,7 +898,7 @@ impl Backend for Stub {
                 self.pending_refusal = None;
                 Ok(())
             }
-            (false, _) => Err(Fault::unsupported()),
+            (false, _) => Err(Fault::unsupported(Capability::MultiShot)),
         }
     }
 
@@ -883,7 +906,7 @@ impl Backend for Stub {
         if self.capabilities.functions || self.flaw == Flaw::AnswersUndeclaredFunctions {
             Ok(())
         } else {
-            Err(Fault::unsupported())
+            Err(Fault::unsupported(Capability::Functions))
         }
     }
 
@@ -891,7 +914,7 @@ impl Backend for Stub {
         if self.capabilities.propagators || self.flaw == Flaw::AnswersUndeclaredPropagators {
             Ok(())
         } else {
-            Err(Fault::unsupported())
+            Err(Fault::unsupported(Capability::Propagators))
         }
     }
 
@@ -901,12 +924,12 @@ impl Backend for Stub {
         request: &ConsequenceRequest,
     ) -> Result<NativeAnswer, Fault> {
         if self.capabilities.native_consequences != ConsequenceSupport::Native {
-            return Err(Fault::unsupported());
+            return Err(Fault::unsupported(Capability::NativeConsequences));
         }
         if self.flaw == Flaw::RefusesTheNativeScenario
             && request.scenario.assumptions().next().is_some()
         {
-            return Err(Fault::request("the stub's door ranges over no scenario"));
+            return Err(Fault::unsupported(Capability::Assumptions));
         }
         if self.flaw == Flaw::StopsTheNativeSearchShort {
             return Ok(NativeAnswer::Stopped(Truncation::Budget));

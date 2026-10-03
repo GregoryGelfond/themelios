@@ -14,8 +14,13 @@ use themelios_program::symbol::{Name, Sign, Symbol, VarName};
 use themelios_program::term::Term;
 use themelios_query::{AgentReading, Answer, BindingPattern, NotABindingPattern, Query};
 use themelios_solve::agent::{Assumption, Scenario};
-use themelios_solve::contract::{Fault, Locus};
-use themelios_solve::outcome::{AnswerSet, Conclusion};
+use themelios_solve::contract::{Capability, Fault, Presupposition, Refused};
+use themelios_solve::outcome::{AnswerSet, Conclusion, Truncation};
+
+/// Whether `fault` refused the request for the presupposition `expected`.
+fn refused_for(fault: &Fault, expected: Presupposition) -> bool {
+    matches!(fault.refused(), Refused::Request(presupposition) if presupposition == expected)
+}
 
 /// The positive ground literal query `name`.
 fn lit(name: &str) -> Query {
@@ -100,11 +105,14 @@ fn bindings_delegates_the_partition() {
 
 #[test]
 fn a_reading_over_an_inconsistent_program_refuses() {
-    // No answer set, search closed: the reading refuses at the request locus rather
-    // than inventing a No.
+    // No answer set, search closed: the reading refuses, as a reading over no
+    // answer set, rather than inventing a No.
     with_agent(vec![], Conclusion::Exhausted, |agent| {
         let refusal = agent.answer(&lit("a")).expect_err("no world view to read");
-        assert_eq!(refusal.locus(), Locus::Request);
+        assert!(
+            refused_for(&refusal, Presupposition::NoAnswerSet),
+            "{refusal:?}"
+        );
     });
 }
 
@@ -117,8 +125,8 @@ fn a_reading_over_a_truncated_search_refuses() {
             .snapshot()
             .expect_err("an undecided program has no world view");
         assert!(
-            refusal.to_string().contains("budget"),
-            "the refusal names why the search stopped",
+            refused_for(&refusal, Presupposition::Unclosed(Truncation::Budget)),
+            "the refusal names why the search stopped: {refusal:?}",
         );
     });
 }
@@ -133,7 +141,10 @@ fn a_reading_over_a_witnessed_but_unclosed_search_refuses() {
         let refusal = agent
             .snapshot()
             .expect_err("a search that did not close has no complete world view");
-        assert_eq!(refusal.locus(), Locus::Request);
+        assert!(
+            refused_for(&refusal, Presupposition::Unclosed(Truncation::Budget)),
+            "{refusal:?}"
+        );
     });
 }
 
@@ -252,12 +263,12 @@ fn a_scoped_snapshot_s_readings_range_over_the_scenario() {
 #[test]
 fn snapshot_assuming_refuses_a_backend_without_assumptions() {
     // The backend declares no `assumptions`, and a scenario needs `solve_assuming`:
-    // the scoped snapshot is refused as unsupported, at the request locus.
+    // the scoped snapshot is refused as unsupported, naming the capability.
     with_agent(three_models(), Conclusion::Exhausted, |agent| {
         let refusal = agent
             .snapshot_assuming(&assuming_a())
             .expect_err("no assumptions declared");
-        assert_eq!(refusal, Fault::unsupported());
+        assert_eq!(refusal, Fault::unsupported(Capability::Assumptions));
     });
 }
 
@@ -271,7 +282,10 @@ fn a_scoped_snapshot_with_no_model_under_the_scenario_refuses() {
         let refusal = agent
             .snapshot_assuming(&impossible)
             .expect_err("no model under the scenario");
-        assert_eq!(refusal.locus(), Locus::Request);
+        assert!(
+            refused_for(&refusal, Presupposition::NoAnswerSet),
+            "{refusal:?}"
+        );
         assert!(refusal.to_string().contains("scenario"), "{refusal}");
     });
 }
@@ -285,6 +299,9 @@ fn a_scoped_snapshot_of_an_unclosed_search_refuses() {
         let refusal = agent
             .snapshot_assuming(&assuming_a())
             .expect_err("a scoped search that did not close");
-        assert!(refusal.to_string().contains("budget"), "{refusal}");
+        assert!(
+            refused_for(&refusal, Presupposition::Unclosed(Truncation::Budget)),
+            "{refusal:?}"
+        );
     });
 }

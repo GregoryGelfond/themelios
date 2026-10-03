@@ -1,14 +1,14 @@
 //! The backend contract (docs/design/solve.md §4): the `Backend` trait, its
-//! capability declaration, and the fault and locus vocabulary — the one door an
-//! audit reads.
+//! capability declaration, and the fault vocabulary — the one door an audit
+//! reads.
 //!
 //! The [`Backend`] trait (§4.1, §4.3) is the sole crossing between the
 //! engine-free core and any engine: four methods required of every backend —
 //! the declaration, the solve, the bridge, and the ground-program observer —
 //! and, beyond them, methods required exactly when the matching capability
-//! bit is declared, each provided with a default that refuses, so an
-//! undeclared capability is a typed refusal at the seam, never a compile
-//! burden and never a silent degrade (§4.1).
+//! bit is declared, each provided with a default that refuses naming the
+//! [`Capability`] it needed, so an undeclared capability is a typed refusal at
+//! the seam, never a compile burden and never a silent degrade (§4.1).
 //!
 //! The capability declaration (§4.1) is a closed set of bits and enums a
 //! backend answers for itself, read before a request is paid for: a request
@@ -20,25 +20,30 @@
 //!
 //! The fault vocabulary (§5.4) is a value with a closed locus taxonomy at the
 //! seam. A [`Fault`] owns its model — where it arose, a message that is never
-//! empty, a source label only where the fault has one, and whether it is a
-//! backend bug — and renders through `Display`. It is not, in general, a
-//! diagnostic: `base`'s `Diagnostic` is located by construction, and a fault
-//! without a source span (an engine, resource, or adapter fault) is not a
-//! degenerate diagnostic with a fabricated span but a different thing. Only a
-//! [`LocatedFault`], reached through [`Fault::located`], lowers to a
-//! `Diagnostic` — under a real span, never an invented one.
+//! empty, whether it is a backend bug, what it refused, and optionally the
+//! engine's typed cause — and renders through `Display`. What it refused is a
+//! closed sum keyed by locus, [`Refused`]: a statement or a parse at the
+//! program locus, the [`Presupposition`] that failed at the request locus, or
+//! nothing, so a consumer acts on a refusal by matching it, never by reading
+//! its message. A fault is not, in general, a diagnostic: `base`'s
+//! `Diagnostic` is located by construction, and a fault without a source span
+//! is not a degenerate diagnostic with a fabricated span but a different
+//! thing. [`Fault::diagnostics`] lowers it to as many diagnostics as its
+//! source has parsed origins to place them at — none for an unlocated fault.
 
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
-use themelios_base::diagnostic::{Diagnostic, DiagnosticId, Label, Severity, ToDiagnostic};
-use themelios_program::Symbol;
+use themelios_base::diagnostic::{Diagnostic, DiagnosticId, Label, Severity};
 use themelios_program::program::Part;
+use themelios_program::provenance::{Origin, WithProvenance};
+use themelios_program::{Statement, Symbol};
 
 use crate::agent::Scenario;
-use crate::bridge::{Door, GroundProgram};
+use crate::bridge::{Door, GroundProgram, NotAdmitted};
 use crate::extend::{Function, Propagator};
-use crate::outcome::{NativeAnswer, Optimized, Solved};
+use crate::outcome::{NativeAnswer, Optimized, Solved, Truncation};
 
 // ---- The backend contract (§4.1, §4.3) ----
 
@@ -110,7 +115,7 @@ pub trait Backend {
     /// the improving trajectory iff the request asks (§5.3); refuses
     /// otherwise.
     fn optimize(&mut self, _request: &OptimizeRequest) -> Result<Optimized<'_>, Fault> {
-        Err(Fault::unsupported())
+        Err(Fault::unsupported(Capability::Optimization))
     }
 
     /// Required under `capabilities().assumptions`. Solve under a scenario
@@ -123,22 +128,23 @@ pub trait Backend {
         _scenario: &Scenario,
         _request: &SolveRequest,
     ) -> Result<Solved<'_>, Fault> {
-        Err(Fault::unsupported())
+        Err(Fault::unsupported(Capability::Assumptions))
     }
 
     /// Required under `capabilities().multi_shot`. Instantiate the named
     /// program parts under the options (§6.2); refuses otherwise.
     fn ground(&mut self, _parts: &[Part], _options: &GroundOptions) -> Result<(), Fault> {
-        Err(Fault::unsupported())
+        Err(Fault::unsupported(Capability::MultiShot))
     }
 
     /// Required under `capabilities().multi_shot`. Assign an external atom its
     /// truth value (§6.2). An atom that is not external — every atom, where the
-    /// backend declares no externals — is refused at the request surface, not
-    /// with [`Fault::unsupported`]: the method is there, the atom is not one it
-    /// assigns. Without `multi_shot`, the default refuses as unsupported.
+    /// backend declares no externals — is refused as
+    /// [`Presupposition::NotExternal`], not with [`Fault::unsupported`]: the
+    /// method is there, the atom is not one it assigns. Without `multi_shot`,
+    /// the default refuses as unsupported.
     fn assign_external(&mut self, _external: Symbol, _value: TruthValue) -> Result<(), Fault> {
-        Err(Fault::unsupported())
+        Err(Fault::unsupported(Capability::MultiShot))
     }
 
     /// Required under `capabilities().multi_shot`. Clear the engine's
@@ -148,19 +154,19 @@ pub trait Backend {
     /// not called on a single-shot backend, where `lower` replaces. Refuses
     /// otherwise.
     fn reset(&mut self) -> Result<(), Fault> {
-        Err(Fault::unsupported())
+        Err(Fault::unsupported(Capability::MultiShot))
     }
 
     /// Required under `capabilities().functions`. Register an `@`-function
     /// for ground-time evaluation (§7); refuses otherwise.
     fn register_function(&mut self, _function: Box<dyn Function>) -> Result<(), Fault> {
-        Err(Fault::unsupported())
+        Err(Fault::unsupported(Capability::Functions))
     }
 
     /// Required under `capabilities().propagators`. Register a custom
     /// propagator (§8); refuses otherwise.
     fn register_propagator(&mut self, _propagator: Box<dyn Propagator>) -> Result<(), Fault> {
-        Err(Fault::unsupported())
+        Err(Fault::unsupported(Capability::Propagators))
     }
 
     /// Optional: overridden exactly when `capabilities().native_consequences`
@@ -187,7 +193,7 @@ pub trait Backend {
         _mode: Mode,
         _request: &ConsequenceRequest,
     ) -> Result<NativeAnswer, Fault> {
-        Err(Fault::unsupported())
+        Err(Fault::unsupported(Capability::NativeConsequences))
     }
 }
 
@@ -312,6 +318,78 @@ pub struct BudgetSupport {
     pub time: bool,
 }
 
+/// A declared capability, named (docs/design/solve.md §4.1) — as a refusal
+/// names the one a request needed ([`Fault::unsupported`], §5.4) and a
+/// conformance report the one it checked (§13.1). A refusal names one of the six
+/// whose method refuses — optimization, native consequences, assumptions,
+/// multi-shot, functions, propagators; undeclared cancellation answers `None`
+/// instead, and externals and the time budget name checks, never refusals: a
+/// budget nothing realises refuses with [`Presupposition::UnrealisableBudget`]
+/// (§6.3). Non-exhaustive, growing with [`Capabilities`].
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Capability {
+    /// Proving optima — `optimize` (§5.3).
+    Optimization,
+    /// The engine's own consequence door — `consequences_native` (§4.2).
+    NativeConsequences,
+    /// Solving under assumptions — `solve_assuming` (§6.3).
+    Assumptions,
+    /// Keeping the program across solves — `reset`, `ground`, and
+    /// `assign_external` (§6.2).
+    MultiShot,
+    /// Honouring external atoms — an assignment through `assign_external`
+    /// read back in the answer sets (§6.2).
+    Externals,
+    /// Interrupting an in-flight solve — `interrupt` (§6.1, §6.3).
+    Cancellation,
+    /// Enforcing a time budget natively — the request's `time` (§6.3).
+    TimeBudget,
+    /// Evaluating `@`-functions — `register_function` (§7).
+    Functions,
+    /// Running custom propagators — `register_propagator` (§8).
+    Propagators,
+}
+
+impl Capabilities {
+    /// Whether this declaration names `capability` — the bit, or the enum value,
+    /// a request needing it reads (§4.1): the one reading, for the agent's gate
+    /// and the conformance suite's honesty checks alike. Total; O(1).
+    pub(crate) fn declares(&self, capability: Capability) -> bool {
+        match capability {
+            Capability::Optimization => self.optimization,
+            Capability::NativeConsequences => {
+                self.native_consequences == ConsequenceSupport::Native
+            }
+            Capability::Assumptions => self.assumptions,
+            Capability::MultiShot => self.multi_shot,
+            Capability::Externals => self.externals,
+            Capability::Cancellation => self.cancellation,
+            Capability::TimeBudget => self.budgets.time,
+            Capability::Functions => self.functions,
+            Capability::Propagators => self.propagators,
+        }
+    }
+}
+
+impl fmt::Display for Capability {
+    /// The capability, as the noun phrase a refusal and a report both print
+    /// (§1.3: every value has a human `Display`).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Capability::Optimization => "optimization",
+            Capability::NativeConsequences => "native consequences",
+            Capability::Assumptions => "assumptions",
+            Capability::MultiShot => "multi-shot solving",
+            Capability::Externals => "external atoms",
+            Capability::Cancellation => "cancellation",
+            Capability::TimeBudget => "a time budget",
+            Capability::Functions => "@-functions",
+            Capability::Propagators => "propagators",
+        })
+    }
+}
+
 // ---- The request-side values (§5.2, §6.3) ----
 
 /// The ask `solve` serves (docs/design/solve.md §5.2): enumerate the answer
@@ -397,14 +475,15 @@ pub enum Mode {
 /// loci, and admitting a sixth is a visible breaking change.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Locus {
-    /// The program: a statement the backend could not lower or ground. Such a
-    /// fault carries the statement's source location, so it lowers to a
-    /// diagnostic.
+    /// The program: a statement the backend refuses — at `lower`, or where its
+    /// engine meets it — or a parse refused at Door A (§10.2). Such a fault
+    /// refers to its source, and is located where that source carries a
+    /// parsed origin.
     Program,
-    /// The request: an ask beyond the backend's declared capabilities (§4.1),
-    /// or a request-side value that cannot be honoured — a stale statement
-    /// handle, a spent observation (§6.2), a non-pattern where a pattern is
-    /// asked for (docs/design/query.md §2.5).
+    /// The request: a presupposition of it that fails — a capability the
+    /// backend does not declare (§4.1), a stale statement handle or a spent
+    /// observation (§6.2), a reading over no model (§5.2), each a
+    /// [`Presupposition`] the fault names.
     Request,
     /// A resource: a limit of the environment reached while the request was
     /// being served.
@@ -450,27 +529,127 @@ impl Locus {
     }
 }
 
-/// A backend or request fault (docs/design/solve.md §5.4). Reserved for
-/// engine and request failures: an inconsistent or inconclusive program is a
+/// Why a request was refused: a presupposition of it that fails
+/// (docs/design/solve.md §5.4), named so a consumer acts on it by matching —
+/// retrying under a larger budget, routing to another backend, rebuilding —
+/// never by reading the message. Each variant is a refusal the tier makes, at
+/// the site cited. Non-exhaustive: a request refused for a reason not yet named
+/// gains a variant, never a message to tell it by.
+#[non_exhaustive]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Presupposition {
+    /// A capability the backend does not declare, one whose method refuses
+    /// (§4.1).
+    Unsupported(Capability),
+    /// The backend refuses until its rebuild (§4.1, a backend's own state).
+    NeedsRebuild,
+    /// A reading over no model: the program, or its scenario, admits none
+    /// (§5.2).
+    NoAnswerSet,
+    /// A reading that needs a closed space, over a search stopped short at this
+    /// truncation (§5.2).
+    Unclosed(Truncation),
+    /// A complete collection, from a handle whose models were streamed (§5.2).
+    Taken,
+    /// A statement handle naming nothing live in this agent's knowledge (§6.2).
+    NotLive,
+    /// An observation already forgotten, or another agent's (§6.2).
+    Spent,
+    /// An observed fact that is not an atom (§6.2, §7.3).
+    NotAnAtom,
+    /// A truth value assigned to an atom that is not external (§6.2).
+    NotExternal,
+    /// A budget the backend neither enforces nor lets the core enforce (§6.3).
+    UnrealisableBudget,
+}
+
+/// What a fault refused — closed, one of four, keyed by locus
+/// (docs/design/solve.md §5.4). Closed on purpose: a row grows a typed reason
+/// inside the sum when a consumer first reads one — the `Statement` row, a
+/// router's reason why a backend refused the statement (§12, §14) — never a
+/// reason held beside it. A view into the fault, freely copied.
+#[derive(Clone, Copy, Debug)]
+pub enum Refused<'a> {
+    /// A program fault refusing a statement, with its provenance.
+    Statement(&'a WithProvenance<Statement>),
+    /// A program fault refusing a parse at Door A, its refusal carried whole
+    /// (§10.2).
+    Parse(&'a NotAdmitted),
+    /// A request fault: the presupposition that failed.
+    Request(Presupposition),
+    /// A resource, engine, or adapter fault, which refused nothing it can name.
+    Nothing,
+}
+
+/// What a fault refused, owned — the storage behind [`Refused`]. A refused
+/// statement or parse is boxed, so a fault that refused nothing stays small.
+#[derive(Clone, Debug)]
+enum Refusal {
+    Statement(Box<WithProvenance<Statement>>),
+    Parse(Box<NotAdmitted>),
+    Request(Presupposition),
+    Nothing,
+}
+
+impl PartialEq for Refusal {
+    /// A refused statement by its content and its origins — two statements at
+    /// different locations differ, annotations alone do not, where the
+    /// carrier's own equality compares content alone (docs/design/program.md
+    /// §6.2); a refused parse by its diagnostics; a request by its
+    /// presupposition. O(statement), or O(diagnostics).
+    fn eq(&self, other: &Refusal) -> bool {
+        match (self, other) {
+            (Refusal::Statement(one), Refusal::Statement(two)) => {
+                one.get() == two.get() && one.provenance().origins().eq(two.provenance().origins())
+            }
+            (Refusal::Parse(one), Refusal::Parse(two)) => one == two,
+            (Refusal::Request(one), Refusal::Request(two)) => one == two,
+            (Refusal::Nothing, Refusal::Nothing) => true,
+            _ => false,
+        }
+    }
+}
+
+/// A backend or request fault (docs/design/solve.md §5.4). Reserved for engine
+/// and request failures: an inconsistent or inconclusive program is a
 /// `Determination` value (§5.1), never a fault.
 ///
-/// A fault owns its model — its [`Locus`], a message that is never empty, a
-/// source label only where it has one, and the closed backend-bug bit — and
-/// renders through `Display`. It lowers to a `base::Diagnostic` only where it
-/// is located, through [`Fault::located`]: a fault without a source span is
-/// not a degenerate diagnostic. Owned plain data (`Send + Sync + 'static`).
+/// A fault owns its model — its [`Locus`], a message that is never empty, the
+/// closed backend-bug bit, what it refused ([`Fault::refused`]), and,
+/// optionally, the engine's typed cause ([`Fault::caused_by`]) — renders
+/// through `Display`, and lowers to zero, one, or several diagnostics
+/// ([`Fault::diagnostics`]). Equality compares the message, the locus, the
+/// bit, and what was refused, never the cause, which is detail, not identity;
+/// `Fault` is not `Hash` — a report, not a key. Clone is `O(statement)`, or
+/// `O(diagnostics)` for a refused parse, the cause shared. Owned plain data
+/// (`Send + Sync + 'static`).
 #[non_exhaustive]
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Debug)]
 pub struct Fault {
     locus: Locus,
     /// The headline; never empty.
     message: String,
-    /// The source label, present only where the fault has a source location
-    /// (a program fault).
-    label: Option<Label>,
+    /// What the fault refused, keyed by its locus.
+    refusal: Refusal,
     /// Whether the fault is a backend contract violation.
     backend_bug: bool,
+    /// The engine's own typed failure, shared and opaque, where one was
+    /// attached.
+    cause: Option<Arc<dyn std::error::Error + Send + Sync>>,
 }
+
+impl PartialEq for Fault {
+    /// The message, the locus, the bit, and what was refused — never the cause
+    /// (§5.4).
+    fn eq(&self, other: &Fault) -> bool {
+        self.locus == other.locus
+            && self.message == other.message
+            && self.backend_bug == other.backend_bug
+            && self.refusal == other.refusal
+    }
+}
+
+impl Eq for Fault {}
 
 /// The headline a fault carries when it was raised without one. The adapter
 /// builds faults from engine strings it does not control, and a headline is
@@ -481,14 +660,9 @@ const NO_MESSAGE: &str = "a fault was raised without a message";
 
 impl Fault {
     /// The one constructor every door routes through: it holds the invariant
-    /// that the message is never empty, so a located fault always lowers.
-    /// Total; O(message).
-    fn new(
-        locus: Locus,
-        message: impl Into<String>,
-        label: Option<Label>,
-        backend_bug: bool,
-    ) -> Fault {
+    /// that the message is never empty, so a located fault always lowers, and
+    /// starts with no cause. Total; O(message).
+    fn new(locus: Locus, message: impl Into<String>, refusal: Refusal, backend_bug: bool) -> Fault {
         let mut message = message.into();
         if message.is_empty() {
             message.push_str(NO_MESSAGE);
@@ -496,8 +670,76 @@ impl Fault {
         Fault {
             locus,
             message,
-            label,
+            refusal,
             backend_bug,
+            cause: None,
+        }
+    }
+
+    /// A statement the backend refuses — outside its language at `lower`, or
+    /// where its engine meets it (§5.4) — kept whole, so no span is made up and
+    /// no statement goes unnamed; located iff it carries a parsed origin. A
+    /// refused parse's door is `From<NotAdmitted>` (§10.2). Total;
+    /// O(message + statement).
+    pub fn program(message: impl Into<String>, statement: &WithProvenance<Statement>) -> Fault {
+        Fault::new(
+            Locus::Program,
+            message,
+            Refusal::Statement(Box::new(statement.clone())),
+            false,
+        )
+    }
+
+    /// A request whose presupposition fails, naming it (§5.4). Total;
+    /// O(message).
+    pub fn request(message: impl Into<String>, presupposition: Presupposition) -> Fault {
+        Fault::new(
+            Locus::Request,
+            message,
+            Refusal::Request(presupposition),
+            false,
+        )
+    }
+
+    /// A request beyond the backend's declared capabilities (§4.1), naming the
+    /// one it needed: the typed refusal every capability-gated method issues
+    /// when its bit is off. Not a backend bug — the capability was declared,
+    /// and read, before the request was paid for. Total; O(1).
+    pub fn unsupported(capability: Capability) -> Fault {
+        Fault::new(
+            Locus::Request,
+            format!("this backend does not declare {capability}"),
+            Refusal::Request(Presupposition::Unsupported(capability)),
+            false,
+        )
+    }
+
+    /// A limit of the environment reached, with the limit named. Total;
+    /// O(message).
+    pub fn resource(message: impl Into<String>) -> Fault {
+        Fault::new(Locus::Resource, message, Refusal::Nothing, false)
+    }
+
+    /// A failure the engine reported, carried verbatim. Total; O(message).
+    pub fn engine(message: impl Into<String>) -> Fault {
+        Fault::new(Locus::Engine, message, Refusal::Nothing, false)
+    }
+
+    /// A backend contract violation — the one door that sets
+    /// [`Fault::is_backend_bug`]. Total; O(message).
+    pub fn adapter_bug(message: impl Into<String>) -> Fault {
+        Fault::new(Locus::Adapter, message, Refusal::Nothing, true)
+    }
+
+    /// This fault, carrying the engine's own typed failure, shared and opaque:
+    /// [`Error::source`](std::error::Error::source) returns it for the caller
+    /// who downcasts it — no engine type in the signature, and not part of
+    /// equality (§5.4). Total; O(1).
+    #[must_use]
+    pub fn caused_by(self, cause: impl std::error::Error + Send + Sync + 'static) -> Fault {
+        Fault {
+            cause: Some(Arc::new(cause)),
+            ..self
         }
     }
 
@@ -512,51 +754,57 @@ impl Fault {
         self.backend_bug
     }
 
-    /// The located form of the fault: `Some` exactly when the fault carries a
-    /// source location (a program fault), so a diagnostic is only ever
-    /// lowered under a real span; `None` for a fault that renders through
-    /// `Display` alone. Total; O(1).
-    pub fn located(&self) -> Option<LocatedFault<'_>> {
-        self.label
-            .as_ref()
-            .map(|label| LocatedFault { fault: self, label })
+    /// What the fault refused: a statement, a parse, the request, or nothing.
+    /// Total; O(1).
+    pub fn refused(&self) -> Refused<'_> {
+        match &self.refusal {
+            Refusal::Statement(statement) => Refused::Statement(statement),
+            Refusal::Parse(refusal) => Refused::Parse(refusal),
+            Refusal::Request(presupposition) => Refused::Request(*presupposition),
+            Refusal::Nothing => Refused::Nothing,
+        }
     }
 
-    /// A request beyond the backend's declared capabilities (§4.1): the typed
-    /// refusal every capability-gated operation issues when its bit is off.
-    /// Not a backend bug — the capability was declared, and read, before the
-    /// request was paid for. Total; O(1).
-    pub fn unsupported() -> Fault {
-        Fault::new(Locus::Request, "unsupported request", None, false)
-    }
-
-    /// A failure the engine reported, carried verbatim. Total; O(message).
-    pub fn engine(message: impl Into<String>) -> Fault {
-        Fault::new(Locus::Engine, message, None, false)
-    }
-
-    /// A request that cannot be honoured, with the reason. Total; O(message).
-    pub fn request(message: impl Into<String>) -> Fault {
-        Fault::new(Locus::Request, message, None, false)
-    }
-
-    /// A limit of the environment reached, with the limit named. Total;
-    /// O(message).
-    pub fn resource(message: impl Into<String>) -> Fault {
-        Fault::new(Locus::Resource, message, None, false)
-    }
-
-    /// A backend contract violation — the one door that sets
-    /// [`Fault::is_backend_bug`]. Total; O(message).
-    pub fn adapter_bug(message: impl Into<String>) -> Fault {
-        Fault::new(Locus::Adapter, message, None, true)
-    }
-
-    /// A statement the backend could not lower or ground, with the statement's
-    /// source label — the located fault, the one that lowers to a diagnostic.
-    /// Total; O(message).
-    pub fn program(message: impl Into<String>, label: Label) -> Fault {
-        Fault::new(Locus::Program, message, Some(label), false)
+    /// The fault lowered to base diagnostics (§5.4): none for an unlocated
+    /// fault; one for a refused statement with a parsed origin — the least such
+    /// origin its primary label, any others secondaries (docs/design/program.md
+    /// §6.3), under the locus's `solve`-space identity, as an error, since a
+    /// fault defeats the operation it reports on; one per diagnostic for a
+    /// refused parse. Total; O(statement), or O(diagnostics).
+    pub fn diagnostics(&self) -> Vec<Diagnostic> {
+        match &self.refusal {
+            Refusal::Statement(statement) => {
+                let mut parsed =
+                    statement
+                        .provenance()
+                        .origins()
+                        .filter_map(|origin| match origin {
+                            Origin::Parsed(location) => Some(*location),
+                            Origin::Constructed | Origin::Transformed(_) => None,
+                        });
+                let Some(primary) = parsed.next() else {
+                    return Vec::new();
+                };
+                let diagnostic = Diagnostic::new(
+                    self.locus.diagnostic_id(),
+                    Severity::Error,
+                    self.message.clone(),
+                    Label {
+                        location: primary,
+                        message: None,
+                    },
+                )
+                .expect("a fault's message is never empty: construction replaces an empty one");
+                vec![parsed.fold(diagnostic, |diagnostic, location| {
+                    diagnostic.with_secondary(Label {
+                        location,
+                        message: None,
+                    })
+                })]
+            }
+            Refusal::Parse(refusal) => refusal.diagnostics(),
+            Refusal::Request(_) | Refusal::Nothing => Vec::new(),
+        }
     }
 }
 
@@ -567,39 +815,25 @@ impl fmt::Display for Fault {
     }
 }
 
-impl std::error::Error for Fault {}
-
-/// A fault that carries a source location — the only form of a fault that is
-/// a `base::Diagnostic` (docs/design/solve.md §5.4). Reached through
-/// [`Fault::located`], so the label is present by construction and the
-/// lowering never invents a span. A view: two borrows, freely copied.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct LocatedFault<'a> {
-    fault: &'a Fault,
-    label: &'a Label,
-}
-
-impl<'a> LocatedFault<'a> {
-    /// The label the fault carries — its source location, with a message where
-    /// it has one — readable without lowering to a diagnostic. Total; O(1).
-    pub fn label(&self) -> &'a Label {
-        self.label
+impl std::error::Error for Fault {
+    /// The engine's own typed failure, where one was attached (§5.4).
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.cause
+            .as_deref()
+            .map(|cause| cause as &(dyn std::error::Error + 'static))
     }
 }
 
-impl ToDiagnostic for LocatedFault<'_> {
-    /// The fault in `base`'s normal form (docs/design/base.md §6.5): the
-    /// locus's `solve`-space identity, the fault's message as the headline,
-    /// its own label as the primary — an error, since a fault defeats the
-    /// operation it reports on. Total; O(message + label).
-    fn to_diagnostic(&self) -> Diagnostic {
-        Diagnostic::new(
-            self.fault.locus.diagnostic_id(),
-            Severity::Error,
-            self.fault.message.clone(),
-            self.label.clone(),
+impl From<NotAdmitted> for Fault {
+    /// A program fault refusing the parse, carrying the refusal whole (§10.2):
+    /// the program text is where it lies. Total; O(1) beyond the message.
+    fn from(refusal: NotAdmitted) -> Fault {
+        Fault::new(
+            Locus::Program,
+            refusal.to_string(),
+            Refusal::Parse(Box::new(refusal)),
+            false,
         )
-        .expect("a fault's message is never empty: construction replaces an empty one")
     }
 }
 
@@ -667,11 +901,11 @@ mod tests {
         }
 
         fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
-            Err(Fault::unsupported())
+            Err(Fault::engine("this backend solves nothing"))
         }
 
         fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
-            Err(Fault::unsupported())
+            Err(Fault::engine("this backend lowers nothing"))
         }
 
         fn ground_program(&self) -> Option<&GroundProgram> {
@@ -704,7 +938,10 @@ mod tests {
         let refused = nothing
             .consequences_native(Mode::Cautious, &some_consequence_request())
             .err();
-        assert_eq!(refused, Some(Fault::unsupported()));
+        assert_eq!(
+            refused,
+            Some(Fault::unsupported(Capability::NativeConsequences))
+        );
     }
 
     #[test]

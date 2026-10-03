@@ -22,7 +22,7 @@ impl Backend for Dormant {
     }
 
     fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
-        Err(Fault::unsupported())
+        Err(Fault::engine("a dormant backend solves nothing"))
     }
 
     fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {

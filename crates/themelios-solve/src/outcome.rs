@@ -19,7 +19,7 @@
 use std::collections::BTreeSet;
 
 use crate::agent::{Assumption, Scenario};
-use crate::contract::{Fault, Mode};
+use crate::contract::{Fault, Mode, Presupposition};
 pub use themelios_program::AnswerSet;
 use themelios_program::{Sign, Symbol};
 
@@ -451,9 +451,14 @@ impl LiveRun<'_> {
             return Err(NotExhausted::faulted(self.conclusion(), fault));
         }
         if self.conclusion() == Some(Conclusion::Exhausted) {
-            Ok(all)
-        } else {
-            Err(NotExhausted::not_closed(self.conclusion()))
+            return Ok(all);
+        }
+        match self.conclusion().and_then(Truncation::of) {
+            Some(truncation) => Err(NotExhausted::not_closed(truncation)),
+            // A run that ended without concluding broke the run protocol (§5.2):
+            // `pull` recorded that breach as its fault, read above, so the arm
+            // states the invariant — the breach's adapter fault either way.
+            None => Err(NotExhausted::faulted(self.conclusion(), unconcluded())),
         }
     }
 }
@@ -497,18 +502,30 @@ impl<'a> Determination<'a> {
     }
 }
 
-/// The completeness refusal: a complete collection was asked of a search that did
-/// not close the space (docs/design/solve.md §5.3). Carries the [`Conclusion`]
-/// the search reached and — for a mid-stream engine fault — the fault itself, so
-/// a truncation and a fault are not laundered into one anonymous refusal.
+/// The completeness refusal: a complete collection was asked of a handle that
+/// cannot yield one (docs/design/solve.md §5.2, §5.3) — its models already
+/// streamed, its search stopped short of the space at a named truncation, or
+/// its search faulted, the fault kept as the cause — so a truncation and a
+/// fault are never laundered into one anonymous refusal.
 #[non_exhaustive]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct NotExhausted {
-    pub(crate) conclusion: Option<Conclusion>,
-    pub(crate) cause: Option<Fault>,
-    /// True when the handle's models were already taken (its stream was
-    /// touched), as distinct from a search that ran but did not close the space.
-    pub(crate) already_taken: bool,
+    reason: Incompleteness,
+}
+
+/// Why a complete collection was refused (docs/design/solve.md §5.2) — one of
+/// three, so an unclosed search always carries its truncation.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Incompleteness {
+    /// The handle's models were already streamed.
+    Taken(Option<Conclusion>),
+    /// The search ended short of the space, at this truncation.
+    Unclosed(Truncation),
+    /// The search faulted; the fault is the cause.
+    Faulted {
+        conclusion: Option<Conclusion>,
+        cause: Fault,
+    },
 }
 
 impl NotExhausted {
@@ -516,27 +533,22 @@ impl NotExhausted {
     /// longer available from it.
     pub(crate) fn already_taken(conclusion: Option<Conclusion>) -> NotExhausted {
         NotExhausted {
-            conclusion,
-            cause: None,
-            already_taken: true,
+            reason: Incompleteness::Taken(conclusion),
         }
     }
 
-    /// The search ran to its end but did not close the space.
-    pub(crate) fn not_closed(conclusion: Option<Conclusion>) -> NotExhausted {
+    /// The search ran to its end short of the space, at `truncation`.
+    pub(crate) fn not_closed(truncation: Truncation) -> NotExhausted {
         NotExhausted {
-            conclusion,
-            cause: None,
-            already_taken: false,
+            reason: Incompleteness::Unclosed(truncation),
         }
     }
 
-    /// A mid-stream engine fault stopped the drain — the fault is the cause.
+    /// The search faulted — mid-stream, or by ending against the run protocol
+    /// — and the fault is the cause.
     pub(crate) fn faulted(conclusion: Option<Conclusion>, cause: Fault) -> NotExhausted {
         NotExhausted {
-            conclusion,
-            cause: Some(cause),
-            already_taken: false,
+            reason: Incompleteness::Faulted { conclusion, cause },
         }
     }
 }
@@ -544,31 +556,22 @@ impl NotExhausted {
 impl From<NotExhausted> for Fault {
     /// This refusal as a [`Fault`], for a reading that needs a complete world view
     /// and cannot proceed without one — the query tier's `materialize` and cautious
-    /// reading among them. A mid-stream engine fault surfaces as its own cause; a
-    /// truncation or an already-taken handle surfaces as a request fault that NAMES
-    /// why, so the inconclusive reason stays visible, never laundered into an
-    /// anonymous error (docs/design/solve.md §5.1, §5.3).
+    /// reading among them. A fault the search raised surfaces as its own cause; a
+    /// truncation or an already-taken handle surfaces as a request fault naming its
+    /// presupposition — the truncation the search stopped at, or the streamed
+    /// handle — so the reason stays visible and matchable, never laundered into an
+    /// anonymous error (docs/design/solve.md §5.1, §5.3, §5.4).
     fn from(refusal: NotExhausted) -> Fault {
-        let NotExhausted {
-            conclusion,
-            cause,
-            already_taken,
-        } = refusal;
-        if let Some(fault) = cause {
-            return fault;
-        }
-        if already_taken {
-            return Fault::request(
+        match refusal.reason {
+            Incompleteness::Taken(_) => Fault::request(
                 "the models were already taken from this handle, so a complete world view is unavailable",
-            );
-        }
-        match conclusion {
-            Some(conclusion) => Fault::request(format!(
-                "the search did not yield a complete world view: {conclusion}"
-            )),
-            None => Fault::request(
-                "the search did not close the space, so a complete world view is unavailable",
+                Presupposition::Taken,
             ),
+            Incompleteness::Unclosed(truncation) => Fault::request(
+                format!("the search did not close the space: {truncation}"),
+                Presupposition::Unclosed(truncation),
+            ),
+            Incompleteness::Faulted { cause, .. } => cause,
         }
     }
 }
@@ -577,39 +580,44 @@ impl From<Partial> for Fault {
     /// This inconclusive reading as a [`Fault`], for a reading that needs a decided
     /// program and cannot proceed without one. The engine fault that stopped the
     /// search surfaces as its own cause; a plain truncation surfaces as a request
-    /// fault naming the conclusion it reached — the reason the search stopped stays
-    /// visible, symmetric with a witnessed truncation (docs/design/solve.md §5.1).
+    /// fault naming the truncation it stopped at — the reason the search stopped
+    /// stays visible, symmetric with a witnessed truncation (docs/design/solve.md
+    /// §5.1, §5.4).
     fn from(partial: Partial) -> Fault {
         match partial.reason {
             Reason::Faulted(fault) => fault,
-            Reason::Concluded(truncation) => Fault::request(format!(
-                "the search did not decide the program: {truncation}"
-            )),
-        }
-    }
-}
-
-impl std::fmt::Display for NotExhausted {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.already_taken {
-            return f.write_str(
-                "the models were already taken from this handle; a complete collection is unavailable",
-            );
-        }
-        match self.conclusion {
-            Some(conclusion) => write!(f, "{conclusion}; a complete collection is unavailable"),
-            None => f.write_str(
-                "the search did not close the space; a complete collection is unavailable",
+            Reason::Concluded(truncation) => Fault::request(
+                format!("the search did not decide the program: {truncation}"),
+                Presupposition::Unclosed(truncation),
             ),
         }
     }
 }
 
+impl std::fmt::Display for NotExhausted {
+    /// Why the collection is unavailable, as the reason says.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.reason {
+            Incompleteness::Taken(_) => f.write_str(
+                "the models were already taken from this handle; a complete collection is unavailable",
+            ),
+            Incompleteness::Unclosed(truncation) => {
+                write!(f, "{truncation}; a complete collection is unavailable")
+            }
+            Incompleteness::Faulted { .. } => {
+                f.write_str("the search faulted; a complete collection is unavailable")
+            }
+        }
+    }
+}
+
 impl std::error::Error for NotExhausted {
+    /// The fault the search raised, where it faulted.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.cause
-            .as_ref()
-            .map(|fault| fault as &(dyn std::error::Error + 'static))
+        match &self.reason {
+            Incompleteness::Faulted { cause, .. } => Some(cause),
+            Incompleteness::Taken(_) | Incompleteness::Unclosed(_) => None,
+        }
     }
 }
 
@@ -1017,6 +1025,7 @@ pub struct Measurement {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contract::Refused;
     use themelios_program::Name;
 
     /// The closed set of conclusions, each beside its rendering.
@@ -1069,22 +1078,70 @@ mod tests {
     }
 
     #[test]
-    fn an_unclosed_refusal_converts_to_a_request_fault_saying_so() {
-        let not_closed = Fault::from(NotExhausted::not_closed(None));
-        assert_eq!(not_closed.locus(), crate::contract::Locus::Request);
-        assert!(not_closed.to_string().contains("did not close"));
+    fn an_unclosed_refusal_converts_to_a_request_fault_naming_its_truncation() {
+        let not_closed = Fault::from(NotExhausted::not_closed(Truncation::Budget));
+        assert!(matches!(
+            not_closed.refused(),
+            Refused::Request(Presupposition::Unclosed(Truncation::Budget))
+        ));
     }
 
     #[test]
-    fn a_refusal_at_a_named_conclusion_names_it() {
-        let budgeted = Fault::from(NotExhausted::not_closed(Some(Conclusion::Budget)));
+    fn an_unclosed_refusal_s_message_names_its_truncation() {
+        let budgeted = Fault::from(NotExhausted::not_closed(Truncation::Budget));
         assert!(budgeted.to_string().contains("budget"), "{budgeted}");
     }
 
     #[test]
-    fn a_refusal_of_a_taken_handle_says_it_was_taken() {
+    fn a_refusal_of_a_taken_handle_names_the_taken_presupposition() {
         let taken = Fault::from(NotExhausted::already_taken(None));
-        assert!(taken.to_string().contains("already taken"), "{taken}");
+        assert!(matches!(
+            taken.refused(),
+            Refused::Request(Presupposition::Taken)
+        ));
+    }
+
+    #[test]
+    fn an_unclosed_refusal_has_no_error_source() {
+        let refusal = NotExhausted::not_closed(Truncation::Budget);
+        assert!(std::error::Error::source(&refusal).is_none());
+    }
+
+    /// A malformed run that ends at once and reports its conclusion only the
+    /// first time it is asked — a conclusion that does not stay put.
+    struct FickleRun {
+        asked: std::cell::Cell<u32>,
+    }
+
+    impl Run for FickleRun {
+        fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+            None
+        }
+        fn conclusion(&self) -> Option<Conclusion> {
+            let asked = self.asked.get();
+            self.asked.set(asked + 1);
+            (asked == 0).then_some(Conclusion::Budget)
+        }
+    }
+
+    #[test]
+    fn a_run_whose_conclusion_vanishes_after_its_end_is_refused_as_a_breach() {
+        // The end of the stream read a conclusion, so no breach was recorded
+        // there; the drain then reads none — the run protocol broken all the same.
+        let mut solved = solved_with(Box::new(FickleRun {
+            asked: std::cell::Cell::new(0),
+        }));
+        let refusal = solved.all_models().unwrap_err();
+        let cause = std::error::Error::source(&refusal)
+            .and_then(|source| source.downcast_ref::<Fault>())
+            .expect("the breach is the refusal's cause");
+        assert!(cause.is_backend_bug());
+    }
+
+    #[test]
+    fn a_faulted_refusal_says_the_search_faulted() {
+        let refusal = NotExhausted::faulted(None, Fault::engine("the engine died"));
+        assert!(refusal.to_string().contains("faulted"), "{refusal}");
     }
 
     #[test]
@@ -1096,8 +1153,10 @@ mod tests {
     #[test]
     fn a_truncated_partial_converts_to_a_request_fault_naming_its_truncation() {
         let truncated = Fault::from(Partial::truncated(Truncation::Budget));
-        assert_eq!(truncated.locus(), crate::contract::Locus::Request);
-        assert!(truncated.to_string().contains("budget"), "{truncated}");
+        assert!(matches!(
+            truncated.refused(),
+            Refused::Request(Presupposition::Unclosed(Truncation::Budget))
+        ));
     }
 
     #[test]
@@ -1499,7 +1558,7 @@ mod tests {
     fn a_fault_during_the_drain_becomes_the_refusals_cause() {
         let mut solved = solved_with(Box::new(MidFaultRun::new(vec![singleton(0)])));
         let refusal = solved.all_models().unwrap_err();
-        assert!(refusal.cause.is_some());
+        assert!(matches!(refusal.reason, Incompleteness::Faulted { .. }));
     }
 
     #[test]
@@ -1536,14 +1595,15 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_without_a_known_conclusion_still_explains_itself() {
+    fn an_unconcluded_search_s_refusal_is_caused_by_the_protocol_breach() {
+        // A run that ends without concluding breaks the run protocol (§5.2): the
+        // refusal's cause is that breach, the adapter's fault.
         let mut solved = solved_with(Box::new(SilentRun));
         let refusal = solved.all_models().unwrap_err();
-        assert!(refusal.conclusion.is_none());
-        assert!(
-            format!("{refusal}").contains("did not close the space"),
-            "{refusal}"
-        );
+        let cause = std::error::Error::source(&refusal)
+            .and_then(|source| source.downcast_ref::<Fault>())
+            .expect("the breach is the refusal's cause");
+        assert!(cause.is_backend_bug());
     }
 
     #[test]
@@ -1847,7 +1907,13 @@ mod tests {
     fn a_run_that_ends_without_a_conclusion_refuses_a_complete_collection() {
         let mut solved = solved_with(Box::new(SilentRun));
         let refusal = solved.all_models().unwrap_err();
-        assert!(refusal.conclusion.is_none());
+        assert!(matches!(
+            refusal.reason,
+            Incompleteness::Faulted {
+                conclusion: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1931,8 +1997,12 @@ mod tests {
     fn a_faulted_handle_keeps_its_fault_as_the_cause_across_refusals() {
         let mut solved = solved_with(Box::new(FaultThenEndRun { step: 0 }));
         let _ = solved.determination();
-        assert!(solved.all_models().unwrap_err().cause.is_some());
-        assert!(solved.all_models().unwrap_err().cause.is_some());
+        for _ in 0..2 {
+            assert!(matches!(
+                solved.all_models().unwrap_err().reason,
+                Incompleteness::Faulted { .. }
+            ));
+        }
     }
 
     // ---- Assumption blame (§5.4) ----

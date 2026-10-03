@@ -24,11 +24,12 @@
 //! (§4.1, §4.2): a declared capability's method answers, and answers rightly — a
 //! provided method needs no override, so a declared bit whose method still
 //! refuses is a lie the type cannot see — and an undeclared one's refuses at the
-//! request locus, never degrading silently; the native door's answer is its
-//! known one, no model over a program with none. **Fault loci:** a program the backend
-//! cannot ground is refused at the program locus, located at the statement that
-//! cannot be grounded (§5.4); assigning an atom that is not external is refused
-//! at the request locus, never the silent no-op an engine may give. **The ground
+//! request locus, or, for `interrupt`, answers nothing, never degrading
+//! silently; the native door's answer is its known one, no model over a program
+//! with none. **Fault loci:** a program the backend cannot ground is refused at
+//! the program locus, naming the statement that cannot be grounded and located
+//! within it (§5.4); assigning an atom that is not external is refused at the
+//! request locus, never the silent no-op an engine may give. **The ground
 //! program's provenance,** where the backend exposes one (§10.4): every ground
 //! rule attributed to a statement of the program it grounds, and a fact never
 //! grounded to nothing.
@@ -58,14 +59,17 @@ use std::fmt;
 use std::time::Duration;
 
 use themelios_base::span::{ByteOffset, Location};
+use themelios_program::provenance::WithProvenance;
 use themelios_program::raise::{raise_source, raise_str};
-use themelios_program::{Dialect, Name, Origin, Program, Sign, Source, SourceId, Symbol};
+use themelios_program::{
+    Dialect, Name, Origin, Program, Sign, Source, SourceId, Statement, Symbol,
+};
 
 use crate::agent::{Assumption, Scenario};
 use crate::bridge::Door;
 use crate::contract::{
-    Backend, Capabilities, ConsequenceRequest, ConsequenceSupport, Fault, GroundOptions, Locus,
-    Mode, OptimizeRequest, SolveRequest, TruthValue,
+    Backend, Capability, ConsequenceRequest, Fault, GroundOptions, Locus, Mode, OptimizeRequest,
+    Presupposition, Refused, SolveRequest, TruthValue,
 };
 use crate::extend::{Function, GroundFault, Propagator};
 use crate::outcome::{
@@ -204,7 +208,8 @@ pub enum Check {
     /// (§10.4).
     GroundProgramIsFaithful,
     /// A program the backend cannot ground is refused at the program locus,
-    /// which carries the statement's source location (§5.4).
+    /// naming the statement that cannot be grounded, located where it was
+    /// written (§5.4).
     ProgramFaultIsLocated,
     /// Assigning a truth value to an atom that is not external refuses at the
     /// request locus.
@@ -242,125 +247,66 @@ impl fmt::Display for Check {
             Check::NonExternalAssignmentRefuses => {
                 f.write_str("assigning an atom that is not external refuses")
             }
-            Check::Capability(capability) => write!(f, "the {capability} declaration is honest"),
+            Check::Capability(capability) => write!(f, "the declaration of {capability} is honest"),
         }
     }
 }
 
-/// A declared capability the suite holds to its declaration (docs/design/solve.md
-/// §4.1): each gates the contract method, or the request field, that is its sole
-/// engine primitive. Non-exhaustive: a capability the contract grows is a new
-/// variant, not a migration.
-#[non_exhaustive]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Capability {
-    /// Proving optima — `optimize` (§5.3).
-    Optimization,
-    /// The engine's own consequence door — `consequences_native` (§4.2).
-    NativeConsequences,
-    /// Solving under assumptions — `solve_assuming` (§6.3).
-    Assumptions,
-    /// Keeping the program across solves — `reset`, `ground`, and
-    /// `assign_external` (§6.2).
-    MultiShot,
-    /// Honouring external atoms — an assignment through `assign_external`
-    /// read back in the answer sets (§6.2).
-    Externals,
-    /// Interrupting an in-flight solve — `interrupt` (§6.1, §6.3).
-    Cancellation,
-    /// Enforcing a time budget on a solve — the request's `time` (§6.3).
-    TimeBudget,
-    /// Evaluating `@`-functions — `register_function` (§7).
-    Functions,
-    /// Running custom propagators — `register_propagator` (§8).
-    Propagators,
-}
-
-impl fmt::Display for Capability {
-    /// The capability, as a phrase.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.row().name)
-    }
-}
-
-/// A capability's row (docs/design/solve.md §4.1): how a report names it, its
-/// reader of the declaration, the contract method — or request — its probe
-/// drives, and the probe, so a capability the contract grows is one row. The
-/// probe is handed whether the capability is declared, and the corpus.
+/// A capability's row (docs/design/solve.md §4.1): the contract method — or
+/// request — its probe drives, and the probe, so a capability the contract
+/// grows is one row; the contract's `Display` names it, and its declaration
+/// reads which bit it is. The probe is handed whether the capability is
+/// declared, and the corpus.
 #[derive(Clone, Copy)]
 struct Row {
-    name: &'static str,
-    declared: fn(&Capabilities) -> bool,
     method: &'static str,
     probe: fn(&mut dyn Backend, bool, &[Case]) -> Response,
 }
 
-impl Capability {
-    /// This capability's row — the table, written as one exhaustive match, so a
-    /// capability the enum gains has no reading until its row is written. O(1).
-    fn row(self) -> Row {
-        match self {
-            Capability::Optimization => Row {
-                name: "optimization",
-                declared: |capabilities| capabilities.optimization,
-                method: "optimize",
-                probe: |backend, _, _| probe_optimization(backend),
+/// A capability's row — the table, written as one exhaustive match, so a
+/// capability the contract gains has no reading until its row is written. O(1).
+fn row(capability: Capability) -> Row {
+    match capability {
+        Capability::Optimization => Row {
+            method: "optimize",
+            probe: |backend, _, _| probe_optimization(backend),
+        },
+        Capability::NativeConsequences => Row {
+            method: "consequences_native",
+            probe: |backend, _, corpus| probe_native_consequences(backend, corpus),
+        },
+        Capability::Assumptions => Row {
+            method: "solve_assuming",
+            probe: |backend, _, _| probe_assumptions(backend),
+        },
+        Capability::MultiShot => Row {
+            method: "the multi-shot methods",
+            probe: |backend, declared, _| probe_multi_shot(backend, declared),
+        },
+        Capability::Externals => Row {
+            method: "assign_external",
+            probe: |backend, _, _| probe_externals(backend),
+        },
+        Capability::Cancellation => Row {
+            method: "interrupt",
+            // `interrupt` answers `None` where another method refuses (§4.1).
+            probe: |backend, _, _| match backend.interrupt() {
+                Some(_) => Response::Answered,
+                None => Response::Absent,
             },
-            Capability::NativeConsequences => Row {
-                name: "native-consequences",
-                declared: |capabilities| {
-                    capabilities.native_consequences == ConsequenceSupport::Native
-                },
-                method: "consequences_native",
-                probe: |backend, _, corpus| probe_native_consequences(backend, corpus),
-            },
-            Capability::Assumptions => Row {
-                name: "assumptions",
-                declared: |capabilities| capabilities.assumptions,
-                method: "solve_assuming",
-                probe: |backend, _, _| probe_assumptions(backend),
-            },
-            Capability::MultiShot => Row {
-                name: "multi-shot",
-                declared: |capabilities| capabilities.multi_shot,
-                method: "the multi-shot methods",
-                probe: |backend, declared, _| probe_multi_shot(backend, declared),
-            },
-            Capability::Externals => Row {
-                name: "externals",
-                declared: |capabilities| capabilities.externals,
-                method: "assign_external",
-                probe: |backend, _, _| probe_externals(backend),
-            },
-            Capability::Cancellation => Row {
-                name: "cancellation",
-                declared: |capabilities| capabilities.cancellation,
-                method: "interrupt",
-                // `interrupt` answers `None` where another method refuses (§4.1).
-                probe: |backend, _, _| match backend.interrupt() {
-                    Some(_) => Response::Answered,
-                    None => Response::Refused(Fault::unsupported()),
-                },
-            },
-            Capability::TimeBudget => Row {
-                name: "time-budget",
-                declared: |capabilities| capabilities.budgets.time,
-                method: "a solve under a time budget",
-                probe: |backend, declared, _| probe_time_budget(backend, declared),
-            },
-            Capability::Functions => Row {
-                name: "@-functions",
-                declared: |capabilities| capabilities.functions,
-                method: "register_function",
-                probe: |backend, _, _| respond(backend.register_function(Box::new(Echo))),
-            },
-            Capability::Propagators => Row {
-                name: "propagators",
-                declared: |capabilities| capabilities.propagators,
-                method: "register_propagator",
-                probe: |backend, _, _| respond(backend.register_propagator(Box::new(Inert))),
-            },
-        }
+        },
+        Capability::TimeBudget => Row {
+            method: "a solve under a time budget",
+            probe: |backend, declared, _| probe_time_budget(backend, declared),
+        },
+        Capability::Functions => Row {
+            method: "register_function",
+            probe: |backend, _, _| respond(backend.register_function(Box::new(Echo))),
+        },
+        Capability::Propagators => Row {
+            method: "register_propagator",
+            probe: |backend, _, _| respond(backend.register_propagator(Box::new(Inert))),
+        },
     }
 }
 
@@ -1088,9 +1034,9 @@ fn ground_program_is_faithful(backend: &mut dyn Backend, corpus: &[Case]) -> Ver
 
 /// A program the backend cannot ground — a fact over a variable nothing binds,
 /// after a fact it can — is refused at the program locus (§5.4), whether at
-/// lowering, at the solve, or at the stream's first item, and located at the
-/// statement that cannot be grounded: the refusal's location lies within that
-/// statement's.
+/// lowering, at the solve, or at the stream's first item, naming the statement
+/// that cannot be grounded and located there: the refusal's diagnostic lies
+/// within that statement's span.
 fn program_fault_is_located(backend: &mut dyn Backend) -> Verdict {
     let program = program_under(UNSAFE_SOURCE, UNSAFE);
     if let Err(failure) = reset_to_load(backend) {
@@ -1113,7 +1059,8 @@ fn program_fault_is_located(backend: &mut dyn Backend) -> Verdict {
 }
 
 /// The verdict on a refusal of the program that cannot be grounded: passed at
-/// the program locus, located within its unsafe statement.
+/// the program locus, refusing the unsafe statement, and lowered to a
+/// diagnostic located within it.
 fn located(fault: Fault, program: &Program) -> Verdict {
     if fault.locus() != Locus::Program {
         return Verdict::Failed(
@@ -1127,10 +1074,23 @@ fn located(fault: Fault, program: &Program) -> Verdict {
             .with_fault(fault),
         );
     }
-    let statement = unsafe_statement(program);
-    let within = fault.located().is_some_and(|refusal| {
-        let at = refusal.label().location;
-        at.source == statement.source && statement.span.contains_span(at.span)
+    let (statement, location) = unsafe_statement(program);
+    let names_it = matches!(
+        fault.refused(),
+        Refused::Statement(refused) if refused.get() == statement.get()
+    );
+    if !names_it {
+        return Verdict::Failed(
+            Failure::new(
+                Breach::Mislocated,
+                "a program that cannot be grounded was refused without naming the statement that cannot be",
+            )
+            .with_fault(fault),
+        );
+    }
+    let within = fault.diagnostics().first().is_some_and(|diagnostic| {
+        let at = diagnostic.primary().location;
+        at.source == location.source && location.span.contains_span(at.span)
     });
     if within {
         Verdict::Passed
@@ -1145,10 +1105,10 @@ fn located(fault: Fault, program: &Program) -> Verdict {
     }
 }
 
-/// Where the unsafe program's second statement — the fact over a variable
-/// nothing binds — was parsed. The suite raised the program from its fixed
-/// text, every statement parsed, so the expects discharge invariants.
-fn unsafe_statement(program: &Program) -> Location {
+/// The unsafe program's second statement — the fact over a variable nothing
+/// binds — with where it was parsed. The suite raised the program from its
+/// fixed text, every statement parsed, so the expects discharge invariants.
+fn unsafe_statement(program: &Program) -> (&WithProvenance<Statement>, Location) {
     let at = UNSAFE
         .find("p(X)")
         .expect("the unsafe program holds its unsafe fact");
@@ -1157,10 +1117,11 @@ fn unsafe_statement(program: &Program) -> Location {
     );
     program
         .statements()
-        .flat_map(|node| node.provenance().origins())
-        .find_map(|origin| match origin {
-            Origin::Parsed(location) if location.span.contains(at) => Some(*location),
-            _ => None,
+        .find_map(|node| {
+            node.provenance().origins().find_map(|origin| match origin {
+                Origin::Parsed(location) if location.span.contains(at) => Some((node, *location)),
+                _ => None,
+            })
         })
         .expect("a raised statement is located where it was parsed")
 }
@@ -1182,13 +1143,20 @@ fn non_external_assignment_refuses(backend: &mut dyn Backend) -> Verdict {
             Breach::Accepted,
             "assigning an atom that is not external was accepted — a silent no-op",
         )),
-        Err(fault) if fault == Fault::unsupported() => Verdict::Failed(
-            Failure::new(
-                Breach::Refused,
-                "assign_external refused as unsupported, though the backend declares multi-shot solving",
+        Err(fault)
+            if matches!(
+                fault.refused(),
+                Refused::Request(Presupposition::Unsupported(_))
+            ) =>
+        {
+            Verdict::Failed(
+                Failure::new(
+                    Breach::Refused,
+                    "assign_external refused as unsupported, though the backend declares multi-shot solving",
+                )
+                .with_fault(fault),
             )
-            .with_fault(fault),
-        ),
+        }
         Err(fault) if fault.locus() == Locus::Request => Verdict::Passed,
         Err(fault) => Verdict::Failed(
             Failure::new(
@@ -1211,6 +1179,9 @@ enum Response {
     Answered,
     /// It refused, with this fault.
     Refused(Fault),
+    /// It answered nothing — `interrupt`'s honest `None` (§4.1), where another
+    /// method refuses.
+    Absent,
     /// It answered, then the stream the probe read faulted, with this fault.
     Faulted(Fault),
     /// It answered, but wrongly: how, and the corpus program it answered
@@ -1259,8 +1230,8 @@ fn capability_is_honest(
     capability: Capability,
     corpus: &[Case],
 ) -> Verdict {
-    let row = capability.row();
-    let declared = (row.declared)(&backend.capabilities());
+    let row = row(capability);
+    let declared = backend.capabilities().declares(capability);
     if capability == Capability::Externals && !declared {
         return Verdict::Skipped(Skip::Undeclared(Capability::Externals));
     }
@@ -1273,7 +1244,11 @@ fn judge(method: &str, declared: bool, response: Response) -> Verdict {
         (_, Response::Unprobed(failure)) | (false, Response::ProgramRefused(failure)) => {
             Verdict::Skipped(Skip::Undriven(failure))
         }
-        (true, Response::Answered) => Verdict::Passed,
+        (true, Response::Answered) | (false, Response::Absent) => Verdict::Passed,
+        (true, Response::Absent) => Verdict::Failed(Failure::new(
+            Breach::Refused,
+            format!("declared, yet {method} answered nothing"),
+        )),
         (true, Response::Refused(fault)) => Verdict::Failed(
             Failure::new(Breach::Refused, format!("declared, yet {method} refused"))
                 .with_fault(fault),
@@ -1674,15 +1649,12 @@ impl Propagator for Inert {}
 mod tests {
     use super::*;
     use crate::bridge::{GroundProgram, GroundRule};
+    use crate::contract::Capabilities;
     use crate::outcome::{Model, Run};
 
     #[test]
-    fn every_capability_s_row_names_it_apart() {
-        let names: BTreeSet<&str> = CAPABILITIES.map(|capability| capability.row().name).into();
-        let methods: BTreeSet<&str> = CAPABILITIES
-            .map(|capability| capability.row().method)
-            .into();
-        assert_eq!(names.len(), CAPABILITIES.len());
+    fn every_capability_s_row_names_its_own_method() {
+        let methods: BTreeSet<&str> = CAPABILITIES.map(|capability| row(capability).method).into();
         assert_eq!(methods.len(), CAPABILITIES.len());
     }
 
@@ -1769,15 +1741,15 @@ mod tests {
                 Check::Capability(Capability::Assumptions),
                 Verdict::Failed(
                     Failure::new(Breach::Refused, "declared, yet solve_assuming refused")
-                        .with_fault(Fault::unsupported()),
+                        .with_fault(Fault::unsupported(Capability::Assumptions)),
                 ),
             ),
         ]);
         assert_eq!(
             report.to_string(),
             "each corpus program's outcome is its known one: passed\n\
-             the assumptions declaration is honest: failed — declared, yet solve_assuming \
-             refused: unsupported request\n",
+             the declaration of assumptions is honest: failed — declared, yet solve_assuming \
+             refused: this backend does not declare assumptions\n",
         );
     }
 
@@ -1906,7 +1878,7 @@ mod tests {
 
         fn lower(&mut self, door: Door<'_>) -> Result<(), Fault> {
             let Door::Program(program) = door else {
-                return Err(Fault::unsupported());
+                return Err(Fault::engine("the stub lowers Door B alone"));
             };
             let mut origins: Vec<Origin> = match self.grounds {
                 Grounds::Nothing => Vec::new(),

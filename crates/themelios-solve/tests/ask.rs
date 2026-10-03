@@ -19,7 +19,8 @@ use themelios_program::{Atom, Name, Program, Sign, Statement, Symbol};
 use themelios_solve::agent::{Agent, Assumption, Interrupt, Scenario, SolveOptions};
 use themelios_solve::bridge::{Door, GroundProgram};
 use themelios_solve::contract::{
-    Backend, Cancel, Capabilities, Fault, GroundOptions, OptimizeRequest, SolveRequest, TruthValue,
+    Backend, Cancel, Capabilities, Capability, Fault, GroundOptions, OptimizeRequest,
+    Presupposition, Refused, SolveRequest, TruthValue,
 };
 use themelios_solve::outcome::{Determination, Optimized, Solved};
 
@@ -143,7 +144,7 @@ impl Backend for Dormant {
     }
 
     fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
-        Err(Fault::unsupported())
+        Err(Fault::engine("a dormant backend solves nothing"))
     }
 
     fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
@@ -450,27 +451,44 @@ fn a_refused_lowering_is_not_followed_by_a_delegation() {
 #[test]
 fn a_question_beyond_the_declaration_refuses_before_anything_is_lowered() {
     // The backend would answer each of these; the agent reads the declaration,
-    // not the method, and refuses before paying for a lowering.
-    let questions: [(&str, Overreach); 4] = [
-        ("optimize", |agent| {
-            agent.optimize(&OptimizeRequest::default()).err()
-        }),
-        ("a budgeted solve", |agent| {
-            agent.solve_with(budgeted()).err()
-        }),
-        ("ground", |agent| agent.ground(&[]).err()),
-        ("assign_external", |agent| {
-            let atom = Symbol::function(identifier("a"), [], Sign::Positive);
-            agent.assign_external(atom, TruthValue::True).err()
-        }),
+    // not the method, and refuses before paying for a lowering, naming what the
+    // question presupposed: a capability, or a budget something enforces.
+    let questions: [(&str, Overreach, Presupposition); 4] = [
+        (
+            "optimize",
+            |agent| agent.optimize(&OptimizeRequest::default()).err(),
+            Presupposition::Unsupported(Capability::Optimization),
+        ),
+        (
+            "a budgeted solve",
+            |agent| agent.solve_with(budgeted()).err(),
+            Presupposition::UnrealisableBudget,
+        ),
+        (
+            "ground",
+            |agent| agent.ground(&[]).err(),
+            Presupposition::Unsupported(Capability::MultiShot),
+        ),
+        (
+            "assign_external",
+            |agent| {
+                let atom = Symbol::function(identifier("a"), [], Sign::Positive);
+                agent.assign_external(atom, TruthValue::True).err()
+            },
+            Presupposition::Unsupported(Capability::MultiShot),
+        ),
     ];
-    for (name, question) in questions {
+    for (name, question, expected) in questions {
         let calls = Rc::new(RefCell::new(Vec::new()));
         let backend = Overreaching {
             calls: Rc::clone(&calls),
         };
         let mut agent = Agent::new(Program::empty(), backend);
-        assert_eq!(question(&mut agent), Some(Fault::unsupported()), "{name}");
+        let refusal = question(&mut agent).unwrap_or_else(|| panic!("{name} was answered"));
+        assert!(
+            matches!(refusal.refused(), Refused::Request(presupposition) if presupposition == expected),
+            "{name}: {refusal:?}"
+        );
         assert!(calls.borrow().is_empty(), "{name}: {:?}", calls.borrow());
     }
 }
@@ -480,7 +498,7 @@ fn optimize_over_a_backend_without_the_capability_is_refused() {
     let mut agent = Agent::new(Program::empty(), Dormant);
     assert_eq!(
         agent.optimize(&OptimizeRequest::default()).err(),
-        Some(Fault::unsupported())
+        Some(Fault::unsupported(Capability::Optimization))
     );
 }
 
@@ -489,7 +507,7 @@ fn solve_assuming_over_a_backend_without_the_capability_is_refused() {
     let mut agent = Agent::new(Program::empty(), Dormant);
     assert_eq!(
         agent.solve_assuming(&Scenario::default()).err(),
-        Some(Fault::unsupported())
+        Some(Fault::unsupported(Capability::Assumptions))
     );
 }
 
