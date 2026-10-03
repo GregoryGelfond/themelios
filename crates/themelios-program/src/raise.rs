@@ -776,14 +776,36 @@ fn lower_each(parse: &Parse<ast::Program>) -> (Vec<Lowered>, Vec<LowerError>) {
 #[must_use]
 pub fn raise(parse: &Parse<ast::Program>) -> Raised {
     let (lowered, diagnostics) = lower_each(parse);
-    let mut program = Program::default();
-    for statement in lowered {
-        program.ingest_into(PartKey::clone(&statement.part), statement.statement);
-    }
     Raised {
-        program,
+        program: collect_runs(lowered.into_iter().map(|each| (each.part, each.statement))),
         diagnostics,
     }
+}
+
+/// Collect lowered statements into a program, one part lookup per run of statements that share
+/// a part (§8): consecutive statements of one `#program` delimiter share its `Arc`, so a run
+/// ends where the delimiter changes, and a re-opened part — a fresh `Arc` over an equal key —
+/// starts a run that joins the same part. O(Σ statement ingests + Σ run keys).
+fn collect_runs(
+    statements: impl IntoIterator<Item = (Arc<PartKey>, WithProvenance<Statement>)>,
+) -> Program {
+    let mut program = Program::default();
+    let mut run: Option<(Arc<PartKey>, Vec<WithProvenance<Statement>>)> = None;
+    for (part, statement) in statements {
+        match &mut run {
+            Some((key, batch)) if Arc::ptr_eq(key, &part) => batch.push(statement),
+            _ => {
+                if let Some((key, batch)) = run.take() {
+                    program.ingest_run(&key, batch);
+                }
+                run = Some((part, vec![statement]));
+            }
+        }
+    }
+    if let Some((key, batch)) = run {
+        program.ingest_run(&key, batch);
+    }
+    program
 }
 
 /// Lower a single parsed statement fragment (§8) — the door the macro tier expands to,
@@ -908,12 +930,12 @@ impl Occurrences {
     /// `into_raised`: it yields the program and diagnostics `raise` builds directly. A consumer
     /// needing both the merged program and the un-merged occurrences pays one lowering, not two.
     pub fn into_raised(self) -> Raised {
-        let mut program = Program::default();
-        for occurrence in self.occurrences {
-            program.ingest_into(PartKey::clone(&occurrence.part), occurrence.statement);
-        }
+        let statements = self
+            .occurrences
+            .into_iter()
+            .map(|each| (each.part, each.statement));
         Raised {
-            program,
+            program: collect_runs(statements),
             diagnostics: self.diagnostics,
         }
     }
