@@ -254,7 +254,13 @@ the arguments an `@`-function receives, the values the differential round-trips
 (32-bit signed): a value outside that range is not a symbol the engine can
 construct, so admitting it here would split "a `Symbol`" from "a member of an
 answer set" into two types and fracture the round-trip, the extraction, and the
-differential at their edges. `i32` keeps the identity exact. A constraint
+differential at their edges. `i32` keeps the identity exact. The pinned lexer is laxer
+than the symbols it builds: it computes a numeral in a machine `int` and lets the
+computation overflow (`libgringo/gringo/lexerstate.hh`, `LexerState::clingo_number`), so
+it admits a numeral beyond the range as its wrapped value — `p(4294967297).` reads as
+`p(1)` — an observation of the pinned build, scoped to its version like every engine
+claim, since ISO C++ leaves the overflow undefined. The raise does not follow it: such a
+numeral raises as a placeholder beside a `NumberOutOfRange` diagnostic (§8). A constraint
 extension's *assignments* may range wider, but those are theory results — a
 solve-tier typed value (spec §2 item 5), a constraint-variable valuation, not a
 `Symbol` — so the engine's width lives in that tier and never forces this one
@@ -1876,7 +1882,11 @@ never silently dropped and never a second splice door here. A bad name never
 reaches here (the lexer guaranteed the token's class, §3.2), so name refusal is
 the spelled-out door's concern (§7.2); the raise's own diagnostics mark a
 construct the parse left incomplete or a value it cannot represent, the unexpanded
-splice among them.
+splice among them. A numeral beyond the `i32` range is such a value, raised as a
+placeholder beside a `NumberOutOfRange` diagnostic; the pinned authority admits it,
+wrapped (§3.1), so the placeholder is a lossy reading of text the authority admits, and
+the analysis differential's faithful-raise gate excludes it with the other such
+readings.
 
 **The corners it settles, each read from the tree, none re-derived.** The `-p`
 ambiguity is positional and the tree already resolved it (§3.3, syntax §8.2); a
@@ -2989,3 +2999,8 @@ evolution with its argument, not a drift.
 - **The law's refusing half witnessed (§16).** The answer-set differential seeds the law's
   second disjunct — a same-name `#const` with different content, refused in source and
   render alike — and adds the `[override]` redefinition witness beside the unannotated one.
+- **The wrapped numeral recorded (§3.1, §8).** The pinned lexer computes a numeral in a
+  machine `int` and so admits one beyond the range as its wrapped value, an observation of
+  the pinned build now recorded with its source; the raise's placeholder reading of such a
+  numeral, beside its `NumberOutOfRange` diagnostic, is named a lossy reading of text the
+  authority admits, which the analysis differential's faithful-raise gate excludes.
