@@ -36,9 +36,12 @@ fn the_solve_prelude_coexists_with_the_program_and_syntax_preludes() {
     let _: Option<Conclusion> = None;
     let _: Option<Solved<'static>> = None;
     let _: Option<Optimized<'static>> = None;
+    let _: Option<Incumbent> = None;
     let _: Option<Models<'static>> = None;
     let _: Option<Model> = None;
     let _: Option<AnswerSet> = None;
+    let _: Option<ShowRule> = None;
+    let _: Option<Shown<'static>> = None;
     let _: Option<Partial> = None;
     let _: Option<Stopped<'static>> = None;
     let _: Option<Truncation> = None;
@@ -49,9 +52,12 @@ fn the_solve_prelude_coexists_with_the_program_and_syntax_preludes() {
     let _: Option<Mode> = None;
     let _: Option<Fault> = None;
     let _: Option<Locus> = None;
+    let _: Option<Refused<'static>> = None;
+    let _: Option<Presupposition> = None;
 
     // The contract a backend implements.
     let _: Option<Capabilities> = None;
+    let _: Option<Capability> = None;
     let _: Option<ConsequenceSupport> = None;
     let _: Option<SolveRequest> = None;
     let _: Option<OptimizeRequest> = None;
@@ -59,7 +65,11 @@ fn the_solve_prelude_coexists_with_the_program_and_syntax_preludes() {
     let _: Option<GroundOptions> = None;
     let _: Option<TruthValue> = None;
     let _: Option<Door<'static>> = None;
+    let _: Option<Admitted> = None;
+    let _: Option<NotAdmitted> = None;
     let _: Option<GroundProgram> = None;
+    let _: Option<GroundRule> = None;
+    let _: Option<Grain> = None;
     let _: Option<NativeAnswer> = None;
 
     // The program spellings nearest them still resolve to the program tier's

@@ -16,13 +16,14 @@ themelios is a library: it reads, represents, analyzes, and builds ASP programs,
 
 - The syntax tier is the surface built to meet untrusted input. Its parser is total on arbitrary input and answers with a tree and typed diagnostics, never a panic.
 - The program tier's raise, which lowers a parse to a program, is total on any parse in the same way, answering with a program and typed diagnostics, so it may meet untrusted text behind the parser — and a consumer of untrusted text gates on those diagnostics, since a program raised with one is the raise's best reading, not the text's meaning. What a transformation of the program then spends is set by the program: `unpool` expands pools into a number of rules exponential in the pooled positions, and `substitute` resolves into an output a pathological unifier can make exponentially larger than its input, so an embedder that accepts untrusted programs budgets that work. A value built through the public types rather than the raise is the host's own: a pool written with no alternatives, which the constructors refuse, drops its statement when `unpool` meets it.
+- The solving contract's Door A admits a parse only when it is in the language and its raise is clean, refusing it whole with typed diagnostics before any backend is asked, so a consumer that lowers untrusted text through it holds the raise's gate without writing it. Its cost is the raise's, near-linear in the parse.
 - A registered `@`-function or propagator runs with the host process's full trust. themelios contains an extension author's accidents, never their malice.
 
 The full threat-model statement lands before the engine adapters do (specification §12.4), and it will be the right starting point for a security review of them.
 
 Reports of the following are especially in scope:
 
-- a panic, a hang, or unbounded resource use reachable from source text handed to the lexer, the parser, or the raise;
+- a panic, a hang, or unbounded resource use reachable from source text handed to the lexer, the parser, the raise, or Door A's admission;
 - a crash or unbounded resource use reachable from a program handed to the analysis, the rendering, or the solving contract — themelios bounds its own walks and aims to refuse such input with a typed reason, never to abort;
 - an unsound answer: an analysis verdict of `Holds` that is false, rendered text that raises to a different program, ground arithmetic that wraps instead of refusing, or a truncated search reported as complete;
 - `unsafe` code, a foreign library, or a build script reaching a crate whose closure forbids it. The structural checks in the crates' `tests/trust.rs` hold those closures (specification §12.3).
