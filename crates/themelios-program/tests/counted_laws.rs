@@ -9,12 +9,13 @@ use themelios_program::program::{
     ConditionalLiteral, DefaultNegation, Head, Identity, Literal, LiteralInner, Program, Relation,
     Rule, SetAggregate, SetElement, Statement, TheoryAtom, TheoryElement, TheoryTerm,
 };
+use themelios_program::provenance::TransformTag;
 use themelios_program::provenance::{Origin, WithProvenance};
 use themelios_program::raise::raise;
 use themelios_program::render::render;
 use themelios_program::symbol::{Name, Sign, Symbol, VarName};
 use themelios_program::term::{Term, Variable};
-use themelios_program::transform::unpool;
+use themelios_program::transform::{Rewrite, rewrite, unpool};
 use themelios_program::unify::{mgu, substitute};
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::parse::parse;
@@ -318,6 +319,49 @@ fn canonicalizing_a_choice_merges_atom_elements_it_makes_equal() {
     );
     let program = Program::of([Rule::new(choice, Body::empty())]);
     assert_eq!(choice_of(&only_rule(&program)).elements().count(), 1);
+}
+
+// ---- the rewrite ----
+
+/// A rewrite that changes nothing but the tag.
+struct Unchanged;
+
+impl Rewrite for Unchanged {
+    fn tag(&self) -> TransformTag {
+        TransformTag::new("unchanged")
+    }
+}
+
+/// A rewrite that binds the variable `X` to `1` wherever it stands.
+struct BindX;
+
+impl Rewrite for BindX {
+    fn tag(&self) -> TransformTag {
+        TransformTag::new("bind-x")
+    }
+
+    fn rewrite_term(&mut self, term: Term) -> Term {
+        if term == var("X") { num(1) } else { term }
+    }
+}
+
+#[test]
+fn a_rewrite_keeps_a_kept_repeat() {
+    let rewritten = rewrite(raised("1 { #true; #true } 1."), &mut Unchanged);
+    assert_eq!(choice_of(&only_rule(&rewritten)).elements().count(), 2);
+}
+
+#[test]
+fn a_rewrite_merges_the_atom_elements_it_makes_equal() {
+    let rewritten = rewrite(raised("{ p(X); p(1) } :- q(X)."), &mut BindX);
+    let choice = choice_of(&only_rule(&rewritten));
+    let entries: Vec<&WithProvenance<ChoiceElement>> = choice.elements().collect();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        parsed_origins(entries[0]).len(),
+        2,
+        "both entries' origins survive the merge"
+    );
 }
 
 // ---- render ----

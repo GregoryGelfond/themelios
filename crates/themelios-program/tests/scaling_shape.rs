@@ -36,7 +36,7 @@ use themelios_program::provenance::{TransformTag, WithProvenance};
 use themelios_program::render::render;
 use themelios_program::symbol::{Name, Sign, Symbol, VarName};
 use themelios_program::term::{Term, Variable};
-use themelios_program::transform::{Rewrite, rewrite};
+use themelios_program::transform::{Rewrite, rewrite, unpool};
 use themelios_program::unify::{mgu, signature_range};
 use themelios_syntax::dialect::Dialect;
 
@@ -885,5 +885,68 @@ fn checking_many_definitions_is_near_linear() {
     assert!(
         ratio < LINEAR_CEILING * RATIO_SCALE,
         "checking definitions' median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} definitions; the near-linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+/// `count` constants, each in a part of its own — every definition a switch of part, so the
+/// check parks the active part's definitions and takes the next part's at each one.
+fn definitions_in_parts(count: usize) -> String {
+    let mut source = String::new();
+    for i in 0..count {
+        write!(source, "#program q{i}. #const c{i} = {i}. ").expect("writing to a String");
+    }
+    source
+}
+
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
+#[test]
+fn checking_definitions_across_many_parts_is_near_linear() {
+    // A switch of part is two ordered-map operations over the parts, O(key · log parts); a
+    // linear scan of the parked parts at each switch would be Θ(d²) over d definitions.
+    let small = definitions_in_parts(STATEMENTS);
+    let big = definitions_in_parts(STATEMENTS * SIZE_RATIO);
+    let ratio = median_ratio(
+        || time_once(|| drop(std::hint::black_box(raise_text(&small)))),
+        || time_once(|| drop(std::hint::black_box(raise_text(&big)))),
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "checking definitions across parts: the median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} definitions; the near-linear shape allows at most x{LINEAR_CEILING}"
+    );
+}
+
+/// `#program p(f1, …, fk).` followed by `k` facts, each over a two-alternative pool — a
+/// part as wide as it is long, every statement one `unpool` expands.
+fn pooled_wide_part(width: usize) -> String {
+    let formals: Vec<String> = (1..=width).map(|i| format!("f{i}")).collect();
+    let mut source = format!("#program p({}).\n", formals.join(", "));
+    for i in 1..=width {
+        write!(source, "a{i}(1;2). ").expect("writing to a String");
+    }
+    source
+}
+
+#[cfg_attr(
+    not(feature = "scale-proofs"),
+    ignore = "scaling proof; held out of the mutation loop — see scale-proofs in Cargo.toml"
+)]
+#[test]
+fn unpooling_statements_under_a_wide_part_is_near_linear() {
+    // `unpool` ingests each part's expanded statements as one run; ingesting each statement
+    // through its own part lookup would clone and compare the key per statement, Θ(n·m).
+    let small = raise_text(&pooled_wide_part(STATEMENTS)).into_program();
+    let big = raise_text(&pooled_wide_part(STATEMENTS * SIZE_RATIO)).into_program();
+    let ratio = median_ratio(
+        || time_once(|| drop(std::hint::black_box(unpool(&small)))),
+        || time_once(|| drop(std::hint::black_box(unpool(&big)))),
+    );
+    let approx = ratio / RATIO_SCALE;
+    assert!(
+        ratio < LINEAR_CEILING * RATIO_SCALE,
+        "unpooling a wide part's median ratio was ~x{approx} ({ratio}/{RATIO_SCALE}) over x{SIZE_RATIO} statements and formals; the near-linear shape allows at most x{LINEAR_CEILING}"
     );
 }
