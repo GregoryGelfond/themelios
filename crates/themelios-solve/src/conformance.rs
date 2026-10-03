@@ -1595,38 +1595,22 @@ fn undriven_at(step: &'static str) -> impl FnOnce(Fault) -> Shortfall {
     move |fault| Shortfall::Undriven(Failure::new(Breach::Refused, step).with_fault(fault))
 }
 
-/// The base part of the program `source` denotes — what a multi-shot backend
-/// grounds before a solve.
+/// The base part of the program `source` denotes, as a grounding names it.
 fn base_of(source: &str) -> Part {
     program_of(source).base().clone()
 }
 
-/// Solve what is lowered — grounding `source`'s base part first on a
-/// multi-shot backend — and read it, bounded by `expected`, as exactly
-/// `expected`: a refused grounding or solve, or another answer within
+/// Solve what is lowered, as every check does, and read it, bounded by
+/// `expected`, as exactly `expected`: a refused solve, or another answer within
 /// `vocabulary`, breaks the obligation — the latter as the caller's sentence
 /// names — while a stream that faults, runs past its bound, or strays from the
 /// vocabulary leaves it undriven.
 fn solves_to(
     backend: &mut dyn Backend,
-    source: &str,
     expected: &[AnswerSet],
     vocabulary: &[Symbol],
     otherwise: &str,
 ) -> Result<(), Shortfall> {
-    if backend.capabilities().multi_shot {
-        backend
-            .ground(&[base_of(source)], &GroundOptions::default())
-            .map_err(|fault| {
-                Shortfall::Broke(
-                    Failure::new(
-                        Breach::Refused,
-                        "the grounding before the solve was refused",
-                    )
-                    .with_fault(fault),
-                )
-            })?;
-    }
     let mut solved = solve(backend).map_err(Shortfall::Broke)?;
     match pull(&mut solved, expected.len()) {
         Ok(Pulled { ended: false, .. }) => Err(Shortfall::Undriven(past_the_bound())),
@@ -1687,7 +1671,6 @@ fn refused_lowering_adds_nothing(backend: &mut dyn Backend) -> Verdict {
     }
     match solves_to(
         backend,
-        FACT,
         &[answer_set([constant("a")])],
         &[constant("a"), constant("b")],
         "a refused lowering added to what was lowered before it",
@@ -1778,7 +1761,6 @@ fn ready_after_a_failed_solve(backend: &mut dyn Backend) -> Result<(), Shortfall
     lower_program(backend, &program_of(FACT), FACT).map_err(Shortfall::Broke)?;
     solves_to(
         backend,
-        FACT,
         &the_fact(),
         &[constant("a")],
         "after a failed grounding, the replacing program did not solve",
@@ -1841,7 +1823,6 @@ fn needs_a_rebuild_after_a_failed_grounding(
     lower_program(backend, &program_of(FACT), FACT).map_err(Shortfall::Broke)?;
     solves_to(
         backend,
-        FACT,
         &the_fact(),
         &[constant("a")],
         "after the rebuild, the program did not solve",
@@ -1866,21 +1847,13 @@ fn registration_kept(backend: &mut dyn Backend) -> Result<(), Shortfall> {
         .register_function(Box::new(Echo))
         .map_err(undriven_at(REGISTRATION_REFUSED))?;
     lower_program(backend, &program_of(FACT), FACT).map_err(Shortfall::Undriven)?;
-    solves_to(
-        backend,
-        FACT,
-        &the_fact(),
-        &[constant("a")],
-        "misread the fact",
-    )
-    .map_err(
+    solves_to(backend, &the_fact(), &[constant("a")], "misread the fact").map_err(
         |(Shortfall::Broke(failure) | Shortfall::Undriven(failure))| Shortfall::Undriven(failure),
     )?;
     load_source(backend, ECHOED_CALL).map_err(Shortfall::Broke)?;
     let echo = atom("p", [Symbol::number(1)], Sign::Positive);
     solves_to(
         backend,
-        ECHOED_CALL,
         &[answer_set([echo.clone()])],
         &[constant("a"), echo],
         "a registration did not survive the rebuild",
@@ -2683,16 +2656,26 @@ mod tests {
 
     // ---- The observer, over a backend that declares it ----
 
-    /// A search that closes the space at once, with no model.
-    struct Closed;
+    /// A grounding backend's search: one that closes the space at once, with
+    /// no model; one that faults at its first pull; or one that yields the empty
+    /// set forever — only the first concluding.
+    enum Search {
+        Closed,
+        Faulting,
+        Endless,
+    }
 
-    impl Run for Closed {
+    impl Run for Search {
         fn next_model(&mut self) -> Option<Result<Model, Fault>> {
-            None
+            match self {
+                Search::Closed => None,
+                Search::Faulting => Some(Err(Fault::engine("the search faulted"))),
+                Search::Endless => Some(Ok(Model::of(AnswerSet::new()))),
+            }
         }
 
         fn conclusion(&self) -> Option<Conclusion> {
-            Some(Conclusion::Exhausted)
+            matches!(self, Search::Closed).then_some(Conclusion::Exhausted)
         }
     }
 
@@ -2716,6 +2699,10 @@ mod tests {
         Withholding,
         /// Faithfully, without declaring the observer.
         Undeclared,
+        /// Faithfully, yet every search faults.
+        FaultingItsSearch,
+        /// Faithfully, yet every search runs past its bound.
+        SearchingPastItsBound,
     }
 
     /// A backend exposing a ground program built from the program it lowered —
@@ -2734,8 +2721,13 @@ mod tests {
         }
 
         fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
+            let search = match self.grounds {
+                Grounds::FaultingItsSearch => Search::Faulting,
+                Grounds::SearchingPastItsBound => Search::Endless,
+                _ => Search::Closed,
+            };
             Ok(Solved::running(
-                Box::new(Closed),
+                Box::new(search),
                 Scenario::default(),
                 ShowRule::default(),
             ))
@@ -2852,6 +2844,26 @@ mod tests {
         let verdict = ground_program_is_faithful(&mut grounding(Grounds::Withholding), &corpus());
         assert!(
             matches!(&verdict, Verdict::Failed(failure) if failure.breach() == Breach::Refused),
+            "{verdict}"
+        );
+    }
+
+    #[test]
+    fn an_observer_whose_search_faults_leaves_its_check_undriven() {
+        let verdict =
+            ground_program_is_faithful(&mut grounding(Grounds::FaultingItsSearch), &corpus());
+        assert!(
+            matches!(verdict, Verdict::Skipped(Skip::Undriven(_))),
+            "{verdict}"
+        );
+    }
+
+    #[test]
+    fn an_observer_whose_search_runs_past_its_bound_leaves_its_check_undriven() {
+        let verdict =
+            ground_program_is_faithful(&mut grounding(Grounds::SearchingPastItsBound), &corpus());
+        assert!(
+            matches!(verdict, Verdict::Skipped(Skip::Undriven(_))),
             "{verdict}"
         );
     }
