@@ -1,19 +1,19 @@
 error[E0499]: cannot borrow `agent` as mutable more than once at a time
-  --> tests/ui/ask_while_reasoning.rs:36:13
+  --> tests/ui/ask_while_reasoning.rs:32:13
    |
-35 |     let solved = agent.solve();
+31 |     let solved = agent.solve();
    |                  ----- first mutable borrow occurs here
-36 |     let _ = agent.assert(Rule::fact(Atom::constant(Name::new("a").unwrap())));
+32 |     let _ = agent.assert(Rule::fact(Atom::constant(Name::new("a").unwrap())));
    |             ^^^^^ second mutable borrow occurs here
-37 |     drop(solved);
+33 |     drop(solved);
    |          ------ first borrow later used here
 
 error[E0499]: cannot borrow `agent` as mutable more than once at a time
-  --> tests/ui/ask_while_reasoning.rs:43:18
+  --> tests/ui/ask_while_reasoning.rs:39:18
    |
-42 |     let first = agent.solve();
+38 |     let first = agent.solve();
    |                 ----- first mutable borrow occurs here
-43 |     let second = agent.solve();
+39 |     let second = agent.solve();
    |                  ^^^^^ second mutable borrow occurs here
-44 |     drop(first);
+40 |     drop(first);
    |          ----- first borrow later used here

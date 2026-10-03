@@ -11,7 +11,7 @@ use std::rc::Rc;
 use themelios_program::program::Part;
 use themelios_program::{Atom, Name, Program, Sign, Statement, Symbol};
 use themelios_solve::agent::{Agent, RetractionClass, Scenario};
-use themelios_solve::bridge::{Door, GroundProgram};
+use themelios_solve::bridge::Door;
 use themelios_solve::contract::{
     Backend, Capabilities, Fault, GroundOptions, Presupposition, Refused, SolveRequest, TruthValue,
 };
@@ -83,10 +83,6 @@ impl Backend for Recorder {
         records.lowered += 1;
         records.steps.push(Step::Lower);
         Ok(())
-    }
-
-    fn ground_program(&self) -> Option<&GroundProgram> {
-        None
     }
 
     fn ground(&mut self, parts: &[Part], _options: &GroundOptions) -> Result<(), Fault> {

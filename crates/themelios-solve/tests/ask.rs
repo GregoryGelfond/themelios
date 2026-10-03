@@ -17,7 +17,7 @@ use std::time::Duration;
 use themelios_program::program::Part;
 use themelios_program::{Atom, Name, Program, Sign, Statement, Symbol};
 use themelios_solve::agent::{Agent, Assumption, Interrupt, Scenario, SolveOptions};
-use themelios_solve::bridge::{Door, GroundProgram};
+use themelios_solve::bridge::Door;
 use themelios_solve::contract::{
     Backend, Cancel, Capabilities, Capability, Fault, GroundOptions, OptimizeRequest,
     Presupposition, Refused, SolveRequest, TruthValue,
@@ -105,10 +105,6 @@ impl Backend for Recorder {
         }
     }
 
-    fn ground_program(&self) -> Option<&GroundProgram> {
-        None
-    }
-
     fn interrupt(&self) -> Option<Box<dyn Cancel>> {
         self.cancellation
             .then(|| Box::new(Unheeded) as Box<dyn Cancel>)
@@ -150,10 +146,6 @@ impl Backend for Dormant {
     fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
         Ok(())
     }
-
-    fn ground_program(&self) -> Option<&GroundProgram> {
-        None
-    }
 }
 
 /// A backend that declares nothing yet answers every gated method, recording
@@ -176,10 +168,6 @@ impl Backend for Overreaching {
     fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
         self.calls.borrow_mut().push("lower");
         Ok(())
-    }
-
-    fn ground_program(&self) -> Option<&GroundProgram> {
-        None
     }
 
     fn optimize(&mut self, _request: &OptimizeRequest) -> Result<Optimized<'_>, Fault> {
