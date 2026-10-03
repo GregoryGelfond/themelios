@@ -105,7 +105,9 @@ impl LowerError {
 /// faithful-raise gate (`raised_faithfully`), or a truncated reading is trusted again, the
 /// failure [`PooledArgumentList`](LowerErrorKind::PooledArgumentList) exists to end.
 /// [`RepeatedDefinition`](LowerErrorKind::RepeatedDefinition) marks text the authority
-/// rejects, not a lossy reading, so it is no such kind.
+/// rejects, not a lossy reading, so it is no such kind;
+/// [`RepeatedScript`](LowerErrorKind::RepeatedScript) is one — the authority admits the repeated
+/// block and runs it twice, where the merged program runs it once — so it joins the gate.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum LowerErrorKind {
@@ -140,6 +142,14 @@ pub enum LowerErrorKind {
     /// name; `first` is the first definition's name.
     RepeatedDefinition {
         /// Where the first definition's name sits.
+        first: Location,
+    },
+    /// A `#script` block repeated content-equal within its part (§6.3): text the authority runs
+    /// once per block where it reads it, which the set would merge into a program that runs it
+    /// once — a different program wherever the script keeps state at module level. Located at
+    /// the repeat; `first` is the first block.
+    RepeatedScript {
+        /// Where the first block sits.
         first: Location,
     },
 }
@@ -181,6 +191,10 @@ impl LowerErrorKind {
                 DiagnosticId::new("program", "repeated-definition"),
                 "this definition repeats one earlier in its part, which the authority rejects",
             ),
+            LowerErrorKind::RepeatedScript { .. } => (
+                DiagnosticId::new("program", "repeated-script"),
+                "this script repeats one earlier in its part, which the authority runs again",
+            ),
         }
     }
 }
@@ -196,7 +210,7 @@ impl ToDiagnostic for LowerError {
     /// The lowering diagnostic in base's normal form (base §6.5): the `program`-space
     /// identity, its headline, and the offending region as the primary label — the
     /// syntax tier's diagnostics and these share one model, so a consumer renders both
-    /// alike (§8). A repeated definition also points at the first definition.
+    /// alike (§8). A repeated definition or script also points at the first.
     fn to_diagnostic(&self) -> Diagnostic {
         let (id, message) = self.kind.report();
         let diagnostic = Diagnostic::new(
@@ -209,10 +223,15 @@ impl ToDiagnostic for LowerError {
             },
         )
         .expect("a lowering diagnostic's headline is never empty");
-        if let LowerErrorKind::RepeatedDefinition { first } = self.kind {
+        let first = match self.kind {
+            LowerErrorKind::RepeatedDefinition { first } => Some((first, "first defined here")),
+            LowerErrorKind::RepeatedScript { first } => Some((first, "first written here")),
+            _ => None,
+        };
+        if let Some((location, message)) = first {
             diagnostic.with_secondary(Label {
-                location: first,
-                message: Some("first defined here".to_owned()),
+                location,
+                message: Some(message.to_owned()),
             })
         } else {
             diagnostic
@@ -769,7 +788,7 @@ fn lower_each(parse: &Parse<ast::Program>) -> (Vec<Lowered>, Vec<LowerError>) {
     let mut lowered = Vec::new();
     let mut batch = Vec::new();
     let mut part = Arc::new(base_key());
-    let mut definitions = Definitions::opening(&part);
+    let mut firsts = Firsts::opening(&part);
     for statement in parse.tree().statements() {
         if let ast::Statement::ProgramPart(directive) = &statement {
             match part_key(directive) {
@@ -787,13 +806,24 @@ fn lower_each(parse: &Parse<ast::Program>) -> (Vec<Lowered>, Vec<LowerError>) {
         // stays in source order and holds every lowering diagnostic.
         let mut diagnostics = Vec::new();
         if let Some(raised) = raise_one(&statement, parse, &mut diagnostics) {
-            if raised.is_global_definition() {
-                let location = definition_location(&statement, parse);
+            // A global definition the authority binds once, and a script it runs per block:
+            // a content-equal repeat in one part is a second occurrence to it, one statement
+            // to the set (§6.3).
+            let repeated: Option<fn(Location) -> LowerErrorKind> = if raised.is_global_definition()
+            {
+                Some(|first| LowerErrorKind::RepeatedDefinition { first })
+            } else if let Statement::Script(_) = raised {
+                Some(|first| LowerErrorKind::RepeatedScript { first })
+            } else {
+                None
+            };
+            if let Some(kind) = repeated {
+                let location = repeat_location(&statement, parse);
                 let canonical = crate::program::canonicalize_statement(raised.clone());
-                if let Some(first) = definitions.repeat_of(&part, canonical, location) {
+                if let Some(first) = firsts.repeat_of(&part, canonical, location) {
                     diagnostics.push(LowerError {
                         location,
-                        kind: LowerErrorKind::RepeatedDefinition { first },
+                        kind: kind(first),
                     });
                 }
             }
@@ -811,31 +841,32 @@ fn lower_each(parse: &Parse<ast::Program>) -> (Vec<Lowered>, Vec<LowerError>) {
     (lowered, batch)
 }
 
-/// The global definitions seen so far, part by part (§6.3), the active part's held apart so a
-/// run of definitions under one part never compares its key. A switch of part parks the active
-/// map under its key first — so a part re-opened under a fresh `Arc` over an equal key finds
-/// what it parked — then takes the new part's, O(key · log parts) per switch; a definition
-/// costs one ordered-map entry, O(log d) comparisons of canonical statements.
-struct Definitions {
+/// The first occurrence of each global definition and script seen so far, part by part (§6.3),
+/// the active part's held apart so a run of them under one part never compares its key. A
+/// switch of part parks the active map under its key first — so a part re-opened under a fresh
+/// `Arc` over an equal key finds what it parked — then takes the new part's, O(key · log parts)
+/// per switch; a statement costs one ordered-map entry, O(log d) comparisons of canonical
+/// statements.
+struct Firsts {
     active: (Arc<PartKey>, BTreeMap<Statement, Location>),
     parked: BTreeMap<Arc<PartKey>, BTreeMap<Statement, Location>>,
 }
 
-impl Definitions {
-    /// No definition seen yet, with `part` — the one a parse opens in (§4.1) — active.
-    fn opening(part: &Arc<PartKey>) -> Definitions {
-        Definitions {
+impl Firsts {
+    /// Nothing seen yet, with `part` — the one a parse opens in (§4.1) — active.
+    fn opening(part: &Arc<PartKey>) -> Firsts {
+        Firsts {
             active: (Arc::clone(part), BTreeMap::new()),
             parked: BTreeMap::new(),
         }
     }
 
-    /// Record a global definition of `part` at `location`, or — if a content-equal one is
+    /// Record `statement`'s occurrence in `part` at `location`, or — if a content-equal one is
     /// already recorded there — answer where the first sits.
     fn repeat_of(
         &mut self,
         part: &Arc<PartKey>,
-        definition: Statement,
+        statement: Statement,
         location: Location,
     ) -> Option<Location> {
         if !Arc::ptr_eq(&self.active.0, part) {
@@ -844,7 +875,7 @@ impl Definitions {
             self.parked.insert(key, seen);
             self.active.1 = self.parked.remove(part).unwrap_or_default();
         }
-        match self.active.1.entry(definition) {
+        match self.active.1.entry(statement) {
             Entry::Occupied(first) => Some(*first.get()),
             Entry::Vacant(slot) => {
                 slot.insert(location);
@@ -854,11 +885,11 @@ impl Definitions {
     }
 }
 
-/// Where a definition's name sits — the location a repeated definition is reported at. Every
-/// statement kind is named, as `raise_one` names them, so a new kind is a compile error here
-/// rather than a coarser location; a statement that names no definition, which the check never
-/// reaches, is located at its own span.
-fn definition_location(statement: &ast::Statement, parse: &Parse<ast::Program>) -> Location {
+/// Where a repeat is reported: a definition at its name, and a script — which names nothing — at
+/// its whole statement. Every statement kind is named, as `raise_one` names them, so a new kind
+/// is a compile error here rather than a coarser location; a kind the check never reaches is
+/// located at its own span.
+fn repeat_location(statement: &ast::Statement, parse: &Parse<ast::Program>) -> Location {
     let name = match statement {
         ast::Statement::Const(constant) => constant.name(),
         ast::Statement::TheoryDefinition(theory) => theory.name(),

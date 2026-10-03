@@ -1,7 +1,9 @@
-//! The repeated definition (docs/design/program.md §6.3, §8): a global definition repeated
-//! content-equal within one part is diagnosed at the repeat, since the authority rejects a
-//! redefinition the set would merge silently; a definition repeated across parts, or a name
-//! defined twice with different content, is kept and diagnosed nowhere.
+//! The repeated definition and the repeated script (docs/design/program.md §6.3, §8): a global
+//! definition repeated content-equal within one part is diagnosed at the repeat, since the
+//! authority rejects a redefinition the set would merge silently, and a `#script` block repeated
+//! content-equal within one part is diagnosed likewise, since the authority runs each block where
+//! it reads it; a repeat across parts, or one with different content, is kept and diagnosed
+//! nowhere.
 
 use themelios_base::diagnostic::ToDiagnostic;
 use themelios_base::source::{Source, SourceId};
@@ -115,4 +117,36 @@ fn a_repeated_theory_is_diagnosed_at_its_name() {
     // The two `t`s sit at bytes 8..9 and 57..58.
     let text = "#theory t { a { + : 1, unary }; &b/0 : a, any }. #theory t { a { + : 1, unary }; &b/0 : a, any }.";
     assert_eq!(repeats(&raised(text)), vec![(at(57, 58), at(8, 9))]);
+}
+
+/// The repeated scripts a raise reports: (the repeat's location, the first's).
+fn script_repeats(raised: &Raised) -> Vec<(Location, Location)> {
+    raised
+        .diagnostics()
+        .iter()
+        .filter_map(|error| match error.kind() {
+            LowerErrorKind::RepeatedScript { first } => Some((*error.location(), *first)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_script_repeated_in_one_part_is_diagnosed_at_the_repeat() {
+    // The two blocks sit at bytes 0..27 and 28..55; a script has no name, so each is located
+    // at its whole statement.
+    let text = "#script (python) pass #end. #script (python) pass #end.";
+    assert_eq!(script_repeats(&raised(text)), vec![(at(28, 55), at(0, 27))]);
+}
+
+#[test]
+fn a_script_repeated_in_another_part_is_not_diagnosed() {
+    let text = "#script (python) pass #end. #program q. #script (python) pass #end.";
+    assert!(script_repeats(&raised(text)).is_empty());
+}
+
+#[test]
+fn a_script_with_other_content_is_not_diagnosed() {
+    let text = "#script (python) pass #end. #script (python) x = 1 #end.";
+    assert!(script_repeats(&raised(text)).is_empty());
 }
