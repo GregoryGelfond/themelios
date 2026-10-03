@@ -95,8 +95,9 @@ fn authority_safe(program: &str) -> bool {
 /// `p(X; a)` raises faithfully and `unpool` (program §9) eliminates it before this reads it, so it is
 /// not lossy and draws a genuine comparison. The *other* `LowerErrorKind`s do not arise here: each
 /// marks input the authority **refuses** at admission (a recovered/incomplete construct, a malformed or
-/// out-of-range token, an unexpanded splice, a non-constant `#const`), so no safety comparison is drawn
-/// on it. `LowerErrorKind` is `#[non_exhaustive]`: a future lossy kind reachable from admitted text
+/// out-of-range token, an unexpanded splice, a non-constant `#const`, a repeated definition —
+/// `RepeatedDefinition`, text the authority rejects as a redefinition), so no safety comparison is
+/// drawn on it. `LowerErrorKind` is `#[non_exhaustive]`: a future lossy kind reachable from admitted text
 /// must join this gate (the obligation is recorded on the enum, program tier).
 fn raised_faithfully(lowered: &Raised) -> bool {
     !lowered
