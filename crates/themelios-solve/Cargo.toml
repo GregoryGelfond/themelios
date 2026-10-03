@@ -37,3 +37,7 @@ workspace = true
 [[bench]]
 name = "rebuild"
 harness = false
+
+[[bench]]
+name = "boundary"
+harness = false
