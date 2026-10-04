@@ -12,6 +12,9 @@ license.workspace = true
 [dependencies]
 z = { package = "fixture-facade", path = "../facade" }
 
+# The facade witness's one instrument (docs/design/macros.md §11): trybuild, for the
+# compile-fail witness that a syntax error through the facade lands on this crate's
+# own token.
 [dev-dependencies]
 trybuild = "1"
 

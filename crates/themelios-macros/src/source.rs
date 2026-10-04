@@ -58,7 +58,8 @@ pub struct Tile {
 
 /// One captured splice: the byte region of its `SPLICE` tile in the
 /// assembled text, and the Rust expression the marker bound (grammar §9),
-/// held for the codegen a later increment writes.
+/// which the codegen emits as the operand of the splice's crossing
+/// (docs/design/macros.md §7).
 #[derive(Debug)]
 pub struct Splice {
     range: std::ops::Range<u32>,
@@ -153,8 +154,9 @@ impl MacroSource {
     }
 
     /// The Rust expression the splice at `range` captured (grammar §9),
-    /// for the codegen a later increment writes. `None` when no `SPLICE`
-    /// tile has exactly this range.
+    /// which the codegen emits as the operand of the splice's crossing
+    /// (docs/design/macros.md §7). `None` when no `SPLICE` tile has exactly
+    /// this range.
     pub fn splice_at(&self, range: TextRange) -> Option<&TokenStream> {
         let start = u32::from(range.start());
         let end = u32::from(range.end());
@@ -558,17 +560,6 @@ impl Assembler {
     }
 }
 
-/// The theory-mode token beginning at char boundary `offset` of `text` when
-/// an operator run opens there (grammar §4.7): the maximal theory-operator
-/// run as one token, formed by calling the syntax tier's
-/// `themelios_syntax::fusion::theory_operator` (syntax §10.3) — the single
-/// home of grammar §4.7's operator formation, which the file lexer forms
-/// through as well. The primitive holds the structural forms apart (`.`,
-/// `;`, `:`, and the neck `:-`) and returns every other run as one
-/// `THEORY_OP`. `None` when the byte there is not the operator alphabet, so
-/// the caller answers that (mode-invariant) token from its tile
-/// (docs/design/macros.md §6). Total: the primitive is total, and `offset`
-/// is a validated char boundary within `text`.
 /// The runtime selection opening `trees`, `#![crate = path]` (docs/design/macros.md §9): the
 /// root its path names, and the trees after it. With no selection the root is the program
 /// tier's crate, `::themelios_program`, and the trees are whole. An inner attribute opens no
@@ -652,6 +643,17 @@ fn is_path_separator(path: &[TokenTree], index: usize) -> bool {
     )
 }
 
+/// The theory-mode token beginning at char boundary `offset` of `text` when
+/// an operator run opens there (grammar §4.7): the maximal theory-operator
+/// run as one token, formed by calling the syntax tier's
+/// `themelios_syntax::fusion::theory_operator` (syntax §10.3) — the single
+/// home of grammar §4.7's operator formation, which the file lexer forms
+/// through as well. The primitive holds the structural forms apart (`.`,
+/// `;`, `:`, and the neck `:-`) and returns every other run as one
+/// `THEORY_OP`. `None` when the byte there is not the operator alphabet, so
+/// the caller answers that (mode-invariant) token from its tile
+/// (docs/design/macros.md §6). Total: the primitive is total, and `offset`
+/// is a validated char boundary within `text`.
 fn theory_operator_at(text: &str, offset: usize) -> Option<Token<'_>> {
     themelios_syntax::fusion::theory_operator(&text[offset..])
 }
@@ -1048,6 +1050,28 @@ mod tests {
         let refused = refusal("#nokeyword");
         assert!(
             refused.message.contains("is not a keyword"),
+            "{}",
+            refused.message
+        );
+    }
+
+    #[test]
+    fn a_hash_before_other_punctuation_opens_no_selection() {
+        // Only `#!` opens a selection: a `#` before any other punctuation is a detached `#`,
+        // whatever bracket follows it.
+        let refused = refusal("#?[crate = ::tp] p");
+        assert!(
+            refused.message.contains("joined to the keyword"),
+            "{}",
+            refused.message
+        );
+    }
+
+    #[test]
+    fn a_selection_in_parentheses_is_refused() {
+        let refused = refusal("#!(crate = ::tp) p");
+        assert!(
+            refused.message.contains("opens the invocation"),
             "{}",
             refused.message
         );
