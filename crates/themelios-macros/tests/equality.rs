@@ -649,6 +649,15 @@ fn a_keyword_written_against_an_operator_equals_its_spaced_spelling() {
 }
 
 #[test]
+fn a_statement_ending_in_an_integer_equals_its_spaced_spelling() {
+    // rustc hands `1.` over as one float literal; the block reads the number and the period.
+    assert_eq!(
+        program! { p(X) :- q(X), X > 1. #show p/1. },
+        program! { p(X) :- q(X), X > 1 . #show p/1 . }
+    );
+}
+
+#[test]
 fn a_splice_written_against_an_operator_equals_its_spaced_spelling() {
     let n = 3;
     assert_eq!(rule!(p(X) :- q(X), X<$n), rule!(p(X) :- q(X), X < $n));

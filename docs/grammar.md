@@ -1173,7 +1173,10 @@ In macro bodies:
     IDENTIFIER, uppercase-initial is VARIABLE, "_" alone is ANONYMOUS;
     "not" is the keyword; an identifier no class matches whole
     ("__", "_1") is a dialect error;
-  - a Rust integer literal is NUMBER, by value;
+  - a Rust integer literal is NUMBER, by value; a Rust float literal
+    that is a decimal integer and a trailing period ("1.") is that
+    NUMBER and the period after it — Rust's lexer joins the two, and
+    a file reads them apart;
   - a Rust string literal is STRING, by value — raw strings included;
   - span adjacency is part of the dialect: "#" forms a keyword exactly
     when it is span-adjacent to the keyword's word — and, for "#sum+",
@@ -1189,7 +1192,7 @@ In macro bodies:
     identifier or parenthesized group, spacing irrelevant, and exists
     only here;
   - every Rust token this mapping does not name is a dialect error at
-    the macro site: float, char, and byte literals, suffixed
+    the macro site: any other float, char, and byte literals, suffixed
     numerals, lifetimes, and raw identifiers — "r#not" is an error,
     never a way to spell the reserved name.
 
