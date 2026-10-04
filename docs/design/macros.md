@@ -96,6 +96,12 @@ checks drift at a glance):
   refusal that marks its boundary.
 - A panic escapes a macro on any input, or a documented failure is undocumented
   (spec §2 item 8, §4).
+- An expansion names more than one runtime root, or a root other than the one the
+  invocation selects or the default (§9).
+- A facade's consumer needs a dependency on `themelios-program`, or a path at the
+  invocation, to use the facade's macros (§9).
+- The tier resolves a runtime by any means other than the selection or the default —
+  a manifest read, a list of crates (§9).
 
 The tier's placement is spec §11, stage 4: the crate "exists from the first
 stage it can client; its vocabulary accretes with its enablers — construction
@@ -482,12 +488,13 @@ input with a runtime selection, `#![crate = path]`, before the payload (§9).
 **Statement coverage.** A construction builds the statement families the statement
 macros name — a rule (a fact, a rule, or a constraint), an optimization statement, a
 `#show`, and an `#external` — through its own macro or as a statement of a `program!`
-block. Any other well-formed statement — a weak constraint, a `#program` delimiter, a
-`#const`, `#include`, `#project`, `#defined`, `#edge`, or `#heuristic` directive, a
-theory definition, or a query — is a located compile error at the construction site,
-never a fabricated value, and `#script` is refused before the parse (§7). The program
-tier constructs each of those families; the codegen that would build them is a
-reserved seam (§12).
+block. Any other well-formed statement — a weak constraint, a `#const`, `#include`,
+`#project`, `#defined`, `#edge`, or `#heuristic` directive, a theory definition, or a
+query — is a located compile error at the construction site, never a fabricated value,
+as is the `#program` delimiter, which the value lifts into its part structure rather
+than holds as a statement (program §4.1); `#script` is refused before the parse (§7).
+The program tier constructs each of those families; the codegen that would build them,
+and the parted assembly the delimiter needs, are reserved seams (§12).
 
 **Head and body-element coverage.** The statement macros that carry a head or a body
 — `fact!`, `rule!`, `constraint!`, and every statement of a `program!` block — build
@@ -714,12 +721,19 @@ what it proves and what it cannot (spec §10.2).
 Named reserved seams — deferred with their reasons and arriving consumers, never
 gaps (the deferrals of §4 and §6, gathered):
 
-- **The remaining statement families** — a weak constraint, a `#program`
-  delimiter, the `#const`, `#include`, `#project`, `#defined`, `#edge`, and
-  `#heuristic` directives, a theory definition, and a query (§8). The program tier
-  constructs each, so each is a trivial expansion once the codegen gains its arm.
-  Until then each is a located compile error, never a fabricated value. `#script`
-  stays refused (§7).
+- **The remaining statement families** — a weak constraint, the `#const`,
+  `#include`, `#project`, `#defined`, `#edge`, and `#heuristic` directives, a theory
+  definition, and a query (§8). The program tier constructs each, so each is a trivial
+  expansion once the codegen gains its arm. They wait because this tranche stated the
+  boundary rather than widened it, and no consumer has yet needed one in a
+  construction; the first that does — a weak constraint is the likeliest, the inline
+  optimization an ASP author writes — is the arriving consumer. Until then each is a
+  located compile error, never a fabricated value. `#script` stays refused (§7).
+- **Parts in `program!`** — the `#program` delimiter (§8). It is no statement of the
+  value: program §4.1 lifts it into the program's part structure, so supporting it
+  changes the block's assembly from `Program::of` to `Program::of_keyed_nodes`
+  (program §7.1) rather than adding an arm. It arrives with the first construction that
+  needs a parted program, and is a located compile error until then.
 - **Further splice sites** — names, tuples, statements (grammar §9): future
   vocabulary, each admitted on argument as the tiers accrete; the v1 floor is the
   term and the theory term (both delivered here, §4, §7). A `ToSymbol for Name`
@@ -779,4 +793,5 @@ deliberate evolution with its argument, not a drift.
 - **The statement boundary, stated** (2026-10-03; §8, §12). The constructions
   build rules, optimization statements, `#show`, and `#external`, and the design
   now says so. It had described `program!` as a block of any statements. The other
-  statement families are located compile errors, recorded as a reserved seam.
+  statement families, and the `#program` delimiter, are located compile errors,
+  recorded as reserved seams with their reasons and arriving consumers.
