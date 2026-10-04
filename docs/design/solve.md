@@ -1245,7 +1245,8 @@ with its own timer over the backend's `Cancel` (§4.1) — the request is forwar
 the core attributes the stop; and a budgeted request over a backend that declares neither refuses at the
 request locus (`Presupposition::UnrealisableBudget`, §5.4), as does a backend handed a budget it does not
 enforce — one presupposition for the one event, whoever refuses. The conformance suite's time-budget probe
-reads this rule. The core's timer is realised with cancellation; until then a budget is honoured natively or
+reads this rule, and drives a declared budget to its cut — a choice over forty atoms, whose answer sets no
+search enumerates within the budget — failing a cut search concluded as closing the space. The core's timer is realised with cancellation; until then a budget is honoured natively or
 refused. The readings take no options — the agent's consequence doors and the query tier's readings each
 solve over the default request — so a budgeted reading is a composition: `solve_with` under the budget, the
 determination it yields, `WorldView::of` over its models, and `materialize` to a `Snapshot` read infallibly
@@ -1841,7 +1842,9 @@ obligation a backend's declared capabilities cannot drive is skipped, and the re
     refuses — optimization, native consequences, assumptions, multi-shot, functions, propagators — refuses
     as unsupported, naming its capability (`Presupposition::Unsupported`), while undeclared cancellation
     and an undeclared observer answer `None`; a budget neither the backend nor the core's timer realises
-    refuses with `Presupposition::UnrealisableBudget`, whoever refuses it (§6.3); the native consequence
+    refuses with `Presupposition::UnrealisableBudget`, whoever refuses it (§6.3), and a declared time
+    budget cuts a search it cannot finish within, concluding `Budget`, never `Exhausted` (§5.3, §6.3); the
+    native consequence
     door's answer is its known one over the corpus, and `NoModel` over a program with no answer set and
     under a scenario that admits none (§5.2); and the observer's declaration is honest by §10.4's law.
 
@@ -2396,4 +2399,5 @@ necessity where it is declared.
     (§4.1, §11.1). The readings take no options, so a budgeted reading is stated as a composition — the
     budgeted solve, its world view, and the `Snapshot` it materialises (§6.3, query.md §2.7) — and the empty
     ground program, `Default`, is named the one value constructible ahead of the observer's construction
-    door (§10.4).
+    door (§10.4). The conformance suite drives a declared time budget to its cut, over a program no search
+    finishes within, and fails a cut concluded as closing the space (§6.3, §13.1).

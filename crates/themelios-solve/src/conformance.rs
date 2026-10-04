@@ -2356,13 +2356,28 @@ fn probe_externals(backend: &mut dyn Backend) -> Response {
 /// answers, never concluding at the budget.
 const PROBE_BUDGET: Duration = Duration::from_mins(1);
 
+/// A program no search enumerates within the cut's budget: a choice over forty
+/// atoms, whose 2^40 answer sets no engine yields in time — so a search of it
+/// concluded as closing the space under that budget was cut, and says otherwise.
+const UNBOUNDED: &str = "{ a(1..40) }.";
+
+/// The budget the cut solves the unbounded program under.
+const CUT_BUDGET: Duration = Duration::from_millis(50);
+
+/// The most models the cut reads: far more than any engine yields within its
+/// budget, so a stream still running past them was never cut.
+const CUT_CAP: usize = 1 << 20;
+
 /// The time budget's probe: over the fact `a.`, each solve the backend serves —
 /// `solve`, and `solve_assuming` (assuming nothing) where the backend declares
 /// `assumptions`, since it takes the same request — asked under a budget, where
 /// the same solve unbudgeted reads the fact; where it does not, another check
 /// owns what went wrong. Declared: each answers, reading the fact's one answer
-/// set. Undeclared: each refuses at the request locus. The first that does not
-/// is the response.
+/// set; and the cut — each asked of the unbounded program under a budget it
+/// cannot finish within — ends its stream within the cap and concludes
+/// `Budget`, never `Exhausted`, the conclusion every complete collection trusts
+/// (§5.3, §6.3). Undeclared: each refuses at the request locus. The first that
+/// does not is the response.
 fn probe_time_budget(backend: &mut dyn Backend, declared: bool) -> Response {
     if let Err(failure) = load_source(backend, FACT) {
         return Response::Unprobed(failure);
@@ -2372,20 +2387,35 @@ fn probe_time_budget(backend: &mut dyn Backend, declared: bool) -> Response {
         time: Some(PROBE_BUDGET),
     };
     let mut responses = Vec::new();
-    if matches!(
+    let solves = matches!(
         read_the_fact(backend.solve(&unbudgeted)),
         Response::Answered
-    ) {
+    );
+    if solves {
         responses.push(read_the_fact(backend.solve(&budgeted)));
     }
     let nothing = Scenario::default();
-    if backend.capabilities().assumptions
+    let assumes = backend.capabilities().assumptions
         && matches!(
             read_the_fact(backend.solve_assuming(&nothing, &unbudgeted)),
             Response::Answered
-        )
-    {
+        );
+    if assumes {
         responses.push(read_the_fact(backend.solve_assuming(&nothing, &budgeted)));
+    }
+    if solves || assumes {
+        if let Err(failure) = load_source(backend, UNBOUNDED) {
+            return Response::Unprobed(failure);
+        }
+        let cut = SolveRequest {
+            time: Some(CUT_BUDGET),
+        };
+        if solves {
+            responses.push(read_the_cut(backend.solve(&cut)));
+        }
+        if assumes {
+            responses.push(read_the_cut(backend.solve_assuming(&nothing, &cut)));
+        }
     }
     let holds = |response: &Response| {
         if declared {
@@ -2402,6 +2432,26 @@ fn probe_time_budget(backend: &mut dyn Backend, declared: bool) -> Response {
                 "no solve read the fact without a budget",
             ))
         }),
+    }
+}
+
+/// How a solve of the unbounded program under the cut's budget met the probe:
+/// refused, or answered — rightly only when its stream ends within the cap and
+/// its search concludes at the budget. The models are counted, never kept.
+fn read_the_cut(solved: Result<Solved<'_>, Fault>) -> Response {
+    let mut solved = match solved {
+        Ok(solved) => solved,
+        Err(fault) => return Response::Refused(fault),
+    };
+    let read = solved
+        .models()
+        .take(CUT_CAP + 1)
+        .try_fold(0_usize, |read, yielded| yielded.map(|_| read + 1));
+    match read {
+        Err(fault) => Response::Faulted(fault),
+        Ok(read) if read > CUT_CAP => misanswered("ran a search past its budget, never cutting it"),
+        Ok(_) if solved.conclusion() == Some(Conclusion::Budget) => Response::Answered,
+        Ok(_) => misanswered("concluded a search cut at its budget other than at the budget"),
     }
 }
 
