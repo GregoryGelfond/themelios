@@ -916,35 +916,38 @@ pub enum Refutation {
 
 /// A fault is a value with a CLOSED locus taxonomy at the seam, the loci naming where a fault lies. It OWNS
 /// its model — a message, the `Locus`, the backend-bug bit, what it refused, and optionally a typed cause
-/// (below). What it refused is one of four, a closed sum keyed by locus (`Refused`): a STATEMENT — a Program
-/// fault refusing a statement, with its provenance (program.md §6), located iff that statement carries a
-/// parsed origin, written in source or transformed from one, while a statement built in Rust carries none; a
-/// PARSE — a Program fault refusing a parse at Door A, its refusal `NotAdmitted` carried whole (§10.2) and
-/// located at each of its diagnostics; the REQUEST — a Request fault, naming the presupposition of the
-/// request that failed (`Presupposition`); or NOTHING — every Resource, Engine, or Adapter fault, whose locus
-/// and bug bit are its typed distinction. So `Locus::Program` holds exactly when a fault refused a statement
-/// or a parse — the program, as written or as built, is where it lies — `Locus::Request` exactly when it
-/// refused the request, and a fault is unlocated where it carries no span: it refused the request or
-/// nothing, or a statement built in Rust. An unlocated fault is NOT a degenerate diagnostic with a
-/// fabricated span at an "unknown source" but a different thing (base's §diagnostic): it renders through its
-/// own `Display`. Equality compares the message, the locus, the bit, and what was refused: a refused
-/// statement by its content and its origins — two Program faults refusing content-equal statements at
-/// different locations are different faults, which lower to different diagnostics, while a difference in
-/// annotations alone (a doc comment, a label) is not — hand-written, since the derive would compare content
-/// alone (program.md §6.2); a refused parse, by its diagnostics; a refused request, by its presupposition;
-/// and never the cause, which is detail, not identity. `Fault` is not `Hash`: a fault is a report, not a
-/// key — no consumer keys on one — and its opaque cause carries no hash. A fault's clone is `O(statement)`,
-/// or `O(diagnostics)` for a refused parse, the cause shared.
+/// (below). What it refused is one of five, a closed sum keyed by locus (`Refused`): a STATEMENT — a
+/// Program fault refusing a statement, with its provenance (program.md §6), located iff that statement
+/// carries a parsed origin, written in source or transformed from one, while a statement built in Rust
+/// carries none; a PART — a Program fault refusing a part of the program a backend does not admit (§6.3),
+/// named by its key and never located, since a part keeps no provenance; a PARSE — a Program fault refusing
+/// a parse at Door A, its refusal `NotAdmitted` carried whole (§10.2) and located at each of its
+/// diagnostics; the REQUEST — a Request fault, naming the presupposition of the request that failed
+/// (`Presupposition`); or NOTHING — every Resource, Engine, or Adapter fault, whose locus and bug bit are
+/// its typed distinction. So `Locus::Program` holds exactly when a fault refused a statement, a part, or a
+/// parse — the program, as written or as built, is where it lies — `Locus::Request` exactly when it refused
+/// the request, and a fault is unlocated where it carries no span: it refused the request, nothing, a part,
+/// or a statement built in Rust. An unlocated fault is NOT a degenerate diagnostic with a fabricated span
+/// at an "unknown source" but a different thing (base's §diagnostic): it renders through its own `Display`.
+/// Equality compares the message, the locus, the bit, and what was refused: a refused statement by its
+/// content and its origins — two Program faults refusing content-equal statements at different locations
+/// are different faults, which lower to different diagnostics, while a difference in annotations alone (a
+/// doc comment, a label) is not — hand-written, since the derive would compare content alone (program.md
+/// §6.2); a refused part, by its key; a refused parse, by its diagnostics; a refused request, by its
+/// presupposition; and never the cause, which is detail, not identity. `Fault` is not `Hash`: a fault is a
+/// report, not a key — no consumer keys on one — and its opaque cause carries no hash. A fault's clone is
+/// `O(statement)`, or `O(diagnostics)` for a refused parse, the cause shared.
 #[non_exhaustive]
 pub struct Fault { /* message + Locus + what it refused + bug bit + optional cause */ }
 pub enum Locus { Program, Request, Resource, Engine, Adapter }
 
-/// What a fault refused — closed, one of four, keyed by locus (above). Closed on purpose: a row grows a typed
-/// reason inside the sum when a consumer first reads one — the `Statement` row, a router's reason why a
-/// backend refused the statement (§12, §14) — a breaking change accepted before 1.0, never a reason held
+/// What a fault refused — closed, one of five, keyed by locus (above). Closed on purpose: a row grows a
+/// typed reason inside the sum when a consumer first reads one — the `Statement` row, a router's reason why
+/// a backend refused the statement (§12, §14) — a breaking change accepted before 1.0, never a reason held
 /// beside it.
 pub enum Refused<'a> {
     Statement(&'a WithProvenance<Statement>),   // a Program fault refusing a statement
+    Part(&'a PartKey),                           // a Program fault refusing a part, unlocated (§6.3)
     Parse(&'a NotAdmitted),                      // a Program fault refusing a parse at Door A (§10.2)
     Request(Presupposition),                     // a Request fault: the presupposition that failed
     Nothing,                                     // a Resource, Engine, or Adapter fault
@@ -973,6 +976,9 @@ impl Fault {
     pub fn program(message: impl Into<String>, statement: &WithProvenance<Statement>) -> Fault;
         // keeps the refused statement whole, O(statement), so no span is made up and no statement goes
         // unnamed; a refused parse's door is `From<NotAdmitted>` (§10.2)
+    pub fn program_part(message: impl Into<String>, part: &PartKey) -> Fault;
+        // a Program fault refusing a part of the program a backend does not admit (§6.3), named by its
+        // key, O(part key); unlocated, since a part keeps no provenance — never a member statement
     pub fn request(message: impl Into<String>, presupposition: Presupposition) -> Fault;
     pub fn unsupported(capability: Capability) -> Fault;   // a Request fault, `Presupposition::Unsupported`,
                                                            // its message naming the capability
@@ -984,11 +990,12 @@ impl Fault {
         // caller who downcasts it; no engine type in the signature, and not part of equality
     pub fn is_backend_bug(&self) -> bool;                  // a closed bit
     pub fn locus(&self) -> Locus;
-    pub fn refused(&self) -> Refused<'_>;                  // a statement, a parse, the request, or nothing
+    pub fn refused(&self) -> Refused<'_>;                  // a statement, part, or parse; the request; nothing
     pub fn diagnostics(&self) -> Vec<Diagnostic>;
-        // its lowering to base diagnostics: none for an unlocated fault; one for a refused statement with a
-        // parsed origin — the least such origin its primary label, any others secondaries (program.md
-        // §6.3); one per diagnostic for a refused parse. O(statement), or O(diagnostics)
+        // its lowering to base diagnostics: none for an unlocated fault, a refused part among them; one for
+        // a refused statement with a parsed origin — the least such origin its primary label, any others
+        // secondaries (program.md §6.3); one per diagnostic for a refused parse. O(statement), or
+        // O(diagnostics)
 }
 impl std::fmt::Display for Fault {}                        // Fault is Display + Error — NOT ToDiagnostic
 ```
@@ -1309,10 +1316,19 @@ two phases, and the contract fixes what each may do:
 - **`lower` validates and retains.** It makes its checks at the door, each bounded by the program's size,
   and keeps the program it will solve. It grounds nothing: grounding belongs to `solve`. Its retention is
   transactional, so a refused `lower` leaves the program lowered before it in place (§4.1).
-- **`solve` opens the run.** It creates the run's control state first, then grounds the retained program,
-  then searches, delivering each model as the caller reads it. A grounding that fails fails that solve
-  alone: the lowered program stays, ready for another question, and partial ground output never becomes
-  it (§4.1).
+- **`solve` opens the run.** It creates the run's control state first, then grounds the retained program's
+  `base` part, then searches, delivering each model as the caller reads it. A grounding that fails fails
+  that solve alone: the lowered program stays, ready for another question, and partial ground output never
+  becomes it (§4.1).
+- **The `base` part alone.** A single-shot solve grounds the `base` part — the statements before any
+  `#program` delimiter, and those under `#program base.` — and no other, as the pinned authority's
+  single-shot run grounds `base` and nothing else (`libclingo/src/clingocontrol.cc`,
+  `ClingoControl::main`). A named part, with formals or without, is instantiated only through a multi-shot
+  backend's `ground` (§6.2). So a single-shot backend either leaves a part beyond the base ungrounded, as
+  the authority does, or refuses the program at `lower` with a Program fault naming the part
+  (`Fault::program_part`, §5.4). It never grounds such a part, and never charges the refusal to a statement
+  in it. The refusal is unlocated: a part keeps no provenance, its `#program` delimiter being no statement
+  (program.md §4.1).
 - **What may be reused.** A backend may reuse any immutable preparation of a retained program across
   questions — an index, a dependency graph, a compiled form — since each question reads the same program.
   The contract promises no shared mutable search state, and no incremental grounding between questions.
@@ -1990,6 +2006,14 @@ obligation a backend's declared capabilities cannot drive is skipped, and the re
     `Exhausted` (§5.3, §6.3); the native consequence door's answer is its known one over the corpus through
     both doors, and `NoModel` over a program with no answer set and under a scenario that admits none
     (§5.2); and the observer's declaration is honest by §10.4's law.
+12. **Only the base grounds.** A single-shot solve grounds the `base` part alone (§6.3). Over
+    `q. #program step(t). p(t).`, driven through both doors, a backend either answers as the base alone
+    denotes — its every model `{q}`, and where it enumerates, `{q}` the one answer set, its search closing
+    the space — or refuses at `lower` with a Program fault naming the part `step(t)` by its key, unlocated
+    (§5.4). It never yields a model holding `p`, and never refuses naming a statement. The obligation binds a
+    single-shot backend. A multi-shot backend instantiates its parts through `ground`, and whether its search
+    covers a part lowered but not yet grounded the contract does not yet say (§4.1), so the report says the
+    check was not driven.
 
 Door A's admission is the core's, before any backend is asked (§10.2), so its refusals are the core's own
 check, not an adapter's. The suite's skeleton is exercisable **engine-free over a stub backend** before any
@@ -2583,3 +2607,10 @@ necessity where it is declared.
     whose run handle was leaked rather than dropped, so a leaked run keeps no question in flight past it
     (§6.3). The drop clause revisions 11 and 12 recorded is restated as the pull's own safety, with no
     change of rule (§4.1).
+19. **A refused part, and what a single-shot solve grounds** (2026-10-04). A single-shot solve grounds the
+    `base` part alone, as the pinned authority's single-shot run does, and a named part is instantiated only
+    through a multi-shot backend's `ground` (§6.3). A backend that does not admit a part refuses the program
+    at `lower` with a Program fault naming the part by its key — `Refused::Part`, the sum's fifth row, built
+    by `Fault::program_part` — and the fault is unlocated, since a part keeps no provenance (§5.4). The
+    conformance suite gains obligation 12, which holds a single-shot backend to the rule through both doors
+    and says it was not driven for a multi-shot one (§13.1).
