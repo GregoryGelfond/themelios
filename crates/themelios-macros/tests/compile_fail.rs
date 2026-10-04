@@ -14,6 +14,8 @@
 //!   body (`atom_not_a_rule`), each refused at the offending construct (§8);
 //! - a **`#script` in `program!`** refused at the macro site before assembly (`program_script`,
 //!   §7);
+//! - a **statement family no construction builds** — a `#const` in `program!` — refused at the
+//!   statement (`program_unbuilt_statement`, §8);
 //! - and a **lowering diagnostic** from a real expansion landing on the offending numeral's
 //!   span, not the call site (`numeral_overflows`, the I2 span check).
 //!
