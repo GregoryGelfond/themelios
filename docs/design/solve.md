@@ -943,9 +943,9 @@ pub struct Fault { /* message + Locus + what it refused + bug bit + optional cau
 pub enum Locus { Program, Request, Resource, Engine, Adapter }
 
 /// What a fault refused — closed, one of five, keyed by locus (above). Closed on purpose: a row grows a
-/// typed reason inside the sum when a consumer first reads one — the `Statement` row, a router's reason why
-/// a backend refused the statement (§12, §14) — a breaking change accepted before 1.0, never a reason held
-/// beside it.
+/// typed reason inside the sum when a consumer first reads one — the `Statement` or `Part` row, a router's
+/// reason why a backend refused the statement or the part (§12, §14) — a breaking change accepted before
+/// 1.0, never a reason held beside it.
 pub enum Refused<'a> {
     Statement(&'a WithProvenance<Statement>),   // a Program fault refusing a statement
     Part(&'a PartKey),                           // a Program fault refusing a part, unlocated (§6.3)
@@ -2014,12 +2014,14 @@ obligation a backend's declared capabilities cannot drive is skipped, and the re
     both doors, and `NoModel` over a program with no answer set and under a scenario that admits none
     (§5.2); and the observer's declaration is honest by §10.4's law.
 12. **Only the base grounds.** A single-shot solve grounds the `base` part alone (§6.3). Over `q. #program
-    step(t). p(t).`, driven through both doors, a backend either answers as the base alone denotes — its
-    every model `{q}`, and where it enumerates, `{q}` the one answer set, its search closing the space — or
-    refuses at `lower` with a Program fault naming the part `step(t)` by its key, unlocated (§5.4), and the
-    program lowered before it stays: the fact `a.`, lowered first, still answers `{a}` (§4.1's transactional
-    `lower`, witnessed here with a part). It never yields a model holding `p`, and never refuses naming a
-    statement. The obligation binds a single-shot backend. A multi-shot backend instantiates its parts
+    step(t). p(t).`, driven through both doors, which must agree (§10.2), a backend either answers as the
+    base alone denotes — its every model `{q}`, and where it enumerates, `{q}` the one answer set, its
+    search closing the space — or refuses at `lower` with a Program fault naming the part `step(t)` by its
+    key, unlocated (§5.4), and the program lowered before it stays: the fact `a.`, lowered first, still
+    answers `{a}` (§4.1's transactional `lower`, witnessed here with a part). It never yields a model holding
+    `p`, never answers other than its base alone denotes, and never refuses naming a statement. No other
+    check lowers the program, so every answer over it is this obligation's. The obligation binds a
+    single-shot backend. A multi-shot backend instantiates its parts
     through `ground`, and whether its search covers a part lowered but not yet grounded the contract does
     not yet say (§4.1), so the report says the check was not driven.
 
@@ -2631,7 +2633,9 @@ necessity where it is declared.
     part (§5.4). The rule is the language's single-shot reading, which the authority's default run realises
     and themelios holds whatever a program carries; the refusal is §12's fragment interim (§6.3). Two
     seams are named: a located part refusal, and `ground` over part instances, which a part with formals
-    needs (§14). §10.2, §12, and obligation 8 cite §5.4's sum for what a Program fault names. The
-    conformance suite gains obligation 12, which holds a single-shot backend to the rule through both doors,
-    a refused part leaving the program lowered before it, and says it was not driven for a multi-shot one
-    (§13.1).
+    needs (§14). §10.2, §12, and obligation 8 cite §5.4's sum for what a Program fault names, and a router's
+    reason grows in its `Statement` or `Part` row. The conformance suite gains obligation 12, which holds a
+    single-shot backend to the rule through both doors, which must agree: the base answered as it alone
+    denotes, or the part refused, the program lowered before it left in place. No other check lowers the
+    probe, so any other answer over it fails the obligation; it says it was not driven for a multi-shot
+    one (§13.1).
