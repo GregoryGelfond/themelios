@@ -2336,13 +2336,13 @@ It forms the whole §4.6 roster, brackets among the punctuation, but its first
 consumer reaches only its operator part. The macro tier (grammar §9) receives
 a bracket as a Rust group, already tiled, and reaches here only for an
 operator run: it reassembles the run — the punctuation its Rust tokens glue
-with `Spacing::Joint` — into text and munches it by calling `punctuation`
-until the run is spent, each character the formation does not take its own
-dialect refusal (grammar §9). A bare `!` is one such refusal: `punctuation`
-answers `None` for it — `NEQ`'s lead and nothing alone — as the file lexer
-too forms no token from a lone `!`. Its result is a `Token` whose text is the
-munch, so its length is the extent (§4.2); it is total and O(1) over the
-fixed roster.
+with `Spacing::Joint`, up to a `#` or `$`, which open tokens of their own —
+into text and munches it by calling `punctuation` until the run is spent, each
+character the formation does not take its own dialect refusal (grammar §9). A
+bare `!` is one such refusal: `punctuation` answers `None` for it — `NEQ`'s
+lead and nothing alone — as the file lexer too forms no token from a lone `!`.
+Its result is a `Token` whose text is the munch, so its length is the extent
+(§4.2); it is total and O(1) over the fixed roster.
 
 ## 11. Token-stream equivalence
 

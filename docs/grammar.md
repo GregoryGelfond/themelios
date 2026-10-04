@@ -1182,7 +1182,8 @@ In macro bodies:
   - Rust punctuation maps one-to-one onto the operator roster; a
     multi-character operator exists where its characters are adjacent
     and joined, and theory-operator runs form the same way inside
-    theory expressions;
+    theory expressions; no operator contains "#" or "$", so either
+    opens its own token however closely it follows an operator;
   - comments do not exist in the dialect;
   - "$" begins a splice by token order alone: it takes the next
     identifier or parenthesized group, spacing irrelevant, and exists

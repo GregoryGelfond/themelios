@@ -519,14 +519,19 @@ impl Assembler {
     /// forms through as well. The run's characters are all ASCII operators —
     /// one byte each — reassembled into text and munched front to back; a
     /// character the formation does not take (a bare `!`) is a dialect error
-    /// at its span.
+    /// at its span. The run ends before a `#` or a `$`, which no operator
+    /// contains: each opens its own token (a keyword, a splice), however
+    /// closely it follows the run — `S=#sum`, `X<$n`.
     fn map_operator_run(&mut self, trees: &[TokenTree], index: usize) -> Result<usize, MapError> {
         let mut run: Vec<(char, Span)> = Vec::new();
         let mut cursor = index;
         while let Some(TokenTree::Punct(punct)) = trees.get(cursor) {
             run.push((punct.as_char(), punct.span()));
             let glued = punct.spacing() == Spacing::Joint
-                && matches!(trees.get(cursor + 1), Some(TokenTree::Punct(_)));
+                && matches!(
+                    trees.get(cursor + 1),
+                    Some(TokenTree::Punct(next)) if !matches!(next.as_char(), '#' | '$')
+                );
             if glued {
                 cursor += 1;
             } else {
@@ -907,6 +912,27 @@ mod tests {
     }
 
     #[test]
+    fn an_operator_run_ends_before_a_hash() {
+        // `#` is no operator character (grammar §4.6), so a keyword written against an
+        // operator opens its own token, as the file lexer reads `S=#sum`.
+        assert_eq!(kinds(&build("S=#sum")), [VARIABLE, EQ, KW_SUM, EOF]);
+        assert_eq!(
+            kinds(&build("#true;#true")),
+            [KW_TRUE, SEMICOLON, KW_TRUE, EOF]
+        );
+        assert_eq!(kinds(&build(":-#count")), [NECK, KW_COUNT, EOF]);
+    }
+
+    #[test]
+    fn an_operator_run_ends_before_a_splice() {
+        // The splice takes its separator, as everywhere (`a_splice_never_abuts_its_neighbours`).
+        assert_eq!(
+            kinds(&build("X<$n")),
+            [VARIABLE, LT, WHITESPACE, SPLICE, EOF]
+        );
+    }
+
+    #[test]
     fn a_keyword_forms_from_a_span_adjacent_hash() {
         let source = build("#show");
         assert_eq!(kinds(&source), [KW_SHOW, EOF]);
@@ -1018,6 +1044,16 @@ mod tests {
     }
 
     #[test]
+    fn a_hash_word_off_the_keyword_roster_is_refused() {
+        let refused = refusal("#nokeyword");
+        assert!(
+            refused.message.contains("is not a keyword"),
+            "{}",
+            refused.message
+        );
+    }
+
+    #[test]
     fn a_detached_hash_is_a_dialect_error() {
         assert!(MacroSource::build(TokenStream::from_str("# show").unwrap(), None).is_err());
         assert!(MacroSource::build(TokenStream::from_str("#").unwrap(), None).is_err());
@@ -1043,6 +1079,7 @@ mod tests {
         assert_eq!(build("0o17").text(), "15");
         assert_eq!(build("1_000").text(), "1000");
         assert_eq!(build("0x1F").text(), "31");
+        assert_eq!(build("0b101").text(), "5");
         assert_eq!(kinds(&build("42")), [NUMBER, EOF]);
     }
 
@@ -1066,6 +1103,16 @@ mod tests {
     #[test]
     fn a_string_needing_unescaping_is_refused_for_now() {
         assert!(MacroSource::build(TokenStream::from_str(r#""a\tb""#).unwrap(), None).is_err());
+    }
+
+    #[test]
+    fn a_raw_string_is_refused_for_now() {
+        let refused = refusal(r#"p(r"raw")"#);
+        assert!(
+            refused.message.contains("raw string"),
+            "{}",
+            refused.message
+        );
     }
 
     #[test]
@@ -1148,6 +1195,19 @@ mod tests {
         let a = TextRange::new(4.into(), 5.into());
         assert_eq!(source.span_of(p).byte_range(), 0..1);
         assert_eq!(source.span_of(a).byte_range(), 5..6);
+    }
+
+    #[test]
+    fn token_at_refuses_inside_a_character() {
+        // A splice's tile spells its operand verbatim, so the text can hold a multi-byte
+        // character, and one byte into it is no char boundary.
+        let source = build(r#"p($("é"))"#);
+        let inside = source.text().find('é').expect("the operand is spelled") + 1;
+        let inside = ByteOffset::new(u32::try_from(inside).expect("a short text"));
+        assert!(matches!(
+            source.token_at(inside, LexMode::Normal),
+            Err(PositionRefusal::NotCharBoundary(_))
+        ));
     }
 
     #[test]

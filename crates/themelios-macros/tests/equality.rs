@@ -561,6 +561,16 @@ fn a_binary_arithmetic_term_equals_the_constructor() {
 }
 
 #[test]
+fn a_left_associative_chain_of_three_equals_the_constructor() {
+    // Three operands at one precedence re-associate to the left (the raise's `reassociate`,
+    // program §8): `1 - 2 - 3` is `(1 - 2) - 3`, Rust's own grouping of the hand spelling.
+    assert_eq!(
+        fact!(p(1 - 2 - 3)),
+        fact_p(Term::from(1i32) - Term::from(2i32) - Term::from(3i32))
+    );
+}
+
+#[test]
 fn a_tuple_term_equals_the_constructor() {
     assert_eq!(
         fact!(p((a, b))),
@@ -620,6 +630,28 @@ fn the_empty_tuple_term_equals_the_constructor() {
     // The empty tuple `()`, compiling the empty-array element-type inference that the
     // codegen's `[#(#terms),*]` rests on (a codegen-emission concern, locked here).
     assert_eq!(fact!(p(())), fact_p(Term::tuple([])));
+}
+
+// ---- spacing (grammar §9): a `#` or a `$` opens its own token however closely it follows an
+// operator, as the file lexer reads `S=#sum` — rustc hands such an operator over joined ----
+
+#[test]
+fn a_keyword_written_against_an_operator_equals_its_spaced_spelling() {
+    assert_eq!(
+        rule!(p :- S=#sum { X : q(X) }, S > 1),
+        rule!(p :- S = #sum { X : q(X) }, S > 1)
+    );
+    assert_eq!(fact!(1 { #true;#true } 1), fact!(1 { #true; #true } 1));
+    assert_eq!(
+        constraint!(:-#count { X : q(X) } > 2),
+        constraint!(:- #count { X : q(X) } > 2)
+    );
+}
+
+#[test]
+fn a_splice_written_against_an_operator_equals_its_spaced_spelling() {
+    let n = 3;
+    assert_eq!(rule!(p(X) :- q(X), X<$n), rule!(p(X) :- q(X), X < $n));
 }
 
 // ---- the theory-atom witnesses (§7): the non-`Symbolic` theory codegen a splice
