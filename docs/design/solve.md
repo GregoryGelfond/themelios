@@ -1245,9 +1245,10 @@ with its own timer over the backend's `Cancel` (§4.1) — the request is forwar
 the core attributes the stop; and a budgeted request over a backend that declares neither refuses at the
 request locus (`Presupposition::UnrealisableBudget`, §5.4), as does a backend handed a budget it does not
 enforce — one presupposition for the one event, whoever refuses. The conformance suite's time-budget probe
-reads this rule, and drives a declared budget to its cut — a choice over forty atoms, whose answer sets no
-search enumerates within the budget — failing a cut search concluded as closing the space. The core's timer is realised with cancellation; until then a budget is honoured natively or
-refused. The readings take no options — the agent's consequence doors and the query tier's readings each
+reads this rule, and drives an enumerating backend's declared budget to its cut — a choice over forty atoms,
+whose answer sets no search enumerates within the budget — failing a cut search concluded as closing the
+space; a deciding backend stops at its witness, which no such budget cuts. The core's timer is realised
+with cancellation; until then a budget is honoured natively or refused. The readings take no options — the agent's consequence doors and the query tier's readings each
 solve over the default request — so a budgeted reading is a composition: `solve_with` under the budget, the
 determination it yields, `WorldView::of` over its models, and `materialize` to a `Snapshot` read infallibly
 (query.md §2.7). That composition bounds the search by its time budget alone: the world view's models are
@@ -1847,11 +1848,11 @@ obligation a backend's declared capabilities cannot drive is skipped, and the re
     refuses — optimization, native consequences, assumptions, multi-shot, functions, propagators — refuses
     as unsupported, naming its capability (`Presupposition::Unsupported`), while undeclared cancellation
     and an undeclared observer answer `None`; a budget neither the backend nor the core's timer realises
-    refuses with `Presupposition::UnrealisableBudget`, whoever refuses it (§6.3), and a declared time
-    budget cuts a search it cannot finish within, concluding `Budget`, never `Exhausted` (§5.3, §6.3); the
-    native consequence door's answer is its known one over the corpus through both doors, and `NoModel` over
-    a program with no answer set and under a scenario that admits none (§5.2); and the observer's
-    declaration is honest by §10.4's law.
+    refuses with `Presupposition::UnrealisableBudget`, whoever refuses it (§6.3), and an enumerating
+    backend's declared time budget cuts an enumeration it cannot finish within, concluding `Budget`, never
+    `Exhausted` (§5.3, §6.3); the native consequence door's answer is its known one over the corpus through
+    both doors, and `NoModel` over a program with no answer set and under a scenario that admits none
+    (§5.2); and the observer's declaration is honest by §10.4's law.
 
 Door A's admission is the core's, before any backend is asked (§10.2), so its refusals are the core's own
 check, not an adapter's. The suite's skeleton is exercisable **engine-free over a stub backend** before any
@@ -2410,4 +2411,6 @@ necessity where it is declared.
     rules at the statement grain is held once the observer's construction door lands (§10.4, §11.1). The
     observer's fact obligation is stated with its reason, and the native door's corpus pass named as going
     through both doors (§13.1); §6.3 states what the budgeted composition bounds and leaves the rest to the
-    threat-model statement.
+    threat-model statement. The cut binds an enumerating backend: a deciding one stops at its witness, which
+    no budget the suite sets cuts, so a deciding backend cut before its witness is not yet probed (§6.3,
+    §13.1).

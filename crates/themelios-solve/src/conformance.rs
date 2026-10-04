@@ -2375,11 +2375,13 @@ const CUT_CAP: usize = 1 << 20;
 /// `assumptions`, since it takes the same request — asked under a budget, where
 /// the same solve unbudgeted reads the fact; where it does not, another check
 /// owns what went wrong. Declared: each answers, reading the fact's one answer
-/// set; and the cut — each asked of the unbounded program under a budget it
-/// cannot finish within — ends its stream within the cap and concludes
-/// `Budget`, never `Exhausted`, the conclusion every complete collection trusts
-/// (§5.3, §6.3). Undeclared: each refuses at the request locus. The first that
-/// does not is the response.
+/// set; and, where the backend enumerates, the cut — each asked of the
+/// unbounded program under a budget it cannot finish within — ends its stream
+/// within the cap and concludes `Budget`, never `Exhausted`, the conclusion
+/// every complete collection trusts (§5.3, §6.3). A deciding backend stops at
+/// its witness, which no budget the suite sets cuts, so it owes no cut here.
+/// Undeclared: each refuses at the request locus. The first that does not is
+/// the response.
 fn probe_time_budget(backend: &mut dyn Backend, declared: bool) -> Response {
     if let Err(failure) = load_source(backend, FACT) {
         return Response::Unprobed(failure);
@@ -2405,7 +2407,7 @@ fn probe_time_budget(backend: &mut dyn Backend, declared: bool) -> Response {
     if assumes {
         responses.push(read_the_fact(backend.solve_assuming(&nothing, &budgeted)));
     }
-    if solves || assumes {
+    if (solves || assumes) && backend.capabilities().enumeration {
         if let Err(response) = load_own(backend, UNBOUNDED) {
             return response;
         }

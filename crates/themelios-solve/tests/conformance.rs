@@ -964,7 +964,19 @@ impl Stub {
     /// the first answer sets, then the budget — unless its flaw searches past
     /// the budget, faults the cut search, or concludes the cut as closing the
     /// space.
-    fn cut(&self, sets: Vec<AnswerSet>, scenario: Scenario) -> Solved<'static> {
+    fn cut(&self, mut sets: Vec<AnswerSet>, scenario: Scenario) -> Solved<'static> {
+        if !self.capabilities.enumeration {
+            // A deciding stub stops at its witness, well inside any budget.
+            sets.truncate(1);
+            let witness = Enumeration {
+                sets: sets.into_iter(),
+                terms: Vec::new(),
+                terminal: Conclusion::Target,
+                concludes: true,
+                ended: false,
+            };
+            return Solved::running(Box::new(witness), scenario, self.show_rule());
+        }
         let run: Box<dyn Run> = match self.flaw {
             Flaw::IgnoresTheBudget => Box::new(PastItsBudget { yielded: 0 }),
             Flaw::FillsTheCutsCap => Box::new(Capped { left: CUT_CAP }),
@@ -2368,6 +2380,16 @@ fn a_search_past_its_budget_fails_the_time_budget_as_uncut() {
         panic!("the search past its budget fails the time budget: {report}");
     };
     assert!(failure.to_string().contains("past its budget"), "{failure}");
+}
+
+#[test]
+fn a_deciding_backend_declaring_a_time_budget_conforms() {
+    // Stopping at its witness, well inside the budget, it concludes at its
+    // target: nothing cut its search.
+    let mut capabilities = deciding();
+    capabilities.budgets.time = true;
+    let report = report(capabilities, Flaw::Faithful);
+    assert!(report.is_conformant(), "{report}");
 }
 
 #[test]
