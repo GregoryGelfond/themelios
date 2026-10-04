@@ -560,6 +560,9 @@ enum Flaw {
     /// Declares the native door, yet answers the brave consequences for the
     /// cautious.
     MisanswersTheNativeCautious,
+    /// Declares the native door, yet answers the brave consequences for the
+    /// cautious of a program lowered through Door A.
+    MisanswersTheNativeCautiousAtDoorA,
     /// Declares the native door, yet answers the consequences of a program with
     /// no answer set.
     AnswersTheConsequencesOfNoModel,
@@ -1401,6 +1404,11 @@ impl Backend for Stub {
         }
         let answered = match (mode, self.flaw) {
             (Mode::Cautious, Flaw::MisanswersTheNativeCautious) => Mode::Brave,
+            (Mode::Cautious, Flaw::MisanswersTheNativeCautiousAtDoorA)
+                if self.through == Through::Parsed =>
+            {
+                Mode::Brave
+            }
             _ => mode,
         };
         // Answering over no model anyway, the flawed door answers the empty set.
@@ -2048,6 +2056,13 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
         ),
         (
             Flaw::MisanswersTheNativeCautious,
+            realising(),
+            vec![(Declared(C::NativeConsequences), Misanswered)],
+        ),
+        (
+            // Faithful through Door B, the door's misanswer is found where the
+            // probe lowers the corpus through Door A too.
+            Flaw::MisanswersTheNativeCautiousAtDoorA,
             realising(),
             vec![(Declared(C::NativeConsequences), Misanswered)],
         ),
