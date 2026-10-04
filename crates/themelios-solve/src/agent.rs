@@ -488,8 +488,10 @@ fn require(declaration: &Capabilities, capability: Capability) -> Result<(), Fau
 
 /// The gate a budgeted question passes (docs/design/solve.md §6.3): a time
 /// budget the `declaration` neither enforces nor lets the core enforce refuses
-/// at the request locus, as unrealisable, before anything is lowered. A function
-/// of the declaration alone. O(1).
+/// at the request locus, as unrealisable, before anything is lowered. The core's
+/// own timer over a cancelling backend is realised with cancellation, so until
+/// then only a backend enforcing the budget natively passes. A function of the
+/// declaration alone. O(1).
 fn realisable(declaration: &Capabilities) -> Result<(), Fault> {
     if declaration.budgets.time {
         Ok(())
