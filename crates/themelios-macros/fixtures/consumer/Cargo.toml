@@ -1,0 +1,19 @@
+[package]
+name = "fixture-consumer"
+version = "0.0.0"
+publish = false
+description = "A consumer that depends on the test facade alone, renamed z, building every construction macro's value through it. A test fixture, never published."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The facade alone, under a Cargo rename: no dependency on themelios-program or
+# themelios-macros reaches this crate's own code.
+[dependencies]
+z = { package = "fixture-facade", path = "../facade" }
+
+[dev-dependencies]
+trybuild = "1"
+
+[lints]
+workspace = true
