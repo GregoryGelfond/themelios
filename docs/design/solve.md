@@ -314,11 +314,14 @@ pub trait Backend {
 /// the core's timer thread and the caller's handle pull it from another thread. A pull signals and returns
 /// — `O(1)`, never blocking on the solving thread — and the stop is read through the run's `conclusion`.
 ///
-/// A pull with no solve in flight is a no-op — never a cancellation of the next question. An adapter over
-/// an engine whose own primitive cuts "the active call or the following one" compensates by arming its
-/// forward only while a run is open: armed from before the engine's search can begin until it ends, and
-/// disarmed no later than it ends, so the window coincides with the engine's active call — a pull inside
-/// it is never dropped, and one outside it never reaches the engine. That coincidence is a version-scoped
+/// A solve is in flight from the moment `solve` is called until its run ends or its handle drops. A pull
+/// inside that window is never dropped: the backend takes it at its next check, in grounding or in search
+/// (§6.3), and the run concludes `Interrupted`. A pull outside it is a no-op — never a cancellation of the
+/// next question. An adapter over an engine whose own primitive cuts "the active call or the following
+/// one" compensates with a slot of its own: it holds a pull for the whole window, forwards it to the engine
+/// only while the engine's search is active — armed from before that search can begin until it ends, and
+/// disarmed no later than it ends — and begins no search once it holds a pull. So a pull inside the window
+/// is never dropped, and one outside it never reaches the engine. That coincidence is a version-scoped
 /// claim the spike suite establishes for the pinned engine (§13.2), with the race harness (§13.3) holding
 /// the concurrent open and close and the conformance suite the deterministic stale pull (§6.3).
 ///
@@ -413,7 +416,8 @@ While a multi-shot backend needs a rebuild, every method that touches the engine
 `register_*` doors — refuses with a Request fault naming that state (`Presupposition::NeedsRebuild`, §5.4),
 while `capabilities`, `interrupt`, `ground_program` (`None`, §10.4), and `reset` answer; `reset` discards the
 accumulated program and its groundings, keeps the registrations, and leaves the backend ready. A single-shot
-backend has no `reset` and grounds within each solve: a refusal its check makes leaves the program lowered
+backend has no `reset` and grounds within each solve (the phases, §6.3): a refusal its check makes leaves
+the program lowered
 before it, the backend ready; a grounding that fails fails its solve and leaves the lowered program as it was;
 and an engine refusal past `lower`'s check leaves every other method that touches the engine refusing, as
 above, until a `lower` replaces the program. The agent recovers by its rebuild (§6.2); a caller driving the
@@ -566,6 +570,43 @@ concludes, so the closed `Conclusion` gains no word for it, and the stopping rea
 optional conclusion beside an optional cause. `Concluded` carries a `Truncation`, the conclusions short of
 the space, so an exhausted conclusion — which decides — is unrepresentable there, not merely never
 produced.
+
+**How a stop is classified.** A run ends in exactly one way, and the contract classifies each way by its
+cause, the same before the first model as after models. Each cell gives the determination, then the
+conclusion:
+
+| What ends the run | Before any model | After models |
+|---|---|---|
+| The search closes the space | `Inconsistent`, `Exhausted` | `Consistent`, `Exhausted` |
+| The request's time budget passes (§6.3) | `Inconclusive`, `Budget` | `Consistent`, `Budget` |
+| The caller's interrupt is pulled (§6.3) | `Inconclusive`, `Interrupted` | `Consistent`, `Interrupted` |
+| A target the request set, or a deciding backend's witness (§4.1) | — | `Consistent`, `Target` |
+| A limit of the backend's own, or an allocation failure | a Resource fault | that fault, the last item |
+| A statement outside the backend's language | a Program fault naming it | that fault, the last item |
+
+- **A fault before any model** is the solve's `Err`, or the run's first item, which reads `Inconclusive`
+  with the fault as its cause (`Stopped::Faulted`).
+- **A fault after models** leaves the reading `Consistent`, since a model was seen. The run has no
+  conclusion, and a complete collection drawn over it refuses (`NotExhausted`, the fault its cause).
+- **No reading turns a fault into a closed space.** A fault never becomes an exhausted enumeration or a
+  complete `Snapshot` (§5.2, query.md §2.3).
+- **A cut is never a fault.** A deadline or a pull that ends a run during its grounding, before any model,
+  concludes it `Budget` or `Interrupted` (§6.3).
+
+**`Budget` and `Target` are the request's words, and no other limit borrows them.** `Budget` names the
+request's acknowledged time budget alone, whether the backend enforces it natively (`budgets.time`) or the
+core's timer does (§6.3). `Target` names a target the request set, or the witness a deciding backend stops
+at: its `enumeration: false` declares that stop before the request is paid for (§4.1).
+
+A backend's own ceiling — a grounding size, a work count, a storage bound, the width of a representation —
+is configured outside the request. It is environmental, as an allocation failure is. A stop at either is a
+Resource fault (`Fault::resource`) carrying the engine's typed cause (`Fault::caused_by`), which a caller
+reads by downcasting `Error::source`, never by parsing the message. Calling such a stop `Budget` would
+claim the caller set a limit the request never carried. If a configured limit should read as a budget, it
+becomes a field of the request, with a declaration that discloses its enforcement as `budgets` does
+(§4.1, §6.3). That field is grown when a consumer needs it (§14). The request carries no target yet (§6.3
+leaves room for a model-count cap), so an enumerating backend's run never concludes `Target`. An engine's
+habit of stopping after one model is a target nobody set, and a backend does not carry it into `solve`.
 
 `Model` owes its §1.4 reason too: an answer set is the atoms alone, while a stable model of a program with
 theory atoms comes with the assignment that satisfied them — the constraint-ASP literature's *constraint
@@ -1247,23 +1288,90 @@ request locus (`Presupposition::UnrealisableBudget`, §5.4), as does a backend h
 enforce — one presupposition for the one event, whoever refuses. The conformance suite's time-budget probe
 reads this rule, and drives an enumerating backend's declared budget to its cut — a choice over forty atoms,
 whose answer sets no search enumerates within the budget — failing a cut search concluded as closing the
-space; a deciding backend stops at its witness, which no such budget cuts. The core's timer is realised
-with cancellation; until then a budget is honoured natively or refused. The readings take no options — the agent's consequence doors and the query tier's readings each
+space; a deciding backend stops at its witness, which no such budget cuts. The core's timer is not yet
+realised, so until it is, a budget is honoured natively or refused. The readings take no options — the agent's consequence doors and the query tier's readings each
 solve over the default request — so a budgeted reading is a composition: `solve_with` under the budget, the
 determination it yields, `WorldView::of` over its models, and `materialize` to a `Snapshot` read infallibly
 (query.md §2.7). That composition bounds the search by its time budget alone: the world view's models are
 materialised before the search's conclusion is read, no model-count cap is realised, and no scoped reading
 carries a budget — what an embedder serving untrusted callers must supply beyond it is the threat-model
 statement's to say (specification §12.4). Reading forms that carry options are grown when a consumer names
-the need. The core owns that timer and the
-caller's handle alike — the `Interrupt` that `Agent::interrupt` returns is the core's own, which records
-its pull and forwards to the backend's `Cancel` primitive (§4.1) — so it attributes the stop over the
-run's `Interrupted`: its timer alone concludes `Budget`, a pulled caller's handle concludes `Interrupted`,
-and when both fire in one window the stop is `Interrupted`, the caller's act; the conformance suite checks
-the attribution once cancellation is realised, beside the stale pull — a pull with no solve in flight,
-which cancels no later question (§4.1). The long tail of engine parameters, when a real consumer needs it,
-follows the two-tier facade pattern (typed knobs over a legible open form); it is YAGNI-gated, grown on
-demand, never a CLI-string passthrough.
+the need.
+
+**The phases of a question, and what the time budget covers.** A single-shot backend answers a question in
+two phases, and the contract fixes what each may do:
+
+- **`lower` validates and retains.** It makes its checks at the door, each bounded by the program's size,
+  and keeps the program it will solve. It grounds nothing: grounding belongs to `solve`. Its retention is
+  transactional, so a refused `lower` leaves the program lowered before it in place (§4.1).
+- **`solve` opens the run.** It creates the run's control state first, then grounds the retained program,
+  then searches, delivering each model as the caller reads it. A grounding that fails fails that solve
+  alone: the lowered program stays, ready for another question, and partial ground output never becomes
+  it (§4.1).
+- **What may be reused.** A backend may reuse any immutable preparation of a retained program across
+  questions — an index, a dependency graph, a compiled form — since each question reads the same program.
+  The contract promises no shared mutable search state, and no incremental grounding between questions.
+
+The time budget is a **wall-clock deadline fixed when `solve` is called**. It covers everything the run then
+does: grounding, search, and the delivery of each model.
+
+- **The consumer's time counts.** The deadline is an instant, not a meter, so the time a consumer takes
+  between reading one model and asking for the next counts against it. A deadline that passes while the
+  backend waits on the consumer ends the run at the next read.
+- **A cut during grounding is a cut.** A deadline that passes during grounding, before any model, ends the
+  run there: `solve` returns it concluded `Budget` with no model, its determination `Inconclusive` — never
+  a fault (§5.1).
+- **Lowering is outside the deadline.** The agent brings the engine level before it calls `solve` — its
+  `lower`, and on a multi-shot backend its `reset` and replay (§6.2) — so that work runs outside the
+  deadline. A budget bounds a question's run, not the whole `Agent::solve_with` call. A multi-shot
+  backend's `ground` is a call of its own, outside any solve, and takes no budget (§4.1).
+- **Enforcement is cooperative.** A backend checks its deadline at points its engine provides, so a run
+  ends at the first check past the deadline, not at the instant. This is not a hard real-time bound. How
+  far a check may lag in each phase is the backend's to state, and its own tests hold it in each grounding
+  mode it has; the conformance suite holds only that a cut search concludes `Budget` (§13.1).
+
+**Cancellation.** The core owns the caller's handle, as it would own the timer:
+
+```rust
+/// The core's handle over a backend's cancellation primitive (§4.1): `Agent::interrupt` answers `Some`
+/// exactly when the backend declares `cancellation`. Owned, and `Send + Sync`, so a caller obtains it
+/// before borrowing the agent for a question and pulls it from any thread.
+pub struct Interrupt { /* the backend's `Cancel`, and the agent's record of its questions */ }
+impl Interrupt {
+    /// Cut short the agent's question in flight, if any. O(1); it signals and returns, never blocking on
+    /// the question's thread.
+    pub fn pull(&self);
+}
+```
+
+- **What a pull cuts.** A pull cuts the question in flight. A question is in flight from the moment it is
+  asked, its lowering included, until its run ends or its handle drops — or, for a question answered by
+  value, such as a consequence door (§6.2), until it returns. The core forwards the pull to the
+  backend's primitive at once. A question pulled before its search begins does not begin it, and concludes
+  `Interrupted` with nothing established. A pull that lands while `solve` opens the run is forwarded again
+  once the run is open, so a pull the backend could not yet take is not lost. The run stops at the
+  backend's next check, in grounding or in search, as for a deadline, and concludes `Interrupted`. Nothing
+  the search established is lost: the models read stay read, and the determination is `Consistent` if there
+  was one. A question answered by value says the same in its own terms: `determination` reads
+  `Inconclusive`, concluded `Interrupted`, when no model was seen, and a question whose answer needs a closed
+  space — a consequence door, or a reading of the query tier — refuses at the request locus with
+  `Presupposition::Unclosed(Truncation::Interrupted)`, nothing established.
+- **A pull with no question in flight cuts nothing.** That covers a pull before the first question, between
+  two, after a run has ended or its handle dropped, and after the agent itself has dropped. The core keeps
+  no memory of such a pull, so the next question runs as if it had never been pulled. The backend's
+  primitive does the same (§4.1).
+- **The caller's act takes precedence.** A pulled question that stopped at its time budget concludes
+  `Interrupted`, whether the deadline was the backend's native one or the core's timer; one answered by
+  value refuses with `Unclosed(Interrupted)`, not `Unclosed(Budget)`. A question no one
+  pulled concludes as its backend reports. A search that closed the space before the cut took effect
+  concludes `Exhausted`: a cut that arrives too late changes nothing.
+- **Who holds what.** The conformance suite holds a backend's primitive: an active, unfinished search
+  that it cuts, and the stale pulls (§13.1). The agent's tests hold the core's part deterministically over
+  a test backend: the attribution, the held pull, and a pull after the backend drops. Each adapter's race
+  harness holds a pull concurrent with a run's opening and closing (§13.3).
+
+The long tail of engine parameters, when a real consumer needs it, follows the two-tier facade pattern
+(typed knobs over a legible open form); it is YAGNI-gated, grown on demand, never a CLI-string passthrough.
 
 ### 6.4 Single-shot: the questions asked of a program directly
 
@@ -1826,7 +1934,13 @@ obligation a backend's declared capabilities cannot drive is skipped, and the re
 4. **Inconsistency is exhausted.** An inconsistent reading rests on a search that closed the space.
 5. **Truncation cannot pose as complete.** A stream once touched yields no complete collection — the one
    named pathology a run can attempt; the others are unconstructible in the vocabulary (§5.3).
-6. **Cancellation is not exhaustion.** A cancelled search never concludes as closing the space.
+6. **Cancellation is not exhaustion.** A cancelled search never concludes as closing the space. Over a
+   program no search finishes, a search cut after a model it yielded concludes `Interrupted` within a bound
+   — never `Exhausted`, `Budget`, or a fault. A pull with no solve in flight cancels no later solve, whether
+   it lands before a solve, after a run ended, or after a handle dropped. The obligation binds a backend that
+   declares cancellation and enumerates. A deciding backend stops at its first witness, and no program the
+   suite can carry keeps it searching long enough to cut, so the report says the check was not driven
+   (§6.3).
 7. **The ground-program observer**, where a backend declares it: `Some` once a grounding has finished,
    every ground rule naming a statement of the program lowered, carrying its provenance — an origin at
    least, each among the merged statement's — the membership §10.4 states, whose correctness the corpus of
@@ -2414,3 +2528,22 @@ necessity where it is declared.
     the rest to the threat-model statement. The cut binds an enumerating backend: a deciding one stops at
     its witness, which no budget the suite sets cuts, so a deciding backend cut before its witness is not
     yet probed (§6.3, §13.1).
+17. **The boundary a native backend integrates against** (2026-10-03). The stops are classified in one
+    table, before the first model and after models alike (§5.1). `Budget` and `Target` are the request's
+    words: `Budget` is its acknowledged time budget, and `Target` a target it set or a deciding backend's
+    witness. A backend's own configured ceiling, or an allocation failure, is a Resource fault carrying the
+    engine's typed cause. A configured limit read as a budget would be a request field with its declaration,
+    grown on need, and an engine's one-model habit is not carried into `solve` (§5.1). The phases are fixed
+    (§6.3). `lower` validates and retains, grounding nothing. `solve` creates the run's control state, then
+    grounds and searches. Immutable preparation may be reused across questions, with no mutable search
+    state shared. The time budget is a wall-clock deadline fixed when `solve` is called, covering grounding,
+    search, and model delivery, the consumer's time between reads included. A cut during grounding reads
+    `Budget`, never a fault. The agent's lowering precedes the deadline, and enforcement is cooperative, not
+    hard real-time (§6.3). The interrupt handle gains its operation, `Interrupt::pull`. A pull cuts the
+    agent's question in flight, its lowering included. A question pulled before its search begins does not
+    begin it, and a pull that lands while `solve` opens the run is forwarded again once it is open. A pull
+    with no question in flight is forgotten, and the caller's pull takes precedence over a deadline in the
+    same run (§6.3). A backend's solve is in flight from `solve` until its run ends or its handle drops; an
+    adapter over a primitive that cuts the following call holds a pull for that whole window (§4.1). The
+    conformance suite drives obligation 6 for an enumerating backend that declares cancellation — an active,
+    unfinished search cut, and the stale pulls — and names a deciding backend's skip (§13.1).
