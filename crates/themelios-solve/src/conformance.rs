@@ -1257,9 +1257,9 @@ fn cancellation_is_not_exhaustion(backend: &dyn Backend) -> Verdict {
 /// through either door, has drained — so an engine that grounds as it searches
 /// has grounded — the observer answers `Some`; every ground rule names a member
 /// of the program lowered — a statement of the rule's part, equal in content,
-/// whose origins include the rule's statement's own, since the set merge unions
-/// them, so an occurrence of the parse Door A carries is one at the
-/// per-occurrence grain; and a fact grounds to a rule. Membership is not correctness: which statement a
+/// carrying an origin, every one of its origins among the member's, since the
+/// set merge unions them, so an occurrence of the parse Door A carries is one at
+/// the per-occurrence grain; and a fact grounds to a rule. Membership is not correctness: which statement a
 /// rule came from is checked once a rule carries its head and body. An
 /// undeclared observer binds nothing here — that its method answers `None` is
 /// the honesty check's.
@@ -1293,13 +1293,14 @@ fn ground_program_is_faithful(backend: &mut dyn Backend, corpus: &[Case]) -> Ver
                     .map(move |node| ((part.key(), node.get()), node))
             })
             .collect();
+        // A statement of the program lowered carries its provenance: at least
+        // one origin, each among the member's.
         let belongs = |part: &PartKey, statement: &WithProvenance<Statement>| {
-            members.get(&(part, statement.get())).is_some_and(|member| {
-                statement
-                    .provenance()
-                    .origins()
-                    .all(|origin| member.provenance().origins().any(|held| held == origin))
-            })
+            let mut origins = statement.provenance().origins().peekable();
+            origins.peek().is_some()
+                && members.get(&(part, statement.get())).is_some_and(|member| {
+                    origins.all(|origin| member.provenance().origins().any(|held| held == origin))
+                })
         };
         if ground
             .rules()
@@ -2752,6 +2753,8 @@ mod tests {
         Withholding,
         /// Faithfully, without declaring the observer.
         Undeclared,
+        /// Faithfully, each statement stripped of its provenance.
+        Stripping,
         /// Faithfully, yet every search faults.
         FaultingItsSearch,
         /// Faithfully, yet every search runs past its bound.
@@ -2815,6 +2818,11 @@ mod tests {
             if self.grounds == Grounds::Nothing {
                 statements.clear();
             }
+            if self.grounds == Grounds::Stripping {
+                for (_, statement) in &mut statements {
+                    *statement = WithProvenance::new(statement.get().clone(), Provenance::empty());
+                }
+            }
             if self.grounds == Grounds::Relocating {
                 for (_, statement) in &mut statements {
                     *statement = WithProvenance::new(
@@ -2868,6 +2876,15 @@ mod tests {
     fn a_ground_rule_inventing_a_statement_at_door_a_fails() {
         let verdict =
             ground_program_is_faithful(&mut grounding(Grounds::InventingAtDoorA), &corpus());
+        assert!(
+            matches!(&verdict, Verdict::Failed(failure) if failure.breach() == Breach::Misanswered),
+            "{verdict}"
+        );
+    }
+
+    #[test]
+    fn a_ground_rule_naming_a_statement_without_an_origin_fails() {
+        let verdict = ground_program_is_faithful(&mut grounding(Grounds::Stripping), &corpus());
         assert!(
             matches!(&verdict, Verdict::Failed(failure) if failure.breach() == Breach::Misanswered),
             "{verdict}"

@@ -1824,7 +1824,8 @@ obligation a backend's declared capabilities cannot drive is skipped, and the re
    named pathology a run can attempt; the others are unconstructible in the vocabulary (§5.3).
 6. **Cancellation is not exhaustion.** A cancelled search never concludes as closing the space.
 7. **The ground-program observer**, where a backend declares it: `Some` once a grounding has finished,
-   every ground rule naming a statement of the program lowered — the membership §10.4 states, whose
+   every ground rule naming a statement of the program lowered, carrying its provenance — an origin at
+   least, each among the merged statement's — the membership §10.4 states, whose
    correctness the corpus of rules told apart by their heads and bodies holds once rules carry them — and
    its content qualified per engine by the relation §10.4 names; a backend that declares none passes
    without it.
@@ -2400,4 +2401,6 @@ necessity where it is declared.
     budgeted solve, its world view, and the `Snapshot` it materialises (§6.3, query.md §2.7) — and the empty
     ground program, `Default`, is named the one value constructible ahead of the observer's construction
     door (§10.4). The conformance suite drives a declared time budget to its cut, over a program no search
-    finishes within, and fails a cut concluded as closing the space (§6.3, §13.1).
+    finishes within, and fails a cut concluded as closing the space (§6.3, §13.1). The observer's membership requires a
+    ground rule's statement to carry an origin (§13.1); that a merged statement's every origin reaches its
+    rules at the statement grain is held once the observer's construction door lands (§10.4, §11.1).
