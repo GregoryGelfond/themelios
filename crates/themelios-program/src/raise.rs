@@ -10,9 +10,10 @@
 //! Its statement half lowers a parsed program in two steps. Each statement is lowered, in
 //! source order, with its part and its provenance — the occurrence stream
 //! [`raise_occurrences`] returns — and lowering diagnoses the two statements the set may not
-//! merge, repeated content-equal within their part (§6.3): a global definition
+//! hold faithfully (§6.3): a global definition repeated content-equal within its part
 //! ([`LowerErrorKind::RepeatedDefinition`]), whose redefinition the authority rejects, and a
-//! `#script` block ([`LowerErrorKind::RepeatedScript`]), which the authority runs again.
+//! `#script` block after the program's first ([`LowerErrorKind::ExtraScript`]), since the raise
+//! admits one.
 //! The occurrences are then collected into the part-structured set, one part lookup per run of statements sharing a part ([`raise`],
 //! [`Occurrences::into_raised`]). [`raise_source`] and [`raise_str`] parse and raise in one
 //! call.
@@ -100,16 +101,17 @@ impl LowerError {
 
 /// The ways a raise defeats the value (program §8): a term recovered or not
 /// representable, which the term raise emits, and the statement and directive
-/// raise's own — a definition or `#script` block repeated within its part among
-/// them — so a consumer's match carries a wildcard. `#[non_exhaustive]`, and a soundness obligation rides it: a new
+/// raise's own — a definition repeated within its part, and a `#script` block after the
+/// program's first, among them — so a consumer's match carries a wildcard. `#[non_exhaustive]`, and a soundness obligation rides it: a new
 /// kind that marks a *lossy* reading — a best-effort partial the value could not fully
 /// represent — of text the grounder itself admits must join the analysis differential's
 /// faithful-raise gate (`raised_faithfully`), or a truncated reading is trusted again, the
 /// failure [`PooledArgumentList`](LowerErrorKind::PooledArgumentList) exists to end.
 /// [`RepeatedDefinition`](LowerErrorKind::RepeatedDefinition) marks text the authority
 /// rejects, not a lossy reading, so it is no such kind;
-/// [`RepeatedScript`](LowerErrorKind::RepeatedScript) is one — the authority admits the repeated
-/// block and runs it twice, where the merged program runs it once — and so is
+/// [`ExtraScript`](LowerErrorKind::ExtraScript) is one — the authority admits a second block
+/// and runs each where it reads it, in an order the set does not keep, where the merged program
+/// runs a repeated block once — and so is
 /// [`NumberOutOfRange`](LowerErrorKind::NumberOutOfRange), which the pinned authority admits,
 /// wrapped into the width: its lexer computes a numeral in a machine `int`
 /// (`libgringo/gringo/lexerstate.hh`, `LexerState::clingo_number`), an observation of
@@ -150,12 +152,13 @@ pub enum LowerErrorKind {
         /// Where the first definition's name sits.
         first: Location,
     },
-    /// A `#script` block repeated content-equal within its part (§6.3): text the authority runs
-    /// once per block where it reads it, which the set would merge into a program that runs it
-    /// once — a different program wherever the script keeps state at module level. Located at
-    /// the repeat; `first` is the first block.
-    RepeatedScript {
-        /// Where the first block sits.
+    /// A `#script` block after the program's first (§6.3): the raise admits one, in any part and
+    /// any language. The authority runs each block where it reads it, every block of a language
+    /// in one interpreter, so a repeated block runs twice where the merged program runs it once,
+    /// and two different blocks depend on an order the set does not keep. The block is kept in
+    /// the value beside this diagnostic. Located at the block; `first` is the program's first.
+    ExtraScript {
+        /// Where the program's first block sits.
         first: Location,
     },
 }
@@ -197,9 +200,9 @@ impl LowerErrorKind {
                 DiagnosticId::new("program", "repeated-definition"),
                 "this definition repeats one earlier in its part, which the authority rejects",
             ),
-            LowerErrorKind::RepeatedScript { .. } => (
-                DiagnosticId::new("program", "repeated-script"),
-                "this script repeats one earlier in its part, which the authority runs again",
+            LowerErrorKind::ExtraScript { .. } => (
+                DiagnosticId::new("program", "extra-script"),
+                "this script follows the program's first, and the raise admits one",
             ),
         }
     }
@@ -216,7 +219,7 @@ impl ToDiagnostic for LowerError {
     /// The lowering diagnostic in base's normal form (base §6.5): the `program`-space
     /// identity, its headline, and the offending region as the primary label — the
     /// syntax tier's diagnostics and these share one model, so a consumer renders both
-    /// alike (§8). A repeated definition or script also points at the first.
+    /// alike (§8). A repeated definition, and a script after the first, also point at the first.
     fn to_diagnostic(&self) -> Diagnostic {
         let (id, message) = self.kind.report();
         let diagnostic = Diagnostic::new(
@@ -231,7 +234,7 @@ impl ToDiagnostic for LowerError {
         .expect("a lowering diagnostic's headline is never empty");
         let first = match self.kind {
             LowerErrorKind::RepeatedDefinition { first } => Some((first, "first defined here")),
-            LowerErrorKind::RepeatedScript { first } => Some((first, "first written here")),
+            LowerErrorKind::ExtraScript { first } => Some((first, "the first script")),
             _ => None,
         };
         if let Some((location, message)) = first {
@@ -795,6 +798,7 @@ fn lower_each(parse: &Parse<ast::Program>) -> (Vec<Lowered>, Vec<LowerError>) {
     let mut batch = Vec::new();
     let mut part = Arc::new(base_key());
     let mut firsts = Firsts::opening(&part);
+    let mut first_script: Option<Location> = None;
     for statement in parse.tree().statements() {
         if let ast::Statement::ProgramPart(directive) = &statement {
             match part_key(directive) {
@@ -812,25 +816,28 @@ fn lower_each(parse: &Parse<ast::Program>) -> (Vec<Lowered>, Vec<LowerError>) {
         // stays in source order and holds every lowering diagnostic.
         let mut diagnostics = Vec::new();
         if let Some(raised) = raise_one(&statement, parse, &mut diagnostics) {
-            // A global definition the authority binds once, and a script it runs per block:
-            // a content-equal repeat in one part is a second occurrence to it, one statement
-            // to the set (§6.3).
-            let repeated: Option<fn(Location) -> LowerErrorKind> = if raised.is_global_definition()
-            {
-                Some(|first| LowerErrorKind::RepeatedDefinition { first })
-            } else if let Statement::Script(_) = raised {
-                Some(|first| LowerErrorKind::RepeatedScript { first })
-            } else {
-                None
-            };
-            if let Some(kind) = repeated {
+            // A global definition the authority binds once: a content-equal repeat in one part
+            // is a second occurrence to it, one statement to the set (§6.3).
+            if raised.is_global_definition() {
                 let location = repeat_location(&statement, parse);
                 let canonical = crate::program::canonicalize_statement(raised.clone());
                 if let Some(first) = firsts.repeat_of(&part, canonical, location) {
                     diagnostics.push(LowerError {
                         location,
-                        kind: kind(first),
+                        kind: LowerErrorKind::RepeatedDefinition { first },
                     });
+                }
+            }
+            // The raise admits one script to a program: every later block, in any part and of
+            // any content or language, is diagnosed naming the first, and kept (§6.3).
+            if let Statement::Script(_) = raised {
+                let location = repeat_location(&statement, parse);
+                match first_script {
+                    Some(first) => diagnostics.push(LowerError {
+                        location,
+                        kind: LowerErrorKind::ExtraScript { first },
+                    }),
+                    None => first_script = Some(location),
                 }
             }
             let provenance = statement_provenance(&statement, parse);
@@ -847,7 +854,7 @@ fn lower_each(parse: &Parse<ast::Program>) -> (Vec<Lowered>, Vec<LowerError>) {
     (lowered, batch)
 }
 
-/// The first occurrence of each global definition and script seen so far, part by part (§6.3),
+/// The first occurrence of each global definition seen so far, part by part (§6.3),
 /// the active part's held apart so a run of them under one part never compares its key. A
 /// switch of part parks the active map under its key first — so a part re-opened under a fresh
 /// `Arc` over an equal key finds what it parked — then takes the new part's, O(key · log parts)
@@ -891,8 +898,8 @@ impl Firsts {
     }
 }
 
-/// Where a repeat is reported: a definition at its name, and a script — which names nothing — at
-/// its whole statement. Every statement kind is named, as `raise_one` names them, so a new kind
+/// Where a repeat or an extra script is reported: a definition at its name, and a script — which
+/// names nothing — at its whole statement. Every statement kind is named, as `raise_one` names them, so a new kind
 /// is a compile error here rather than a coarser location; a kind the check never reaches is
 /// located at its own span.
 fn repeat_location(statement: &ast::Statement, parse: &Parse<ast::Program>) -> Location {

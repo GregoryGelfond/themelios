@@ -80,6 +80,21 @@ fn a_repeated_constant_refuses_door_a() {
 }
 
 #[test]
+fn a_second_script_refuses_door_a() {
+    // Two blocks of different languages: the raise admits one, whatever the content (§6.3).
+    let refusal =
+        admitted("#script (python) pass #end. #script (lua) x = 1 #end.").expect_err("refused");
+    let NotAdmitted::Lowering(batch) = refusal else {
+        panic!("a lowering refusal, not {refusal:?}")
+    };
+    assert!(
+        batch
+            .iter()
+            .any(|error| matches!(error.kind(), LowerErrorKind::ExtraScript { .. }))
+    );
+}
+
+#[test]
 fn a_warning_alone_does_not_refuse_a_parse() {
     // A doc comment with no statement after it is the syntax tier's warning: it
     // stays on the caller's parse and does not refuse the program.

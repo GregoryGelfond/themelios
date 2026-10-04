@@ -135,8 +135,9 @@ fn program_text() -> impl Strategy<Value = String> {
         Just("1 { ."),         // a malformed line
         Just("#const n = 1."), // twice: a repeated definition in one part
         Just("#const n = 1."),
-        Just("#script (python) pass #end."), // twice: a repeated script in one part
+        Just("#script (python) pass #end."), // twice: an extra script, repeated in one part
         Just("#script (python) pass #end."),
+        Just("#script (lua) x = 1 #end."), // an extra script of other content and language
     ];
     prop::collection::vec(line, 0..8).prop_map(|lines| lines.join("\n"))
 }
