@@ -1,6 +1,6 @@
 # themelios-macros — tier design
 
-2026-09-10, revised through 2026-10-03 (§13). The design of record, which the build
+2026-09-10, revised through 2026-10-04 (§13). The design of record, which the build
 follows; §13 records each revision. This document is the API design of
 `themelios-macros` — the surface-macro tier, its vocabulary, expansion
 architecture, semantics, and assurance — derived from the v1 specification
@@ -360,15 +360,17 @@ removed before it.
 - Rust punctuation maps one-to-one onto the operator roster; a multi-character
   operator exists where its characters are adjacent and joined, and the source
   forms an operator run by reassembling its `Spacing::Joint`-glued punctuation
-  into text and munching that through `themelios_syntax::fusion::punctuation`
-  (syntax §10.5), the single home of grammar §4.6's punctuation-and-operator
-  formation the file lexer forms through as well: it reaches only the operator
-  part of that roster, a bracket arriving as a Rust group it has already tiled,
-  and a character the formation does not take (a bare `!`) is its own dialect
-  refusal. Theory-operator runs form the same way inside theory expressions —
-  the source forms them under the parser's `Theory` mode by calling
-  `themelios_syntax::fusion::theory_operator` (syntax §10.3), the single home of
-  grammar §4.7's operator formation the file lexer forms through as well.
+  into text — up to a `#` or a `$`, which no operator contains, so each opens its
+  own token however closely it follows (`S=#sum`, `X<$n`) — and munching that
+  through `themelios_syntax::fusion::punctuation` (syntax §10.5), the single home
+  of grammar §4.6's punctuation-and-operator formation the file lexer forms
+  through as well: it reaches only the operator part of that roster, a bracket
+  arriving as a Rust group it has already tiled, and a character the formation
+  does not take (a bare `!`) is its own dialect refusal. Theory-operator runs
+  form the same way inside theory expressions — the source forms them under the
+  parser's `Theory` mode by calling `themelios_syntax::fusion::theory_operator`
+  (syntax §10.3), the single home of grammar §4.7's operator formation the file
+  lexer forms through as well.
 - Comments do not exist in the dialect (Rust has removed them).
 - `$` emits a `SPLICE` token over its marker and operand (§7).
 - Every Rust token the mapping does not name is a dialect error at its span —
@@ -795,3 +797,8 @@ deliberate evolution with its argument, not a drift.
   now says so. It had described `program!` as a block of any statements. The other
   statement families, and the `#program` delimiter, are located compile errors,
   recorded as reserved seams with their reasons and arriving consumers.
+- **An operator run ends before `#` and `$`** (2026-10-04; §6). The mapping glued
+  a joint `#` or `$` into the operator run before it, refusing `S=#sum`,
+  `#true;#true`, `:-#count`, and `X<$n`, which grammar §9 admits. The design now
+  states that the run takes operator characters only, so a keyword and a splice
+  each open their own token.
