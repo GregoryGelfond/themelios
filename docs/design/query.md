@@ -489,9 +489,9 @@ through the programmatic form.
 and `snapshot` are a **query-side extension trait `AgentReading`, impl'd for `solve.md`'s `Agent<B>`** and
 re-exported in the prelude, so `agent.answer(q)?` reads inherent while `themelios-solve` keeps no
 dependency on `themelios-query` (the dependency is one-directional — query depends on solve, the tier
-direction, §2.1's `pub use themelios_solve::Consequences`; the reverse would cycle, and `WorldView::of`
-keeps the construction side acyclic too, §2.3). `cautious`/`brave` are the agent's own (`solve.md` §6.2), the `Consequences`
-type being the solve tier's. Each of these **solves once**, then reads — an owned answer, freely composed
+direction, §2.1's `pub use themelios_solve::outcome::Consequences`; the reverse would cycle, and
+`WorldView::of` keeps the construction side acyclic too, §2.3). `cautious`/`brave` are the agent's own
+(`solve.md` §6.2), the `Consequences` type being the solve tier's. Each of these **solves once**, then reads — an owned answer, freely composed
 — rather than borrowing and draining a live `WorldView`; that is why the readings are not on the live
 handle (§2.2, §2.3). A `Snapshot` (from `materialize`) mirrors them infallibly over materialised data,
 for a reading that must outlive its engine or cross a service boundary. The readings take no options —

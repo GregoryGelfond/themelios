@@ -181,8 +181,9 @@ impl GroundProgram {
     }
 
     /// Each ground rule with the part and the statement it was instantiated
-    /// from, in the order produced. A rule naming no statement — which the
-    /// crate's own construction never builds — yields nothing. O(1) per rule.
+    /// from, in the order produced. A rule naming no statement yields nothing;
+    /// whether the observer's construction door refuses such a rule is settled
+    /// with that door (§10.4, §11.1). O(1) per rule.
     pub fn rules(
         &self,
     ) -> impl Iterator<Item = (&GroundRule, &PartKey, &WithProvenance<Statement>)> + '_ {

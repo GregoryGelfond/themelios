@@ -12,8 +12,8 @@
 //! [`raise_occurrences`] returns — and lowering diagnoses the two statements the set may not
 //! merge, repeated content-equal within their part (§6.3): a global definition
 //! ([`LowerErrorKind::RepeatedDefinition`]), whose redefinition the authority rejects, and a
-//! `#script` block ([`LowerErrorKind::RepeatedScript`]), which the authority runs again. The occurrences are then collected into
-//! the part-structured set, one part lookup per run of statements sharing a part ([`raise`],
+//! `#script` block ([`LowerErrorKind::RepeatedScript`]), which the authority runs again.
+//! The occurrences are then collected into the part-structured set, one part lookup per run of statements sharing a part ([`raise`],
 //! [`Occurrences::into_raised`]). [`raise_source`] and [`raise_str`] parse and raise in one
 //! call.
 //!
@@ -98,9 +98,10 @@ impl LowerError {
     }
 }
 
-/// The ways a recovered term defeats the value (program §8). The term raise emits
-/// these; the statement and directive raise add their own, so a consumer's match
-/// carries a wildcard. `#[non_exhaustive]`, and a soundness obligation rides it: a new
+/// The ways a raise defeats the value (program §8): a term recovered or not
+/// representable, which the term raise emits, and the statement and directive
+/// raise's own — a definition or `#script` block repeated within its part among
+/// them — so a consumer's match carries a wildcard. `#[non_exhaustive]`, and a soundness obligation rides it: a new
 /// kind that marks a *lossy* reading — a best-effort partial the value could not fully
 /// represent — of text the grounder itself admits must join the analysis differential's
 /// faithful-raise gate (`raised_faithfully`), or a truncated reading is trusted again, the

@@ -640,10 +640,10 @@ impl LiveRun<'_> {
             Some(conclusion) => {
                 Truncation::of(conclusion).map_or(Class::Inconsistent, Class::Inconclusive)
             }
-            // A run that ends without concluding broke the terminal obligation,
-            // and `pull` has recorded that as its fault, read above; the arm
-            // states the invariant, so the reading stays total — never "yes",
-            // never "no".
+            // A run that ends without concluding broke the terminal obligation:
+            // `pull` recorded the breach where the end read no conclusion, and
+            // where a conclusion read there has since vanished this arm is what
+            // attributes it — the adapter's fault, never "yes", never "no".
             None => Class::Faulted(unconcluded()),
         }
     }
@@ -690,9 +690,10 @@ impl LiveRun<'_> {
         }
         match self.conclusion().and_then(Truncation::of) {
             Some(truncation) => Err(NotExhausted::not_closed(truncation)),
-            // A run that ended without concluding broke the run protocol (§5.2):
-            // `pull` recorded that breach as its fault, read above, so the arm
-            // states the invariant — the breach's adapter fault either way.
+            // A run that ended without concluding broke the run protocol (§5.2).
+            // `pull` recorded the breach where the end read no conclusion, read
+            // above; where a conclusion read at the end has since vanished, this
+            // arm attributes the breach — the adapter's fault either way.
             None => Err(NotExhausted::faulted(unconcluded())),
         }
     }
@@ -785,6 +786,11 @@ impl NotExhausted {
     }
 }
 
+/// The refusal of a complete collection whose handle's models were already
+/// streamed — the one wording, for the refusal and the fault it becomes.
+const TAKEN: &str =
+    "the models were already taken from this handle; a complete collection is unavailable";
+
 impl From<NotExhausted> for Fault {
     /// This refusal as a [`Fault`], for a reading that needs a complete world view
     /// and cannot proceed without one — the query tier's `materialize` and cautious
@@ -795,10 +801,7 @@ impl From<NotExhausted> for Fault {
     /// anonymous error (docs/design/solve.md §5.1, §5.3, §5.4).
     fn from(refusal: NotExhausted) -> Fault {
         match refusal.reason {
-            Incompleteness::Taken => Fault::request(
-                "the models were already taken from this handle, so a complete world view is unavailable",
-                Presupposition::Taken,
-            ),
+            Incompleteness::Taken => Fault::request(TAKEN, Presupposition::Taken),
             Incompleteness::Unclosed(truncation) => Fault::request(
                 format!("the search did not close the space: {truncation}"),
                 Presupposition::Unclosed(truncation),
@@ -830,9 +833,7 @@ impl std::fmt::Display for NotExhausted {
     /// Why the collection is unavailable, as the reason says.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.reason {
-            Incompleteness::Taken => f.write_str(
-                "the models were already taken from this handle; a complete collection is unavailable",
-            ),
+            Incompleteness::Taken => f.write_str(TAKEN),
             Incompleteness::Unclosed(truncation) => {
                 write!(f, "{truncation}; a complete collection is unavailable")
             }
