@@ -266,6 +266,60 @@ mod tests {
     }
 
     #[test]
+    fn run_under_a_selection_roots_every_path_at_it() {
+        // A runtime selection names the root every constructor path begins at (macros §9): the
+        // selected path, and never the default beside it.
+        let input = TokenStream::from_str("#![crate = ::tp] p(1, a)").expect("lexes");
+        let expansion = run(input, Entry::Statement, None).to_string();
+        assert!(
+            expansion.contains(":: tp :: program :: Rule :: fact"),
+            "{expansion}"
+        );
+        assert!(!expansion.contains("themelios_program"), "{expansion}");
+    }
+
+    #[test]
+    fn run_of_an_atom_under_a_selection_roots_every_path_at_it() {
+        let input = TokenStream::from_str("#![crate = ::tp] -p(1)").expect("lexes");
+        let expansion = run(input, Entry::Atom, None).to_string();
+        assert!(
+            expansion.contains(":: tp :: program :: Atom :: new"),
+            "{expansion}"
+        );
+        assert!(!expansion.contains("themelios_program"), "{expansion}");
+    }
+
+    #[test]
+    fn run_of_a_directive_reads_the_selection_before_its_keyword() {
+        let input = TokenStream::from_str("#![crate = ::tp] p / 1").expect("lexes");
+        let expansion = run(input, Entry::Statement, Some("show")).to_string();
+        assert!(
+            expansion.contains(":: tp :: program :: Show"),
+            "{expansion}"
+        );
+        assert!(!expansion.contains("themelios_program"), "{expansion}");
+    }
+
+    #[test]
+    fn run_of_a_program_block_under_a_selection_roots_every_path_at_it() {
+        let input = TokenStream::from_str("#![crate = ::tp] p(1). q(X) :- p(X).").expect("lexes");
+        let expansion = run(input, Entry::Program, None).to_string();
+        assert!(
+            expansion.contains(":: tp :: program :: Program :: of"),
+            "{expansion}"
+        );
+        assert!(!expansion.contains("themelios_program"), "{expansion}");
+    }
+
+    #[test]
+    fn run_of_a_malformed_selection_is_a_block_expression() {
+        let input = TokenStream::from_str("#![crate = 1] p").expect("lexes");
+        let expansion = run(input, Entry::Statement, None).to_string();
+        assert!(expansion.contains("compile_error"), "{expansion}");
+        assert!(expansion.starts_with('{'), "{expansion}");
+    }
+
+    #[test]
     fn run_of_a_dialect_error_is_a_block_expression() {
         // A float literal is no token the dialect names (§6): the mapping refuses it and
         // `run` returns a `compile_error!` at its span, never a panic (§2). Like the

@@ -9,6 +9,49 @@
 //! constructors it names build, structurally equal up to and including
 //! provenance (docs/design/macros.md §8, §11). A directive macro supplies its
 //! leading `#`-keyword from its own name; the caller writes the payload alone.
+//!
+//! # The runtime root
+//!
+//! An expansion names the program tier by absolute path, `::themelios_program` unless the
+//! invocation selects another root (docs/design/macros.md §9). A caller that renamed the
+//! dependency, or a facade forwarding these macros under its own name, opens the invocation
+//! with a runtime selection, `#![crate = path]`, `path` a Rust path to the program tier's
+//! crate root:
+//!
+//! ```
+//! use themelios_macros::program;
+//! use themelios_program::program::Program;
+//!
+//! // The default root, selected explicitly: the same program the unselected block builds.
+//! let selected: Program = program! { #![crate = ::themelios_program] p(1). };
+//! assert_eq!(selected, program! { p(1). });
+//! ```
+//!
+//! A facade re-exports this crate and the program tier from a `#[doc(hidden)]` module and
+//! wraps each macro in a `macro_rules!` that selects its own re-export through `$crate`, so
+//! a consumer depending on the facade alone, under any name, builds the program tier's own
+//! values. The wrapper the design states (§9) is:
+//!
+//! ```text
+//! #[doc(hidden)]
+//! pub mod __private {
+//!     pub use themelios_macros;
+//!     pub use themelios_program;
+//! }
+//!
+//! #[macro_export]
+//! macro_rules! program {
+//!     ($($body:tt)*) => {
+//!         $crate::__private::themelios_macros::program! {
+//!             #![crate = $crate::__private::themelios_program]
+//!             $($body)*
+//!         }
+//!     };
+//! }
+//! ```
+//!
+//! The wrapper is a `text` block because a doctest cannot hold it: the doctest's own crate
+//! links this one privately and cannot re-export it.
 #![forbid(unsafe_code)]
 
 mod codegen;
@@ -97,9 +140,9 @@ pub fn atom(input: TokenStream) -> TokenStream {
 /// Its statements are the families the statement macros build (docs/design/macros.md §8): rules,
 /// with every head and body shape — a disjunction, a choice, or an aggregate in the head, an
 /// aggregate in the body — optimization statements, `#show`, and `#external`. Any other
-/// statement — a weak constraint, a `#program` part delimiter, a `#const`, `#include`,
-/// `#project`, `#defined`, `#edge`, `#heuristic`, or `#theory` directive, or a query — is a
-/// located compile error, as it is for the single statement macros (§8, §12). A `#script` body
+/// statement — a weak constraint, a `#const`, `#include`, `#project`, `#defined`, `#edge`,
+/// `#heuristic`, or `#theory` directive, or a query — and a `#program` part delimiter are
+/// located compile errors, as they are for the single statement macros (§8, §12). A `#script` body
 /// cannot be recovered from Rust tokens — it is opaque text a file lexer reads, not a token
 /// stream — so a `#script` in the block is a compile error directing the caller to raise a file
 /// instead (§7).

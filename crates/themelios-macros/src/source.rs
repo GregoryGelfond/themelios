@@ -9,8 +9,9 @@
 //! §4.7; syntax §10.3), the single home of the operator formation the file
 //! lexer forms through as well — the one place a token's extent turns on the
 //! mode it is asked under. Alongside the text it keeps a span
-//! map (each tile's originating `proc_macro` span) and the captured
-//! splices.
+//! map (each tile's originating `proc_macro` span), the captured
+//! splices, and the runtime root the invocation selects (docs/design/macros.md
+//! §9), read from the invocation's opening `#![crate = path]` before the mapping.
 //!
 //! The four token-source laws (tiling, slice, determinism, refusal —
 //! syntax §4.3) are what this source owes; because it answers from tiles,
@@ -32,8 +33,10 @@ use themelios_syntax::tree::{SyntaxKind, TextRange};
 /// A themelios text assembled from a Rust token stream, tiled by the
 /// macro dialect (grammar §9). It owns the assembled `text`, an ordered
 /// gap-free cover of it in `tiles` (one per token, the trailing `EOF`
-/// included), the `proc_macro` span each tile came from in `spans`, and
-/// the captured Rust expression of each splice in `splices`.
+/// included), the `proc_macro` span each tile came from in `spans`, the
+/// captured Rust expression of each splice in `splices`, and the runtime
+/// root every emitted constructor path begins at in `root`
+/// (docs/design/macros.md §9).
 #[derive(Debug)]
 pub struct MacroSource {
     text: String,
@@ -41,6 +44,7 @@ pub struct MacroSource {
     spans: Vec<Span>,
     splices: Vec<Splice>,
     dialect: Dialect,
+    root: TokenStream,
 }
 
 /// One tile: a half-open byte region `[start, start + len)` of the
@@ -93,8 +97,11 @@ impl MacroSource {
     /// Returns [`MapError`] for any token grammar §9 leaves unnamed — a
     /// float, char, or byte literal, a suffixed numeral, a raw identifier,
     /// an identifier no name class matches, a detached `#`, a `$` without
-    /// an operand — and for the corners a later increment maps by value (a
-    /// string whose value grammar §4.4 cannot spell verbatim).
+    /// an operand — for the corners a later increment maps by value (a
+    /// string whose value grammar §4.4 cannot spell verbatim), and for a
+    /// malformed runtime selection (docs/design/macros.md §9): another key,
+    /// a value that is not a path, or a selection that does not open the
+    /// invocation.
     pub fn build(input: TokenStream, entry_keyword: Option<&str>) -> Result<MacroSource, MapError> {
         let mut assembler = Assembler::default();
         if let Some(word) = entry_keyword {
@@ -108,7 +115,8 @@ impl MacroSource {
             assembler.emit(kind, &spelling, Span::call_site(), false);
         }
         let trees: Vec<TokenTree> = input.into_iter().collect();
-        assembler.walk(&trees)?;
+        let (root, payload) = runtime_selection(&trees)?;
+        assembler.walk(payload)?;
         assembler.push_eof();
         Ok(MacroSource {
             text: assembler.text,
@@ -116,7 +124,16 @@ impl MacroSource {
             spans: assembler.spans,
             splices: assembler.splices,
             dialect: Dialect::Clingo,
+            root,
         })
+    }
+
+    /// The runtime root every constructor path the codegen emits begins at
+    /// (docs/design/macros.md §9): the path the invocation's selection names,
+    /// its tokens and spans unchanged, or `::themelios_program` when it names
+    /// none.
+    pub(crate) fn runtime_root(&self) -> &TokenStream {
+        &self.root
     }
 
     /// The `proc_macro` span the tile covering `range`'s start came from —
@@ -205,6 +222,7 @@ impl MacroSource {
             spans: self.spans.clone(),
             splices: Vec::new(),
             dialect: self.dialect,
+            root: self.root.clone(),
         }
     }
 }
@@ -410,6 +428,17 @@ impl Assembler {
         index: usize,
         hash: &Punct,
     ) -> Result<usize, MapError> {
+        // A runtime selection is read before the walk (docs/design/macros.md §9), so a `#!` met
+        // here is one that does not open the invocation — after the payload, or a second.
+        if let Some(TokenTree::Punct(bang)) = trees.get(index + 1)
+            && bang.as_char() == '!'
+        {
+            return Err(MapError {
+                span: hash.span(),
+                message: "a runtime selection, `#![crate = path]`, opens the invocation, once"
+                    .to_owned(),
+            });
+        }
         if let Some(TokenTree::Ident(word)) = trees.get(index + 1)
             && adjacent(hash.span(), word.span())
         {
@@ -535,6 +564,89 @@ impl Assembler {
 /// the caller answers that (mode-invariant) token from its tile
 /// (docs/design/macros.md §6). Total: the primitive is total, and `offset`
 /// is a validated char boundary within `text`.
+/// The runtime selection opening `trees`, `#![crate = path]` (docs/design/macros.md §9): the
+/// root its path names, and the trees after it. With no selection the root is the program
+/// tier's crate, `::themelios_program`, and the trees are whole. An inner attribute opens no
+/// ASP fragment, so the selection and the payload cannot be mistaken for each other. Refuses
+/// another key, at the key, and a value that is not a path, at the token that breaks it.
+fn runtime_selection(trees: &[TokenTree]) -> Result<(TokenStream, &[TokenTree]), MapError> {
+    let [
+        TokenTree::Punct(hash),
+        TokenTree::Punct(bang),
+        TokenTree::Group(group),
+        payload @ ..,
+    ] = trees
+    else {
+        return Ok((default_root(), trees));
+    };
+    if hash.as_char() != '#' || bang.as_char() != '!' || group.delimiter() != Delimiter::Bracket {
+        return Ok((default_root(), trees));
+    }
+    let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+    let [TokenTree::Ident(key), TokenTree::Punct(equals), path @ ..] = inner.as_slice() else {
+        return Err(selection_shape(
+            inner.first().map_or(group.span(), TokenTree::span),
+        ));
+    };
+    if key != "crate" {
+        return Err(selection_shape(key.span()));
+    }
+    if equals.as_char() != '=' {
+        return Err(selection_shape(equals.span()));
+    }
+    check_path(path, group.span_close())?;
+    Ok((path.iter().cloned().collect(), payload))
+}
+
+/// The root an invocation that selects none names: the program tier's crate, by absolute path,
+/// so no name in scope at the macro site can capture it (docs/design/macros.md §9).
+fn default_root() -> TokenStream {
+    quote::quote!(::themelios_program)
+}
+
+/// The refusal of a selection not shaped `#![crate = path]`, at `span`.
+fn selection_shape(span: Span) -> MapError {
+    MapError {
+        span,
+        message: "a runtime selection reads `#![crate = path]`".to_owned(),
+    }
+}
+
+/// Holds `path` to a Rust path — an optional leading `::`, then identifiers joined by `::`, the
+/// first possibly `crate`, `self`, `super`, or a wrapper's `$crate` — refusing at the first token
+/// that breaks it, or at `end` when the path is empty or ends in `::`. Linear in the path.
+fn check_path(path: &[TokenTree], end: Span) -> Result<(), MapError> {
+    let refuse = |span| MapError {
+        span,
+        message: "expected a path to the program tier's crate, such as `::themelios_program`"
+            .to_owned(),
+    };
+    let mut index = if is_path_separator(path, 0) { 2 } else { 0 };
+    loop {
+        match path.get(index) {
+            Some(TokenTree::Ident(_)) => index += 1,
+            Some(other) => return Err(refuse(other.span())),
+            None => return Err(refuse(end)),
+        }
+        if index == path.len() {
+            return Ok(());
+        }
+        if !is_path_separator(path, index) {
+            return Err(refuse(path[index].span()));
+        }
+        index += 2;
+    }
+}
+
+/// Whether a path separator, `::` — a joint `:` then a `:` — begins at `index`.
+fn is_path_separator(path: &[TokenTree], index: usize) -> bool {
+    matches!(
+        (path.get(index), path.get(index + 1)),
+        (Some(TokenTree::Punct(first)), Some(TokenTree::Punct(second)))
+            if first.as_char() == ':' && first.spacing() == Spacing::Joint && second.as_char() == ':'
+    )
+}
+
 fn theory_operator_at(text: &str, offset: usize) -> Option<Token<'_>> {
     themelios_syntax::fusion::theory_operator(&text[offset..])
 }
@@ -804,6 +916,105 @@ mod tests {
         // them apart with a separator.
         assert_eq!(kinds(&build("#sum +")), [KW_SUM, WHITESPACE, PLUS, EOF]);
         assert_eq!(build("#sum +").text(), "#sum +");
+    }
+
+    /// The refusal building `source` meets.
+    fn refusal(source: &str) -> MapError {
+        MacroSource::build(TokenStream::from_str(source).expect("lexes"), None)
+            .expect_err("refused under the dialect")
+    }
+
+    #[test]
+    fn an_invocation_without_a_selection_roots_its_paths_at_the_program_tier() {
+        assert_eq!(
+            build("p(1)").runtime_root().to_string(),
+            ":: themelios_program"
+        );
+    }
+
+    #[test]
+    fn a_selection_roots_the_paths_at_its_path() {
+        assert_eq!(
+            build("#![crate = ::tp] p(1)").runtime_root().to_string(),
+            ":: tp"
+        );
+    }
+
+    #[test]
+    fn a_selection_is_removed_before_the_mapping() {
+        assert_eq!(build("#![crate = ::tp] p(1)").text(), build("p(1)").text());
+    }
+
+    #[test]
+    fn a_selection_keeps_a_relative_path_token_for_token() {
+        let source = build("#![crate = crate::rt::program] p");
+        assert_eq!(source.runtime_root().to_string(), "crate :: rt :: program");
+    }
+
+    #[test]
+    fn a_selection_not_shaped_crate_equals_path_is_refused() {
+        for source in [
+            "#![krate = ::tp] p",
+            "#![crate] p",
+            "#![crate ::tp] p",
+            "#![] p",
+        ] {
+            let refused = refusal(source);
+            assert!(
+                refused.message.contains("#![crate = path]"),
+                "{source}: {}",
+                refused.message
+            );
+        }
+    }
+
+    #[test]
+    fn a_selection_without_a_path_is_refused() {
+        for source in ["#![crate =] p", "#![crate = ::] p"] {
+            let refused = refusal(source);
+            assert!(
+                refused.message.contains("expected a path"),
+                "{source}: {}",
+                refused.message
+            );
+        }
+    }
+
+    #[test]
+    fn a_selection_whose_value_is_not_a_path_is_refused() {
+        for source in [
+            "#![crate = 1] p",
+            "#![crate = a::] p",
+            "#![crate = ::a, b] p",
+            "#![crate = a.b] p",
+        ] {
+            let refused = refusal(source);
+            assert!(
+                refused.message.contains("expected a path"),
+                "{source}: {}",
+                refused.message
+            );
+        }
+    }
+
+    #[test]
+    fn a_second_selection_is_refused() {
+        let refused = refusal("#![crate = ::a] #![crate = ::b] p");
+        assert!(
+            refused.message.contains("opens the invocation"),
+            "{}",
+            refused.message
+        );
+    }
+
+    #[test]
+    fn a_selection_after_the_payload_is_refused() {
+        let refused = refusal("p #![crate = ::tp]");
+        assert!(
+            refused.message.contains("opens the invocation"),
+            "{}",
+            refused.message
+        );
     }
 
     #[test]

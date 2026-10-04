@@ -1,9 +1,11 @@
 //! Codegen (docs/design/macros.md §5, step 4): the walk from the syntax
 //! tier's typed `ast::Term` to a `proc_macro2::TokenStream` of the program
 //! tier's §7.1 constructor calls that build the value. Every emitted path is
-//! absolute (`::themelios_program::…`), so the expansion names the program
-//! tier alone at runtime (the shipped closure, spec §12.5) and cannot be
-//! captured by a name in scope at the macro site.
+//! absolute from the runtime root the invocation selects (§9) —
+//! `::themelios_program::…` by default, a facade's re-export through its
+//! wrapper's `$crate` — so the expansion names the program tier alone at runtime
+//! (the shipped closure, spec §12.5) and cannot be captured by a name in scope at
+//! the macro site.
 //!
 //! The map is the raise's (program §8), one arm per `ast::Term` family, but
 //! it *emits the constructor calls* rather than build the `Term`: a constant
@@ -69,9 +71,10 @@ use crate::source::MacroSource;
 /// as the tier's isomorphism walk (§5.3) does; a chain's width is handled by
 /// iteration, not recursion.
 pub(crate) fn codegen_term(term: &ast::Term, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     match term {
-        ast::Term::Constant(constant) => codegen_constant(constant),
-        ast::Term::Variable(variable) => codegen_variable(variable),
+        ast::Term::Constant(constant) => codegen_constant(constant, root),
+        ast::Term::Variable(variable) => codegen_variable(variable, root),
         ast::Term::Function(function) => codegen_application(
             Application::Function,
             function.name(),
@@ -97,31 +100,31 @@ pub(crate) fn codegen_term(term: &ast::Term, src: &MacroSource) -> TokenStream {
 /// `#inf`/`#sup` to the order's bounds through `From<Symbol>` — the raise's
 /// reading (program §8), emitted as construction. A numeral past the engine's
 /// width, or a constant missing under recovery, is the recovery placeholder.
-fn codegen_constant(constant: &ast::ConstantTerm) -> TokenStream {
+fn codegen_constant(constant: &ast::ConstantTerm, root: &TokenStream) -> TokenStream {
     match constant.constant() {
         Some(ast::Constant::Symbol(identifier)) => {
-            let name = codegen_name(identifier.text());
-            quote!(::themelios_program::term::Term::constant(#name))
+            let name = codegen_name(identifier.text(), root);
+            quote!(#root::term::Term::constant(#name))
         }
         Some(ast::Constant::Number(number)) => match integer(&number) {
-            Some(value) => quote!(::themelios_program::term::Term::from(#value)),
-            None => placeholder(),
+            Some(value) => quote!(#root::term::Term::from(#value)),
+            None => placeholder(root),
         },
         Some(ast::Constant::String(string)) => match string.value(Dialect::Clingo) {
-            Ok(text) => quote!(::themelios_program::term::Term::from(#text)),
-            Err(_) => placeholder(),
+            Ok(text) => quote!(#root::term::Term::from(#text)),
+            Err(_) => placeholder(root),
         },
         Some(ast::Constant::Infimum(_)) => {
-            quote!(::themelios_program::term::Term::from(
-                ::themelios_program::symbol::Symbol::Infimum
+            quote!(#root::term::Term::from(
+                #root::symbol::Symbol::Infimum
             ))
         }
         Some(ast::Constant::Supremum(_)) => {
-            quote!(::themelios_program::term::Term::from(
-                ::themelios_program::symbol::Symbol::Supremum
+            quote!(#root::term::Term::from(
+                #root::symbol::Symbol::Supremum
             ))
         }
-        None => placeholder(),
+        None => placeholder(root),
     }
 }
 
@@ -143,16 +146,16 @@ fn integer(number: &ast::NumberLit) -> Option<i32> {
 /// A variable leaf (grammar §5.1): the anonymous `_` to `Term::anonymous()`, a
 /// named variable to `Term::variable(VarName)`. Missing under recovery, the
 /// placeholder.
-fn codegen_variable(variable: &ast::VariableTerm) -> TokenStream {
+fn codegen_variable(variable: &ast::VariableTerm, root: &TokenStream) -> TokenStream {
     match variable.variable() {
         Some(inner) if inner.is_anonymous() => {
-            quote!(::themelios_program::term::Term::anonymous())
+            quote!(#root::term::Term::anonymous())
         }
         Some(inner) => {
-            let name = codegen_varname(inner.text());
-            quote!(::themelios_program::term::Term::variable(#name))
+            let name = codegen_varname(inner.text(), root);
+            quote!(#root::term::Term::variable(#name))
         }
-        None => placeholder(),
+        None => placeholder(root),
     }
 }
 
@@ -175,10 +178,11 @@ fn codegen_application(
     arguments: Option<ast::Arguments>,
     src: &MacroSource,
 ) -> TokenStream {
+    let root = src.runtime_root();
     let Some(identifier) = name else {
-        return placeholder();
+        return placeholder(root);
     };
-    let name = codegen_name(identifier.text());
+    let name = codegen_name(identifier.text(), root);
     let alternatives: Vec<TokenStream> = arguments
         .into_iter()
         .flat_map(|arguments| arguments.alternatives())
@@ -187,14 +191,14 @@ fn codegen_application(
                 .terms()
                 .map(|term| codegen_term(&term, src))
                 .collect();
-            apply(application, &name, &terms)
+            apply(application, &name, &terms, root)
         })
         .collect();
     match alternatives.len() {
         // A bare `@name` has no argument list; a function always has one.
-        0 => apply(application, &name, &[]),
+        0 => apply(application, &name, &[], root),
         1 => alternatives.into_iter().next().expect("one alternative"),
-        _ => codegen_pool_of(&alternatives),
+        _ => codegen_pool_of(&alternatives, root),
     }
 }
 
@@ -202,12 +206,17 @@ fn codegen_application(
 /// function, the `Term::External` struct literal for an `@`-call (program §3.3
 /// — `Term` is a public enum, so an `@`-term is constructed directly, needing
 /// no canonicalization door of its own).
-fn apply(application: Application, name: &TokenStream, arguments: &[TokenStream]) -> TokenStream {
+fn apply(
+    application: Application,
+    name: &TokenStream,
+    arguments: &[TokenStream],
+    root: &TokenStream,
+) -> TokenStream {
     match application {
         Application::Function => {
-            quote!(::themelios_program::term::Term::function(#name, [#(#arguments),*]))
+            quote!(#root::term::Term::function(#name, [#(#arguments),*]))
         }
-        Application::External => quote!(::themelios_program::term::Term::External {
+        Application::External => quote!(#root::term::Term::External {
             name: #name,
             arguments: ::std::vec![#(#arguments),*],
         }),
@@ -220,6 +229,7 @@ fn apply(application: Application, name: &TokenStream, arguments: &[TokenStream]
 /// (the parser wraps every parenthesized form in at least one tuple), so no
 /// empty-pool door is reached.
 fn codegen_pool(pool: &ast::Pool, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let mut alternatives: Vec<TokenStream> = pool
         .tuples()
         .map(|tuple| codegen_tuple_or_term(&tuple, src))
@@ -227,7 +237,7 @@ fn codegen_pool(pool: &ast::Pool, src: &MacroSource) -> TokenStream {
     if alternatives.len() == 1 {
         alternatives.pop().expect("one alternative")
     } else {
-        codegen_pool_of(&alternatives)
+        codegen_pool_of(&alternatives, root)
     }
 }
 
@@ -235,11 +245,12 @@ fn codegen_pool(pool: &ast::Pool, src: &MacroSource) -> TokenStream {
 /// lone term when it is one term with no trailing comma (`(a)` parenthesizes
 /// `a`), a `Term::tuple` otherwise (`(a, b)`, `(a,)`, `()`).
 fn codegen_tuple_or_term(tuple: &ast::Tuple, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let terms: Vec<TokenStream> = tuple.terms().map(|term| codegen_term(&term, src)).collect();
     if terms.len() == 1 && tuple.trailing_comma_token().is_none() {
         terms.into_iter().next().expect("one term")
     } else {
-        quote!(::themelios_program::term::Term::tuple([#(#terms),*]))
+        quote!(#root::term::Term::tuple([#(#terms),*]))
     }
 }
 
@@ -249,8 +260,9 @@ fn codegen_tuple_or_term(tuple: &ast::Tuple, src: &MacroSource) -> TokenStream {
 /// bitwise complement as `Term::complement` (program §7.1). A run recovered with
 /// no operand is the placeholder.
 fn codegen_unary(unary: &ast::UnaryTerm, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let Some(operand) = unary.operand() else {
-        return placeholder();
+        return placeholder(root);
     };
     let operators: Vec<SyntaxKind> = unary.operators().map(|token| token.kind()).collect();
     operators
@@ -270,13 +282,17 @@ fn codegen_unary(unary: &ast::UnaryTerm, src: &MacroSource) -> TokenStream {
 /// each operator its constructor. A chain recovered below two operands folds
 /// what is present.
 fn codegen_binary(binary: &ast::BinaryTerm, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let operators: Vec<SyntaxKind> = binary.operators().map(|token| token.kind()).collect();
     let operands: Vec<TokenStream> = binary
         .operands()
         .map(|operand| codegen_term(&operand, src))
         .collect();
     if operands.len() < 2 {
-        return operands.into_iter().next().unwrap_or_else(placeholder);
+        return operands
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| placeholder(root));
     }
     if matches!(binary.associativity(), Some(ast::Associativity::Right)) {
         // `t₀ ** (t₁ ** (t₂ …))`: fold from the right over (operator, left) pairs.
@@ -321,9 +337,10 @@ fn combine(left: &TokenStream, operator: SyntaxKind, right: &TokenStream) -> Tok
 /// `Term::abs`, a pooled `|a; b|` distributes to a `Term::pool` of absolute
 /// values. An empty `||`, which a recovered parse can reach, is the placeholder.
 fn codegen_absolute(abs: &ast::AbsTerm, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let terms: Vec<TokenStream> = abs.terms().map(|term| codegen_term(&term, src)).collect();
     match terms.len() {
-        0 => placeholder(),
+        0 => placeholder(root),
         1 => {
             let operand = terms.into_iter().next().expect("one operand");
             quote!(#operand.abs())
@@ -331,7 +348,7 @@ fn codegen_absolute(abs: &ast::AbsTerm, src: &MacroSource) -> TokenStream {
         _ => {
             let absolutes: Vec<TokenStream> =
                 terms.into_iter().map(|term| quote!(#term.abs())).collect();
-            codegen_pool_of(&absolutes)
+            codegen_pool_of(&absolutes, root)
         }
     }
 }
@@ -347,19 +364,20 @@ fn codegen_absolute(abs: &ast::AbsTerm, src: &MacroSource) -> TokenStream {
 /// — no `SPLICE` tile matches the node's range, unreachable for a parsed splice —
 /// is the recovery [`placeholder`], keeping the walk total.
 fn codegen_splice(splice: &ast::SpliceTerm, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     match src.splice_at(splice.syntax().text_range()) {
-        Some(expr) => quote!(::themelios_program::term::Term::from(
-            ::themelios_program::symbol::ToSymbol::to_symbol(&(#expr))
+        Some(expr) => quote!(#root::term::Term::from(
+            #root::symbol::ToSymbol::to_symbol(&(#expr))
         )),
-        None => placeholder(),
+        None => placeholder(root),
     }
 }
 
 /// A `Term::pool` over `alternatives`, its emptiness discharged: a parsed pool
 /// or pooled list is non-empty by the grammar, the invariant the raise §8 rests
 /// on, so the `Result` cannot be `Err` on any input that compiles.
-fn codegen_pool_of(alternatives: &[TokenStream]) -> TokenStream {
-    quote!(::themelios_program::term::Term::pool([#(#alternatives),*])
+fn codegen_pool_of(alternatives: &[TokenStream], root: &TokenStream) -> TokenStream {
+    quote!(#root::term::Term::pool([#(#alternatives),*])
         .expect("the grammar parsed a non-empty pool"))
 }
 
@@ -367,16 +385,16 @@ fn codegen_pool_of(alternatives: &[TokenStream]) -> TokenStream {
 /// was classified `IDENTIFIER` by the dialect mapping (§6; the raise §8
 /// name-class invariant), so `Name::new` cannot refuse on any input that
 /// compiles.
-fn codegen_name(text: &str) -> TokenStream {
-    quote!(::themelios_program::symbol::Name::new(#text)
+fn codegen_name(text: &str, root: &TokenStream) -> TokenStream {
+    quote!(#root::symbol::Name::new(#text)
         .expect("the lexer classified this token IDENTIFIER (raise §8 name-class invariant)"))
 }
 
 /// A validated variable name, its refusal discharged as [`codegen_name`]'s: a
 /// variable reaching the codegen was classified `VARIABLE` by the dialect
 /// mapping (§6).
-fn codegen_varname(text: &str) -> TokenStream {
-    quote!(::themelios_program::symbol::VarName::new(#text)
+fn codegen_varname(text: &str, root: &TokenStream) -> TokenStream {
+    quote!(#root::symbol::VarName::new(#text)
         .expect("the lexer classified this token VARIABLE (raise §8 name-class invariant)"))
 }
 
@@ -384,8 +402,8 @@ fn codegen_varname(text: &str) -> TokenStream {
 /// represent (program §8's `placeholder`): the anonymous variable, so a partial
 /// term stays buildable. In the wired pipeline this coincides with a
 /// compile-time diagnostic (§5.3); alone, it keeps `codegen_term` total.
-fn placeholder() -> TokenStream {
-    quote!(::themelios_program::term::Term::anonymous())
+fn placeholder(root: &TokenStream) -> TokenStream {
+    quote!(#root::term::Term::anonymous())
 }
 
 // ---- theory terms and theory atoms (docs/design/macros.md §4; program §4.9) ----
@@ -399,41 +417,42 @@ fn placeholder() -> TokenStream {
 /// the flat operator sequence ([`codegen_theory_opterm`]); a leaf missing under
 /// recovery is the [`theory_placeholder`].
 pub(crate) fn codegen_theory_term(theory_term: &ast::TheoryTerm, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     match theory_term {
         ast::TheoryTerm::Set(set) => {
             let items = theory_opterms(set.opterms(), src);
-            quote!(::themelios_program::program::TheoryTerm::Set(
+            quote!(#root::program::TheoryTerm::Set(
                 ::std::vec![#(#items),*]
             ))
         }
         ast::TheoryTerm::List(list) => {
             let items = theory_opterms(list.opterms(), src);
-            quote!(::themelios_program::program::TheoryTerm::List(
+            quote!(#root::program::TheoryTerm::List(
                 ::std::vec![#(#items),*]
             ))
         }
         ast::TheoryTerm::Tuple(tuple) => {
             let items = theory_opterms(tuple.opterms(), src);
-            quote!(::themelios_program::program::TheoryTerm::Tuple(
+            quote!(#root::program::TheoryTerm::Tuple(
                 ::std::vec![#(#items),*]
             ))
         }
         ast::TheoryTerm::Function(function) => {
             let Some(identifier) = function.name() else {
-                return theory_placeholder();
+                return theory_placeholder(root);
             };
-            let name = codegen_name(identifier.text());
+            let name = codegen_name(identifier.text(), root);
             let arguments = theory_opterms(function.opterms(), src);
-            quote!(::themelios_program::program::TheoryTerm::Function {
+            quote!(#root::program::TheoryTerm::Function {
                 name: #name,
                 arguments: ::std::vec![#(#arguments),*],
             })
         }
         ast::TheoryTerm::Constant(constant) => {
-            let symbol = codegen_theory_symbol(constant);
-            quote!(::themelios_program::program::TheoryTerm::Symbolic(#symbol))
+            let symbol = codegen_theory_symbol(constant, root);
+            quote!(#root::program::TheoryTerm::Symbolic(#symbol))
         }
-        ast::TheoryTerm::Variable(variable) => codegen_theory_variable(variable),
+        ast::TheoryTerm::Variable(variable) => codegen_theory_variable(variable, root),
         ast::TheoryTerm::Splice(splice) => codegen_theory_splice(splice, src),
     }
 }
@@ -456,9 +475,10 @@ fn theory_opterms(
 /// operands, each recursed. An opterm recovered with no operand is the
 /// [`theory_placeholder`].
 fn codegen_theory_opterm(opterm: &ast::TheoryOpTerm, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let (operators, operands) = split_theory_opterm(opterm);
     if operands.is_empty() {
-        return theory_placeholder();
+        return theory_placeholder(root);
     }
     if operands.len() == 1 && operators.iter().all(Vec::is_empty) {
         let operand = operands.into_iter().next().expect("one operand");
@@ -469,7 +489,7 @@ fn codegen_theory_opterm(opterm: &ast::TheoryOpTerm, src: &MacroSource) -> Token
         .map(|run| {
             let operator_calls: Vec<TokenStream> = run
                 .iter()
-                .map(|symbol| quote!(::themelios_program::program::TheoryOperator::new(#symbol)))
+                .map(|symbol| quote!(#root::program::TheoryOperator::new(#symbol)))
                 .collect();
             quote!(::std::vec![#(#operator_calls),*])
         })
@@ -478,7 +498,7 @@ fn codegen_theory_opterm(opterm: &ast::TheoryOpTerm, src: &MacroSource) -> Token
         .iter()
         .map(|operand| codegen_theory_term(operand, src))
         .collect();
-    quote!(::themelios_program::program::TheoryTerm::Operation {
+    quote!(#root::program::TheoryTerm::Operation {
         operators: ::std::vec![#(#operator_runs),*],
         operands: ::std::vec![#(#operand_terms),*],
     })
@@ -510,27 +530,27 @@ fn split_theory_opterm(opterm: &ast::TheoryOpTerm) -> (Vec<Vec<String>>, Vec<ast
 /// order's bounds. A numeral past the engine's width, a string the value cannot spell,
 /// or a leaf missing under recovery is `Symbol::Infimum` — the raise's ground stand-in
 /// for a theory leaf beside its diagnostic (a `Symbol` has no anonymous-variable form).
-fn codegen_theory_symbol(constant: &ast::ConstantTerm) -> TokenStream {
+fn codegen_theory_symbol(constant: &ast::ConstantTerm, root: &TokenStream) -> TokenStream {
     match constant.constant() {
         Some(ast::Constant::Symbol(identifier)) => {
-            let name = codegen_name(identifier.text());
-            quote!(::themelios_program::symbol::Symbol::Function {
+            let name = codegen_name(identifier.text(), root);
+            quote!(#root::symbol::Symbol::Function {
                 name: #name,
                 arguments: ::std::vec![],
-                sign: ::themelios_program::symbol::Sign::Positive,
+                sign: #root::symbol::Sign::Positive,
             })
         }
         Some(ast::Constant::Number(number)) => match integer(&number) {
-            Some(value) => quote!(::themelios_program::symbol::Symbol::Number(#value)),
-            None => theory_symbol_infimum(),
+            Some(value) => quote!(#root::symbol::Symbol::Number(#value)),
+            None => theory_symbol_infimum(root),
         },
         Some(ast::Constant::String(string)) => match string.value(Dialect::Clingo) {
-            Ok(text) => quote!(::themelios_program::symbol::Symbol::string(#text)),
-            Err(_) => theory_symbol_infimum(),
+            Ok(text) => quote!(#root::symbol::Symbol::string(#text)),
+            Err(_) => theory_symbol_infimum(root),
         },
-        Some(ast::Constant::Supremum(_)) => quote!(::themelios_program::symbol::Symbol::Supremum),
+        Some(ast::Constant::Supremum(_)) => quote!(#root::symbol::Symbol::Supremum),
         // `#inf` and a leaf no value can stand for share the ground bound.
-        Some(ast::Constant::Infimum(_)) | None => theory_symbol_infimum(),
+        Some(ast::Constant::Infimum(_)) | None => theory_symbol_infimum(root),
     }
 }
 
@@ -539,27 +559,27 @@ fn codegen_theory_symbol(constant: &ast::ConstantTerm) -> TokenStream {
 /// form, so — unlike the term [`placeholder`] — a theory leaf's recovery is a
 /// ground bound, and the wired pipeline reports the leaf through a compile-time
 /// diagnostic, so this is never the value a compiling program builds.
-fn theory_symbol_infimum() -> TokenStream {
-    quote!(::themelios_program::symbol::Symbol::Infimum)
+fn theory_symbol_infimum(root: &TokenStream) -> TokenStream {
+    quote!(#root::symbol::Symbol::Infimum)
 }
 
 /// A theory variable leaf (the raise's `raise_theory_variable`, program §8): the
 /// anonymous `_` to `TheoryTerm::Variable(Variable::Anonymous)`, a named variable to
 /// `Variable::Named`. Missing under recovery, the [`theory_placeholder`].
-fn codegen_theory_variable(variable: &ast::VariableTerm) -> TokenStream {
+fn codegen_theory_variable(variable: &ast::VariableTerm, root: &TokenStream) -> TokenStream {
     match variable.variable() {
         Some(inner) if inner.is_anonymous() => {
-            quote!(::themelios_program::program::TheoryTerm::Variable(
-                ::themelios_program::term::Variable::Anonymous
+            quote!(#root::program::TheoryTerm::Variable(
+                #root::term::Variable::Anonymous
             ))
         }
         Some(inner) => {
-            let name = codegen_varname(inner.text());
-            quote!(::themelios_program::program::TheoryTerm::Variable(
-                ::themelios_program::term::Variable::Named(#name)
+            let name = codegen_varname(inner.text(), root);
+            quote!(#root::program::TheoryTerm::Variable(
+                #root::term::Variable::Named(#name)
             ))
         }
-        None => theory_placeholder(),
+        None => theory_placeholder(root),
     }
 }
 
@@ -570,11 +590,12 @@ fn codegen_theory_variable(variable: &ast::VariableTerm) -> TokenStream {
 /// Rust spans, so a non-`ToSymbol` value is refused here pointing at the spliced
 /// expression; a splice with no captured operand is the [`theory_placeholder`].
 fn codegen_theory_splice(splice: &ast::SpliceTerm, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     match src.splice_at(splice.syntax().text_range()) {
-        Some(expr) => quote!(::themelios_program::program::TheoryTerm::Symbolic(
-            ::themelios_program::symbol::ToSymbol::to_symbol(&(#expr))
+        Some(expr) => quote!(#root::program::TheoryTerm::Symbolic(
+            #root::symbol::ToSymbol::to_symbol(&(#expr))
         )),
-        None => theory_placeholder(),
+        None => theory_placeholder(root),
     }
 }
 
@@ -589,6 +610,7 @@ fn codegen_theory_splice(splice: &ast::SpliceTerm, src: &MacroSource) -> TokenSt
 /// diagnostic that already refuses it (§5.3), so it is never the value a compiling
 /// program builds.
 pub(crate) fn codegen_theory_atom(atom: &ast::TheoryAtom, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let Some(identifier) = atom.name() else {
         return located_compile_error(
             src,
@@ -596,7 +618,7 @@ pub(crate) fn codegen_theory_atom(atom: &ast::TheoryAtom, src: &MacroSource) -> 
             "a theory atom needs a name",
         );
     };
-    let name = codegen_name(identifier.text());
+    let name = codegen_name(identifier.text(), root);
     let arguments: Vec<TokenStream> = atom
         .arguments()
         .and_then(|arguments| arguments.alternatives().next())
@@ -611,7 +633,7 @@ pub(crate) fn codegen_theory_atom(atom: &ast::TheoryAtom, src: &MacroSource) -> 
         .map(|element| codegen_theory_element(&element, src))
         .collect();
     let guard = codegen_theory_guard(atom.guard(), src);
-    quote!(::themelios_program::program::TheoryAtom::new(
+    quote!(#root::program::TheoryAtom::new(
         #name,
         [#(#arguments),*],
         [#(#elements),*],
@@ -626,6 +648,7 @@ pub(crate) fn codegen_theory_atom(atom: &ast::TheoryAtom, src: &MacroSource) -> 
 /// codegens through the ordinary [`codegen_condition`], the same door a rule body's
 /// condition takes; an unconditioned element (no `:`) carries `None`.
 fn codegen_theory_element(element: &ast::TheoryElement, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let terms = theory_opterms(element.opterms(), src);
     let condition = if element.colon_token().is_some() {
         let condition = codegen_condition(element.condition().as_ref(), src);
@@ -633,7 +656,7 @@ fn codegen_theory_element(element: &ast::TheoryElement, src: &MacroSource) -> To
     } else {
         quote!(::std::option::Option::None)
     };
-    quote!(::themelios_program::program::TheoryElement::new(
+    quote!(#root::program::TheoryElement::new(
         [#(#terms),*],
         #condition,
     ))
@@ -645,6 +668,7 @@ fn codegen_theory_element(element: &ast::TheoryElement, src: &MacroSource) -> To
 /// under recovery (as the raise's `?` drops it). A guard whose bound is missing takes
 /// the [`theory_placeholder`].
 fn codegen_theory_guard(guard: Option<ast::TheoryGuard>, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let Some(guard) = guard else {
         return quote!(::std::option::Option::None);
     };
@@ -652,11 +676,12 @@ fn codegen_theory_guard(guard: Option<ast::TheoryGuard>, src: &MacroSource) -> T
         return quote!(::std::option::Option::None);
     };
     let symbol = operator.text();
-    let term = guard.opterm().map_or_else(theory_placeholder, |opterm| {
-        codegen_theory_opterm(&opterm, src)
-    });
-    quote!(::std::option::Option::Some(::themelios_program::program::TheoryGuard {
-        operator: ::themelios_program::program::TheoryOperator::new(#symbol),
+    let term = guard.opterm().map_or_else(
+        || theory_placeholder(root),
+        |opterm| codegen_theory_opterm(&opterm, src),
+    );
+    quote!(::std::option::Option::Some(#root::program::TheoryGuard {
+        operator: #root::program::TheoryOperator::new(#symbol),
         term: #term,
     }))
 }
@@ -665,9 +690,9 @@ fn codegen_theory_guard(guard: Option<ast::TheoryGuard>, src: &MacroSource) -> T
 /// `theory_placeholder`, program §8): the anonymous variable lifted into the theory
 /// algebra. As with [`placeholder`], in the wired pipeline this coincides with a
 /// compile-time diagnostic, so it is never the value a compiling program builds.
-fn theory_placeholder() -> TokenStream {
-    quote!(::themelios_program::program::TheoryTerm::Variable(
-        ::themelios_program::term::Variable::Anonymous
+fn theory_placeholder(root: &TokenStream) -> TokenStream {
+    quote!(#root::program::TheoryTerm::Variable(
+        #root::term::Variable::Anonymous
     ))
 }
 
@@ -702,17 +727,18 @@ fn located_compile_error(src: &MacroSource, range: TextRange, message: &str) -> 
 /// [`codegen_statement`]'s located compile error, inherited here; a choice or aggregate head
 /// and a body aggregate are built, as any rule's parts are (program §4.4, §4.7).
 pub(crate) fn codegen_program(program: &ast::Program, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let statements: Vec<TokenStream> = program
         .statements()
         .map(|statement| {
             let value = codegen_statement(&statement, src);
-            quote!(::themelios_program::program::Statement::from(#value))
+            quote!(#root::program::Statement::from(#value))
         })
         .collect();
     if statements.is_empty() {
-        quote!(::themelios_program::program::Program::empty())
+        quote!(#root::program::Program::empty())
     } else {
-        quote!(::themelios_program::program::Program::of([#(#statements),*]))
+        quote!(#root::program::Program::of([#(#statements),*]))
     }
 }
 
@@ -836,19 +862,20 @@ fn codegen_head_literal_atom(literal: &ast::Literal, src: &MacroSource) -> Token
 /// three shapes the `fact!`, `constraint!`, and `rule!` macros build, told apart by the
 /// head and body the parse carries, so one codegen serves all three.
 fn codegen_rule(rule: &ast::Rule, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let Some(head) = rule.head() else {
         // No head node is a constraint: `:- body.` (§4.4).
         let body = codegen_body(rule.body().as_ref(), src);
-        return quote!(::themelios_program::program::Rule::constraint(#body));
+        return quote!(#root::program::Rule::constraint(#body));
     };
     let head = codegen_head(&head, src);
     match rule.body() {
         // A head with no body node is a fact: `head.` (§4.3).
-        None => quote!(::themelios_program::program::Rule::fact(#head)),
+        None => quote!(#root::program::Rule::fact(#head)),
         // A head over a body reads as the rule it denotes (§7.1).
         Some(body) => {
             let body = codegen_body(Some(&body), src);
-            quote!(::themelios_program::program::Rule::new(#head, #body))
+            quote!(#root::program::Rule::new(#head, #body))
         }
     }
 }
@@ -877,11 +904,12 @@ fn codegen_head(head: &ast::Head, src: &MacroSource) -> TokenStream {
 /// conditioned elements, each through [`codegen_disjunction_element`]. A disjunction is
 /// unguarded (program §7.1).
 fn codegen_disjunction(disjunction: &ast::Disjunction, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let elements: Vec<TokenStream> = disjunction
         .elements()
         .map(|element| codegen_disjunction_element(&element, src))
         .collect();
-    quote!(::themelios_program::program::Disjunction::new([#(#elements),*]))
+    quote!(#root::program::Disjunction::new([#(#elements),*]))
 }
 
 /// A disjunction element to `DisjunctionElement::new` (the raise's
@@ -892,11 +920,12 @@ fn codegen_disjunction_element(
     element: &ast::DisjunctionElement,
     src: &MacroSource,
 ) -> TokenStream {
+    let root = src.runtime_root();
     let (literal, condition) = match element {
         ast::DisjunctionElement::Literal(literal) => bare_element(literal, src),
         ast::DisjunctionElement::ConditionalLiteral(conditional) => split_element(conditional, src),
     };
-    quote!(::themelios_program::program::DisjunctionElement::new(#literal, #condition))
+    quote!(#root::program::DisjunctionElement::new(#literal, #condition))
 }
 
 /// A head set form to a choice (§4.4) through `Choice::new` (the raise's `raise_choice`):
@@ -904,33 +933,36 @@ fn codegen_disjunction_element(
 /// ([`codegen_choice_element`]). A set form is a `Choice` in a head, a cardinality
 /// aggregate in a body — the position the tree records (program §8).
 fn codegen_choice(set: &ast::SetAggregate, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let left = codegen_guard(set.left_guard(), src);
     let right = codegen_guard(set.right_guard(), src);
     let elements: Vec<TokenStream> = set
         .elements()
         .map(|element| codegen_choice_element(&element, src))
         .collect();
-    quote!(::themelios_program::program::Choice::new(#left, [#(#elements),*], #right))
+    quote!(#root::program::Choice::new(#left, [#(#elements),*], #right))
 }
 
 /// A choice element to `ChoiceElement::new` (the raise's `raise_choice_element`): the
 /// (literal, condition) the element carries ([`bare_element`] / [`split_element`]) — the
 /// same shape as a disjunction element.
 fn codegen_choice_element(element: &ast::SetElement, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let (literal, condition) = match element {
         ast::SetElement::Literal(literal) => bare_element(literal, src),
         ast::SetElement::ConditionalLiteral(conditional) => split_element(conditional, src),
     };
-    quote!(::themelios_program::program::ChoiceElement::new(#literal, #condition))
+    quote!(#root::program::ChoiceElement::new(#literal, #condition))
 }
 
 /// The (literal, condition) token pair a bare-literal choice or disjunction element
 /// carries: the literal under the empty condition, mirroring the raise's
 /// `ChoiceElement::new(literal, Condition::empty())` / its disjunction twin (program §8).
 fn bare_element(literal: &ast::Literal, src: &MacroSource) -> (TokenStream, TokenStream) {
+    let root = src.runtime_root();
     (
         codegen_literal(literal, src),
-        quote!(::themelios_program::program::Condition::empty()),
+        quote!(#root::program::Condition::empty()),
     )
 }
 
@@ -945,6 +977,7 @@ fn split_element(
     conditional: &ast::ConditionalLiteral,
     src: &MacroSource,
 ) -> (TokenStream, TokenStream) {
+    let root = src.runtime_root();
     let Some(literal) = conditional.literal() else {
         return (
             located_compile_error(
@@ -952,7 +985,7 @@ fn split_element(
                 conditional.syntax().text_range(),
                 "this conditional literal is incomplete",
             ),
-            quote!(::themelios_program::program::Condition::empty()),
+            quote!(#root::program::Condition::empty()),
         );
     };
     (
@@ -967,6 +1000,7 @@ fn split_element(
 /// function keyword missing under recovery is a located compile error, mirroring the
 /// raise's `incomplete`.
 fn codegen_head_aggregate(function: &ast::FunctionAggregate, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let Some(kind) = function.function() else {
         return located_compile_error(
             src,
@@ -974,14 +1008,14 @@ fn codegen_head_aggregate(function: &ast::FunctionAggregate, src: &MacroSource) 
             "this head aggregate is incomplete",
         );
     };
-    let function_kind = aggregate_function(kind);
+    let function_kind = aggregate_function(kind, root);
     let left = codegen_guard(function.left_guard(), src);
     let right = codegen_guard(function.right_guard(), src);
     let elements: Vec<TokenStream> = function
         .elements()
         .map(|element| codegen_head_aggregate_element(&element, src))
         .collect();
-    quote!(::themelios_program::program::HeadAggregate::new(
+    quote!(#root::program::HeadAggregate::new(
         #left,
         #function_kind,
         [#(#elements),*],
@@ -998,6 +1032,7 @@ fn codegen_head_aggregate_element(
     element: &ast::AggregateElement,
     src: &MacroSource,
 ) -> TokenStream {
+    let root = src.runtime_root();
     match element {
         ast::AggregateElement::Head(head) => {
             let terms: Vec<TokenStream> =
@@ -1011,7 +1046,7 @@ fn codegen_head_aggregate_element(
             };
             let literal = codegen_literal(&literal, src);
             let condition = codegen_condition(head.condition().as_ref(), src);
-            quote!(::themelios_program::program::HeadAggregateElement::new(
+            quote!(#root::program::HeadAggregateElement::new(
                 [#(#terms),*],
                 #literal,
                 #condition,
@@ -1031,20 +1066,21 @@ fn codegen_head_aggregate_element(
 /// takes the [`placeholder`], as the raise's `step_term` does. `Guard` is a public-field
 /// struct (program §7.1), so it is built as a struct literal, the door the raise uses too.
 fn codegen_guard(guard: Option<ast::Guard>, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let Some(guard) = guard else {
         return quote!(::std::option::Option::None);
     };
     let relation = guard.relation().map_or_else(
         || quote!(::std::option::Option::None),
         |relation| {
-            let relation = relation_of(relation);
+            let relation = relation_of(relation, root);
             quote!(::std::option::Option::Some(#relation))
         },
     );
     let term = guard
         .term()
-        .map_or_else(placeholder, |term| codegen_term(&term, src));
-    quote!(::std::option::Option::Some(::themelios_program::program::Guard {
+        .map_or_else(|| placeholder(root), |term| codegen_term(&term, src));
+    quote!(::std::option::Option::Some(#root::program::Guard {
         relation: #relation,
         term: #term,
     }))
@@ -1053,22 +1089,22 @@ fn codegen_guard(guard: Option<ast::Guard>, src: &MacroSource) -> TokenStream {
 /// The program-tier aggregate function an AST one names (the raise's
 /// `aggregate_function_of`): the token twin of that 1:1 map, `#count` and its kin to the
 /// `AggregateFunction` variant (`#sum+` is `SumPlus`, program §7.1).
-fn aggregate_function(function: ast::AggregateFunction) -> TokenStream {
+fn aggregate_function(function: ast::AggregateFunction, root: &TokenStream) -> TokenStream {
     match function {
         ast::AggregateFunction::Count => {
-            quote!(::themelios_program::program::AggregateFunction::Count)
+            quote!(#root::program::AggregateFunction::Count)
         }
         ast::AggregateFunction::Sum => {
-            quote!(::themelios_program::program::AggregateFunction::Sum)
+            quote!(#root::program::AggregateFunction::Sum)
         }
         ast::AggregateFunction::SumPlus => {
-            quote!(::themelios_program::program::AggregateFunction::SumPlus)
+            quote!(#root::program::AggregateFunction::SumPlus)
         }
         ast::AggregateFunction::Min => {
-            quote!(::themelios_program::program::AggregateFunction::Min)
+            quote!(#root::program::AggregateFunction::Min)
         }
         ast::AggregateFunction::Max => {
-            quote!(::themelios_program::program::AggregateFunction::Max)
+            quote!(#root::program::AggregateFunction::Max)
         }
     }
 }
@@ -1077,17 +1113,18 @@ fn aggregate_function(function: ast::AggregateFunction) -> TokenStream {
 /// the empty body (`Body::empty`) for a fact or a bodiless rule. A body node with no
 /// elements — `h :- .` — is the empty body too, the raise's reading (program §8).
 fn codegen_body(body: Option<&ast::Body>, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let Some(body) = body else {
-        return quote!(::themelios_program::program::Body::empty());
+        return quote!(#root::program::Body::empty());
     };
     let elements: Vec<TokenStream> = body
         .elements()
         .map(|element| codegen_body_element(&element, src))
         .collect();
     if elements.is_empty() {
-        quote!(::themelios_program::program::Body::empty())
+        quote!(#root::program::Body::empty())
     } else {
-        quote!(::themelios_program::program::Body::new([#(#elements),*]))
+        quote!(#root::program::Body::new([#(#elements),*]))
     }
 }
 
@@ -1098,25 +1135,26 @@ fn codegen_body(body: Option<&ast::Body>, src: &MacroSource) -> TokenStream {
 /// aggregate fans out through [`codegen_body_aggregate`]; the match is exhaustive, so a new
 /// body-element family is a compile error here, never a silent drop.
 fn codegen_body_element(element: &ast::BodyElement, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     match element {
         ast::BodyElement::Literal(literal) => {
             let literal = codegen_literal(literal, src);
-            quote!(::themelios_program::program::BodyElement::from(#literal))
+            quote!(#root::program::BodyElement::from(#literal))
         }
         ast::BodyElement::ConditionalLiteral(conditional) => {
             let conditional = codegen_conditional_literal(conditional, src);
-            quote!(::themelios_program::program::BodyElement::from(#conditional))
+            quote!(#root::program::BodyElement::from(#conditional))
         }
         ast::BodyElement::TheoryAtom(atom) => {
             let negation = atom.negation();
             let value = codegen_theory_atom(atom, src);
             match negation {
                 ast::Negation::None => {
-                    quote!(::themelios_program::program::BodyElement::from(#value))
+                    quote!(#root::program::BodyElement::from(#value))
                 }
-                ast::Negation::Default => quote!(::themelios_program::construct::not(#value)),
+                ast::Negation::Default => quote!(#root::construct::not(#value)),
                 ast::Negation::DoubleDefault => {
-                    quote!(::themelios_program::construct::not_not(#value))
+                    quote!(#root::construct::not_not(#value))
                 }
             }
         }
@@ -1131,11 +1169,12 @@ fn codegen_body_element(element: &ast::BodyElement, src: &MacroSource) -> TokenS
 /// door the theory-atom arm takes, needed because `program::BodyElement` is `#[non_exhaustive]`
 /// and its aggregate variant is built only through this surface.
 fn codegen_body_aggregate(aggregate: &ast::Aggregate, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let value = codegen_aggregate_value(aggregate, src);
     match aggregate_negation(aggregate) {
-        ast::Negation::None => quote!(::themelios_program::program::BodyElement::from(#value)),
-        ast::Negation::Default => quote!(::themelios_program::construct::not(#value)),
-        ast::Negation::DoubleDefault => quote!(::themelios_program::construct::not_not(#value)),
+        ast::Negation::None => quote!(#root::program::BodyElement::from(#value)),
+        ast::Negation::Default => quote!(#root::construct::not(#value)),
+        ast::Negation::DoubleDefault => quote!(#root::construct::not_not(#value)),
     }
 }
 
@@ -1144,14 +1183,15 @@ fn codegen_body_aggregate(aggregate: &ast::Aggregate, src: &MacroSource) -> Toke
 /// a set to [`SetAggregate`](codegen_set_aggregate), a function to
 /// [`FunctionAggregate`](codegen_function_aggregate).
 fn codegen_aggregate_value(aggregate: &ast::Aggregate, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     match aggregate {
         ast::Aggregate::Function(function) => {
             let function = codegen_function_aggregate(function, src);
-            quote!(::themelios_program::program::Aggregate::Function(#function))
+            quote!(#root::program::Aggregate::Function(#function))
         }
         ast::Aggregate::Set(set) => {
             let set = codegen_set_aggregate(set, src);
-            quote!(::themelios_program::program::Aggregate::Set(#set))
+            quote!(#root::program::Aggregate::Set(#set))
         }
     }
 }
@@ -1170,6 +1210,7 @@ fn aggregate_negation(aggregate: &ast::Aggregate) -> ast::Negation {
 /// its body elements, which *test* ([`codegen_body_aggregate_element`]). A function keyword
 /// missing under recovery is a located compile error, mirroring the raise's `incomplete`.
 fn codegen_function_aggregate(function: &ast::FunctionAggregate, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let Some(kind) = function.function() else {
         return located_compile_error(
             src,
@@ -1177,14 +1218,14 @@ fn codegen_function_aggregate(function: &ast::FunctionAggregate, src: &MacroSour
             "this aggregate is incomplete",
         );
     };
-    let function_kind = aggregate_function(kind);
+    let function_kind = aggregate_function(kind, root);
     let left = codegen_guard(function.left_guard(), src);
     let right = codegen_guard(function.right_guard(), src);
     let elements: Vec<TokenStream> = function
         .elements()
         .map(|element| codegen_body_aggregate_element(&element, src))
         .collect();
-    quote!(::themelios_program::program::FunctionAggregate::new(
+    quote!(#root::program::FunctionAggregate::new(
         #left,
         #function_kind,
         [#(#elements),*],
@@ -1200,12 +1241,13 @@ fn codegen_body_aggregate_element(
     element: &ast::AggregateElement,
     src: &MacroSource,
 ) -> TokenStream {
+    let root = src.runtime_root();
     match element {
         ast::AggregateElement::Body(body) => {
             let terms: Vec<TokenStream> =
                 body.terms().map(|term| codegen_term(&term, src)).collect();
             let condition = codegen_condition(body.condition().as_ref(), src);
-            quote!(::themelios_program::program::BodyAggregateElement::new(
+            quote!(#root::program::BodyAggregateElement::new(
                 [#(#terms),*],
                 #condition,
             ))
@@ -1222,13 +1264,14 @@ fn codegen_body_aggregate_element(
 /// `raise_set_aggregate`): its two optional guards ([`codegen_guard`]) over its set elements
 /// ([`codegen_set_element`]).
 fn codegen_set_aggregate(set: &ast::SetAggregate, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let left = codegen_guard(set.left_guard(), src);
     let right = codegen_guard(set.right_guard(), src);
     let elements: Vec<TokenStream> = set
         .elements()
         .map(|element| codegen_set_element(&element, src))
         .collect();
-    quote!(::themelios_program::program::SetAggregate::new(
+    quote!(#root::program::SetAggregate::new(
         #left,
         [#(#elements),*],
         #right,
@@ -1241,14 +1284,15 @@ fn codegen_set_aggregate(set: &ast::SetAggregate, src: &MacroSource) -> TokenStr
 /// unlike a choice or disjunction element, which splits it (§4.7). `SetElement` is a public
 /// enum, so each is built as a variant literal.
 fn codegen_set_element(element: &ast::SetElement, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     match element {
         ast::SetElement::Literal(literal) => {
             let literal = codegen_literal(literal, src);
-            quote!(::themelios_program::program::SetElement::Literal(#literal))
+            quote!(#root::program::SetElement::Literal(#literal))
         }
         ast::SetElement::ConditionalLiteral(conditional) => {
             let conditional = codegen_conditional_literal(conditional, src);
-            quote!(::themelios_program::program::SetElement::ConditionalLiteral(#conditional))
+            quote!(#root::program::SetElement::ConditionalLiteral(#conditional))
         }
     }
 }
@@ -1261,7 +1305,8 @@ fn codegen_set_element(element: &ast::SetElement, src: &MacroSource) -> TokenStr
 /// A literal missing its inner form under recovery is a located compile error,
 /// coincident with the syntax diagnostic that flags it (§5.3).
 fn codegen_literal(literal: &ast::Literal, src: &MacroSource) -> TokenStream {
-    let negation = default_negation(literal.negation());
+    let root = src.runtime_root();
+    let negation = default_negation(literal.negation(), root);
     let Some(inner) = literal.inner() else {
         return located_compile_error(
             src,
@@ -1270,22 +1315,22 @@ fn codegen_literal(literal: &ast::Literal, src: &MacroSource) -> TokenStream {
         );
     };
     let inner = match inner {
-        ast::LiteralInner::True(_) => quote!(::themelios_program::program::LiteralInner::True),
-        ast::LiteralInner::False(_) => quote!(::themelios_program::program::LiteralInner::False),
+        ast::LiteralInner::True(_) => quote!(#root::program::LiteralInner::True),
+        ast::LiteralInner::False(_) => quote!(#root::program::LiteralInner::False),
         ast::LiteralInner::Atom(atom) => {
             let atom = codegen_atom(&atom, src);
-            quote!(::themelios_program::program::LiteralInner::Atom(
-                ::themelios_program::provenance::WithProvenance::constructed(#atom)
+            quote!(#root::program::LiteralInner::Atom(
+                #root::provenance::WithProvenance::constructed(#atom)
             ))
         }
         ast::LiteralInner::Comparison(comparison) => {
             let comparison = codegen_comparison(&comparison, src);
-            quote!(::themelios_program::program::LiteralInner::Comparison(
-                ::themelios_program::provenance::WithProvenance::constructed(#comparison)
+            quote!(#root::program::LiteralInner::Comparison(
+                #root::provenance::WithProvenance::constructed(#comparison)
             ))
         }
     };
-    quote!(::themelios_program::program::Literal {
+    quote!(#root::program::Literal {
         negation: #negation,
         inner: #inner,
     })
@@ -1298,10 +1343,11 @@ fn codegen_literal(literal: &ast::Literal, src: &MacroSource) -> TokenStream {
 /// the `Neg` operator (program §4.6), leaving a canonical atom canonical. A nameless atom
 /// under recovery is a located compile error, coincident with the syntax diagnostic (§8).
 fn codegen_atom(atom: &ast::Atom, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let Some(identifier) = atom.name() else {
         return located_compile_error(src, atom.syntax().text_range(), "this atom has no name");
     };
-    let name = codegen_name(identifier.text());
+    let name = codegen_name(identifier.text(), root);
     let alternatives: Vec<Vec<TokenStream>> = atom
         .arguments()
         .into_iter()
@@ -1312,13 +1358,13 @@ fn codegen_atom(atom: &ast::Atom, src: &MacroSource) -> TokenStream {
         // One tuple (or none) is a `Single` atom; two or more, an argument-list pool.
         0 | 1 => {
             let terms = alternatives.into_iter().next().unwrap_or_default();
-            quote!(::themelios_program::program::Atom::new(#name, [#(#terms),*]))
+            quote!(#root::program::Atom::new(#name, [#(#terms),*]))
         }
         _ => {
             let tuples = alternatives
                 .iter()
                 .map(|terms| quote!(::std::vec![#(#terms),*]));
-            quote!(::themelios_program::program::Atom::pooled(#name, [#(#tuples),*])
+            quote!(#root::program::Atom::pooled(#name, [#(#tuples),*])
                 .expect("the grammar parsed a non-empty argument-list pool"))
         }
     };
@@ -1335,13 +1381,14 @@ fn codegen_atom(atom: &ast::Atom, src: &MacroSource) -> TokenStream {
 /// no step is a located compile error, as the raise's `incomplete` is (program §8),
 /// coincident with the syntax diagnostic.
 fn codegen_comparison(comparison: &ast::Comparison, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let first = comparison
         .first()
-        .map_or_else(placeholder, |term| codegen_term(&term, src));
+        .map_or_else(|| placeholder(root), |term| codegen_term(&term, src));
     let mut steps = comparison.steps().map(|(relation, term)| {
         (
-            relation_of(relation),
-            term.map_or_else(placeholder, |term| codegen_term(&term, src)),
+            relation_of(relation, root),
+            term.map_or_else(|| placeholder(root), |term| codegen_term(&term, src)),
         )
     });
     let Some((relation, second)) = steps.next() else {
@@ -1351,8 +1398,7 @@ fn codegen_comparison(comparison: &ast::Comparison, src: &MacroSource) -> TokenS
             "this comparison is incomplete",
         );
     };
-    let mut chain =
-        quote!(::themelios_program::program::Comparison::new(#first, #relation, #second));
+    let mut chain = quote!(#root::program::Comparison::new(#first, #relation, #second));
     for (relation, term) in steps {
         chain = quote!(#chain.chain(#relation, #term));
     }
@@ -1366,6 +1412,7 @@ fn codegen_conditional_literal(
     conditional: &ast::ConditionalLiteral,
     src: &MacroSource,
 ) -> TokenStream {
+    let root = src.runtime_root();
     let Some(literal) = conditional.literal() else {
         return located_compile_error(
             src,
@@ -1375,7 +1422,7 @@ fn codegen_conditional_literal(
     };
     let literal = codegen_literal(&literal, src);
     let condition = codegen_condition(conditional.condition().as_ref(), src);
-    quote!(::themelios_program::program::ConditionalLiteral {
+    quote!(#root::program::ConditionalLiteral {
         literal: #literal,
         condition: #condition,
     })
@@ -1385,17 +1432,18 @@ fn codegen_conditional_literal(
 /// `Condition::new` (program §7.1), or `Condition::empty` when absent or empty — present
 /// and empty when the colon is (grammar §5.4).
 fn codegen_condition(condition: Option<&ast::Condition>, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let Some(condition) = condition else {
-        return quote!(::themelios_program::program::Condition::empty());
+        return quote!(#root::program::Condition::empty());
     };
     let literals: Vec<TokenStream> = condition
         .literals()
         .map(|literal| codegen_literal(&literal, src))
         .collect();
     if literals.is_empty() {
-        quote!(::themelios_program::program::Condition::empty())
+        quote!(#root::program::Condition::empty())
     } else {
-        quote!(::themelios_program::program::Condition::new([#(#literals),*]))
+        quote!(#root::program::Condition::new([#(#literals),*]))
     }
 }
 
@@ -1403,20 +1451,21 @@ fn codegen_condition(condition: Option<&ast::Condition>, src: &MacroSource) -> T
 /// a signature (`#show p/1.`), a term (`#show t.`), a term under a body
 /// (`#show t : body.`, through `Show::term_body`), or all (`#show.`).
 fn codegen_show(show: &ast::ShowStatement, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     if let Some(signature) = show.signature() {
         let signature = codegen_signature(&signature, src);
-        return quote!(::themelios_program::program::Show::Signature(#signature));
+        return quote!(#root::program::Show::Signature(#signature));
     }
     if let Some(term) = show.term() {
         let term = codegen_term(&term, src);
         return if show.colon_token().is_some() {
             let body = codegen_body(show.body().as_ref(), src);
-            quote!(::themelios_program::program::Show::term_body(#term, #body))
+            quote!(#root::program::Show::term_body(#term, #body))
         } else {
-            quote!(::themelios_program::program::Show::Term(#term))
+            quote!(#root::program::Show::Term(#term))
         };
     }
-    quote!(::themelios_program::program::Show::All)
+    quote!(#root::program::Show::All)
 }
 
 /// A signature (grammar §5.9), emitting `Signature::new` (program §7.1): a strong sign, a
@@ -1424,6 +1473,7 @@ fn codegen_show(show: &ast::ShowStatement, src: &MacroSource) -> TokenStream {
 /// engine's width, is a located compile error — a signature the value cannot complete,
 /// coincident with the raise's `incomplete` (program §8).
 fn codegen_signature(signature: &ast::Signature, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let (Some(name), Some(arity)) = (
         signature.name(),
         signature.arity().as_ref().and_then(arity_of),
@@ -1434,19 +1484,20 @@ fn codegen_signature(signature: &ast::Signature, src: &MacroSource) -> TokenStre
             "this signature is incomplete",
         );
     };
-    let name = codegen_name(name.text());
+    let name = codegen_name(name.text(), root);
     let sign = if signature.strong_negation_token().is_some() {
-        quote!(::themelios_program::symbol::Sign::Negative)
+        quote!(#root::symbol::Sign::Negative)
     } else {
-        quote!(::themelios_program::symbol::Sign::Positive)
+        quote!(#root::symbol::Sign::Positive)
     };
-    quote!(::themelios_program::symbol::Signature::new(#sign, #name, #arity))
+    quote!(#root::symbol::Signature::new(#sign, #name, #arity))
 }
 
 /// An `#external` directive (§4.8), emitting `External::new` (program §7.1): the atom, its
 /// body, and the optional carried-not-meaningful value (grammar §13). An atom the parse
 /// left absent is a located compile error, coincident with the raise's `incomplete` (§8).
 fn codegen_external(external: &ast::ExternalStatement, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let Some(atom) = external.atom() else {
         return located_compile_error(
             src,
@@ -1463,13 +1514,14 @@ fn codegen_external(external: &ast::ExternalStatement, src: &MacroSource) -> Tok
             quote!(::std::option::Option::Some(#term))
         },
     );
-    quote!(::themelios_program::program::External::new(#atom, #body, #value))
+    quote!(#root::program::External::new(#atom, #body, #value))
 }
 
 /// An optimization statement (§4.7), emitting `minimize`/`maximize` (program §7.1): the
 /// direction the keyword the parse carries names, over the optimize elements. `#minimize`
 /// and `#maximize` are the two directions; a directive macro's own keyword fixes which.
 fn codegen_optimize(optimize: &ast::OptimizeStatement, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let elements: Vec<TokenStream> = optimize
         .elements()
         .map(|element| codegen_optimize_element(&element, src))
@@ -1478,22 +1530,23 @@ fn codegen_optimize(optimize: &ast::OptimizeStatement, src: &MacroSource) -> Tok
         .keyword_token()
         .is_some_and(|token| token.kind() == SyntaxKind::KW_MAXIMIZE);
     if maximize {
-        quote!(::themelios_program::construct::maximize([#(#elements),*]))
+        quote!(#root::construct::maximize([#(#elements),*]))
     } else {
-        quote!(::themelios_program::construct::minimize([#(#elements),*]))
+        quote!(#root::construct::minimize([#(#elements),*]))
     }
 }
 
 /// An optimize element (grammar §5.7), emitting `OptimizeElement::new` (program §7.1): a
 /// weight at a priority, a term tuple, and a condition (§4.7).
 fn codegen_optimize_element(element: &ast::OptimizeElement, src: &MacroSource) -> TokenStream {
+    let root = src.runtime_root();
     let weight = codegen_weight(element.weight(), element.priority(), src);
     let terms: Vec<TokenStream> = element
         .tuple()
         .map(|term| codegen_term(&term, src))
         .collect();
     let condition = codegen_condition(element.condition().as_ref(), src);
-    quote!(::themelios_program::program::OptimizeElement::new(
+    quote!(#root::program::OptimizeElement::new(
         #weight,
         [#(#terms),*],
         #condition,
@@ -1508,8 +1561,9 @@ fn codegen_weight(
     priority: Option<ast::Term>,
     src: &MacroSource,
 ) -> TokenStream {
-    let weight = weight.map_or_else(placeholder, |term| codegen_term(&term, src));
-    let base = quote!(::themelios_program::program::weight(#weight));
+    let root = src.runtime_root();
+    let weight = weight.map_or_else(|| placeholder(root), |term| codegen_term(&term, src));
+    let base = quote!(#root::program::weight(#weight));
     match priority {
         Some(term) => {
             let term = codegen_term(&term, src);
@@ -1520,25 +1574,25 @@ fn codegen_weight(
 }
 
 /// The program-tier default negation an AST negation prefix names (§4.5).
-fn default_negation(negation: ast::Negation) -> TokenStream {
+fn default_negation(negation: ast::Negation, root: &TokenStream) -> TokenStream {
     match negation {
-        ast::Negation::None => quote!(::themelios_program::program::DefaultNegation::None),
-        ast::Negation::Default => quote!(::themelios_program::program::DefaultNegation::Not),
+        ast::Negation::None => quote!(#root::program::DefaultNegation::None),
+        ast::Negation::Default => quote!(#root::program::DefaultNegation::Not),
         ast::Negation::DoubleDefault => {
-            quote!(::themelios_program::program::DefaultNegation::NotNot)
+            quote!(#root::program::DefaultNegation::NotNot)
         }
     }
 }
 
 /// The program-tier relation an AST relation names (§4.6).
-fn relation_of(relation: ast::Relation) -> TokenStream {
+fn relation_of(relation: ast::Relation, root: &TokenStream) -> TokenStream {
     match relation {
-        ast::Relation::Lt => quote!(::themelios_program::program::Relation::Lt),
-        ast::Relation::Le => quote!(::themelios_program::program::Relation::Le),
-        ast::Relation::Gt => quote!(::themelios_program::program::Relation::Gt),
-        ast::Relation::Ge => quote!(::themelios_program::program::Relation::Ge),
-        ast::Relation::Eq => quote!(::themelios_program::program::Relation::Eq),
-        ast::Relation::Neq => quote!(::themelios_program::program::Relation::Neq),
+        ast::Relation::Lt => quote!(#root::program::Relation::Lt),
+        ast::Relation::Le => quote!(#root::program::Relation::Le),
+        ast::Relation::Gt => quote!(#root::program::Relation::Gt),
+        ast::Relation::Ge => quote!(#root::program::Relation::Ge),
+        ast::Relation::Eq => quote!(#root::program::Relation::Eq),
+        ast::Relation::Neq => quote!(#root::program::Relation::Neq),
     }
 }
 
@@ -2274,7 +2328,7 @@ mod tests {
     // deterministic, so a golden is exactly the emitted stream (`::themelios_program::`
     // renders `:: themelios_program ::`); the only cross-file variation is the file's
     // trailing newline, which [`normalized`] trims. A golden freezes the emitted
-    // *spelling* — every path absolute at `::themelios_program::` (§10), every fallible
+    // *spelling* — every path absolute at the default root `::themelios_program::` (§9, §10), every fallible
     // door discharged by its invariant-naming `.expect()` (the design's law-2 spelling
     // and totality made visible, §5). The *value* proof beside them — that the emission
     // builds the right value — is the per-macro equality witness (tests/equality.rs;
@@ -2346,6 +2400,14 @@ mod tests {
     /// to proc-macro2's `.to_string()` gluing an opening delimiter to the `::` that
     /// follows it (`fact (:: themelios_program`).
     fn references_only_program(expansion: &str) {
+        references_only_root(expansion, "themelios_program");
+    }
+
+    /// [`references_only_program`] under a runtime root (docs/design/macros.md §9): every
+    /// program-tier path `expansion` emits is absolute at `root` — the crate root a selection
+    /// names, `themelios_program` by default — and, under a selection, the default root never
+    /// appears beside it, so the expansion names exactly one runtime.
+    fn references_only_root(expansion: &str, root: &str) {
         let stream = TokenStream::from_str(expansion).expect("the expansion re-lexes");
         let colon = |tree: &proc_macro2::TokenTree| matches!(tree, proc_macro2::TokenTree::Punct(punct) if punct.as_char() == ':');
         let is_ident =
@@ -2360,11 +2422,15 @@ mod tests {
                     ident != "themelios_syntax",
                     "the expansion names the syntax tier: {expansion}"
                 );
-                if ident == "themelios_program" {
+                assert!(
+                    root == "themelios_program" || ident != "themelios_program",
+                    "the expansion names the default root beside the selected one: {expansion}"
+                );
+                if ident == root {
                     names_program = true;
                     assert!(
                         index >= 2 && colon(&trees[index - 1]) && colon(&trees[index - 2]),
-                        "a `themelios_program` path is not absolute: {expansion}"
+                        "a `{root}` path is not absolute: {expansion}"
                     );
                 }
                 // The head of an absolute path — an ident preceded by `::` whose pre-`::`
@@ -2382,7 +2448,7 @@ mod tests {
                 let after_path = index >= 2 && colon(&trees[index - 1]) && colon(&trees[index - 2]);
                 let is_root = after_path && (index < 3 || !is_ident(&trees[index - 3]));
                 assert!(
-                    !is_root || ident == "themelios_program" || ident == "std",
+                    !is_root || ident == root || ident == "std",
                     "the expansion names a crate root beyond the program tier and std \
                      (`{ident}`): {expansion}"
                 );
@@ -2456,6 +2522,77 @@ mod tests {
         references_only_program(&theory_term_codegen("&sum { $x }."));
         references_only_program(&codegen_program_str("p(1). q(X) :- p(X)."));
         references_only_program(&codegen_head_atom_str("p(1, a)."));
+    }
+
+    #[test]
+    fn every_codegen_arm_under_a_selection_references_only_the_selected_root() {
+        // The same sweep under a runtime selection (docs/design/macros.md §9): every path is
+        // rooted at the selected `::tp`, and the default root appears nowhere beside it.
+        for input in [
+            "p(1, a).",
+            "q(X) :- p(X).",
+            ":- p(X).",
+            "-p(X).",
+            "p(a; b).",
+            ":- not p.",
+            ":- 1 < X < 5 .",
+            ":- p : q.",
+            "a | b.",
+            "1 { a : q(X) }.",
+            "#count { X : p(X) }.",
+            ":- 1 <= #count { X : p(X) }.",
+            ":- not { a; b }.",
+            "&sum { X + 1 } <= n.",
+            ":- not &sum { X } <= 3 .",
+            "#show p/1 .",
+            "#show a : p(X).",
+            "#external p(X). [a]",
+            "#minimize { 3@1 }.",
+            "#maximize { 5 }.",
+            "p($x).",
+        ] {
+            references_only_root(&codegen_stmt(&format!("#![crate = ::tp] {input}")), "tp");
+        }
+        references_only_root(
+            &codegen_program_str("#![crate = ::tp] p(1). q(X) :- p(X)."),
+            "tp",
+        );
+        references_only_root(&codegen_head_atom_str("#![crate = ::tp] p(1, a)."), "tp");
+    }
+
+    #[test]
+    fn a_recovered_operator_chain_under_a_selection_is_rooted_at_it() {
+        // A chain the parser recovered below two operands folds what is present (§5); under a
+        // selection that fold too names the selected root and never the default (§9).
+        let expansion = codegen_stmt("#![crate = ::tp] p(1 + ).");
+        assert!(
+            expansion.contains(":: tp :: term :: Term :: from (1i32)"),
+            "{expansion}"
+        );
+        references_only_root(&expansion, "tp");
+    }
+
+    #[test]
+    fn a_recovered_theory_guard_under_a_selection_is_rooted_at_it() {
+        // A theory guard the parser recovered without its term takes the recovery placeholder
+        // (§5), which under a selection names the selected root and never the default (§9).
+        let expansion = codegen_stmt("#![crate = ::tp] :- &sum { X } <= .");
+        assert!(
+            expansion.contains(":: tp :: program :: TheoryTerm :: Variable"),
+            "{expansion}"
+        );
+        references_only_root(&expansion, "tp");
+    }
+
+    #[test]
+    #[should_panic(expected = "the default root beside the selected one")]
+    fn the_default_root_beside_a_selected_one_is_refused() {
+        // Under a selection the default root may not appear at all (§9: one runtime). This
+        // exercises that refusal directly, so the check could not silently stop refusing.
+        references_only_root(
+            ":: tp :: program :: Program :: of ([:: themelios_program :: program :: Statement])",
+            "tp",
+        );
     }
 
     #[test]

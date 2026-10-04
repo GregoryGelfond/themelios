@@ -16,6 +16,9 @@
 //!   §7);
 //! - a **statement family no construction builds** — a `#const` in `program!` — refused at the
 //!   statement (`program_unbuilt_statement`, §8);
+//! - a **malformed runtime selection** (§9) — another key (`selection_wrong_key`), a value that
+//!   is not a path (`selection_not_a_path`), and a selection that does not open the invocation,
+//!   after the payload (`selection_misplaced`) or a second (`selection_repeated`);
 //! - and a **lowering diagnostic** from a real expansion landing on the offending numeral's
 //!   span, not the call site (`numeral_overflows`, the I2 span check).
 //!

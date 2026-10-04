@@ -1,0 +1,5 @@
+error: a runtime selection, `#![crate = path]`, opens the invocation, once
+ --> tests/ui/selection_repeated.rs:6:9
+  |
+6 |         #![crate = ::themelios_program]
+  |         ^

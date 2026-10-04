@@ -150,6 +150,17 @@ mod first_solve {
         assert_eq!(by_macro, by_hand);
     }
 
+    // `#[rustfmt::skip]`: the block writes its statements ASP-side, as above.
+    #[rustfmt::skip]
+    #[test]
+    fn an_explicit_default_selection_builds_the_same_program() {
+        // The runtime selection names the root the expansion's paths begin at (§9); naming the
+        // default root explicitly builds the value the unselected block builds.
+        let selected: Program = program! { #![crate = ::themelios_program] p(1). q(X) :- p(X). };
+        let unselected: Program = program! { p(1). q(X) :- p(X). };
+        assert_eq!(selected, unselected);
+    }
+
     #[test]
     fn empty_program_macro_equals_program_empty() {
         // An empty block is the named empty program, locking the empty-array inference the codegen

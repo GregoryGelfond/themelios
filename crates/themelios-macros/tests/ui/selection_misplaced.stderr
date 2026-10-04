@@ -1,0 +1,5 @@
+error: a runtime selection, `#![crate = path]`, opens the invocation, once
+ --> tests/ui/selection_misplaced.rs:4:48
+  |
+4 |     let _ = themelios_macros::program! { p(1). #![crate = ::themelios_program] };
+  |                                                ^
