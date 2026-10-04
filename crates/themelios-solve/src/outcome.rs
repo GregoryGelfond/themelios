@@ -648,19 +648,9 @@ impl LiveRun<'_> {
         }
     }
 
-    /// The exhaustion gate, shared by `Solved::all_models`,
-    /// `Models::all_members`, and the derived consequences' fold
-    /// (docs/design/solve.md §5.3): a complete collection ONLY from an
-    /// untouched handle whose search closed the space; refuses otherwise,
-    /// keeping a mid-stream fault as the cause.
-    fn drain_complete(&mut self) -> Result<Vec<Model>, NotExhausted> {
-        let mut all = Vec::new();
-        self.drain_each(&mut |model| all.push(model))?;
-        Ok(all)
-    }
-
-    /// The exhaustion gate, its members handed to `each` as they stream, one
-    /// at a time — so a consumer that folds them holds one model, never the
+    /// The exhaustion gate (docs/design/solve.md §5.3), which every complete
+    /// collection and the derived consequences' fold pass: its members handed
+    /// to `each` as they stream, one at a time — so a consumer that folds them holds one model, never the
     /// collection (§5.2) — and its verdict after the last: `Ok` only where the
     /// search closed the space from an untouched handle. A refusal comes after
     /// members were handed over, so a consumer discards what it built from
@@ -1091,6 +1081,15 @@ pub(crate) trait RunAccess {
     fn is_exhausted(&self) -> bool;
     fn scenario(&self) -> &Scenario;
     fn drain_each(&mut self, each: &mut dyn FnMut(Model)) -> Result<(), NotExhausted>;
+
+    /// The complete collection: every member the exhaustion gate hands over,
+    /// kept — a collection ONLY from an untouched handle whose search closed
+    /// the space, refused otherwise, a mid-stream fault kept as the cause.
+    fn drain_complete(&mut self) -> Result<Vec<Model>, NotExhausted> {
+        let mut all = Vec::new();
+        self.drain_each(&mut |model| all.push(model))?;
+        Ok(all)
+    }
 }
 
 impl RunAccess for LiveRun<'_> {
@@ -1172,9 +1171,7 @@ impl<'a> Models<'a> {
     /// gate, §5.3), so the query tier's `materialize` cannot launder a partial
     /// set as complete (query.md §3.2).
     pub fn all_members(&mut self) -> Result<Vec<Model>, NotExhausted> {
-        let mut all = Vec::new();
-        self.access().drain_each(&mut |model| all.push(model))?;
-        Ok(all)
+        self.access().drain_complete()
     }
 
     /// The cautious (⋂) or brave (⋃) consequences of the complete collection,

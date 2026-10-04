@@ -91,8 +91,8 @@ use themelios_syntax::parse;
 use crate::agent::{Assumption, Scenario};
 use crate::bridge::{Admitted, Door};
 use crate::contract::{
-    Backend, Capabilities, Capability, ConsequenceRequest, ConsequenceSupport, Fault,
-    GroundOptions, Locus, Mode, OptimizeRequest, Presupposition, Refused, SolveRequest, TruthValue,
+    Backend, Capabilities, Capability, ConsequenceRequest, Fault, GroundOptions, Locus, Mode,
+    OptimizeRequest, Presupposition, Refused, SolveRequest, TruthValue,
 };
 use crate::extend::{Function, GroundFault, Propagator};
 use crate::outcome::{
@@ -1252,11 +1252,13 @@ fn truncation_cannot_pose_as_complete(backend: &mut dyn Backend, corpus: &[Case]
 /// with no search in flight cancel a later one (§4.1). Not yet drivable: the
 /// interrupt handle is reserved, so no search can be cancelled through it.
 fn cancellation_is_not_exhaustion(backend: &dyn Backend) -> Verdict {
-    Verdict::Skipped(if backend.capabilities().cancellation {
-        Skip::Reserved
-    } else {
-        Skip::Undeclared(Capability::Cancellation)
-    })
+    Verdict::Skipped(
+        if backend.capabilities().declares(Capability::Cancellation) {
+            Skip::Reserved
+        } else {
+            Skip::Undeclared(Capability::Cancellation)
+        },
+    )
 }
 
 /// A declared observer is faithful (§10.4): once the corpus case's solve,
@@ -1270,7 +1272,7 @@ fn cancellation_is_not_exhaustion(backend: &dyn Backend) -> Verdict {
 /// undeclared observer binds nothing here — that its method answers `None` is
 /// the honesty check's.
 fn ground_program_is_faithful(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {
-    if !backend.capabilities().ground_program {
+    if !backend.capabilities().declares(Capability::GroundProgram) {
         return Verdict::Skipped(Skip::Undeclared(Capability::GroundProgram));
     }
     over_both_doors(corpus, |case, through| {
@@ -1542,7 +1544,7 @@ fn rebuild_leaves_nothing_behind(backend: &mut dyn Backend) -> Verdict {
 /// cannot be.
 fn rebuilt(backend: &mut dyn Backend) -> Result<(), Shortfall> {
     load_source(backend, FACT).map_err(Shortfall::Undriven)?;
-    let cancel = if backend.capabilities().cancellation {
+    let cancel = if backend.capabilities().declares(Capability::Cancellation) {
         backend.interrupt()
     } else {
         None
@@ -1718,7 +1720,7 @@ fn needs_its_rebuild<T>(result: Result<T, Fault>) -> Result<(), Shortfall> {
 /// ready (§4.1). Binds a backend declaring functions.
 fn failed_grounding_needs_a_rebuild(backend: &mut dyn Backend) -> Verdict {
     let capabilities = backend.capabilities();
-    if !capabilities.functions {
+    if !capabilities.declares(Capability::Functions) {
         return Verdict::Skipped(Skip::Undeclared(Capability::Functions));
     }
     verdict_of(failed_grounding(backend, &capabilities))
@@ -1800,21 +1802,21 @@ fn needs_a_rebuild_after_a_failed_grounding(
     needs_its_rebuild(assigned)?;
     let registered = backend.register_function(Box::new(Echo));
     needs_its_rebuild(registered)?;
-    if capabilities.assumptions {
+    if capabilities.declares(Capability::Assumptions) {
         let assumed = backend
             .solve_assuming(&Scenario::default(), &SolveRequest::default())
             .map(drop);
         needs_its_rebuild(assumed)?;
     }
-    if capabilities.native_consequences == ConsequenceSupport::Native {
+    if capabilities.declares(Capability::NativeConsequences) {
         let native = backend.consequences_native(Mode::Cautious, &ConsequenceRequest::default());
         needs_its_rebuild(native)?;
     }
-    if capabilities.optimization {
+    if capabilities.declares(Capability::Optimization) {
         let optimized = backend.optimize(&OptimizeRequest::default()).map(drop);
         needs_its_rebuild(optimized)?;
     }
-    if capabilities.propagators {
+    if capabilities.declares(Capability::Propagators) {
         let registered = backend.register_propagator(Box::new(Inert));
         needs_its_rebuild(registered)?;
     }
@@ -1841,7 +1843,7 @@ fn needs_a_rebuild_after_a_failed_grounding(
 /// `lower` on a multi-shot backend, one `lower` on a single-shot one — solves
 /// to a set holding `p(1)`. Binds a backend declaring functions.
 fn registration_survives_the_rebuild(backend: &mut dyn Backend) -> Verdict {
-    if !backend.capabilities().functions {
+    if !backend.capabilities().declares(Capability::Functions) {
         return Verdict::Skipped(Skip::Undeclared(Capability::Functions));
     }
     verdict_of(registration_kept(backend))
@@ -1885,7 +1887,7 @@ fn backend_state(backend: &mut dyn Backend) -> Verdict {
 /// §6.2). Binds a backend declaring multi-shot solving, under which
 /// `assign_external` is required.
 fn non_external_assignment_refuses(backend: &mut dyn Backend) -> Verdict {
-    if !backend.capabilities().multi_shot {
+    if !backend.capabilities().declares(Capability::MultiShot) {
         return Verdict::Skipped(Skip::Undeclared(Capability::MultiShot));
     }
     if let Err(failure) = load_source(backend, FACT) {
@@ -2126,7 +2128,7 @@ fn misread(found: &NativeAnswer, known: &NativeAnswer) -> &'static str {
 /// — the door ranges over the models a request's scenario admits, so it agrees
 /// with the fold over `solve_assuming`.
 fn probe_native_consequences(backend: &mut dyn Backend, corpus: &[Case]) -> Response {
-    let assumes = backend.capabilities().assumptions;
+    let assumes = backend.capabilities().declares(Capability::Assumptions);
     for case in corpus {
         for through in [Through::Program, Through::Parsed] {
             if let Err(failure) = load_through(backend, case, through) {
@@ -2407,7 +2409,7 @@ fn probe_time_budget(backend: &mut dyn Backend, declared: bool) -> Response {
         responses.push(read_the_fact(backend.solve(&budgeted)));
     }
     let nothing = Scenario::default();
-    let assumes = backend.capabilities().assumptions
+    let assumes = backend.capabilities().declares(Capability::Assumptions)
         && matches!(
             read_the_fact(backend.solve_assuming(&nothing, &unbudgeted)),
             Response::Answered

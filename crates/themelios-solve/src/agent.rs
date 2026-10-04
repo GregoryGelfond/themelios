@@ -493,7 +493,7 @@ fn require(declaration: &Capabilities, capability: Capability) -> Result<(), Fau
 /// then only a backend enforcing the budget natively passes. A function of the
 /// declaration alone. O(1).
 fn realisable(declaration: &Capabilities) -> Result<(), Fault> {
-    if declaration.budgets.time {
+    if declaration.declares(Capability::TimeBudget) {
         Ok(())
     } else {
         Err(Fault::request(
