@@ -975,11 +975,12 @@ pub enum Presupposition {
 impl Fault {
     // The construction doors, one per locus; an empty message is replaced, so a fault always has one.
     pub fn program(message: impl Into<String>, statement: &WithProvenance<Statement>) -> Fault;
-        // keeps the refused statement whole, O(statement), so no span is made up and no statement goes
-        // unnamed; a refused parse's door is `From<NotAdmitted>` (§10.2)
+        // keeps the refused statement whole, O(message + statement), so no span is made up and no
+        // statement goes unnamed; a refused parse's door is `From<NotAdmitted>` (§10.2)
     pub fn program_part(message: impl Into<String>, part: &PartKey) -> Fault;
         // a Program fault refusing a part of the program a backend does not admit (§6.3), named by its
-        // key, O(part key); unlocated, since a part keeps no provenance — never a member statement
+        // key, O(message + part key); unlocated, since a part keeps no provenance — never a member
+        // statement
     pub fn request(message: impl Into<String>, presupposition: Presupposition) -> Fault;
     pub fn unsupported(capability: Capability) -> Fault;   // a Request fault, `Presupposition::Unsupported`,
                                                            // its message naming the capability
