@@ -32,7 +32,8 @@
 //! the pathologies a run can attempt (below). **The observer,** where the
 //! backend declares it (§10.4): a ground program once a grounding has finished,
 //! every ground rule naming a statement of the program lowered — through Door
-//! A, an occurrence of the parse — and a fact never grounded to nothing. **Fault loci:** a program the backend cannot
+//! A, an occurrence of the parse — and a fact never grounded to nothing.
+//! **Fault loci:** a program the backend cannot
 //! ground is refused at the program locus, naming the statement that cannot be
 //! grounded and located within it (§5.4); assigning an atom that is not
 //! external is refused at the request locus, never the silent no-op an engine
@@ -228,7 +229,7 @@ pub enum Check {
     CancellationIsNotExhaustion,
     /// A declared observer answers once a grounding has finished, every ground
     /// rule naming a statement of the program lowered, and a fact grounds to a
-    /// rule (§10.4).
+    /// rule (§10.4, §13.1).
     GroundProgramIsFaithful,
     /// Each fault lands where it belongs (§5.4): a program the backend cannot
     /// ground is refused at the program locus, naming the statement that cannot

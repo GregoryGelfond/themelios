@@ -1250,8 +1250,11 @@ search enumerates within the budget — failing a cut search concluded as closin
 refused. The readings take no options — the agent's consequence doors and the query tier's readings each
 solve over the default request — so a budgeted reading is a composition: `solve_with` under the budget, the
 determination it yields, `WorldView::of` over its models, and `materialize` to a `Snapshot` read infallibly
-(query.md §2.7), the path an embedder serving untrusted callers takes; reading forms that carry options are
-grown when a consumer names the need. The core owns that timer and the
+(query.md §2.7). That composition bounds the search by its time budget alone: the world view's models are
+materialised before the search's conclusion is read, no model-count cap is realised, and no scoped reading
+carries a budget — what an embedder serving untrusted callers must supply beyond it is the threat-model
+statement's to say (specification §12.4). Reading forms that carry options are grown when a consumer names
+the need. The core owns that timer and the
 caller's handle alike — the `Interrupt` that `Agent::interrupt` returns is the core's own, which records
 its pull and forwards to the backend's `Cancel` primitive (§4.1) — so it attributes the stop over the
 run's `Interrupted`: its timer alone concludes `Budget`, a pulled caller's handle concludes `Interrupted`,
@@ -1825,10 +1828,11 @@ obligation a backend's declared capabilities cannot drive is skipped, and the re
 6. **Cancellation is not exhaustion.** A cancelled search never concludes as closing the space.
 7. **The ground-program observer**, where a backend declares it: `Some` once a grounding has finished,
    every ground rule naming a statement of the program lowered, carrying its provenance — an origin at
-   least, each among the merged statement's — the membership §10.4 states, whose
-   correctness the corpus of rules told apart by their heads and bodies holds once rules carry them — and
-   its content qualified per engine by the relation §10.4 names; a backend that declares none passes
-   without it.
+   least, each among the merged statement's — the membership §10.4 states, whose correctness the corpus of
+   rules told apart by their heads and bodies holds once rules carry them; the fact `a.` grounding to a rule
+   that names it, since the carrier holds a fact as a rule, so membership alone would hold of an observer
+   that exposed nothing; and its content qualified per engine by the relation §10.4 names; a backend that
+   declares none passes without it.
 8. **Fault loci.** Each fault lands where it belongs: a Program fault names its refused statement, located
    within it where the statement was parsed and unlocated where it was built in Rust; a Request fault
    names its presupposition — assigning a truth value to an atom that is not external refuses with
@@ -1845,9 +1849,9 @@ obligation a backend's declared capabilities cannot drive is skipped, and the re
     and an undeclared observer answer `None`; a budget neither the backend nor the core's timer realises
     refuses with `Presupposition::UnrealisableBudget`, whoever refuses it (§6.3), and a declared time
     budget cuts a search it cannot finish within, concluding `Budget`, never `Exhausted` (§5.3, §6.3); the
-    native consequence
-    door's answer is its known one over the corpus, and `NoModel` over a program with no answer set and
-    under a scenario that admits none (§5.2); and the observer's declaration is honest by §10.4's law.
+    native consequence door's answer is its known one over the corpus through both doors, and `NoModel` over
+    a program with no answer set and under a scenario that admits none (§5.2); and the observer's
+    declaration is honest by §10.4's law.
 
 Door A's admission is the core's, before any backend is asked (§10.2), so its refusals are the core's own
 check, not an adapter's. The suite's skeleton is exercisable **engine-free over a stub backend** before any
@@ -2403,4 +2407,7 @@ necessity where it is declared.
     door (§10.4). The conformance suite drives a declared time budget to its cut, over a program no search
     finishes within, and fails a cut concluded as closing the space (§6.3, §13.1). The observer's membership requires a
     ground rule's statement to carry an origin (§13.1); that a merged statement's every origin reaches its
-    rules at the statement grain is held once the observer's construction door lands (§10.4, §11.1).
+    rules at the statement grain is held once the observer's construction door lands (§10.4, §11.1). The
+    observer's fact obligation is stated with its reason, and the native door's corpus pass named as going
+    through both doors (§13.1); §6.3 states what the budgeted composition bounds and leaves the rest to the
+    threat-model statement.
