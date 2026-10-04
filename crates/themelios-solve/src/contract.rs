@@ -509,7 +509,8 @@ pub enum Locus {
     /// [`Presupposition`] the fault names.
     Request,
     /// A resource: a limit of the environment reached while the request was
-    /// being served.
+    /// being served — a backend's own configured ceiling, or an allocation
+    /// failure, never the request's budget (docs/design/solve.md §5.1).
     Resource,
     /// The engine: a failure the engine itself reported, carried verbatim.
     Engine,
@@ -737,8 +738,13 @@ impl Fault {
         )
     }
 
-    /// A limit of the environment reached, with the limit named. Total;
-    /// O(message).
+    /// A limit of the environment reached, with the limit named: a backend's
+    /// own configured ceiling — a grounding size, a work count, a storage
+    /// bound, the width of a representation — or an allocation failure, never
+    /// the request's time budget, which a run reports as `Conclusion::Budget`
+    /// (docs/design/solve.md §5.1). The engine's typed cause rides with it
+    /// through [`caused_by`](Fault::caused_by), for a caller to downcast rather
+    /// than parse the message. Total; O(message).
     pub fn resource(message: impl Into<String>) -> Fault {
         Fault::new(Locus::Resource, message, Refusal::Nothing, false)
     }

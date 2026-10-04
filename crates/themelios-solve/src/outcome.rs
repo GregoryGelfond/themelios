@@ -57,10 +57,14 @@ pub enum Conclusion {
     /// the absence of any was proved.
     Exhausted,
     /// The search met the target the request set — the model-count cap §6.3
-    /// leaves room for — and stopped there, the space not closed.
+    /// leaves room for — or, on a backend that declares `enumeration: false`,
+    /// the witness that declaration stops at (§4.1), and stopped there, the
+    /// space not closed. An engine's habit of stopping after one model is no
+    /// target the request set (§5.1).
     Target,
-    /// The search hit the request's budget (§6.3) — reported as what it is,
-    /// never as a clean end.
+    /// The search hit the request's acknowledged time budget (§6.3) — reported
+    /// as what it is, never as a clean end. A backend's own configured ceiling
+    /// is no budget: a stop there is a Resource fault (§5.1).
     Budget,
     /// The search was cancelled through the interrupt handle (§6.3) before it
     /// closed the space. An engine fault is no conclusion: it stops a search as
@@ -87,9 +91,10 @@ impl std::fmt::Display for Conclusion {
 /// is the [`Conclusion`] of its name.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Truncation {
-    /// The search met the target the request set, the space not closed.
+    /// The search met the target the request set, or a deciding backend's
+    /// witness, the space not closed.
     Target,
-    /// The search hit the request's budget.
+    /// The search hit the request's acknowledged time budget.
     Budget,
     /// The search was cancelled through the interrupt handle.
     Interrupted,
