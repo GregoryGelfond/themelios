@@ -51,7 +51,10 @@
 //! ```
 //!
 //! The wrapper is a `text` block because a doctest cannot hold it: the doctest's own crate
-//! links this one privately and cannot re-export it.
+//! links this one privately and cannot re-export it. The workspace's facade fixtures
+//! (`crates/themelios-macros/fixtures`) compile and test the pattern whole: a neutral facade, a
+//! consumer that depends on it alone under a Cargo rename, and a direct consumer that selects a
+//! renamed runtime beside an unrelated crate named `themelios_program`.
 #![forbid(unsafe_code)]
 
 mod codegen;

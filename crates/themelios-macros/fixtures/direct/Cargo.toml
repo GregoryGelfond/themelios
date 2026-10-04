@@ -1,0 +1,19 @@
+[package]
+name = "fixture-direct"
+version = "0.0.0"
+publish = false
+description = "A consumer that uses the construction macros directly with the program tier renamed tp and selected by path, beside a decoy named themelios_program. A test fixture, never published."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The program tier renamed `tp`, and an unrelated crate under the runtime's canonical name, so
+# an expansion that fell back to the default root `::themelios_program` would not compile.
+[dependencies]
+themelios-macros = { path = "../.." }
+tp = { package = "themelios-program", path = "../../../themelios-program" }
+facade = { package = "fixture-facade", path = "../facade" }
+themelios_program = { package = "fixture-decoy", path = "../decoy" }
+
+[lints]
+workspace = true

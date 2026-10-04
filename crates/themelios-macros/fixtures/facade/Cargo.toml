@@ -1,0 +1,15 @@
+[package]
+name = "fixture-facade"
+version = "0.0.0"
+publish = false
+description = "A neutral test facade over the construction macros: it re-exports the program tier and forwards each macro through a wrapper selecting its own re-export. A test fixture, never published."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+themelios-macros = { path = "../.." }
+themelios-program = { path = "../../../themelios-program" }
+
+[lints]
+workspace = true

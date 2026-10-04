@@ -1,0 +1,11 @@
+[package]
+name = "fixture-decoy"
+version = "0.0.0"
+publish = false
+description = "An unrelated crate a consumer names themelios_program, so an expansion that fell back to the default runtime root would resolve here and fail. A test fixture, never published."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

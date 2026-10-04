@@ -2,3 +2,7 @@
 /crates/themelios-syntax/fuzz/artifacts
 /.pixi
 proptest-regressions/
+# LLVM profile data an instrumented proc macro writes where a nested compile loads it under
+# coverage (the macros facade fixtures, compiled by the consumer's compile-fail check); the
+# coverage report reads its own copies under /target.
+*.profraw

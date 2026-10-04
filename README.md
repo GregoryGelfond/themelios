@@ -117,7 +117,10 @@ start(1).
 ```
 
 There are nine macros in all: `program!`, `rule!`, `fact!`, `constraint!`,
-`minimize!`, `maximize!`, `show!`, `external!`, and `atom!`.
+`minimize!`, `maximize!`, `show!`, `external!`, and `atom!`. Their expansions
+name `themelios_program`; a crate that renames that dependency, or re-exports
+the macros under its own name, opens an invocation with `#![crate = path]` to
+name the runtime instead ([macros design](docs/design/macros.md) §9).
 
 ## Solve through any engine
 
