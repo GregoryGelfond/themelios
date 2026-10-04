@@ -103,9 +103,10 @@ fn resolved_packages(metadata: &Value) -> BTreeMap<String, Package> {
 
 /// The ids reachable from `themelios-program` over normal dependency edges — the
 /// runtime closure a `themelios-macros` consumer links (docs/design/macros.md §10;
-/// docs/specification.md §12.5). Every path the codegen emits begins at the runtime
-/// root (§9): `::themelios_program` by default, or the crate root a `#![crate = path]`
-/// selection names, which a facade points at its own re-export of the program tier.
+/// docs/specification.md §12.5). Every program-tier path the codegen emits begins at the
+/// runtime root (§9): `::themelios_program` by default, or the crate root a
+/// `#![crate = path]` selection names, which a facade points at its own re-export of the
+/// program tier. The only other root it names is `::std`, the caller's own.
 /// Under either the expansion names only the program tier at runtime — and the
 /// equality and law witnesses compile against it alone — so, though Cargo classes
 /// this crate's own edges to the syntax tier and the proc-macro2/quote toolchain as

@@ -1203,6 +1203,10 @@ term (macro dialect)        ::= any term        | splice
 theory-term (macro dialect) ::= any theory-term | splice
 ```
 
+(Recorded 2026-10-04: the mapping states that no operator contains "#" or
+"$", and that a float literal "1." is the number and the period; the macro tier
+had refused both forms.)
+
 Two of the mapping's rules deserve their mechanism named. Rust's token
 model records adjacency only between punctuation tokens, so the
 `#`-keyword rule cannot ride on it: *span adjacency* — the tokens'
