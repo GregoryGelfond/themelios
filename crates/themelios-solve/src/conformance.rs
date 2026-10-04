@@ -1968,14 +1968,17 @@ fn respond<T>(result: Result<T, Fault>) -> Response {
 }
 
 /// Whether `response` is the refusal an undeclared `capability` owes (§4.1,
-/// §6.3): unsupported, naming that capability — or, for the time budget, the
-/// budget nothing realises.
+/// §6.3): unsupported, naming that capability — save the time budget, which
+/// names a check, never a refusal, and whose one refusal is the budget nothing
+/// realises.
 fn refuses_as_owed(capability: Capability, response: &Response) -> bool {
     let Response::Refused(fault) = response else {
         return false;
     };
     match fault.refused() {
-        Refused::Request(Presupposition::Unsupported(named)) => named == capability,
+        Refused::Request(Presupposition::Unsupported(named)) => {
+            named == capability && capability != Capability::TimeBudget
+        }
         Refused::Request(Presupposition::UnrealisableBudget) => {
             capability == Capability::TimeBudget
         }

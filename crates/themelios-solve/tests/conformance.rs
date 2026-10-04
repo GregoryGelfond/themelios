@@ -662,6 +662,9 @@ enum Flaw {
     OffersAnUndeclaredInterrupt,
     /// Answers a timed solve without declaring a time budget.
     AnswersAnUndeclaredTimedSolve,
+    /// Refuses a timed solve, undeclared, as an unsupported capability — the
+    /// time budget names a check, never such a refusal.
+    RefusesAnUndeclaredBudgetAsUnsupported,
     /// Answers a timed `solve_assuming` without declaring a time budget.
     AnswersAnUndeclaredTimedScopedSolve,
     /// Declares a time budget, yet a timed solve yields a set that is no answer
@@ -1133,6 +1136,9 @@ impl Backend for Stub {
             && !self.capabilities.budgets.time
             && self.flaw != Flaw::AnswersAnUndeclaredTimedSolve
         {
+            if self.flaw == Flaw::RefusesAnUndeclaredBudgetAsUnsupported {
+                return Err(Fault::unsupported(Capability::TimeBudget));
+            }
             return Err(Fault::request(
                 "the stub enforces no time budget",
                 Presupposition::UnrealisableBudget,
@@ -2302,6 +2308,11 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             Flaw::MisanswersATimedSolve,
             only(Capability::TimeBudget),
             vec![(Declared(C::TimeBudget), Misanswered)],
+        ),
+        (
+            Flaw::RefusesAnUndeclaredBudgetAsUnsupported,
+            enumerating(),
+            vec![(Declared(C::TimeBudget), Mislocated)],
         ),
         (
             // Cut at its budget, yet read as closing the space: the truncated
