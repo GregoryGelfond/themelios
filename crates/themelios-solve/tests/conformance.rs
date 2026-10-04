@@ -353,6 +353,25 @@ const ENDLESS_TRIPWIRE: usize = 1024;
 /// is the suite holding on past its bound.
 const PAST_ITS_BUDGET_TRIPWIRE: usize = 1 << 21;
 
+/// The most models the suite's cut reads before it holds a search uncut.
+const CUT_CAP: usize = 1 << 20;
+
+/// A search cut at its budget having yielded `left` more empty sets.
+struct Capped {
+    left: usize,
+}
+
+impl Run for Capped {
+    fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+        self.left = self.left.checked_sub(1)?;
+        Some(Ok(Model::of(AnswerSet::new())))
+    }
+
+    fn conclusion(&self) -> Option<Conclusion> {
+        (self.left == 0).then_some(Conclusion::Budget)
+    }
+}
+
 /// A search that runs past its budget, yielding the empty set forever.
 struct PastItsBudget {
     yielded: usize,
@@ -657,6 +676,9 @@ enum Flaw {
     FaultsTheCutSearch,
     /// Refuses to lower the choice over forty atoms.
     RefusesTheUnboundedProgram,
+    /// None: cuts its search at its budget having yielded exactly the most
+    /// models the cut reads — honest at the cap's edge.
+    FillsTheCutsCap,
     /// Registers an `@`-function without declaring `functions`.
     AnswersUndeclaredFunctions,
     /// Registers a propagator without declaring `propagators`.
@@ -945,6 +967,7 @@ impl Stub {
     fn cut(&self, sets: Vec<AnswerSet>, scenario: Scenario) -> Solved<'static> {
         let run: Box<dyn Run> = match self.flaw {
             Flaw::IgnoresTheBudget => Box::new(PastItsBudget { yielded: 0 }),
+            Flaw::FillsTheCutsCap => Box::new(Capped { left: CUT_CAP }),
             Flaw::FaultsTheCutSearch => Box::new(Faulting {
                 first: sets.into_iter().next(),
                 fault: Some(Fault::engine("the stub's cut search faulted")),
@@ -2328,6 +2351,22 @@ fn a_failure_names_the_corpus_program_it_broke_on() {
         panic!("the dropped answer set fails its outcome: {report}");
     };
     assert_eq!(failure.case(), Some("an even loop"));
+}
+
+#[test]
+fn a_search_past_its_budget_fails_the_time_budget_as_uncut() {
+    let report = report(only(Capability::TimeBudget), Flaw::IgnoresTheBudget);
+    let Some(Verdict::Failed(failure)) = report.verdict(Check::Capability(Capability::TimeBudget))
+    else {
+        panic!("the search past its budget fails the time budget: {report}");
+    };
+    assert!(failure.to_string().contains("past its budget"), "{failure}");
+}
+
+#[test]
+fn a_cut_that_fills_its_cap_conforms() {
+    let report = report(only(Capability::TimeBudget), Flaw::FillsTheCutsCap);
+    assert!(report.is_conformant(), "{report}");
 }
 
 #[test]
