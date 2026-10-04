@@ -47,8 +47,10 @@ use themelios_program::program::{
     TheoryAtom, TheoryElement, TheoryGuard, TheoryOperator, TheoryTerm, weight,
 };
 use themelios_program::provenance::Origin;
+use themelios_program::raise::raise_str;
 use themelios_program::symbol::{Name, Sign, Signature, Symbol, VarName};
 use themelios_program::term::{Term, Variable};
+use themelios_syntax::dialect::Dialect;
 
 /// `Name::new(text)`, discharged as the codegen's `.expect()` is (the fixture text is a
 /// valid identifier by inspection).
@@ -646,6 +648,41 @@ fn a_keyword_written_against_an_operator_equals_its_spaced_spelling() {
         constraint!(:-#count { X : q(X) } > 2),
         constraint!(:- #count { X : q(X) } > 2)
     );
+}
+
+/// The program a file holding `text` raises to, read cleanly.
+fn read_as_a_file(text: &str) -> Program {
+    let raised = raise_str(text, Dialect::Clingo).expect("the text raises");
+    assert!(
+        raised.diagnostics().is_empty(),
+        "{text}: {:?}",
+        raised.diagnostics()
+    );
+    raised.program().clone()
+}
+
+#[test]
+fn operators_set_apart_in_a_theory_term_equal_the_files_reading() {
+    assert_eq!(
+        program! { &a { x + -y }. },
+        read_as_a_file("&a { x + -y }.")
+    );
+}
+
+#[test]
+fn an_operator_written_joined_in_a_theory_term_equals_the_files_reading() {
+    // Written joined, `+-` is one theory operator, in a macro body as in a file.
+    assert_eq!(
+        program! { &a { x +- y }. },
+        read_as_a_file("&a { x +- y }.")
+    );
+}
+
+#[test]
+fn a_theory_guard_s_period_before_a_statement_equals_the_files_reading() {
+    let file = read_as_a_file("&sum { x } <= 10. :- p.");
+    assert_eq!(program! { &sum { x } <= 10 . :- p. }, file);
+    assert_eq!(program! { &sum { x } <= 10. :- p. }, file);
 }
 
 #[test]
