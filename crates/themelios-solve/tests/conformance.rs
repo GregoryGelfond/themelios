@@ -605,6 +605,16 @@ enum Flaw {
     /// Admits a program with a part beyond the base, then faults its stream,
     /// naming the part.
     RefusesThePartInTheStream,
+    /// Answers a program with a part beyond the base as though its base held
+    /// nothing.
+    DropsTheBaseBesideAPart,
+    /// Answers a program with a part beyond the base as its base denotes, yet
+    /// concludes at its target, never that the space closed.
+    LeavesTheSpaceOpenBesideAPart,
+    /// Answers a program with a part beyond the base as its base denotes at
+    /// Door B, and refuses it at Door A, naming the part: a program refused for
+    /// the door it came through.
+    RefusesThePartAtDoorAOnly,
     /// Ends its unbudgeted search of the program no search finishes before its
     /// first model, as though its space were empty.
     EndsTheUnboundedSearchAtOnce,
@@ -827,26 +837,33 @@ impl Run for Streaming {
     }
 }
 
+/// What the stub says when it refuses the parts probe's part.
+const PART_REFUSAL: &str = "the stub admits the base part alone";
+
+/// The parts probe's part beyond the base, `step(t)`, in `program`.
+fn the_step_part(program: &Program) -> &Part {
+    program
+        .parts()
+        .find(|part| part.key().name.as_str() == "step")
+        .expect("the probe holds the part step(t)")
+}
+
 /// The refusal `flaw` makes of the parts probe's `program`, if any: the part
 /// named by its key, honestly; a statement in it, the part without its formals,
 /// or an unsupported request, under the flaws that misname it.
 fn refuse_the_part(flaw: Flaw, program: &Program) -> Result<(), Fault> {
-    let part = program
-        .parts()
-        .find(|part| part.key().name.as_str() == "step")
-        .expect("the probe holds the part step(t)");
-    let refused = "the stub admits the base part alone";
+    let part = the_step_part(program);
     match flaw {
         Flaw::RefusesThePartBeyondTheBase
         | Flaw::KeepsARefusedPart
-        | Flaw::LosesTheProgramOnARefusedPart => Err(Fault::program_part(refused, part.key())),
+        | Flaw::LosesTheProgramOnARefusedPart => Err(Fault::program_part(PART_REFUSAL, part.key())),
         Flaw::BlamesAStatementInThePart => Err(Fault::program(
-            refused,
+            PART_REFUSAL,
             part.statements().next().expect("the part holds p(t)"),
         )),
         Flaw::RefusesThePartAsUnsupported => Err(Fault::unsupported(Capability::MultiShot)),
         Flaw::MisnamesThePart => Err(Fault::program_part(
-            refused,
+            PART_REFUSAL,
             &PartKey {
                 name: part.key().name.clone(),
                 formals: Vec::new(),
@@ -859,14 +876,7 @@ fn refuse_the_part(flaw: Flaw, program: &Program) -> Result<(), Fault> {
 /// The refusal of the parts probe that `flaw` makes after admitting it, if any:
 /// the part named at the solve, or in its stream, rather than at `lower`.
 fn refuse_the_part_late(flaw: Flaw) -> Option<Result<Solved<'static>, Fault>> {
-    let refusal = || {
-        let part = program(PARTS)
-            .parts()
-            .find(|part| part.key().name.as_str() == "step")
-            .map(|part| part.key().clone())
-            .expect("the probe holds the part step(t)");
-        Fault::program_part("the stub admits the base part alone", &part)
-    };
+    let refusal = || Fault::program_part(PART_REFUSAL, the_step_part(&program(PARTS)).key());
     match flaw {
         Flaw::RefusesThePartAtTheSolve => Some(Err(refusal())),
         Flaw::RefusesThePartInTheStream => Some(Ok(Solved::running(
@@ -1023,6 +1033,11 @@ impl Stub {
                 sets.push(set([constant("a"), constant("b")]));
             }
             Flaw::ShiftsTheHeadCycle if source == HEAD_CYCLE => sets.clear(),
+            Flaw::DropsTheBaseBesideAPart if source == PARTS => {
+                for set in &mut sets {
+                    set.clear();
+                }
+            }
             Flaw::GroundsThePartBeyondTheBase if source == PARTS => {
                 for set in &mut sets {
                     set.insert(atom("p", [constant("t")], Sign::Positive));
@@ -1328,7 +1343,11 @@ impl Stub {
             Conclusion::Interrupted
         } else if sets.is_empty() && self.flaw == Flaw::LeavesTheSearchUndecided {
             Conclusion::Budget
-        } else if !sets.is_empty() && self.flaw == Flaw::LeavesTheSpaceOpen {
+        } else if !sets.is_empty()
+            && (self.flaw == Flaw::LeavesTheSpaceOpen
+                || (self.flaw == Flaw::LeavesTheSpaceOpenBesideAPart
+                    && self.loaded_source() == Some(PARTS)))
+        {
             Conclusion::Target
         } else if self.capabilities.enumeration || sets.is_empty() {
             Conclusion::Exhausted
@@ -1512,6 +1531,12 @@ impl Backend for Stub {
                 Flaw::KeepsARefusedPart => self.keep(index),
                 Flaw::LosesTheProgramOnARefusedPart => self.loaded.clear(),
                 _ => {}
+            }
+            if self.flaw == Flaw::RefusesThePartAtDoorAOnly && matches!(door, Door::Parsed(_)) {
+                return Err(Fault::program_part(
+                    PART_REFUSAL,
+                    the_step_part(lowered).key(),
+                ));
             }
             refuse_the_part(self.flaw, lowered)?;
         }
@@ -2106,7 +2131,11 @@ fn a_deciding_backend_grounding_the_base_alone_meets_the_base_obligation() {
 #[test]
 fn a_refusal_naming_the_part_meets_the_base_obligation() {
     let report = report(enumerating(), Flaw::RefusesThePartBeyondTheBase);
-    assert!(report.is_conformant(), "{report}");
+    assert_eq!(
+        report.verdict(Check::OnlyTheBaseGrounds),
+        Some(&Verdict::Passed),
+        "{report}"
+    );
 }
 
 #[test]
@@ -2283,6 +2312,21 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             Flaw::KeepsARefusedPart,
             enumerating(),
             vec![(Base, Misanswered)],
+        ),
+        (
+            Flaw::DropsTheBaseBesideAPart,
+            enumerating(),
+            vec![(Base, Misanswered)],
+        ),
+        (
+            Flaw::LeavesTheSpaceOpenBesideAPart,
+            enumerating(),
+            vec![(Base, Misanswered)],
+        ),
+        (
+            Flaw::RefusesThePartAtDoorAOnly,
+            enumerating(),
+            vec![(Base, Refused)],
         ),
         (
             Flaw::LosesTheProgramOnARefusedPart,
