@@ -76,11 +76,11 @@ pub struct MapError {
     pub message: String,
 }
 
-/// The lexical context every separator question is asked under: the one
+/// The context the normal-mode separator question is asked under: the one
 /// dialect this crate parses (grammar §3) and normal mode. The assembled
 /// tiles carry normal-mode operator kinds, so the fusion oracle
 /// (syntax §10) is consulted under the same mode it must agree with.
-const CONTEXT: LexContext = LexContext {
+const NORMAL: LexContext = LexContext {
     dialect: Dialect::Clingo,
     mode: LexMode::Normal,
 };
@@ -105,7 +105,8 @@ impl MacroSource {
     ///
     /// Returns [`MapError`] for any token grammar §9 leaves unnamed — a
     /// float literal other than an integer and its period (`1.`, which maps
-    /// to the number and the period), a char or byte literal, a suffixed numeral, a raw identifier,
+    /// to the number and the period), a char or byte literal, a suffixed
+    /// numeral, a raw identifier,
     /// an identifier no name class matches, a detached `#`, a `$` without
     /// an operand — for the corners a later increment maps by value (a
     /// string whose value grammar §4.4 cannot spell verbatim), and for a
@@ -122,7 +123,7 @@ impl MacroSource {
             })?;
             // The directive keyword is the macro's own, not a Rust token,
             // so it maps to the call site (docs/design/macros.md §8).
-            assembler.emit(kind, &spelling, Span::call_site(), false);
+            assembler.emit(kind, &spelling, Span::call_site());
         }
         let trees: Vec<TokenTree> = input.into_iter().collect();
         let (root, payload) = runtime_selection(&trees)?;
@@ -320,35 +321,50 @@ struct Previous {
     is_splice: bool,
 }
 
+/// How a tile stands to the tile before it, which decides the separator
+/// between them (syntax §10).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Adjacency {
+    /// Apart: a token of its own, or the period of a split `1.`.
+    Apart,
+    /// Glued to the tile before it in one Rust operator run.
+    Glued,
+    /// A splice, whose marker is no themelios token the fusion oracle reads.
+    Splice,
+}
+
 impl Assembler {
-    /// Emits one tile from a token of its own, inserting a single
-    /// `WHITESPACE` separator first when the previous tile would otherwise
-    /// fuse with this one under normal or theory mode (syntax §10). A
-    /// splice's marker (`$x`) is no themelios token the fusion oracle
-    /// reads, so a splice on either side always takes a separator — safe,
-    /// since whitespace is trivia everywhere.
-    fn emit(&mut self, kind: SyntaxKind, text: &str, span: Span, is_splice: bool) {
-        self.place(kind, text, span, is_splice, false);
+    /// Emits a tile standing apart from the one before it — a token of its
+    /// own, or the period of a split `1.` (syntax §10).
+    fn emit(&mut self, kind: SyntaxKind, text: &str, span: Span) {
+        self.place(kind, text, span, Adjacency::Apart);
     }
 
-    /// Emits a tile glued to the one before it in one Rust operator run — the
+    /// Emits a tile glued to the one before it in one Rust operator run: the
     /// author wrote them joined, so theory mode may coalesce them into one
-    /// operator (`<==>`), and only a normal-mode fusion separates them.
+    /// operator (`<==>`). The normal-mode question still guards the pair,
+    /// though two tiles of one munched run never fuse under it.
     fn emit_glued(&mut self, kind: SyntaxKind, text: &str, span: Span) {
-        self.place(kind, text, span, false, true);
+        self.place(kind, text, span, Adjacency::Glued);
     }
 
-    /// Places a tile after a separator wherever the two would fuse: under normal
-    /// mode always, and under theory mode unless `glued` — tokens the author wrote
-    /// apart stay apart in either mode, as their whitespace keeps them in a file.
-    fn place(&mut self, kind: SyntaxKind, text: &str, span: Span, is_splice: bool, glued: bool) {
+    /// Places a tile, after a single `WHITESPACE` separator wherever it needs
+    /// one (syntax §10): beside a splice always, since the fusion oracle reads
+    /// no marker; otherwise wherever normal mode would fuse the two, and wherever
+    /// theory mode would unless the tile is glued to the one before it, so
+    /// tokens the author wrote apart stay apart in either mode, as their
+    /// whitespace keeps them in a file. The source cannot know which mode the
+    /// parser will read a position under — the parser owns the modes (syntax
+    /// §4.2) — and a separator is trivia under every mode, so asking both
+    /// questions only ever over-separates.
+    fn place(&mut self, kind: SyntaxKind, text: &str, span: Span, adjacency: Adjacency) {
         if let Some(previous) = &self.previous {
-            let fuses = previous.is_splice
-                || is_splice
-                || separator_between(&previous.text, text, CONTEXT) != Separator::Nothing
-                || (!glued
+            let needs_separator = previous.is_splice
+                || adjacency == Adjacency::Splice
+                || separator_between(&previous.text, text, NORMAL) != Separator::Nothing
+                || (adjacency != Adjacency::Glued
                     && separator_between(&previous.text, text, THEORY) != Separator::Nothing);
-            if fuses {
+            if needs_separator {
                 let start = length_of(&self.text);
                 self.text.push(' ');
                 self.tiles.push(Tile {
@@ -369,7 +385,7 @@ impl Assembler {
         self.spans.push(span);
         self.previous = Some(Previous {
             text: text.to_owned(),
-            is_splice,
+            is_splice: adjacency == Adjacency::Splice,
         });
     }
 
@@ -400,17 +416,17 @@ impl Assembler {
         match &trees[index] {
             TokenTree::Ident(ident) => {
                 let (kind, text) = classify_ident(ident)?;
-                self.emit(kind, &text, ident.span(), false);
+                self.emit(kind, &text, ident.span());
                 Ok(index + 1)
             }
             TokenTree::Literal(literal) => {
                 if let Some(number) = number_before_a_period(literal) {
-                    self.emit(SyntaxKind::NUMBER, &number, literal.span(), false);
-                    self.emit(SyntaxKind::DOT, ".", literal.span(), false);
+                    self.emit(SyntaxKind::NUMBER, &number, literal.span());
+                    self.emit(SyntaxKind::DOT, ".", literal.span());
                     return Ok(index + 1);
                 }
                 let (kind, text) = classify_literal(literal)?;
-                self.emit(kind, &text, literal.span(), false);
+                self.emit(kind, &text, literal.span());
                 Ok(index + 1)
             }
             TokenTree::Group(group) => {
@@ -436,9 +452,9 @@ impl Assembler {
         };
         let inner: Vec<TokenTree> = group.stream().into_iter().collect();
         if let Some((open, open_text, close, close_text)) = brackets {
-            self.emit(open, open_text, group.span_open(), false);
+            self.emit(open, open_text, group.span_open());
             self.walk(&inner)?;
-            self.emit(close, close_text, group.span_close(), false);
+            self.emit(close, close_text, group.span_close());
         } else {
             self.walk(&inner)?;
         }
@@ -479,7 +495,7 @@ impl Assembler {
                 && plus.as_char() == '+'
                 && adjacent(word.span(), plus.span())
             {
-                self.emit(SyntaxKind::KW_SUM_PLUS, "#sum+", hash.span(), false);
+                self.emit(SyntaxKind::KW_SUM_PLUS, "#sum+", hash.span());
                 return Ok(index + 3);
             }
             let hash_word = format!("#{spelling}");
@@ -487,7 +503,7 @@ impl Assembler {
                 span: word.span(),
                 message: format!("`{hash_word}` is not a keyword"),
             })?;
-            self.emit(kind, &hash_word, hash.span(), false);
+            self.emit(kind, &hash_word, hash.span());
             return Ok(index + 2);
         }
         Err(MapError {
@@ -529,13 +545,13 @@ impl Assembler {
     }
 
     /// Emits a `SPLICE` tile of `text` and records its captured `expr` over
-    /// the tile `emit` just placed. The splice's range is read back from that
+    /// the tile `place` just placed. The splice's range is read back from that
     /// tile, so the tile and its recorded range are one decision — not a
     /// separate prediction of where the tile would land, which could drift
-    /// from `emit`'s own separator choice and leave `splice_at` no exact
+    /// from `place`'s own separator choice and leave `splice_at` no exact
     /// range to match.
     fn emit_splice(&mut self, text: &str, span: Span, expr: TokenStream) {
-        self.emit(SyntaxKind::SPLICE, text, span, true);
+        self.place(SyntaxKind::SPLICE, text, span, Adjacency::Splice);
         let tile = *self.tiles.last().expect("emit pushed the splice tile");
         self.splices.push(Splice {
             range: tile.start..tile.start + tile.len,
@@ -583,7 +599,7 @@ impl Assembler {
                     }
                 })?;
             if position == 0 {
-                self.emit(token.kind, token.text, run[position].1, false);
+                self.emit(token.kind, token.text, run[position].1);
             } else {
                 self.emit_glued(token.kind, token.text, run[position].1);
             }
@@ -1169,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn a_float_literal_is_a_dialect_error() {
+    fn a_fractional_float_literal_is_a_dialect_error() {
         assert!(MacroSource::build(TokenStream::from_str("1.5").unwrap(), None).is_err());
     }
 
@@ -1739,10 +1755,10 @@ mod tests {
     }
 
     /// An unnamed token — a class grammar §9 leaves out, which the dialect
-    /// refuses: a float, char, byte, or byte-string literal, a suffixed
-    /// numeral, a raw string, a lifetime, a detached `#`, a bare `$`, a
-    /// no-class identifier, or a lone `!` (and, built rather than parsed, a raw
-    /// identifier).
+    /// refuses: a float other than an integer and its period, a char, byte,
+    /// or byte-string literal, a suffixed numeral, a raw string, a lifetime, a
+    /// detached `#`, a bare `$`, a no-class identifier, or a lone `!` (and,
+    /// built rather than parsed, a raw identifier).
     fn unnamed_token() -> impl Strategy<Value = Mapping> {
         let by_spelling = prop::sample::select(vec![
             "1.5", "2.0", "1e10", "3.14", // floats

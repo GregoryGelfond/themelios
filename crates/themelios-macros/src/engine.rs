@@ -266,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn run_under_a_selection_roots_every_path_at_it() {
+    fn run_under_a_selection_roots_its_program_paths_at_it() {
         // A runtime selection names the root every constructor path begins at (macros §9): the
         // selected path, and never the default beside it.
         let input = TokenStream::from_str("#![crate = ::tp] p(1, a)").expect("lexes");
@@ -279,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn run_of_an_atom_under_a_selection_roots_every_path_at_it() {
+    fn run_of_an_atom_under_a_selection_roots_its_program_paths_at_it() {
         let input = TokenStream::from_str("#![crate = ::tp] -p(1)").expect("lexes");
         let expansion = run(input, Entry::Atom, None).to_string();
         assert!(
@@ -301,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn run_of_a_program_block_under_a_selection_roots_every_path_at_it() {
+    fn run_of_a_program_block_under_a_selection_roots_its_program_paths_at_it() {
         let input = TokenStream::from_str("#![crate = ::tp] p(1). q(X) :- p(X).").expect("lexes");
         let expansion = run(input, Entry::Program, None).to_string();
         assert!(

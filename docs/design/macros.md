@@ -388,7 +388,11 @@ operator (grammar §4.7), so the source separates two tiles from tokens the auth
 wrote apart wherever theory-mode lexing would merge them: `x + -y` keeps its two
 operators, and a theory guard's closing `.` stays apart from the next statement's
 `:-`. A run written joined, `<==>`, still coalesces into one theory operator, as in
-a file. The four token-source laws (tiling, slice, determinism,
+a file. One spelling stays beyond the source's knowledge: Rust gives a literal no
+spacing, so a numeral's period written directly against an operator inside a theory
+atom (`10.:-`) reads as the period ending the statement, as the spaced `10. :-` does,
+though a file reads that abutted run as one theory operator. The four token-source
+laws (tiling, slice, determinism,
 refusal — syntax §4.3) are what the source owes, and `check_token_source_laws`
 is the standing check it passes; the `Theory` and `ScriptBody` modes the checker
 does not exercise are held under the engine's own tests, over the inputs its
@@ -539,23 +543,25 @@ engine delivers this through the **span map** (§6): the compile-time parse and
 the splice-free-view raise (§5.3) produce diagnostics located in the assembled
 text; each is translated through the span map to the `proc_macro` span of the
 Rust token that produced it, and emitted as a compile error there. Because the
-`TokenSource` owns its boundaries (§6), a token's text is exactly a Rust token's
-spelling, so a diagnostic never lands on synthetic separator text — there is
-none.
+`TokenSource` owns its boundaries (§6), each token answers from a Rust token's
+tile, and the separators the source places between tiles are whitespace, so a
+diagnostic never lands on separator text.
 
 The diagnostics carried are the syntax tier's `SyntaxError` and the program
 tier's `LowerError`, both lowering to base's normal form (base §6.5; program §8)
 — one model, so a macro-site diagnostic reads exactly as the file parser's, at
 the rust-analyzer bar (spec §2 item 9). Dialect errors of the mapping itself
-(§6 — a float literal, a detached `#` (refused only under the fallback backend;
-real expansion reads it benignly), `r#not`), a non-`ToSymbol` splice (§7), a
-non-single-atom `atom!` head (§8), a `#script` in `program!` (§7), and a
-malformed runtime selection (below) are the engine's own diagnostics, located at
-the offending Rust token's span and worded in the same register.
+(§6 — a float literal other than an integer and its period, a detached `#`
+(refused only under the fallback backend; real expansion reads it benignly),
+`r#not`), a non-`ToSymbol` splice (§7), a non-single-atom `atom!` head (§8), a
+`#script` in `program!` (§7), and a malformed runtime selection (below) are the
+engine's own diagnostics, located at the offending Rust token's span and worded
+in the same register.
 
 **Hygiene and the runtime root.** The expansion names every program-tier item by
 an absolute path from one **runtime root** — the program tier's crate,
-`::themelios_program`, unless the invocation selects another — so it compiles
+`::themelios_program`, unless the invocation selects another — and the only other
+items it names are the caller's own `::std` vectors and options, so it compiles
 regardless of the caller's imports, and no name in scope at the macro site can
 capture it. A `$( … )` splice's expression is emitted in the caller's context — it
 *should* see the caller's bindings, which is the point of a splice.
@@ -841,4 +847,6 @@ deliberate evolution with its argument, not a drift.
   two operators the author wrote apart coalesced into one: `&a { x + -y }` built
   the term `x +- y`, and `&sum { x } <= 10 . :- p.` one statement where a file
   holds two. The source now separates such tiles wherever theory-mode lexing would
-  merge them; a run written joined still forms one theory operator.
+  merge them; a run written joined still forms one theory operator. A numeral's
+  period written against an operator (`10.:-`) is the one spelling it cannot tell
+  apart, and the design says so.
