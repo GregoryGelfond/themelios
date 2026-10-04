@@ -1,6 +1,6 @@
 # themelios-solve — design of record
 
-2026-09-03, revised through 2026-10-03 (§17). The design of record, which the build follows; §17 records
+2026-09-03, revised through 2026-10-04 (§17). The design of record, which the build follows; §17 records
 each revision, the reconciliations with built code among them. This is the normative design for the
 **solve tier** — `themelios-solve` and the adapter crates that realise it — the fourth tier over the
 shared base (§12.1 of the specification). Its sibling `themelios-query` has its own design
@@ -317,17 +317,21 @@ pub trait Backend {
 /// A solve is in flight from the moment `solve` is called until its run ends or its handle drops. A pull
 /// inside that window is never dropped: the backend takes it at its next check, in grounding or in search
 /// (§6.3), and the run concludes `Interrupted`. A pull outside it is a no-op — never a cancellation of the
-/// next question. An adapter over an engine whose own primitive cuts "the active call or the following
-/// one" compensates with a slot of its own: it holds a pull for the whole window, forwards it to the engine
-/// only while the engine's search is active — armed from before that search can begin until it ends, and
-/// disarmed no later than it ends — and begins no search once it holds a pull. So a pull inside the window
-/// is never dropped, and one outside it never reaches the engine. That coincidence is a version-scoped
-/// claim the spike suite establishes for the pinned engine (§13.2), with the race harness (§13.3) holding
-/// the concurrent open and close and the conformance suite the deterministic stale pull (§6.3).
+/// next question. Pulls within one window are one pull: the core may forward a caller's pull twice — when
+/// it lands, and again once the run opens (§6.3) — and a caller may pull more than once, so a primitive
+/// that counts or toggles is wrong. An adapter over an engine whose own primitive cuts "the active call or
+/// the following one" compensates with a slot of its own: it holds a pull for the whole window, forwards
+/// it to the engine only while the engine's search is active — armed from before that search can begin
+/// until it ends, and disarmed no later than it ends — and begins no search once it holds a pull. So a
+/// pull inside the window is never dropped, and one outside it never reaches the engine. That coincidence
+/// is a version-scoped claim the spike suite establishes for the pinned engine (§13.2), with the race
+/// harness (§13.3) holding the concurrent open and close and the conformance suite the deterministic stale
+/// pull (§6.3).
 ///
 /// The primitive carries no authority over a dropped engine: a pull reaches a slot the backend owns and
 /// clears on drop, shared with the handle, never a pointer into the engine — so the engine's lifetime is
-/// the backend's, and a handle that outlives its backend holds nothing and cuts nothing.
+/// the backend's, and a pull through a handle that outlives its backend is safe: it holds nothing and cuts
+/// nothing.
 pub trait Cancel: Send + Sync {
     fn cancel(&self);
 }
@@ -2565,7 +2569,8 @@ necessity where it is declared.
     begin it, and a pull that lands while `solve` opens the run is forwarded again once it is open. A pull
     with no question in flight is forgotten, and the caller's pull takes precedence over a deadline in the
     same run (§6.3). A backend's solve is in flight from `solve` until its run ends or its handle drops; an
-    adapter over a primitive that cuts the following call holds a pull for that whole window (§4.1). The
+    adapter over a primitive that cuts the following call holds a pull for that whole window. Pulls within
+    one window are one pull, and a pull through a handle that outlives its backend is safe (§4.1). The
     conformance suite drives obligation 6 for an enumerating backend that declares cancellation — an active,
     unfinished search cut, and the stale pulls, within the cut's cap of further reads — and names a deciding
     backend's skip (§13.1). Obligation 10 states its single-shot arm beside the multi-shot one, witnessing

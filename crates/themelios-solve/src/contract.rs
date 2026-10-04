@@ -103,9 +103,9 @@ pub trait Backend {
     /// program, so a rebuild is `reset` then `lower` the amended whole; on a
     /// single-shot backend a `lower` replaces the program, so a rebuild is one
     /// `lower`. It validates and retains (docs/design/solve.md §6.3): its checks
-    /// are each bounded by the program's size, it grounds nothing — grounding is
-    /// `solve`'s — and a refused `lower` leaves the program lowered before it
-    /// (§4.1).
+    /// are each bounded by the program's size, it grounds nothing — on a
+    /// single-shot backend grounding is `solve`'s, on a multi-shot one `ground`'s
+    /// — and a refused `lower` leaves the program lowered before it (§4.1).
     fn lower(&mut self, door: Door<'_>) -> Result<(), Fault>;
 
     /// Provided. The ground program the backend exposes — the observer, a
@@ -227,23 +227,33 @@ pub trait Backend {
 /// and returns — `O(1)`, never blocking on the solving thread — and the stop is
 /// read through the run's `conclusion`.
 ///
-/// A pull with no solve in flight is a no-op — never a cancellation of the
-/// next question. An implementation over an engine whose own primitive cuts
-/// "the active call or the following one" compensates by arming its forward
-/// only while a run is open: armed from before the engine's search can begin
-/// until it ends, and disarmed no later than it ends, so the window coincides
-/// with the engine's active call — a pull inside it is never dropped, and one
-/// outside it never reaches the engine. That coincidence is a claim to
-/// establish for the pinned engine, with a race harness holding the concurrent
-/// open and close.
+/// A solve is in flight from the moment `solve` is called until its run ends
+/// or its handle drops. A pull inside that window is never dropped: the backend
+/// takes it at its next check, in grounding or in search (§6.3), and the run
+/// concludes `Interrupted`. A pull outside it is a no-op — never a cancellation
+/// of the next question. Pulls within one window are one pull: the core may
+/// forward a caller's pull twice — when it lands, and again once the run opens
+/// (§6.3) — and a caller may pull more than once, so a primitive that counts or
+/// toggles is wrong.
+///
+/// An adapter over an engine whose own primitive cuts "the active call or the
+/// following one" compensates with a slot of its own: it holds a pull for the
+/// whole window, forwards it to the engine only while the engine's search is
+/// active — armed from before that search can begin until it ends, and disarmed
+/// no later than it ends — and begins no search once it holds a pull. So a pull
+/// inside the window is never dropped, and one outside it never reaches the
+/// engine. That coincidence is a claim to establish for the pinned engine, with
+/// a race harness holding the concurrent open and close.
 ///
 /// The primitive carries no authority over a dropped engine: a pull reaches a
 /// slot the backend owns and clears on drop, shared with the handle, never a
 /// pointer into the engine — so the engine's lifetime is the backend's, and a
-/// handle that outlives its backend holds nothing and cuts nothing.
+/// pull through a handle that outlives its backend is safe: it holds nothing
+/// and cuts nothing.
 pub trait Cancel: Send + Sync {
     /// Signal the in-flight solve to stop, and return; a no-op with none in
-    /// flight, or once the backend is dropped. `O(1)`.
+    /// flight or once the backend is dropped, and a repeat within one window
+    /// adds nothing. `O(1)`.
     fn cancel(&self);
 }
 

@@ -248,7 +248,8 @@ pub enum Check {
     /// replaced into the next (§4.1, §6.3).
     RebuildLeavesNothingBehind,
     /// A backend's own state (§4.1): a refusal its lowering's check makes adds
-    /// nothing, a failed grounding leaves it needing its rebuild, and a
+    /// nothing, a failed grounding leaves a multi-shot backend needing its
+    /// rebuild and a single-shot one ready over the program it lowered, and a
     /// registration survives the rebuild.
     BackendState,
     /// The capability's declaration is honest: declared, its method answers
@@ -1842,7 +1843,7 @@ fn needs_its_rebuild<T>(result: Result<T, Fault>) -> Result<(), Shortfall> {
 /// `reset` answer and its observer answers nothing, until the `reset` that
 /// rebuilds; and fails a single-shot backend's solve, the backend staying
 /// ready (§4.1). Binds a backend declaring functions.
-fn failed_grounding_needs_a_rebuild(backend: &mut dyn Backend) -> Verdict {
+fn failed_grounding_is_recoverable(backend: &mut dyn Backend) -> Verdict {
     let capabilities = backend.capabilities();
     if !capabilities.declares(Capability::Functions) {
         return Verdict::Skipped(Skip::Undeclared(Capability::Functions));
@@ -2042,7 +2043,7 @@ fn registration_kept(backend: &mut dyn Backend) -> Result<(), Shortfall> {
 fn backend_state(backend: &mut dyn Backend) -> Verdict {
     combined([
         refused_lowering_adds_nothing(backend),
-        failed_grounding_needs_a_rebuild(backend),
+        failed_grounding_is_recoverable(backend),
         registration_survives_the_rebuild(backend),
     ])
 }
