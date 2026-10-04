@@ -68,7 +68,14 @@ impl<B: Backend> Agent<B> {
     /// `Θ(program size)` — each statement is recorded in the ledger.
     pub fn new(knowledge: Program, backend: B) -> Self {
         let ledger = KnowledgeLedger::of(&knowledge);
-        let questions = Arc::new(Questions::over(backend.interrupt()));
+        // The declaration is the contract: a primitive offered beside an undeclared
+        // cancellation is not taken (docs/design/solve.md §6.3).
+        let primitive = if backend.capabilities().declares(Capability::Cancellation) {
+            backend.interrupt()
+        } else {
+            None
+        };
+        let questions = Arc::new(Questions::over(primitive));
         Agent {
             backend,
             knowledge,
@@ -1018,11 +1025,14 @@ impl Questions {
         self.record.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Open a question: its generation, odd. Questions are asked one at a time —
-    /// each borrows the agent — and each closes before the next opens.
+    /// Open a question: its generation, the next odd one. Questions are asked one at
+    /// a time — each borrows the agent — so the one before has closed, unless its run
+    /// handle was leaked rather than dropped; either way the new generation
+    /// supersedes it, and a pull lands in the question just opened.
     fn open(&self) -> u64 {
         let mut record = self.record();
-        record.current = record.current.wrapping_add(1);
+        let step = if record.current % 2 == 1 { 2 } else { 1 };
+        record.current = record.current.wrapping_add(step);
         record.current
     }
 

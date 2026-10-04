@@ -25,11 +25,13 @@ use themelios_solve::outcome::{
 };
 
 /// The backend's cancellation slot (§4.1): armed only while a run is open, so a pull outside a run
-/// reaches nothing, and a pull inside it sets `pulled`, which the run reads.
+/// reaches nothing, and a pull inside it sets `pulled`, which the run reads. `forwarded` counts every
+/// pull the core forwards to the primitive, armed or not.
 #[derive(Default)]
 struct Slot {
     armed: AtomicBool,
     pulled: AtomicBool,
+    forwarded: AtomicUsize,
 }
 
 impl Slot {
@@ -51,6 +53,7 @@ struct Primitive(Arc<Slot>);
 
 impl Cancel for Primitive {
     fn cancel(&self) {
+        self.0.forwarded.fetch_add(1, Ordering::SeqCst);
         if self.0.armed.load(Ordering::SeqCst) {
             self.0.pulled.store(true, Ordering::SeqCst);
         }
@@ -134,9 +137,21 @@ enum Seam {
     Consequences,
 }
 
+/// Where the backend departs from an honest canceller's other duties.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Quirk {
+    #[default]
+    None,
+    /// It offers its primitive without declaring cancellation.
+    Undeclared,
+    /// It refuses every lowering.
+    RefusesLowering,
+}
+
 /// A cancelling backend over a slot armed only while a run is open, its runs reading the pull
-/// between models. It pulls the handle in `hook` at its `seam`, counts the searches asked of it, and
-/// declares assumptions and a native consequence door where `assumes` and `native` say.
+/// between models. It pulls the handle in `hook` at its `seam`, counts the searches asked of it,
+/// declares assumptions and a native consequence door where `assumes` and `native` say, and departs
+/// as its `quirk` says.
 #[derive(Default)]
 struct Cancelling {
     slot: Arc<Slot>,
@@ -146,6 +161,7 @@ struct Cancelling {
     searches: Arc<AtomicUsize>,
     assumes: bool,
     native: bool,
+    quirk: Quirk,
 }
 
 impl Cancelling {
@@ -161,7 +177,7 @@ impl Backend for Cancelling {
     fn capabilities(&self) -> Capabilities {
         // Non-exhaustive, so declared by assignment.
         let mut capabilities = Capabilities::default();
-        capabilities.cancellation = true;
+        capabilities.cancellation = self.quirk != Quirk::Undeclared;
         capabilities.assumptions = self.assumes;
         if self.native {
             capabilities.native_consequences = ConsequenceSupport::Native;
@@ -174,6 +190,9 @@ impl Backend for Cancelling {
     }
 
     fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
+        if self.quirk == Quirk::RefusesLowering {
+            return Err(Fault::engine("this stub refuses every lowering"));
+        }
         if self.seam == Seam::Lowering {
             self.pull_hook();
         }
@@ -232,10 +251,14 @@ fn agent_over(space: Space) -> Agent<Cancelling> {
     )
 }
 
-/// The models a question yields and the conclusion it ends at, read to its end.
+/// The most models a witness reads from one run. A run no pull ends streams forever, so a witness
+/// whose pull never lands reads the cap and no conclusion, and fails rather than hangs.
+const CAP: usize = 64;
+
+/// The models a question yields, up to the cap, and the conclusion it ends at.
 fn run_out(agent: &mut Agent<Cancelling>) -> (usize, Option<Conclusion>) {
     let mut solved = agent.solve().expect("the question is answered");
-    let read = solved.models().count();
+    let read = solved.models().take(CAP).count();
     (read, solved.conclusion())
 }
 
@@ -256,7 +279,7 @@ fn a_handle_pulled_from_another_thread_interrupts_the_question() {
         scope.spawn(|| interrupt.pull());
     });
     assert_eq!(
-        solved.models().count(),
+        solved.models().take(CAP).count(),
         0,
         "the pull takes effect at the next read"
     );
@@ -274,7 +297,7 @@ fn an_interrupted_question_keeps_the_models_it_read() {
         .map(|item| item.expect("a model"))
         .collect();
     interrupt.pull();
-    assert_eq!(solved.models().count(), 0);
+    assert_eq!(solved.models().take(CAP).count(), 0);
     assert_eq!(read.len(), 3);
     assert!(matches!(
         solved.into_determination(),
@@ -308,6 +331,75 @@ fn a_pull_after_the_handle_dropped_cuts_nothing_later() {
     }
     interrupt.pull();
     assert_eq!(run_out(&mut agent), (2, Some(Conclusion::Exhausted)));
+}
+
+#[test]
+fn a_pull_after_the_run_ended_reaches_no_primitive() {
+    let backend = Cancelling {
+        space: Space::Closes(2),
+        ..Cancelling::default()
+    };
+    let slot = Arc::clone(&backend.slot);
+    let mut agent = Agent::new(Program::empty(), backend);
+    let interrupt = agent.interrupt().expect("the backend cancels");
+    assert_eq!(run_out(&mut agent), (2, Some(Conclusion::Exhausted)));
+    interrupt.pull();
+    assert_eq!(slot.forwarded.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_pull_after_the_handle_dropped_reaches_no_primitive() {
+    let backend = Cancelling::default();
+    let slot = Arc::clone(&backend.slot);
+    let mut agent = Agent::new(Program::empty(), backend);
+    let interrupt = agent.interrupt().expect("the backend cancels");
+    {
+        let mut solved = agent.solve().expect("the question is answered");
+        assert!(matches!(solved.models().next(), Some(Ok(_))));
+    }
+    interrupt.pull();
+    assert_eq!(slot.forwarded.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_pull_after_a_refused_question_reaches_no_primitive() {
+    let backend = Cancelling {
+        quirk: Quirk::RefusesLowering,
+        ..Cancelling::default()
+    };
+    let slot = Arc::clone(&backend.slot);
+    let mut agent = Agent::new(Program::empty(), backend);
+    let interrupt = agent.interrupt().expect("the backend cancels");
+    assert!(agent.solve().is_err(), "the lowering is refused");
+    interrupt.pull();
+    assert_eq!(slot.forwarded.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_question_after_a_leaked_run_is_cut_by_a_pull() {
+    // A run handle leaked rather than dropped never closes its question; the next question
+    // supersedes it, so a pull still reaches that next one.
+    let mut agent = agent_over(Space::Unbounded);
+    let interrupt = agent.interrupt().expect("the backend cancels");
+    std::mem::forget(agent.solve().expect("the question is answered"));
+    let mut solved = agent.solve().expect("the next question is answered");
+    assert!(matches!(solved.models().next(), Some(Ok(_))));
+    interrupt.pull();
+    assert_eq!(solved.models().take(CAP).count(), 0);
+    assert_eq!(solved.conclusion(), Some(Conclusion::Interrupted));
+}
+
+#[test]
+fn an_undeclared_cancellation_offers_no_handle() {
+    // The declaration is the contract: a primitive offered beside it is not taken.
+    let agent = Agent::new(
+        Program::empty(),
+        Cancelling {
+            quirk: Quirk::Undeclared,
+            ..Cancelling::default()
+        },
+    );
+    assert!(agent.interrupt().is_none());
 }
 
 #[test]
@@ -368,7 +460,7 @@ fn a_search_that_closed_before_the_pull_reads_exhausted() {
     let mut solved = agent.solve().expect("the question is answered");
     assert!(matches!(solved.models().next(), Some(Ok(_))));
     interrupt.pull();
-    assert_eq!(solved.models().count(), 0);
+    assert_eq!(solved.models().take(CAP).count(), 0);
     assert_eq!(solved.conclusion(), Some(Conclusion::Exhausted));
 }
 
@@ -454,7 +546,7 @@ fn a_scoped_question_pulled_while_lowering_begins_no_search() {
     let mut solved = agent
         .solve_assuming(&Scenario::default())
         .expect("a cut is no fault");
-    assert_eq!(solved.models().count(), 0);
+    assert_eq!(solved.models().take(CAP).count(), 0);
     assert_eq!(solved.conclusion(), Some(Conclusion::Interrupted));
     assert_eq!(searches.load(Ordering::SeqCst), 0, "no search was begun");
 }

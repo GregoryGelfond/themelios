@@ -1357,15 +1357,16 @@ impl Interrupt {
 
 - **What a pull cuts.** A pull cuts the question in flight. A question is in flight from the moment it is
   asked, its lowering included, until its run ends or its handle drops — or, for a question answered by
-  value, such as a consequence door (§6.2), until it returns. The core forwards the pull to the
-  backend's primitive at once. A question pulled before its search begins does not begin it, and concludes
-  `Interrupted` with nothing established. A pull that lands while `solve` opens the run is forwarded again
-  once the run is open, so a pull the backend could not yet take is not lost. The run stops at the
-  backend's next check, in grounding or in search, as for a deadline, and concludes `Interrupted`. Nothing
-  the search established is lost: the models read stay read, and the determination is `Consistent` if there
-  was one. A question answered by value says the same in its own terms: `determination` reads
-  `Inconclusive`, concluded `Interrupted`, when no model was seen, and a question whose answer needs a closed
-  space — a consequence door, or a reading of the query tier — refuses at the request locus with
+  value, such as a consequence door (§6.2), until it returns. The next question asked ends it in any case,
+  so a run handle leaked rather than dropped keeps no question in flight past it. The core forwards the pull
+  to the backend's primitive at once. A question pulled before its search begins does not begin it, and
+  concludes `Interrupted` with nothing established. A pull that lands while `solve` opens the run is
+  forwarded again once the run is open, so a pull the backend could not yet take is not lost. The run stops
+  at the backend's next check, in grounding or in search, as for a deadline, and concludes `Interrupted`.
+  Nothing the search established is lost: the models read stay read, and the determination is `Consistent`
+  if there was one. A question answered by value says the same in its own terms: `determination` reads
+  `Inconclusive`, concluded `Interrupted`, when no model was seen, and a question whose answer needs a
+  closed space — a consequence door, or a reading of the query tier — refuses at the request locus with
   `Presupposition::Unclosed(Truncation::Interrupted)`, nothing established.
 - **A pull with no question in flight cuts nothing.** That covers a pull before the first question, between
   two, after a run has ended or its handle dropped, and after the agent itself has dropped. The core keeps
@@ -2560,20 +2561,21 @@ necessity where it is declared.
     engine's typed cause. A configured limit read as a budget would be a request field with its declaration,
     grown on need, and an engine's one-model habit is not carried into `solve` (§5.1). The phases are fixed
     (§6.3). `lower` validates and retains, grounding nothing. `solve` creates the run's control state, then
-    grounds and searches. Immutable preparation may be reused across questions, with no mutable search
-    state shared. The time budget is a wall-clock deadline fixed when `solve` is called, covering grounding,
+    grounds and searches. Immutable preparation may be reused across questions, with no mutable search state
+    shared. The time budget is a wall-clock deadline fixed when `solve` is called, covering grounding,
     search, and model delivery, the consumer's time between reads included. A cut during grounding reads
     `Budget`, never a fault. The agent's lowering precedes the deadline, and enforcement is cooperative, not
     hard real-time (§6.3). The interrupt handle gains its operation, `Interrupt::pull`. A pull cuts the
     agent's question in flight, its lowering included. A question pulled before its search begins does not
     begin it, and a pull that lands while `solve` opens the run is forwarded again once it is open. A pull
     with no question in flight is forgotten, and the caller's pull takes precedence over a deadline in the
-    same run (§6.3). A backend's solve is in flight from `solve` until its run ends or its handle drops; an
-    adapter over a primitive that cuts the following call holds a pull for that whole window. Pulls within
-    one window are one pull, and a pull through a handle that outlives its backend is safe (§4.1). The
-    conformance suite drives obligation 6 for an enumerating backend that declares cancellation — an active,
-    unfinished search cut, and the stale pulls, within the cut's cap of further reads — and names a deciding
-    backend's skip (§13.1). Obligation 10 states its single-shot arm beside the multi-shot one, witnessing
-    that the lowered program stays, and the request-side limits beyond time are named a reserved seam
-    (§13.1, §14). The deadline's reason is stated: an engine's own limit is a wall-clock alarm, and a
-    deadline bounds the question's wall-clock time (§6.3).
+    same run, and the next question asked ends one whose run handle was leaked (§6.3). A backend's solve is
+    in flight from `solve` until its run ends or its handle drops; an adapter over a primitive that cuts the
+    following call holds a pull for that whole window. Pulls within one window are one pull, and a pull
+    through a handle that outlives its backend is safe (§4.1). The conformance suite drives obligation 6 for
+    an enumerating backend that declares cancellation — an active, unfinished search cut, and the stale
+    pulls, within the cut's cap of further reads — and names a deciding backend's skip (§13.1). Obligation
+    10 states its single-shot arm beside the multi-shot one, witnessing that the lowered program stays, and
+    the request-side limits beyond time are named a reserved seam (§13.1, §14). The deadline's reason is
+    stated: an engine's own limit is a wall-clock alarm, and a deadline bounds the question's wall-clock
+    time (§6.3).
