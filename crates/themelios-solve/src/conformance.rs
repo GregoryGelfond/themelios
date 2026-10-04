@@ -32,7 +32,7 @@
 //! the pathologies a run can attempt (below). **The observer,** where the
 //! backend declares it (§10.4): a ground program once a grounding has finished,
 //! every ground rule naming a statement of the program lowered — through Door
-//! A, an occurrence of the parse — and a fact never grounded to nothing.
+//! A, an occurrence of the parse — and the fact `a.` never grounded to nothing.
 //! **Fault loci:** a program the backend cannot
 //! ground is refused at the program locus, naming the statement that cannot be
 //! grounded and located within it (§5.4); assigning an atom that is not
@@ -50,8 +50,9 @@
 //! cannot see — and an undeclared one's refuses as unsupported, naming the
 //! capability, or, for `interrupt` and the observer, answers nothing, never
 //! degrading silently, while a budget nothing realises refuses as unrealisable;
-//! the native door's answer is its known one, no model over a program with
-//! none.
+//! an enumerating backend's declared budget cuts an enumeration it cannot finish
+//! within, concluding at the budget, never as closing the space; the native
+//! door's answer is its known one, no model over a program with none.
 //!
 //! The named pathologies are unconstructible in the vocabulary (§5.3). The suite
 //! attempts the two a backend could reach at run time — a touched stream passing
@@ -64,10 +65,10 @@
 //! the interrupt handle is reserved, so no search can yet be cancelled through
 //! it.
 //!
-//! Every stream the suite reads, it reads to one model past its program's
-//! answer sets, so a run that never ends is caught at that bound rather than
-//! holding the suite: outcome correctness fails it there, as does a capability's
-//! probe. A check that cannot be driven over a backend — its program refused,
+//! Every stream the suite reads, it reads to a bound — one model past its
+//! program's answer sets, or, for the time budget's cut, the cut's cap and one
+//! more — so a run that never ends is caught at that bound rather than holding
+//! the suite: outcome correctness fails it there, as does a capability's probe. A check that cannot be driven over a backend — its program refused,
 //! its stream faulted or run past its bound — is skipped with the failure that
 //! stopped it, and the check that owns that failure fails. A program only a
 //! capability's probe lowers, refused, fails that capability's check, though:
@@ -109,7 +110,9 @@ use crate::outcome::{
 /// `lower` accumulates there (§6.2) — and probes every capability, registering
 /// its probe extensions where the backend accepts them, so the backend's state
 /// afterwards is the suite's: run it over a backend kept for it. Cost: a handful
-/// of solves per corpus program.
+/// of solves per corpus program, and the time budget's cut — one solve under
+/// its budget, read to at most its cap of models over a backend that never
+/// cuts.
 #[must_use]
 pub fn run(backend: &mut dyn Backend) -> ConformanceReport {
     let corpus = corpus();
@@ -228,8 +231,8 @@ pub enum Check {
     /// A cancelled search never concludes as closing the space.
     CancellationIsNotExhaustion,
     /// A declared observer answers once a grounding has finished, every ground
-    /// rule naming a statement of the program lowered, and a fact grounds to a
-    /// rule (§10.4, §13.1).
+    /// rule naming a statement of the program lowered, and the fact `a.`
+    /// grounds to a rule (§10.4, §13.1).
     GroundProgramIsFaithful,
     /// Each fault lands where it belongs (§5.4): a program the backend cannot
     /// ground is refused at the program locus, naming the statement that cannot
@@ -245,8 +248,10 @@ pub enum Check {
     /// registration survives the rebuild.
     BackendState,
     /// The capability's declaration is honest: declared, its method answers
-    /// rightly; undeclared, it refuses as unsupported, naming the capability —
-    /// a budget, as unrealisable — or answers nothing (§4.1, §4.2, §6.3).
+    /// rightly — an enumerating backend's time budget cutting an enumeration
+    /// at the budget; undeclared, it refuses as unsupported, naming the
+    /// capability — a budget, as unrealisable — or answers nothing (§4.1, §4.2,
+    /// §6.3).
     Capability(Capability),
 }
 
@@ -1260,7 +1265,7 @@ fn cancellation_is_not_exhaustion(backend: &dyn Backend) -> Verdict {
 /// of the program lowered — a statement of the rule's part, equal in content,
 /// carrying an origin, every one of its origins among the member's, since the
 /// set merge unions them, so an occurrence of the parse Door A carries is one at
-/// the per-occurrence grain; and a fact grounds to a rule. Membership is not correctness: which statement a
+/// the per-occurrence grain; and the fact `a.` grounds to a rule. Membership is not correctness: which statement a
 /// rule came from is checked once a rule carries its head and body. An
 /// undeclared observer binds nothing here — that its method answers `None` is
 /// the honesty check's.

@@ -2406,11 +2406,11 @@ necessity where it is declared.
     budgeted solve, its world view, and the `Snapshot` it materialises (§6.3, query.md §2.7) — and the empty
     ground program, `Default`, is named the one value constructible ahead of the observer's construction
     door (§10.4). The conformance suite drives a declared time budget to its cut, over a program no search
-    finishes within, and fails a cut concluded as closing the space (§6.3, §13.1). The observer's membership requires a
-    ground rule's statement to carry an origin (§13.1); that a merged statement's every origin reaches its
-    rules at the statement grain is held once the observer's construction door lands (§10.4, §11.1). The
-    observer's fact obligation is stated with its reason, and the native door's corpus pass named as going
-    through both doors (§13.1); §6.3 states what the budgeted composition bounds and leaves the rest to the
-    threat-model statement. The cut binds an enumerating backend: a deciding one stops at its witness, which
-    no budget the suite sets cuts, so a deciding backend cut before its witness is not yet probed (§6.3,
-    §13.1).
+    finishes within, and fails a cut concluded as closing the space (§6.3, §13.1). The observer's membership
+    requires a ground rule's statement to carry an origin (§13.1); that a merged statement's every origin
+    reaches its rules at the statement grain is held once the observer's construction door lands (§10.4,
+    §11.1). The observer's fact obligation is stated with its reason, and the native door's corpus pass
+    named as going through both doors (§13.1); §6.3 states what the budgeted composition bounds and leaves
+    the rest to the threat-model statement. The cut binds an enumerating backend: a deciding one stops at
+    its witness, which no budget the suite sets cuts, so a deciding backend cut before its witness is not
+    yet probed (§6.3, §13.1).
