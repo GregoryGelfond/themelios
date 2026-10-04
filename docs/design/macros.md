@@ -1,6 +1,7 @@
 # themelios-macros — tier design
 
-2026-09-10. Design, pre-implementation. This document is the API design of
+2026-09-10, revised through 2026-10-03 (§13). The design of record, which the build
+follows; §13 records each revision. This document is the API design of
 `themelios-macros` — the surface-macro tier, its vocabulary, expansion
 architecture, semantics, and assurance — derived from the v1 specification
 (`docs/specification.md`, cited as *spec §n*), the syntax tier design
@@ -148,7 +149,8 @@ constructors and parse through the syntax tier's fragment entries: `atom!`,
 `fact!`, `rule!`, `constraint!`, `minimize!`, `maximize!`, `show!`, `external!`
 — the last the `#external` **directive** macro (a statement in the program,
 program §4.8), distinct from the `#[external]` attribute below — and the
-program-level block `program!` (which excludes `#script`, §8). Their targets all
+program-level block `program!` (which builds the statement families the statement
+macros build and refuses `#script`, §8). Their targets all
 exist at this tier's base (§8 names each), so each reduces to a trivial expansion.
 Each builds the complete head and body-element vocabulary its category admits — the
 disjunction, choice, and head-aggregate heads and the set and function body
@@ -195,9 +197,11 @@ a named-provisional surface, not a gap.
 
 ## 5. The expansion architecture
 
-Every construction macro is a procedural macro. `macro_rules!` has no role:
-law 1 requires the real parser at compile time, and a declarative macro cannot
-run it. The nine macros are **one engine behind N entry points** — each entry
+Every construction macro is a procedural macro. `macro_rules!` has no role in the
+expansion: law 1 requires the real parser at compile time, and a declarative macro
+cannot run it (a facade's declarative wrapper, §9, forwards its tokens to the
+procedural macro and parses nothing). The nine macros are **one engine behind N
+entry points** — each entry
 fixes a grammatical category (a term, a statement, a program) and a target
 constructor family; the engine is shared.
 
@@ -247,7 +251,8 @@ except the constructor calls it emits:
    arm per AST node family, and `TheoryTerm::Symbolic(…)` at a theory-term splice
    (§7). At each `Splice` node it emits the spliced Rust expression crossed to a
    ground term (§7). The expansion is these public constructor calls and nothing
-   else — law 2.
+   else — law 2 — each named by an absolute path from the runtime root the
+   invocation selects, the program tier's crate by default (§9).
 
 **Totality — no panic on any input.** The codegen emits the §7.1 constructors,
 some fallible on raw data: `Name::new` refuses a non-identifier, `Term::pool` an
@@ -314,7 +319,9 @@ the codegen replaces both.
 Grammar §9 defines the dialect over Rust's token model and assigns its
 realization to this crate; the syntax tier provides the door (a `TokenSource`)
 and the target token (`SPLICE`). The engine implements the mapping and answers
-`token_at`; it invents no syntax.
+`token_at`; it invents no syntax. The mapping reads the ASP alone: an
+invocation's runtime selection (§9), which is Rust rather than ASP, is read and
+removed before it.
 
 **The token mapping** (grammar §9, as the `TokenSource` answers it):
 
@@ -437,7 +444,8 @@ the dialect (§6) with splices (§7) through the syntax tier's fragment entry
 ASP-Core-2 semantics reaches for the raise doors directly. Signatures name the
 *value each builds*; the by-hand equivalent it equals is the program §7.1
 constructor named. A directive macro supplies its leading `#`-keyword from its
-own name (§5) — the caller writes the payload alone.
+own name (§5) — the caller writes the payload alone. Any of the nine may open its
+input with a runtime selection, `#![crate = path]`, before the payload (§9).
 
 - **`atom!(-? name(args…))` → `Atom`.** There is no atom entry in the parser's
   closed `EntryPoint` set (§5.2), and the `Term` entry would read `-p` as
@@ -468,7 +476,18 @@ own name (§5) — the caller writes the payload alone.
   author (program §7.3), the program-level of spec §8's levels. It **refuses
   `#script`** at the macro site (§7): a verbatim script body cannot be recovered
   from Rust tokens, so refusal beats a mangled body; a script belongs in a file
-  raised through program §8.
+  raised through program §8. Its statements are the families the statement
+  macros build (below).
+
+**Statement coverage.** A construction builds the statement families the statement
+macros name — a rule (a fact, a rule, or a constraint), an optimization statement, a
+`#show`, and an `#external` — through its own macro or as a statement of a `program!`
+block. Any other well-formed statement — a weak constraint, a `#program` delimiter, a
+`#const`, `#include`, `#project`, `#defined`, `#edge`, or `#heuristic` directive, a
+theory definition, or a query — is a located compile error at the construction site,
+never a fabricated value, and `#script` is refused before the parse (§7). The program
+tier constructs each of those families; the codegen that would build them is a
+reserved seam (§12).
 
 **Head and body-element coverage.** The statement macros that carry a head or a body
 — `fact!`, `rule!`, `constraint!`, and every statement of a `program!` block — build
@@ -513,18 +532,82 @@ tier's `LowerError`, both lowering to base's normal form (base §6.5; program §
 the rust-analyzer bar (spec §2 item 9). Dialect errors of the mapping itself
 (§6 — a float literal, a detached `#` (refused only under the fallback backend;
 real expansion reads it benignly), `r#not`), a non-`ToSymbol` splice (§7), a
-non-single-atom `atom!` head (§8), and a `#script` in `program!` (§7) are the
-engine's own diagnostics, located at the offending Rust token's span and worded
-in the same register.
+non-single-atom `atom!` head (§8), a `#script` in `program!` (§7), and a
+malformed runtime selection (below) are the engine's own diagnostics, located at
+the offending Rust token's span and worded in the same register.
 
-**Hygiene.** The expansion references program-tier items by absolute path
-(`::themelios_program::…`), so it compiles regardless of the caller's imports. A
-`$( … )` splice's expression is emitted in the caller's context — it *should* see
-the caller's bindings, which is the point of a splice. A proc-macro crate can
-export only macros, so the constructors the expansion names come from the
-caller's dependency on `themelios-program`; the eventual `themelios` facade (spec
-§11, stage 8) will re-export the macros beside the runtime so a consumer names
-one crate — a stated forward dependency, not this tier's to resolve.
+**Hygiene and the runtime root.** The expansion names every program-tier item by
+an absolute path from one **runtime root** — the program tier's crate,
+`::themelios_program`, unless the invocation selects another — so it compiles
+regardless of the caller's imports, and no name in scope at the macro site can
+capture it. A `$( … )` splice's expression is emitted in the caller's context — it
+*should* see the caller's bindings, which is the point of a splice.
+
+A proc-macro crate can export only macros, so the runtime the expansion names must
+be reachable from the calling crate. A caller that depends on `themelios-program`
+under its own name needs nothing more. Any other caller selects the root by opening
+the invocation with a **runtime selection**, `#![crate = path]`, where `path` is a
+Rust path to the program tier's crate root: `::tp` from a caller that renamed the
+dependency `tp`, or a path through `$crate` from a facade's wrapper (below).
+
+- **One inner attribute, at most once, first.** An inner attribute applies to the
+  item it is written in, here the whole invocation, and ASP never opens with `#!`, so
+  the selection and the payload cannot be mistaken for each other.
+- **The key is `crate`**, the name the Rust ecosystem gives this option
+  (`#[serde(crate = …)]`, `#[tokio::main(crate = …)]`). The path is unquoted, so a
+  `$crate` in it keeps the hygiene a string would lose.
+- **Read before the mapping, emitted unchanged.** The engine reads the selection
+  before the dialect mapping (§6) and emits its tokens, spans and all, as the root of
+  every constructor path. The expansion uses either the selected root or the
+  default, never both, so it names exactly one runtime.
+- **Malformed is a compile error at its tokens**: no `crate` key, a value that is
+  not a path, a second selection, or a selection that is not first. A relative path
+  resolves at the call site like any path the caller writes. An absolute one
+  (`::name`, or a path from `$crate`) cannot be captured.
+
+**A facade** is a crate that re-exports the program tier and these macros under its
+own name, so that a consumer depends on it alone; the `themelios` facade (spec §11,
+stage 8) is one. It forwards each macro through a declarative wrapper that selects
+the facade's own re-export through `$crate`. `$crate` resolves to the facade however
+a consumer names it, so the wrapper keeps working under a Cargo rename:
+
+```rust
+#[doc(hidden)]
+pub mod __private {
+    pub use themelios_macros;
+    pub use themelios_program;
+}
+
+/// `program!{ … }`, through this crate's runtime: a whole-program block.
+#[macro_export]
+macro_rules! program {
+    ($($body:tt)*) => {
+        $crate::__private::themelios_macros::program! {
+            #![crate = $crate::__private::themelios_program]
+            $($body)*
+        }
+    };
+}
+```
+
+Each of the nine macros gets one such wrapper.
+
+- **What the consumer writes.** `facade::program! { … }`, or `z::program! { … }`
+  under a Cargo rename, or the imported macro (`use facade::program;`). It needs no
+  dependency on `themelios-program` and writes no path at the site.
+- **Tokens pass through unchanged.** The wrapper forwards the consumer's tokens as
+  they are, so splices resolve in the consumer's scope and diagnostics land on the
+  consumer's tokens, as at a direct call.
+- **Inside the facade.** The same wrappers work in the facade crate itself, where
+  `$crate` names that crate.
+
+The hidden module is the established Rust idiom for paths a macro needs and a user
+should not name, as in serde's and futures' `__private`. Its re-exports promise
+nothing beyond the wrappers that use them.
+
+The tier knows no facade by name. It consults no list of crates and reads no
+manifest, so any crate can be a facade. The values a facade's macros build are the
+program tier's own types, under whatever name the facade re-exports them.
 
 ## 10. Dependencies and trust
 
@@ -547,8 +630,9 @@ only.** Concretely:
   expression is handled — a `$( … )` splice — is *captured and re-emitted*, a
   token-group operation `proc-macro2` serves without parsing.
 - **Runtime dependency of the expansion:** `themelios-program` alone (the
-  constructor calls). The expansion names no syntax-tier type, so a consumer's
-  runtime graph gains only the program tier it already has.
+  constructor calls), reached through the runtime root (§9) — the caller's own
+  dependency, or a facade's re-export of it. The expansion names no syntax-tier
+  type, so a consumer's runtime graph gains only the program tier it already has.
 
 The proc-macro toolchain runs **at compile time**; it is in no shipped closure.
 `forbid(unsafe_code)` holds; no build script; the structural trust checks
@@ -600,9 +684,26 @@ what it proves and what it cannot (spec §10.2).
   diagnostics-quality discipline, spec §2 item 9).
 - **Compile-fail tests** (`trybuild`, §10): a macro-site syntax error, a dialect
   error (§6), a non-`ToSymbol` splice (§7), a non-single-atom `atom!` head (§8),
-  and a `#script` in `program!` (§7) each produce the expected compile error at
+  a `#script` in `program!` (§7), a statement family no construction builds (§8),
+  and each malformed runtime selection (§9) produce the expected compile error at
   the expected span — the direct test of law 1 and of the refusals' clean
   boundary.
+- **The facade witness** (§9). Consumer crates outside this one, in the workspace,
+  build every macro's value and compare it with the value the spelled-out
+  constructors build, up to and including provenance and counted repeats. The
+  splices, strong negation, choice, head, and body aggregates, and `#show` are among
+  the values compared, for empty and nonempty programs. Between them the consumers
+  cover:
+  - a neutral test facade, using its own wrappers within itself;
+  - a consumer that depends on that facade alone, under a Cargo rename, through both
+    the qualified and the imported macros;
+  - a consumer that uses the macros directly with the program tier renamed and
+    selected by path, beside an unrelated crate named `themelios_program` that
+    neither its own expansion nor the facade's may resolve.
+
+  An error inside a facade invocation lands on the consumer's token. The witness
+  proves the mechanism in this workspace; a facade elsewhere carries its own
+  consumer test.
 - **Standing checks:** the workspace coverage floor as a tripwire, at the
   estate's per-file bar; documentation examples that run; `forbid(unsafe_code)`
   and the structural trust checks; unused-code and unused-result denied (spec
@@ -613,6 +714,12 @@ what it proves and what it cannot (spec §10.2).
 Named reserved seams — deferred with their reasons and arriving consumers, never
 gaps (the deferrals of §4 and §6, gathered):
 
+- **The remaining statement families** — a weak constraint, a `#program`
+  delimiter, the `#const`, `#include`, `#project`, `#defined`, `#edge`, and
+  `#heuristic` directives, a theory definition, and a query (§8). The program tier
+  constructs each, so each is a trivial expansion once the codegen gains its arm.
+  Until then each is a located compile error, never a fabricated value. `#script`
+  stays refused (§7).
 - **Further splice sites** — names, tuples, statements (grammar §9): future
   vocabulary, each admitted on argument as the tiers accrete; the v1 floor is the
   term and the theory term (both delivered here, §4, §7). A `ToSymbol for Name`
@@ -662,3 +769,14 @@ deliberate evolution with its argument, not a drift.
   (§10). Spec §12.5 says "the proc-macro toolchain only"; this design reads that
   as the minimal set the job needs and argues `syn` out, the bespoke token
   grammar making Rust-AST parsing the wrong tool.
+- **The runtime root, for a facade** (2026-10-03; §5, §9, §10, §11). The expansion
+  named the caller's own dependency on `themelios-program`, and the facade was a
+  stated forward dependency. An invocation may now select the runtime root with
+  `#![crate = path]`. A facade forwards each macro through a declarative wrapper
+  that selects its own re-export through `$crate`, so a consumer that depends on the
+  facade alone, under any name, builds the program tier's own values. The facade
+  witness holds the mechanism.
+- **The statement boundary, stated** (2026-10-03; §8, §12). The constructions
+  build rules, optimization statements, `#show`, and `#external`, and the design
+  now says so. It had described `program!` as a block of any statements. The other
+  statement families are located compile errors, recorded as a reserved seam.
