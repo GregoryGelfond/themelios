@@ -1,6 +1,7 @@
 # themelios-program — tier design
 
-2026-08-24. Design, pre-implementation. This document is the API
+2026-08-24, revised through 2026-10-03 (§18). The design of record, which the build
+follows; §18 records each revision. This document is the API
 design of `themelios-program` — the types, traits, signatures, semantics, and
 computational costs of the foundation's program tier — derived from the v1
 specification (`docs/specification.md`, cited as *spec §n*), the base tier
@@ -1547,12 +1548,28 @@ The diagnosis is needed only within one part — the scope of the set's merge, s
 content-equal statements under different parts stay distinct (§4.1), render twice,
 and are rejected alike — and only for the content-equal repeat: a same-name
 definition with different content is kept, rendered beside the first, and rejected
-alike. The second exception is a `#script` block. The authority runs each block where it
-reads it (`libgringo/src/input/programbuilder.cc`, `NongroundProgramBuilder::script`), so
-a content-equal block repeated within a part runs twice there and once in the merged
-program — a different program wherever the script keeps state at module level — and the
-raise diagnoses it likewise (`RepeatedScript`, §8), within one part and for the
-content-equal repeat only.
+alike. The second exception is a `#script` block, and the raise's rule for it is wider
+than the repeat: **the raise admits one `#script` block to a program.** It diagnoses every
+block after the first, naming the first (`ExtraScript`, §8) — across parts, whatever the
+content, and in any language. The authority runs each block where it reads it
+(`libgringo/src/input/programbuilder.cc`, `NongroundProgramBuilder::script`), every block
+of a language in that language's one interpreter, in the order read
+(`libclingo/src/scripts.cc`, `Scripts::exec`). So a content-equal block repeated within a
+part runs twice there and once in the merged program — a different program wherever the
+script keeps state at module level — and of two different blocks of a language the later
+one's definitions replace the earlier one's, so their meaning turns on an order the set,
+which orders by content, does not keep. A source with a second block is therefore a lossy
+reading, of the kind §8 names: the raise keeps each block in the value beside its
+diagnostic, as it keeps a repeated definition, and Door A refuses the source (solve.md
+§10.2). A block of a second language loses nothing to the set, but the rule keeps no
+exception for it, so it is one rule stated whole. The rule is a stage boundary over a
+domain the value under-represents — the order of a program's scripts — not accidental
+complexity cut; the structure that would represent that order is a reserved seam (§17).
+It is narrower than the authority, which admits any number of blocks, and it binds the
+source the raise reads. Like the repeated definition's diagnosis, it is a reading of
+source, not a rule of the value's well-formedness, which both doors share (§7). A program
+built in Rust carries the statements its builder gives it, and §10 states what rendering
+one with two blocks writes.
 
 The equality (not mere containment) is the safety half: a consumer that maps a
 node's references back to their sources — an explanation tool citing a rule's
@@ -1886,7 +1903,8 @@ splice among them. A numeral beyond the `i32` range is such a value, raised as a
 placeholder beside a `NumberOutOfRange` diagnostic; the pinned authority admits it,
 wrapped (§3.1), so the placeholder is a lossy reading of text the authority admits, and
 the analysis differential's faithful-raise gate excludes it with the other such
-readings.
+readings. A source with a second `#script` block is another (§6.3): the raise keeps each
+block beside its `ExtraScript` diagnostic, and the gate excludes the source.
 
 **The corners it settles, each read from the tree, none re-derived.** The `-p`
 ambiguity is positional and the tree already resolved it (§3.3, syntax §8.2); a
@@ -1896,9 +1914,9 @@ records (§4.4); the elements of a choice, a set aggregate, and a theory atom ar
 raised one entry per source element and kept counted (§4.4, §4.9), so a repeat the
 authority counts survives the raise; a global definition (§4.2) repeated
 content-equal within one part is diagnosed at the repeat, a `RepeatedDefinition`,
-since the authority rejects a redefinition the set would merge silently (§6.3), and a
-`#script` block repeated content-equal within one part likewise, a `RepeatedScript`, since
-the authority runs each block where it reads it (§6.3); a `#const`
+since the authority rejects a redefinition the set would merge silently (§6.3), and every
+`#script` block after the program's first is diagnosed and kept, an `ExtraScript`, since
+the raise admits one (§6.3); a `#const`
 value is checked against the constant-term subset (grammar §5.9) and carried as an
 unevaluated term (§4.8); a maximal ground
 constructor term is collapsed by canonicalization (§5.1); an **ordinary atom's
@@ -2176,7 +2194,11 @@ textual position, so its placement is grounder-*sensitive* — an `#include` mov
 across a `#program` boundary changes what is grounded — and it renders in ordinary
 `Ord` order with the rest. The membership differential reads statements into an
 order-insensitive set and so cannot witness this reordering; the leading set is
-settled empirically, by an answer-set comparison against the authority (§16).
+settled empirically, by an answer-set comparison against the authority (§16). A
+`#script` block is not lifted either. A program built in Rust may carry more than one,
+since the rule that admits one is the raise's (§6.3), and the render writes them in `Ord`
+order with the rest — the order the set keeps, not an order a builder wrote, which the
+value cannot hold — so raising the rendered text diagnoses every block after the first.
 
 **Spelling a lone value.** A consumer holding a single value rather than a whole
 program spells it through this same printer. `Symbol::spell(&self, Dialect) ->
@@ -2216,7 +2238,8 @@ unparse is non-injective on a pair of forms an empty aggregate can take (`#count
 {}` with one empty element versus none), so the law carries those as named
 exceptions rather than pretending an identity the notation cannot hold; and the
 theory carve-out of §5 rides here too, the reparse being up-to-grounding for
-theory-bearing programs.
+theory-bearing programs. A program with more than one `#script` block is no exception:
+the raise returns the same value, beside its `ExtraScript` diagnostic (§6.3).
 
 **Computational cost.** `render` is `O(output)` — proportional to the text it
 writes, a flat work-list walk, no recursion in depth; `canonical_spelling` of a
@@ -2651,7 +2674,8 @@ with what it proves and what it cannot (spec §10.2).
     order-insensitive (`1 { #true; #true } 1.` is two elements, `{ a; a }` one, a
     theory atom's repeated element two); and, pinned by example laws
     (`repeated_definition_laws.rs`), a global definition repeated within one part raises
-    with a `RepeatedDefinition` diagnostic, a `#script` block with a `RepeatedScript`, and a
+    with a `RepeatedDefinition` diagnostic, every `#script` block after the first with an
+    `ExtraScript`, and a
     repeated rule with none;
     `Program` equality is canonical-form equality up to provenance; `Ord`/`Eq`/`Hash` are one content
     projection — mutually consistent, a total order, and in agreement with a
@@ -2747,6 +2771,12 @@ with what it proves and what it cannot (spec §10.2).
 Named reserved seams — deferred with their reasons and their arriving consumers,
 never gaps:
 
+- **An ordered script carrier** (§6.3): a program's `#script` blocks lifted out of the
+  statement set into an ordered sequence beside it, as §4.1 lifts the `#program`
+  delimiter — the structure that would represent the order the authority gives a
+  program's blocks. Its reason: while no consumer needs more than one block, the raise's
+  one-block rule is the cheaper boundary. Its retiring condition: a consumer that needs two
+  blocks, in one language or two.
 - **Symbol interning** (§3.1): a per-arena interner for structural dedup and
   `O(1)` equality, never a global table (spec §1.2); its consumers are a program
   large enough that the benches (§16) show the dedup pays, and a caller that
@@ -3004,3 +3034,13 @@ evolution with its argument, not a drift.
   the pinned build now recorded with its source; the raise's placeholder reading of such a
   numeral, beside its `NumberOutOfRange` diagnostic, is named a lossy reading of text the
   authority admits, which the analysis differential's faithful-raise gate excludes.
+- **One `#script` block to a program, read by the raise (§6.3, §8, §10, §16, §17).** The
+  repeated-script diagnosis widens into a rule of the raise: it admits one `#script` block
+  to a program and diagnoses every block after the first, naming it, keeping each beside
+  its diagnostic — across parts, whatever the content, in any language. `ExtraScript`
+  replaces `RepeatedScript` and takes its place in the faithful-raise gate. Two different
+  blocks of one language run in one interpreter, in an order the set does not keep, a lossy
+  reading like the repeat's. The rule keeps no exception by language, and the authority,
+  which admits any number of blocks, is wider than it. A program built in Rust may carry
+  more, which the render writes in `Ord` order (§10); the ordered carrier that would keep
+  their order is a reserved seam, retired by a consumer that needs two blocks (§17).
