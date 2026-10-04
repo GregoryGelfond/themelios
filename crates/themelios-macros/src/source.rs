@@ -85,6 +85,14 @@ const CONTEXT: LexContext = LexContext {
     mode: LexMode::Normal,
 };
 
+/// The context the theory-mode separator question is asked under: theory mode
+/// coalesces adjacent operator characters into one operator (grammar §4.7), so two
+/// tiles from tokens the author wrote apart are separated wherever it would merge them.
+const THEORY: LexContext = LexContext {
+    dialect: Dialect::Clingo,
+    mode: LexMode::Theory,
+};
+
 impl MacroSource {
     /// Assembles the token source for `input` under the macro dialect
     /// (grammar §9). When `entry_keyword` is `Some(word)` the assembled
@@ -312,18 +320,33 @@ struct Previous {
 }
 
 impl Assembler {
-    /// Emits one tile, inserting a single `WHITESPACE` separator first
-    /// when the previous tile would otherwise fuse with this one
-    /// (syntax §10). A splice's marker (`$x`) is no themelios token the
-    /// fusion oracle reads, so a splice on either side always takes a
-    /// separator — safe, since whitespace is trivia everywhere.
+    /// Emits one tile from a token of its own, inserting a single
+    /// `WHITESPACE` separator first when the previous tile would otherwise
+    /// fuse with this one under normal or theory mode (syntax §10). A
+    /// splice's marker (`$x`) is no themelios token the fusion oracle
+    /// reads, so a splice on either side always takes a separator — safe,
+    /// since whitespace is trivia everywhere.
     fn emit(&mut self, kind: SyntaxKind, text: &str, span: Span, is_splice: bool) {
+        self.place(kind, text, span, is_splice, false);
+    }
+
+    /// Emits a tile glued to the one before it in one Rust operator run — the
+    /// author wrote them joined, so theory mode may coalesce them into one
+    /// operator (`<==>`), and only a normal-mode fusion separates them.
+    fn emit_glued(&mut self, kind: SyntaxKind, text: &str, span: Span) {
+        self.place(kind, text, span, false, true);
+    }
+
+    /// Places a tile after a separator wherever the two would fuse: under normal
+    /// mode always, and under theory mode unless `glued` — tokens the author wrote
+    /// apart stay apart in either mode, as their whitespace keeps them in a file.
+    fn place(&mut self, kind: SyntaxKind, text: &str, span: Span, is_splice: bool, glued: bool) {
         if let Some(previous) = &self.previous {
-            let fuses = if previous.is_splice || is_splice {
-                true
-            } else {
-                separator_between(&previous.text, text, CONTEXT) != Separator::Nothing
-            };
+            let fuses = previous.is_splice
+                || is_splice
+                || separator_between(&previous.text, text, CONTEXT) != Separator::Nothing
+                || (!glued
+                    && separator_between(&previous.text, text, THEORY) != Separator::Nothing);
             if fuses {
                 let start = length_of(&self.text);
                 self.text.push(' ');
@@ -558,7 +581,11 @@ impl Assembler {
                         ),
                     }
                 })?;
-            self.emit(token.kind, token.text, run[position].1, false);
+            if position == 0 {
+                self.emit(token.kind, token.text, run[position].1, false);
+            } else {
+                self.emit_glued(token.kind, token.text, run[position].1);
+            }
             position += token.text.len();
         }
         Ok(cursor + 1)
@@ -1367,6 +1394,46 @@ mod tests {
         ] {
             let formed = theory_operator_at(text, 0).map(|token| (token.kind, token.text));
             assert_eq!(formed, expected, "`{text}` forms through the primitive");
+        }
+    }
+
+    /// The theory-mode walk with its whitespace dropped.
+    fn theory_tokens(source: &MacroSource) -> Vec<(SyntaxKind, String)> {
+        walk_theory(source)
+            .into_iter()
+            .filter(|(kind, _)| *kind != WHITESPACE)
+            .collect()
+    }
+
+    #[test]
+    fn operators_written_apart_stay_apart_under_theory_mode() {
+        // A file's theory lexer reads `x + -y` as two operators; abutted, `+-` would coalesce
+        // into one, so the assembled text keeps the author's tokens apart.
+        assert_eq!(
+            theory_tokens(&build("&a { x + -y }")),
+            [
+                (THEORY_OP, "&"),
+                (IDENT, "a"),
+                (L_BRACE, "{"),
+                (IDENT, "x"),
+                (THEORY_OP, "+"),
+                (THEORY_OP, "-"),
+                (IDENT, "y"),
+                (R_BRACE, "}"),
+            ]
+            .map(|(kind, text)| (kind, text.to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_guard_s_period_stays_apart_from_the_next_neck_under_theory_mode() {
+        for text in ["&sum { x } <= 10 . :- p.", "&sum { x } <= 10. :- p."] {
+            let tokens = theory_tokens(&build(text));
+            let period_then_neck = [(DOT, ".".to_owned()), (NECK, ":-".to_owned())];
+            assert!(
+                tokens.windows(2).any(|pair| pair == period_then_neck),
+                "{text}: {tokens:?}"
+            );
         }
     }
 

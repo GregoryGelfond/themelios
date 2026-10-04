@@ -383,7 +383,12 @@ removed before it.
 **The source owns its boundaries.** Because the engine answers `token_at` from
 its own knowledge, two Rust identifiers that abut do not fuse and an intended
 adjacency is never lost — the boundary questions a re-lex would raise do not
-arise (syntax §4.2). The four token-source laws (tiling, slice, determinism,
+arise (syntax §4.2). Theory mode coalesces adjacent operator characters into one
+operator (grammar §4.7), so the source separates two tiles from tokens the author
+wrote apart wherever theory-mode lexing would merge them: `x + -y` keeps its two
+operators, and a theory guard's closing `.` stays apart from the next statement's
+`:-`. A run written joined, `<==>`, still coalesces into one theory operator, as in
+a file. The four token-source laws (tiling, slice, determinism,
 refusal — syntax §4.3) are what the source owes, and `check_token_source_laws`
 is the standing check it passes; the `Theory` and `ScriptBody` modes the checker
 does not exercise are held under the engine's own tests, over the inputs its
@@ -827,3 +832,9 @@ deliberate evolution with its argument, not a drift.
   float literal, so `program!` refused any statement whose last token before its
   period is an integer (`X > 1.`, `#show p/1.`). Such a literal now maps to the
   number and the period, as a file reads the text.
+- **Tokens written apart stay apart under theory mode** (2026-10-04; §6). The
+  source chose its separators under normal mode alone, so inside a theory atom
+  two operators the author wrote apart coalesced into one: `&a { x + -y }` built
+  the term `x +- y`, and `&sum { x } <= 10 . :- p.` one statement where a file
+  holds two. The source now separates such tiles wherever theory-mode lexing would
+  merge them; a run written joined still forms one theory operator.
