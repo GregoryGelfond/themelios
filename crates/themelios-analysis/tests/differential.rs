@@ -91,9 +91,10 @@ fn authority_safe(program: &str) -> bool {
 /// §8): the grounder unpools `&t(a; b)` into distinct theory atoms, but this tier defers theory
 /// terms to the solve stage (§7, program §4.9) and reads only the first alternative, so safety and
 /// finiteness of that reading are not the grounder's — the composed verdict fails closed on it,
-/// agreeing with the grounder, pending the solve stage. And a `#script` block repeated within its
-/// part (`RepeatedScript`, program §6.3): the authority runs each block, the merged program runs
-/// it once, so the reading is not the authority's program. And a numeral beyond the `i32` range
+/// agreeing with the grounder, pending the solve stage. And a `#script` block after the program's
+/// first (`ExtraScript`, program §6.3): the authority runs each block where it reads it, in an order
+/// the set does not keep, and a repeated block twice where the merged program runs it once, so the
+/// reading is not the authority's program. And a numeral beyond the `i32` range
 /// (`NumberOutOfRange`, program §3.1): the authority admits it and wraps it into the width, where
 /// the raise reads a placeholder beside the diagnostic. An *ordinary*-atom argument-list pool
 /// `p(X; a)` raises faithfully and `unpool` (program §9) eliminates it before this reads it, so it is
@@ -108,7 +109,7 @@ fn raised_faithfully(lowered: &Raised) -> bool {
         matches!(
             error.kind(),
             LowerErrorKind::PooledArgumentList
-                | LowerErrorKind::RepeatedScript { .. }
+                | LowerErrorKind::ExtraScript { .. }
                 | LowerErrorKind::NumberOutOfRange
         )
     })
