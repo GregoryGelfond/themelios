@@ -1,0 +1,5 @@
+error: a runtime selection reads `#![crate = path]`
+ --> tests/ui/selection_wrong_key.rs:4:40
+  |
+4 |     let _ = themelios_macros::fact!(#![krate = ::themelios_program] p(1));
+  |                                        ^^^^^
