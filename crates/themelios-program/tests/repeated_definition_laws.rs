@@ -9,8 +9,10 @@
 use themelios_base::diagnostic::ToDiagnostic;
 use themelios_base::source::{Source, SourceId};
 use themelios_base::span::{ByteOffset, Location, Span};
-use themelios_program::program::Statement;
+use themelios_program::program::{Program, Script, Statement};
 use themelios_program::raise::{LowerErrorKind, Occurrences, Raised, raise, raise_occurrences};
+use themelios_program::render::render;
+use themelios_program::symbol::Name;
 use themelios_syntax::dialect::Dialect;
 use themelios_syntax::parse::parse;
 
@@ -189,6 +191,21 @@ fn an_extra_script_is_kept_in_the_program() {
     // Diagnosed and kept: the raise is total, and the value holds both blocks (§6.3, §8).
     let text = "#script (python) pass #end. #script (lua) x = 1 #end.";
     assert_eq!(scripts(&raised(text)), 2);
+}
+
+#[test]
+fn a_constructed_program_of_two_scripts_round_trips_beside_one_diagnostic() {
+    // A second block reaches a program by construction as well as by text: render writes both,
+    // and the raise returns the same program beside its one `ExtraScript` (program.md §10).
+    // Each body is as the raise reads one, with no whitespace before its `#end`.
+    let program = Program::of([
+        Script::new(Name::new("python").expect("a name"), " pass"),
+        Script::new(Name::new("lua").expect("a name"), " x = 1"),
+    ]);
+    let rendered = render(&program, Dialect::Clingo).expect("the program renders");
+    let raised = raised(&rendered);
+    assert_eq!(raised.program(), &program, "rendered `{rendered}`");
+    assert_eq!(extra_scripts(&raised).len(), 1, "rendered `{rendered}`");
 }
 
 #[test]
