@@ -221,7 +221,9 @@ impl<B: Backend> Agent<B> {
     /// The configured pair of [`solve`](Agent::solve) (docs/design/solve.md
     /// §6.3): the same question under the options — the time budget the
     /// question carries, handed on the request to a backend that enforces it
-    /// natively. A budget the backend does not so enforce refuses at the
+    /// natively. The deadline is fixed when the backend's `solve` is called,
+    /// after the agent has brought the engine level, so the lowering runs
+    /// outside it: the budget bounds the question's run, not the whole call. A budget the backend does not so enforce refuses at the
     /// request locus, as unrealisable (§6.3), before anything is lowered: the
     /// core's own timer over a cancelling backend — the realisation rule's
     /// other arm — is realised with cancellation.
@@ -895,7 +897,9 @@ pub struct SolveOptions {
     /// The time budget the question carries (§6.3), handed to the backend on
     /// the request: enforcement is a declared capability, and a hit budget
     /// resolves as [`Conclusion::Budget`](crate::outcome::Conclusion::Budget),
-    /// never as a clean end.
+    /// never as a clean end. A wall-clock deadline fixed when the backend's
+    /// `solve` is called (see
+    /// [`SolveRequest::time`](crate::contract::SolveRequest::time)).
     pub time: Option<Duration>,
 }
 

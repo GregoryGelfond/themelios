@@ -552,6 +552,12 @@ enum Flaw {
     /// Refuses the next method after a grounding failed within its
     /// single-shot solve, as though it needed a rebuild it has none of.
     RefusesAfterAFailedSolve,
+    /// Discards its lowered program when a grounding fails within its
+    /// single-shot solve, staying ready over nothing.
+    DiscardsTheProgramOnAFailedSolve,
+    /// Meets another failure than the grounding's on the solve after a failed
+    /// one: a resource failure, though the program it grounds is unchanged.
+    MeetsAnotherFailureOnASecondSolve,
     /// Forgets its registered functions at a reset.
     LosesRegistrationsOnReset,
     /// Refuses an undeclared function's registration without naming the
@@ -816,6 +822,11 @@ impl Stub {
                 }
                 ("", vec![united])
             }
+            // A stub that discarded its program on a failed solve stays ready
+            // over nothing, answering the empty program's one answer set.
+            [] if self.flaw == Flaw::DiscardsTheProgramOnAFailedSolve => {
+                ("", vec![AnswerSet::new()])
+            }
             [] => return Err(Fault::engine("no program is loaded")),
             _ => return Err(Fault::engine("several programs have accumulated")),
         };
@@ -864,7 +875,8 @@ impl Stub {
     /// method too, then recovers.
     fn rebuild_owed(&mut self) -> Result<(), Fault> {
         let owed = (self.needs_rebuild && self.flaw != Flaw::ForgetsItNeedsARebuild)
-            || std::mem::take(&mut self.failed_solve);
+            || (self.flaw == Flaw::RefusesAfterAFailedSolve
+                && std::mem::take(&mut self.failed_solve));
         if owed && self.flaw == Flaw::MisnamesItsRebuild {
             return Err(Fault::request(
                 "the stub needs a rebuild",
@@ -1175,6 +1187,26 @@ impl Backend for Stub {
             Err(fault) => {
                 if self.flaw == Flaw::RefusesAfterAFailedSolve {
                     self.failed_solve = true;
+                }
+                if self.flaw == Flaw::DiscardsTheProgramOnAFailedSolve {
+                    self.loaded.clear();
+                }
+                if self.flaw == Flaw::MeetsAnotherFailureOnASecondSolve
+                    && std::mem::replace(&mut self.failed_solve, true)
+                {
+                    return Err(Fault::resource("the stub ran out of memory"));
+                }
+                // An engine grounding as it searches surfaces the failure at the
+                // stream's first item rather than at the solve.
+                if self.grounds_at == GroundsAt::TheFirstModel {
+                    return Ok(Solved::running(
+                        Box::new(Faulting {
+                            first: None,
+                            fault: Some(fault),
+                        }),
+                        Scenario::default(),
+                        ShowRule::default(),
+                    ));
                 }
                 return Err(fault);
             }
@@ -1739,6 +1771,22 @@ fn a_backend_grounding_lazily_still_locates_its_refusal() {
 }
 
 #[test]
+fn a_backend_grounding_lazily_keeps_its_program_after_a_failed_solve() {
+    // A single-shot engine grounding as it searches meets the faulting grounding at
+    // the stream's first item — on the failed solve and on the one after it — and the
+    // obligation holds either way (§4.1, §6.3).
+    let report = conformance::run(
+        &mut Stub::new(only(Capability::Functions), Flaw::Faithful)
+            .grounding_at(GroundsAt::TheFirstModel),
+    );
+    assert_eq!(
+        report.verdict(Check::BackendState),
+        Some(&Verdict::Passed),
+        "{report}"
+    );
+}
+
+#[test]
 fn the_structural_pathologies_are_attempted() {
     let report = report(enumerating(), Flaw::Faithful);
     for check in [
@@ -2033,6 +2081,16 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             Flaw::RefusesAfterAFailedSolve,
             only(Capability::Functions),
             vec![(State, Refused)],
+        ),
+        (
+            Flaw::DiscardsTheProgramOnAFailedSolve,
+            only(Capability::Functions),
+            vec![(State, Accepted)],
+        ),
+        (
+            Flaw::MeetsAnotherFailureOnASecondSolve,
+            only(Capability::Functions),
+            vec![(State, Misanswered)],
         ),
         (
             Flaw::LosesRegistrationsOnReset,

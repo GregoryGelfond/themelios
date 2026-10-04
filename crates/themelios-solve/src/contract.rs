@@ -89,13 +89,23 @@ pub trait Backend {
     /// `solve`'s model set, which ignores any objective (§5.2): the stable
     /// models, as if the program had none, so an engine that optimises a
     /// program with an objective by default owes the enumeration without it.
+    ///
+    /// It opens the run (docs/design/solve.md §6.3): the run's control state
+    /// first, then the grounding of the program lowered — a single-shot backend
+    /// grounds here, never in `lower` — then the search, each model delivered
+    /// as the caller reads it. A grounding that fails fails this solve alone and
+    /// leaves the lowered program for the next one (§4.1). A request's time
+    /// budget is a deadline fixed at this call (see [`SolveRequest::time`]).
     fn solve(&mut self, request: &SolveRequest) -> Result<Solved<'_>, Fault>;
 
     /// Required. The bridge (§10): consume a program through a door. On a
     /// multi-shot backend a repeat `lower` accumulates into the engine's
     /// program, so a rebuild is `reset` then `lower` the amended whole; on a
     /// single-shot backend a `lower` replaces the program, so a rebuild is one
-    /// `lower`.
+    /// `lower`. It validates and retains (docs/design/solve.md §6.3): its checks
+    /// are each bounded by the program's size, it grounds nothing — grounding is
+    /// `solve`'s — and a refused `lower` leaves the program lowered before it
+    /// (§4.1).
     fn lower(&mut self, door: Door<'_>) -> Result<(), Fault>;
 
     /// Provided. The ground program the backend exposes — the observer, a
@@ -428,7 +438,12 @@ pub struct SolveRequest {
     /// as what it is, `Conclusion::Budget`, never as a clean end. A backend that
     /// does not declare enforcing one refuses a request carrying one at the
     /// request surface — `solve` and `solve_assuming` alike — never solving
-    /// without it: the silent degrade §4.1 forbids.
+    /// without it: the silent degrade §4.1 forbids. The budget is a wall-clock
+    /// deadline fixed when `solve` is called, covering the run's grounding,
+    /// search, and model delivery, the consumer's time between reads included;
+    /// it is enforced cooperatively, at the backend's checks, so a run ends at
+    /// the first check past it. A deadline that passes during grounding concludes
+    /// the run `Budget` with no model, never a fault (docs/design/solve.md §6.3).
     pub time: Option<Duration>,
 }
 
