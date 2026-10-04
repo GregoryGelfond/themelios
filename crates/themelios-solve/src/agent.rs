@@ -376,7 +376,9 @@ impl<B: Backend> Agent<B> {
                         .solve_assuming(scenario, &SolveRequest::default())?,
                 };
                 match solved.into_determination() {
-                    // Folded as the models stream, one resident at a time.
+                    // Folded as the models stream, one resident at a time. The
+                    // determination's peek parked its witness in the untouched
+                    // stream, so a fold the gate passes holds at least that model.
                     Determination::Consistent(mut models) => Ok(models
                         .fold_members(mode)?
                         .expect("a consistent search's collection holds its witness")),

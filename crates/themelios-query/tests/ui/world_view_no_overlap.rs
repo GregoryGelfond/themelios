@@ -45,7 +45,7 @@ impl Backend for OneModel {
                 ended: false,
             }),
             Scenario::default(),
-ShowRule::default(),
+            ShowRule::default(),
         ))
     }
 
