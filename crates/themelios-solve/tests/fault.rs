@@ -12,6 +12,7 @@ use std::error::Error;
 use std::fmt::Debug;
 
 use themelios_base::diagnostic::Severity;
+use themelios_program::program::PartKey;
 use themelios_program::provenance::{Origin, Provenance, TransformTag, WithProvenance};
 use themelios_program::raise::{RaisedSource, raise_source};
 use themelios_program::{Atom, Dialect, Name, Rule, Source, SourceId, Statement};
@@ -102,6 +103,15 @@ fn least_parsed_origin(statement: &WithProvenance<Statement>) -> Origin {
         .expect("a parsed statement carries a parsed origin")
 }
 
+/// The part `step(t)`, by its key.
+fn a_part() -> PartKey {
+    let name = |text| Name::new(text).expect("an identifier");
+    PartKey {
+        name: name("step"),
+        formals: vec![name("t")],
+    }
+}
+
 /// A statement built through the program tier's constructors, written nowhere.
 fn built_statement() -> Statement {
     Statement::from(Rule::fact(Atom::constant(
@@ -140,13 +150,14 @@ fn refused_lowering() -> NotAdmitted {
 }
 
 /// One fault through every door, each raised with an empty message.
-fn every_door_with_an_empty_message() -> [Fault; 6] {
+fn every_door_with_an_empty_message() -> [Fault; 7] {
     [
         Fault::engine(""),
         Fault::request("", Presupposition::NotLive),
         Fault::resource(""),
         Fault::adapter_bug(""),
         Fault::program("", &parsed_statement()),
+        Fault::program_part("", &a_part()),
         Fault::from(refused_syntax()),
     ]
 }
@@ -212,6 +223,7 @@ fn only_the_adapter_door_sets_the_bug_bit() {
         Fault::request(REQUEST_MESSAGE, Presupposition::NotLive),
         Fault::unsupported(Capability::Optimization),
         Fault::program(PROGRAM_MESSAGE, &parsed_statement()),
+        Fault::program_part(PROGRAM_MESSAGE, &a_part()),
         Fault::from(refused_syntax()),
     ] {
         assert!(!fault.is_backend_bug(), "{fault:?} carries the bug bit");

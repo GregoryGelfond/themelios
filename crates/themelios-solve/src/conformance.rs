@@ -156,8 +156,9 @@ pub fn run(backend: &mut dyn Backend) -> ConformanceReport {
         ),
         (Check::BackendState, backend_state(backend)),
     ];
-    // The capability probes run last: they reset the engine and register
-    // extensions, which the corpus checks above must not see.
+    // The capability probes run after the corpus checks: they reset the engine
+    // and register extensions, which the checks above must not see. Obligation
+    // 12 follows them, as §13.1 orders it; nothing it lowers calls an extension.
     entries.extend(CAPABILITIES.into_iter().map(|capability| {
         (
             Check::Capability(capability),
@@ -1678,9 +1679,9 @@ fn built_fault_is_unlocated(backend: &mut dyn Backend) -> Verdict {
 }
 
 /// Each fault lands where it belongs (§5.4), through three sub-checks under one
-/// obligation: a Program fault names its refused statement, located within it
-/// where it was parsed; a Program fault refusing a statement built in Rust is
-/// unlocated; and a Request fault names its presupposition.
+/// obligation: a Program fault refusing a parsed statement names it, located
+/// within it; one refusing a statement built in Rust names it, unlocated; and a
+/// Request fault names its presupposition. A refused part is obligation 12's.
 fn fault_loci(backend: &mut dyn Backend) -> Verdict {
     combined([
         program_fault_is_located(backend),
@@ -2928,6 +2929,7 @@ mod tests {
                 FAULTING_CALL,
                 ECHOED_CALL,
                 UNBOUNDED,
+                PARTS,
             ])
             .collect::<Vec<_>>();
         for source in sources {

@@ -10,7 +10,7 @@
 
 use themelios_base::source::{Source, SourceId};
 use themelios_program::program::{Atom, PartKey, Program, Rule, Statement};
-use themelios_program::provenance::WithProvenance;
+use themelios_program::provenance::{Origin, WithProvenance};
 use themelios_program::symbol::{Name, Sign, Symbol};
 use themelios_solve::agent::{Agent, Scenario};
 use themelios_solve::bridge::{Admitted, Door};
@@ -109,6 +109,7 @@ impl Backend for BaseOnly {
             .into_iter()
             .filter(|atom| {
                 program
+                    .base()
                     .statements()
                     .any(|statement| statement.get() == fact(atom).get())
             })
@@ -186,7 +187,6 @@ fn a_part_fault_over_parsed_text_lowers_to_no_diagnostic() {
 fn a_part_fault_renders_its_message() {
     let fault = Fault::program_part("the part is beyond this backend", &key("step", &["t"]));
     assert_eq!(fault.to_string(), "the part is beyond this backend");
-    assert!(!fault.is_backend_bug());
 }
 
 #[test]
@@ -235,6 +235,15 @@ fn a_statement_fault_over_parsed_text_keeps_its_location() {
         .statements()
         .next()
         .expect("the parse holds a statement");
-    let fault = Fault::program("this statement is refused", statement.statement());
-    assert_eq!(fault.diagnostics().len(), 1);
+    let refused = statement.statement();
+    let diagnostics = Fault::program("this statement is refused", refused).diagnostics();
+    let [diagnostic] = &diagnostics[..] else {
+        panic!("one diagnostic: {diagnostics:?}");
+    };
+    let parsed = refused
+        .provenance()
+        .origins()
+        .find(|origin| matches!(origin, Origin::Parsed(_)))
+        .expect("a parsed statement carries a parsed origin");
+    assert_eq!(&Origin::Parsed(diagnostic.primary().location), parsed);
 }

@@ -108,8 +108,8 @@ pub trait Backend {
     /// are each bounded by the program's size, it grounds nothing — on a
     /// single-shot backend grounding is `solve`'s, on a multi-shot one `ground`'s
     /// — and a refused `lower` leaves the program lowered before it (§4.1). A
-    /// single-shot backend that does not admit a part beyond `base` refuses it
-    /// here, naming the part ([`Fault::program_part`], §6.3).
+    /// single-shot backend that does not admit a part beyond `base` refuses the
+    /// program here, naming the part ([`Fault::program_part`], §6.3).
     fn lower(&mut self, door: Door<'_>) -> Result<(), Fault>;
 
     /// Provided. The ground program the backend exposes — the observer, a
@@ -618,9 +618,9 @@ pub enum Presupposition {
 
 /// What a fault refused — closed, one of five, keyed by locus
 /// (docs/design/solve.md §5.4). Closed on purpose: a row grows a typed reason
-/// inside the sum when a consumer first reads one — the `Statement` row, a
-/// router's reason why a backend refused the statement (§12, §14) — never a
-/// reason held beside it. A view into the fault, freely copied.
+/// inside the sum when a consumer first reads one — the `Statement` or `Part`
+/// row, a router's reason why a backend refused the statement or the part (§12,
+/// §14) — never a reason held beside it. A view into the fault, freely copied.
 #[derive(Clone, Copy, Debug)]
 pub enum Refused<'a> {
     /// A program fault refusing a statement, with its provenance.
@@ -681,8 +681,9 @@ impl PartialEq for Refusal {
 /// through `Display`, and lowers to zero, one, or several diagnostics
 /// ([`Fault::diagnostics`]). Equality compares the message, the locus, the
 /// bit, and what was refused, never the cause, which is detail, not identity;
-/// `Fault` is not `Hash` — a report, not a key. Clone is `O(statement)`, or
-/// `O(diagnostics)` for a refused parse, the cause shared. Owned plain data
+/// `Fault` is not `Hash` — a report, not a key. Clone is `O(statement)`,
+/// `O(part key)` for a refused part, or `O(diagnostics)` for a refused parse,
+/// the cause shared. Owned plain data
 /// (`Send + Sync + 'static`).
 #[non_exhaustive]
 #[derive(Clone, Debug)]
@@ -756,7 +757,7 @@ impl Fault {
     /// backend whose profile excludes a part beyond `base` refuses the program
     /// at `lower` with it, never naming a statement in the part. Unlocated,
     /// since a part keeps no provenance: it lowers to no diagnostic, and renders
-    /// through its message. Total; O(part key).
+    /// through its message. Total; O(message + part key).
     pub fn program_part(message: impl Into<String>, part: &PartKey) -> Fault {
         Fault::new(
             Locus::Program,
