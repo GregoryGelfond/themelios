@@ -94,12 +94,15 @@ pub fn atom(input: TokenStream) -> TokenStream {
 /// the single directive macros that supply their keyword from the macro name. An empty block
 /// is `Program::empty()`. Equals `Program::of` over the hand-spelled statements.
 ///
-/// A `#script` body cannot be recovered from Rust tokens — it is opaque text a file lexer
-/// reads, not a token stream — so a `#script` in the block is a compile error directing the
-/// caller to raise a file instead (docs/design/macros.md §7). A statement family no
-/// construction macro yet builds — an aggregate or choice head, a body aggregate, a `#program`
-/// part delimiter, or a directive with no macro — is a located compile error, as it is for the
-/// single statement macros (§8).
+/// Its statements are the families the statement macros build (docs/design/macros.md §8): rules,
+/// with every head and body shape — a disjunction, a choice, or an aggregate in the head, an
+/// aggregate in the body — optimization statements, `#show`, and `#external`. Any other
+/// statement — a weak constraint, a `#program` part delimiter, a `#const`, `#include`,
+/// `#project`, `#defined`, `#edge`, `#heuristic`, or `#theory` directive, or a query — is a
+/// located compile error, as it is for the single statement macros (§8, §12). A `#script` body
+/// cannot be recovered from Rust tokens — it is opaque text a file lexer reads, not a token
+/// stream — so a `#script` in the block is a compile error directing the caller to raise a file
+/// instead (§7).
 ///
 /// A literal `#`-keyword's `#` is read as joined to its word by a byte-range adjacency check
 /// that is exact under this crate's tests but inexact under real macro expansion, so a detached

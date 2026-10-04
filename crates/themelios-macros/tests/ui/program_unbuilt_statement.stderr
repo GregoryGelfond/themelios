@@ -1,0 +1,5 @@
+error: this construction builds a fact, a rule, a constraint, an optimization statement, a `#show`, or an `#external`, not this statement
+ --> tests/ui/program_unbuilt_statement.rs:5:42
+  |
+5 |     let _ = themelios_macros::program! { #const n = a. };
+  |                                          ^
