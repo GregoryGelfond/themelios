@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use crate::bridge::Door;
@@ -13,7 +14,8 @@ use crate::contract::{
 };
 use crate::extend::Facts;
 use crate::outcome::{
-    Consequences, Determination, NativeAnswer, NotExhausted, Optimized, Solved, Stopped,
+    Conclusion, Consequences, Determination, Model, NativeAnswer, NotExhausted, Optimized, Run,
+    ShowRule, Solved, Stopped, Truncation,
 };
 use themelios_program::program::{Arguments, Part, PartKey};
 use themelios_program::{Atom, Program, Rule, Statement, Symbol, Term, WithProvenance};
@@ -54,6 +56,9 @@ pub struct Agent<B: Backend> {
     /// [`assign_external`](Agent::assign_external) — re-established by a
     /// rebuild after the grounded parts (§6.2).
     assigned: BTreeMap<Symbol, TruthValue>,
+    /// The record of the agent's questions, shared with every interrupt handle
+    /// it gives out, over the backend's cancellation primitive (§6.3).
+    questions: Arc<Questions>,
 }
 
 impl<B: Backend> Agent<B> {
@@ -63,12 +68,14 @@ impl<B: Backend> Agent<B> {
     /// `Θ(program size)` — each statement is recorded in the ledger.
     pub fn new(knowledge: Program, backend: B) -> Self {
         let ledger = KnowledgeLedger::of(&knowledge);
+        let questions = Arc::new(Questions::over(backend.interrupt()));
         Agent {
             backend,
             knowledge,
             ledger,
             grounded: Vec::new(),
             assigned: BTreeMap::new(),
+            questions,
         }
     }
 
@@ -214,8 +221,7 @@ impl<B: Backend> Agent<B> {
     /// lowering, and the replay of what the loop retains; on a single-shot one
     /// the lowering — then the engine's, streamed.
     pub fn solve(&mut self) -> Result<Solved<'_>, Fault> {
-        self.bring_level()?;
-        self.backend.solve(&SolveRequest::default())
+        self.ask(Search::Plain(SolveRequest::default()))
     }
 
     /// The configured pair of [`solve`](Agent::solve) (docs/design/solve.md
@@ -223,10 +229,11 @@ impl<B: Backend> Agent<B> {
     /// question carries, handed on the request to a backend that enforces it
     /// natively. The deadline is fixed when the backend's `solve` is called,
     /// after the agent has brought the engine level, so the lowering runs
-    /// outside it: the budget bounds the question's run, not the whole call. A budget the backend does not so enforce refuses at the
-    /// request locus, as unrealisable (§6.3), before anything is lowered: the
-    /// core's own timer over a cancelling backend — the realisation rule's
-    /// other arm — is realised with cancellation.
+    /// outside it: the budget bounds the question's run, not the whole call. A
+    /// budget the backend does not so enforce refuses at the request locus, as
+    /// unrealisable (§6.3), before anything is lowered: the core's own timer
+    /// over a cancelling backend — the realisation rule's other arm — is not
+    /// yet realised.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the options are taken by value — the design's surface (docs/design/solve.md \
@@ -236,8 +243,7 @@ impl<B: Backend> Agent<B> {
         if options.time.is_some() {
             realisable(&self.backend.capabilities())?;
         }
-        self.bring_level()?;
-        self.backend.solve(&SolveRequest { time: options.time })
+        self.ask(Search::Plain(SolveRequest { time: options.time }))
     }
 
     /// Ask, and resolve the run into the trichotomy (docs/design/solve.md
@@ -247,10 +253,8 @@ impl<B: Backend> Agent<B> {
     /// the consuming resolver threads the borrow (§5.2). Refusal: an engine or
     /// request `Fault`.
     pub fn determination(&mut self) -> Result<Determination<'_>, Fault> {
-        self.bring_level()?;
         Ok(self
-            .backend
-            .solve(&SolveRequest::default())?
+            .ask(Search::Plain(SolveRequest::default()))?
             .into_determination())
     }
 
@@ -261,8 +265,18 @@ impl<B: Backend> Agent<B> {
     /// `optimization` (§4.2), before anything is lowered.
     pub fn optimize(&mut self, request: &OptimizeRequest) -> Result<Optimized<'_>, Fault> {
         require(&self.backend.capabilities(), Capability::Optimization)?;
+        let asking = Asking::open(&self.questions);
         self.bring_level()?;
-        self.backend.optimize(request)
+        if asking.pulled() {
+            return Ok(Optimized::running(
+                Box::new(Unbegun),
+                Scenario::default(),
+                ShowRule::default(),
+            ));
+        }
+        let optimized = self.backend.optimize(request)?;
+        asking.forward_held();
+        Ok(optimized.map_run(|run| Attributed::over(run, asking)))
     }
 
     /// Ask under a scenario (docs/design/solve.md §6.3): each of its
@@ -273,23 +287,51 @@ impl<B: Backend> Agent<B> {
     /// before the question is paid for, so a refused scenario lowers nothing.
     pub fn solve_assuming(&mut self, scenario: &Scenario) -> Result<Solved<'_>, Fault> {
         require(&self.backend.capabilities(), Capability::Assumptions)?;
-        self.bring_level()?;
-        self.backend
-            .solve_assuming(scenario, &SolveRequest::default())
+        self.ask(Search::Assuming(scenario))
     }
 
-    /// The core's handle that interrupts an in-flight question from another
-    /// thread (docs/design/solve.md §6.1, §6.3), over the backend's
+    /// The core's handle that interrupts the agent's question in flight from
+    /// another thread (docs/design/solve.md §6.1, §6.3), over the backend's
     /// cancellation primitive — `Some` exactly when the backend declares
     /// `cancellation`; `None` says the engine cannot be interrupted, readable
-    /// before any question is paid for. Reserved: the handle's pull is realised
-    /// with cancellation, and until then it holds the primitive and nothing
-    /// more — `Some` says the engine can be interrupted, not yet that this
-    /// handle does (see [`Interrupt`]). O(1).
+    /// before any question is paid for. Obtain it before a question borrows the
+    /// agent; every handle shares the agent's record of its questions (see
+    /// [`Interrupt`]). O(1).
     pub fn interrupt(&self) -> Option<Interrupt> {
-        self.backend.interrupt().map(|primitive| Interrupt {
-            _primitive: primitive,
+        self.questions.primitive.as_ref().map(|_| Interrupt {
+            questions: Arc::clone(&self.questions),
         })
+    }
+
+    /// Ask a question whose answer is a run (docs/design/solve.md §6.3): open the
+    /// question before the engine is brought level; skip the search when a pull
+    /// is already held, the question concluding `Interrupted` with nothing
+    /// established; otherwise ask the backend, forward again a pull it could not
+    /// yet take as its run opened, and attribute the run, which closes the
+    /// question when it ends or drops. Cost: the engine brought level, then the
+    /// search, and O(1) besides.
+    fn ask(&mut self, search: Search<'_>) -> Result<Solved<'_>, Fault> {
+        let asking = Asking::open(&self.questions);
+        self.bring_level()?;
+        if asking.pulled() {
+            let scenario = match search {
+                Search::Plain(_) => Scenario::default(),
+                Search::Assuming(scenario) => scenario.clone(),
+            };
+            return Ok(Solved::running(
+                Box::new(Unbegun),
+                scenario,
+                ShowRule::default(),
+            ));
+        }
+        let solved = match search {
+            Search::Plain(request) => self.backend.solve(&request)?,
+            Search::Assuming(scenario) => self
+                .backend
+                .solve_assuming(scenario, &SolveRequest::default())?,
+        };
+        asking.forward_held();
+        Ok(solved.map_run(|run| Attributed::over(run, asking)))
     }
 
     /// The cautious consequences (`⋂`, "what must hold") of the knowledge base
@@ -356,15 +398,26 @@ impl<B: Backend> Agent<B> {
         if scenario.is_some() {
             require(&self.backend.capabilities(), Capability::Assumptions)?;
         }
-        self.bring_level()?;
         match self.backend.capabilities().native_consequences {
             ConsequenceSupport::Native => {
+                // The question is open until its answer returns; a pull held
+                // before the search begins it not, and a pulled search's stop at
+                // its budget is the caller's interruption (§6.3).
+                let asking = Asking::open(&self.questions);
+                self.bring_level()?;
+                if asking.pulled() {
+                    return Err(NotExhausted::not_closed(Truncation::Interrupted).into());
+                }
                 let request = ConsequenceRequest {
                     scenario: scenario.cloned().unwrap_or_default(),
                 };
-                match self.backend.consequences_native(mode, &request)? {
+                let answer = self.backend.consequences_native(mode, &request)?;
+                match answer {
                     NativeAnswer::Closed(symbols) => Ok(Consequences { symbols, mode }),
                     NativeAnswer::NoModel => Err(no_answer_set(scenario)),
+                    NativeAnswer::Stopped(Truncation::Budget) if asking.pulled() => {
+                        Err(NotExhausted::not_closed(Truncation::Interrupted).into())
+                    }
                     NativeAnswer::Stopped(truncation) => {
                         Err(NotExhausted::not_closed(truncation).into())
                     }
@@ -372,10 +425,8 @@ impl<B: Backend> Agent<B> {
             }
             ConsequenceSupport::DerivedByEnumeration => {
                 let solved = match scenario {
-                    None => self.backend.solve(&SolveRequest::default())?,
-                    Some(scenario) => self
-                        .backend
-                        .solve_assuming(scenario, &SolveRequest::default())?,
+                    None => self.ask(Search::Plain(SolveRequest::default()))?,
+                    Some(scenario) => self.ask(Search::Assuming(scenario))?,
                 };
                 match solved.into_determination() {
                     // Folded as the models stream, one resident at a time. The
@@ -896,21 +947,217 @@ impl std::error::Error for NotAnAssumption {}
 pub struct SolveOptions {
     /// The time budget the question carries (§6.3), handed to the backend on
     /// the request: enforcement is a declared capability, and a hit budget
-    /// resolves as [`Conclusion::Budget`](crate::outcome::Conclusion::Budget),
+    /// resolves as [`Conclusion::Budget`],
     /// never as a clean end. A wall-clock deadline fixed when the backend's
     /// `solve` is called (see
     /// [`SolveRequest::time`](crate::contract::SolveRequest::time)).
     pub time: Option<Duration>,
 }
 
-/// The core's handle that interrupts an in-flight solve from another thread
-/// (docs/design/solve.md §6.2, §6.3), over the backend's [`Cancel`] primitive.
-/// The core owns it so it can record a caller's pull, and so attribute a stop
-/// to the caller rather than to its own budget timer. Reserved: the pull and
-/// its attribution are realised with cancellation, until when the handle holds
-/// the primitive and nothing more. `Send`, as the primitive is.
+/// The core's handle that interrupts the agent's question in flight from
+/// another thread (docs/design/solve.md §6.2, §6.3), over the backend's
+/// [`Cancel`] primitive. The core owns it so it can record a caller's pull, and
+/// so attribute a stop to the caller rather than to a deadline. Obtained from
+/// [`Agent::interrupt`] before a question borrows the agent, and pulled from
+/// any thread: `Send + Sync`.
 pub struct Interrupt {
-    _primitive: Box<dyn Cancel>,
+    questions: Arc<Questions>,
+}
+
+impl Interrupt {
+    /// Cut short the agent's question in flight, if any (docs/design/solve.md
+    /// §6.3). A question is in flight from the moment it is asked, its lowering
+    /// included, until its run ends or its handle drops, or until a question
+    /// answered by value returns. The pull reaches the backend's primitive at
+    /// once; a question pulled before its search begins does not begin it, and
+    /// one pulled while its backend opens the run is forwarded again once the run
+    /// is open. The search stops at the backend's next check and concludes
+    /// `Interrupted`, a stop at the deadline in the same run included. A pull with
+    /// no question in flight — before the first, between two, after a run ended
+    /// or its handle dropped, after the agent dropped — cuts nothing, and no later
+    /// question remembers it. O(1): it signals and returns, never blocking on the
+    /// question's thread.
+    pub fn pull(&self) {
+        self.questions.pull();
+    }
+}
+
+/// The agent's record of its questions, shared with every interrupt handle it
+/// gives out (docs/design/solve.md §6.3), over the backend's primitive: whether
+/// a question is in flight, and whether it was pulled. Opening and closing a
+/// question and recording a pull take the one lock, and a pull forwards to the
+/// primitive while holding it, so a pull cannot land on the next question while
+/// one ends and another begins.
+struct Questions {
+    record: Mutex<Record>,
+    primitive: Option<Box<dyn Cancel>>,
+}
+
+/// The two facts a pull reads and writes (§6.3).
+#[derive(Default)]
+struct Record {
+    /// The generation of the question in flight: odd while one is, even between.
+    current: u64,
+    /// The generation the last pull landed in; zero, which no question has, before
+    /// any.
+    pulled: u64,
+}
+
+impl Questions {
+    /// A record with no question yet, over the backend's primitive.
+    fn over(primitive: Option<Box<dyn Cancel>>) -> Questions {
+        Questions {
+            record: Mutex::default(),
+            primitive,
+        }
+    }
+
+    /// The record, under its lock. Two integers stay consistent whatever a
+    /// panicking holder left, so a poisoned lock is read as it stands.
+    fn record(&self) -> MutexGuard<'_, Record> {
+        self.record.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Open a question: its generation, odd. Questions are asked one at a time —
+    /// each borrows the agent — and each closes before the next opens.
+    fn open(&self) -> u64 {
+        let mut record = self.record();
+        record.current = record.current.wrapping_add(1);
+        record.current
+    }
+
+    /// Close the question of `generation`, if it is still the one in flight.
+    fn close(&self, generation: u64) {
+        let mut record = self.record();
+        if record.current == generation {
+            record.current = record.current.wrapping_add(1);
+        }
+    }
+
+    /// Whether the question of `generation` was pulled.
+    fn pulled(&self, generation: u64) -> bool {
+        self.record().pulled == generation
+    }
+
+    /// Forward again a pull the question of `generation` holds, now that its
+    /// backend's run is open.
+    fn forward_held(&self, generation: u64) {
+        let record = self.record();
+        if record.pulled == generation
+            && record.current == generation
+            && let Some(primitive) = &self.primitive
+        {
+            primitive.cancel();
+        }
+    }
+
+    /// A caller's pull: recorded against the question in flight and forwarded to
+    /// the primitive, both under the lock — or nothing, with no question in flight.
+    fn pull(&self) {
+        let mut record = self.record();
+        if record.current % 2 == 1 {
+            record.pulled = record.current;
+            if let Some(primitive) = &self.primitive {
+                primitive.cancel();
+            }
+        }
+    }
+}
+
+/// A question in flight (§6.3): its generation in the agent's record, closed
+/// when this drops.
+struct Asking {
+    questions: Arc<Questions>,
+    generation: u64,
+}
+
+impl Asking {
+    /// Open a question in `questions`.
+    fn open(questions: &Arc<Questions>) -> Asking {
+        Asking {
+            generation: questions.open(),
+            questions: Arc::clone(questions),
+        }
+    }
+
+    /// Whether this question was pulled.
+    fn pulled(&self) -> bool {
+        self.questions.pulled(self.generation)
+    }
+
+    /// Forward again a pull this question holds, now that its run is open.
+    fn forward_held(&self) {
+        self.questions.forward_held(self.generation);
+    }
+}
+
+impl Drop for Asking {
+    fn drop(&mut self) {
+        self.questions.close(self.generation);
+    }
+}
+
+/// What a question asks its backend to search (§6.3): the plain solve under a
+/// request, or the models a scenario admits.
+enum Search<'s> {
+    Plain(SolveRequest),
+    Assuming(&'s Scenario),
+}
+
+/// The backend's run of an agent's question, as the core attributes it
+/// (docs/design/solve.md §6.3): a pulled question's stop at its budget reads
+/// `Interrupted`; every other conclusion, and a fault, reads as the backend
+/// reported it; and the question closes when the run ends or drops.
+struct Attributed<'a> {
+    run: Box<dyn Run + 'a>,
+    asking: Option<Asking>,
+    pulled: bool,
+}
+
+impl<'a> Attributed<'a> {
+    /// The question `asking`'s run, attributed.
+    fn over(run: Box<dyn Run + 'a>, asking: Asking) -> Box<dyn Run + 'a> {
+        Box::new(Attributed {
+            run,
+            asking: Some(asking),
+            pulled: false,
+        })
+    }
+}
+
+impl Run for Attributed<'_> {
+    fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+        let item = self.run.next_model();
+        if item.is_none()
+            && let Some(asking) = self.asking.take()
+        {
+            // The run has ended: whether it was pulled is fixed now, and the
+            // question closes as `asking` drops.
+            self.pulled = asking.pulled();
+        }
+        item
+    }
+
+    fn conclusion(&self) -> Option<Conclusion> {
+        match self.run.conclusion() {
+            Some(Conclusion::Budget) if self.pulled => Some(Conclusion::Interrupted),
+            reported => reported,
+        }
+    }
+}
+
+/// The run of a question pulled before its search began (§6.3): nothing
+/// established, concluded `Interrupted`.
+struct Unbegun;
+
+impl Run for Unbegun {
+    fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+        None
+    }
+
+    fn conclusion(&self) -> Option<Conclusion> {
+        Some(Conclusion::Interrupted)
+    }
 }
 
 #[cfg(test)]
@@ -1974,5 +2221,162 @@ mod ask_laws {
         assert_eq!(agent.cautious_assuming(&Scenario::default()), unscoped);
         let unscoped = agent.brave();
         assert_eq!(agent.brave_assuming(&Scenario::default()), unscoped);
+    }
+}
+
+#[cfg(test)]
+mod interrupt_laws {
+    //! The optimize question under a pull (docs/design/solve.md §6.3), witnessed in-crate: an
+    //! `Optimized` is the core's to construct until the backend's door lands with the optimum's.
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// A primitive that cuts nothing: these runs stop at their own deadline.
+    struct Inert;
+
+    impl Cancel for Inert {
+        fn cancel(&self) {}
+    }
+
+    /// A run of the optimal set: one model, then a stop at its deadline.
+    struct OneThenDeadline {
+        yielded: bool,
+        ended: bool,
+    }
+
+    impl Run for OneThenDeadline {
+        fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+            if self.yielded {
+                self.ended = true;
+                return None;
+            }
+            self.yielded = true;
+            Some(Ok(Model::of(crate::outcome::AnswerSet::new())))
+        }
+
+        fn conclusion(&self) -> Option<Conclusion> {
+            self.ended.then_some(Conclusion::Budget)
+        }
+    }
+
+    /// An optimizing, cancelling backend, whose `lower` pulls the hooked handle when
+    /// `pull_while_lowering` says so.
+    struct Optimizing {
+        hook: Arc<Mutex<Option<Interrupt>>>,
+        pull_while_lowering: bool,
+    }
+
+    impl Backend for Optimizing {
+        fn capabilities(&self) -> Capabilities {
+            // In the defining crate, so a struct expression builds it.
+            Capabilities {
+                optimization: true,
+                cancellation: true,
+                ..Capabilities::default()
+            }
+        }
+
+        fn interrupt(&self) -> Option<Box<dyn Cancel>> {
+            Some(Box::new(Inert))
+        }
+
+        fn solve(&mut self, _request: &SolveRequest) -> Result<Solved<'_>, Fault> {
+            Err(Fault::engine("this stub only optimizes"))
+        }
+
+        fn lower(&mut self, _door: Door<'_>) -> Result<(), Fault> {
+            if self.pull_while_lowering
+                && let Some(handle) = self.hook.lock().expect("an unpoisoned hook").as_ref()
+            {
+                handle.pull();
+            }
+            Ok(())
+        }
+
+        fn optimize(&mut self, _request: &OptimizeRequest) -> Result<Optimized<'_>, Fault> {
+            Ok(Optimized::running(
+                Box::new(OneThenDeadline {
+                    yielded: false,
+                    ended: false,
+                }),
+                Scenario::default(),
+                ShowRule::default(),
+            ))
+        }
+    }
+
+    /// An agent over an optimizing backend, its handle hooked into the backend.
+    fn agent(pull_while_lowering: bool) -> (Agent<Optimizing>, Interrupt) {
+        let hook = Arc::new(Mutex::new(None));
+        let agent = Agent::new(
+            Program::empty(),
+            Optimizing {
+                hook: Arc::clone(&hook),
+                pull_while_lowering,
+            },
+        );
+        let interrupt = agent.interrupt().expect("the backend cancels");
+        *hook.lock().expect("an unpoisoned hook") = agent.interrupt();
+        (agent, interrupt)
+    }
+
+    #[test]
+    fn a_refused_question_closes_before_the_next() {
+        // The backend refuses the plain solve: the question closes on the refusal, so a pull
+        // after it cuts nothing, and the next question runs to its own end (§6.3).
+        let (mut agent, interrupt) = agent(false);
+        assert!(
+            agent.solve().map(drop).is_err(),
+            "the stub refuses a plain solve"
+        );
+        interrupt.pull();
+        let mut optimized = agent
+            .optimize(&OptimizeRequest::default())
+            .expect("the question is answered");
+        if let Determination::Consistent(mut models) = optimized.determination() {
+            models.members().for_each(drop);
+        }
+        assert_eq!(optimized.conclusion(), Some(Conclusion::Budget));
+    }
+
+    #[test]
+    fn an_optimize_question_pulled_while_lowering_begins_no_search() {
+        let (mut agent, _interrupt) = agent(true);
+        let optimized = agent
+            .optimize(&OptimizeRequest::default())
+            .expect("a cut is no fault");
+        let Determination::Inconclusive(partial) = optimized.into_determination() else {
+            panic!("a question cut before its search is inconclusive")
+        };
+        assert!(matches!(
+            partial.stopped(),
+            Stopped::Concluded(Truncation::Interrupted)
+        ));
+    }
+
+    #[test]
+    fn a_pulled_optimize_question_cut_at_its_deadline_reads_interrupted() {
+        let (mut agent, interrupt) = agent(false);
+        let mut optimized = agent
+            .optimize(&OptimizeRequest::default())
+            .expect("the question is answered");
+        interrupt.pull();
+        if let Determination::Consistent(mut models) = optimized.determination() {
+            models.members().for_each(drop);
+        }
+        assert_eq!(optimized.conclusion(), Some(Conclusion::Interrupted));
+    }
+
+    #[test]
+    fn an_unpulled_optimize_question_cut_at_its_deadline_reads_budget() {
+        let (mut agent, _interrupt) = agent(false);
+        let mut optimized = agent
+            .optimize(&OptimizeRequest::default())
+            .expect("the question is answered");
+        if let Determination::Consistent(mut models) = optimized.determination() {
+            models.members().for_each(drop);
+        }
+        assert_eq!(optimized.conclusion(), Some(Conclusion::Budget));
     }
 }
