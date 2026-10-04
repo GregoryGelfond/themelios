@@ -24,9 +24,9 @@
 //! seam. A [`Fault`] owns its model — where it arose, a message that is never
 //! empty, whether it is a backend bug, what it refused, and optionally the
 //! engine's typed cause — and renders through `Display`. What it refused is a
-//! closed sum keyed by locus, [`Refused`]: a statement or a parse at the
-//! program locus, the [`Presupposition`] that failed at the request locus, or
-//! nothing, so a consumer acts on a refusal by matching it, never by reading
+//! closed sum keyed by locus, [`Refused`]: a statement, a part, or a parse at
+//! the program locus, the [`Presupposition`] that failed at the request locus,
+//! or nothing, so a consumer acts on a refusal by matching it, never by reading
 //! its message. A fault is not, in general, a diagnostic: `base`'s
 //! `Diagnostic` is located by construction, and a fault without a source span
 //! is not a degenerate diagnostic with a fabricated span but a different
@@ -38,7 +38,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use themelios_base::diagnostic::{Diagnostic, DiagnosticId, Label, Severity};
-use themelios_program::program::Part;
+use themelios_program::program::{Part, PartKey};
 use themelios_program::provenance::{Origin, WithProvenance};
 use themelios_program::{Statement, Symbol};
 
@@ -92,10 +92,12 @@ pub trait Backend {
     ///
     /// It opens the run (docs/design/solve.md §6.3): the run's control state
     /// first, then the grounding of the program lowered — a single-shot backend
-    /// grounds here, never in `lower` — then the search, each model delivered
-    /// as the caller reads it. A grounding that fails fails this solve alone and
-    /// leaves the lowered program for the next one (§4.1). A request's time
-    /// budget is a deadline fixed at this call (see [`SolveRequest::time`]).
+    /// grounds here, never in `lower`, and grounds the `base` part alone, a part
+    /// beyond it instantiated only through a multi-shot backend's `ground` —
+    /// then the search, each model delivered as the caller reads it. A grounding
+    /// that fails fails this solve alone and leaves the lowered program for the
+    /// next one (§4.1). A request's time budget is a deadline fixed at this call
+    /// (see [`SolveRequest::time`]).
     fn solve(&mut self, request: &SolveRequest) -> Result<Solved<'_>, Fault>;
 
     /// Required. The bridge (§10): consume a program through a door. On a
@@ -105,7 +107,9 @@ pub trait Backend {
     /// `lower`. It validates and retains (docs/design/solve.md §6.3): its checks
     /// are each bounded by the program's size, it grounds nothing — on a
     /// single-shot backend grounding is `solve`'s, on a multi-shot one `ground`'s
-    /// — and a refused `lower` leaves the program lowered before it (§4.1).
+    /// — and a refused `lower` leaves the program lowered before it (§4.1). A
+    /// single-shot backend that does not admit a part beyond `base` refuses it
+    /// here, naming the part ([`Fault::program_part`], §6.3).
     fn lower(&mut self, door: Door<'_>) -> Result<(), Fault>;
 
     /// Provided. The ground program the backend exposes — the observer, a
@@ -524,9 +528,9 @@ pub enum Mode {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Locus {
     /// The program: a statement the backend refuses — at `lower`, or where its
-    /// engine meets it — or a parse refused at Door A (§10.2). Such a fault
-    /// refers to its source, and is located where that source carries a
-    /// parsed origin.
+    /// engine meets it — a part it does not admit (§6.3), or a parse refused at
+    /// Door A (§10.2). Such a fault refers to its source, and is located where
+    /// that source carries a parsed origin; a part carries none.
     Program,
     /// The request: a presupposition of it that fails — a capability the
     /// backend does not declare (§4.1), a stale statement handle or a spent
@@ -612,7 +616,7 @@ pub enum Presupposition {
     UnrealisableBudget,
 }
 
-/// What a fault refused — closed, one of four, keyed by locus
+/// What a fault refused — closed, one of five, keyed by locus
 /// (docs/design/solve.md §5.4). Closed on purpose: a row grows a typed reason
 /// inside the sum when a consumer first reads one — the `Statement` row, a
 /// router's reason why a backend refused the statement (§12, §14) — never a
@@ -621,6 +625,10 @@ pub enum Presupposition {
 pub enum Refused<'a> {
     /// A program fault refusing a statement, with its provenance.
     Statement(&'a WithProvenance<Statement>),
+    /// A program fault refusing a part of the program the backend does not
+    /// admit, named by its key (§6.3); never located, since a part keeps no
+    /// provenance.
+    Part(&'a PartKey),
     /// A program fault refusing a parse at Door A, its refusal carried whole
     /// (§10.2).
     Parse(&'a NotAdmitted),
@@ -631,10 +639,12 @@ pub enum Refused<'a> {
 }
 
 /// What a fault refused, owned — the storage behind [`Refused`]. A refused
-/// statement or parse is boxed, so a fault that refused nothing stays small.
+/// statement, part, or parse is boxed, so a fault that refused nothing stays
+/// small.
 #[derive(Clone, Debug)]
 enum Refusal {
     Statement(Box<WithProvenance<Statement>>),
+    Part(Box<PartKey>),
     Parse(Box<NotAdmitted>),
     Request(Presupposition),
     Nothing,
@@ -644,13 +654,15 @@ impl PartialEq for Refusal {
     /// A refused statement by its content and its origins — two statements at
     /// different locations differ, annotations alone do not, where the
     /// carrier's own equality compares content alone (docs/design/program.md
-    /// §6.2); a refused parse by its diagnostics; a request by its
-    /// presupposition. O(statement), or O(diagnostics).
+    /// §6.2); a refused part by its key; a refused parse by its diagnostics; a
+    /// request by its presupposition. O(statement), O(part key), or
+    /// O(diagnostics).
     fn eq(&self, other: &Refusal) -> bool {
         match (self, other) {
             (Refusal::Statement(one), Refusal::Statement(two)) => {
                 one.get() == two.get() && one.provenance().origins().eq(two.provenance().origins())
             }
+            (Refusal::Part(one), Refusal::Part(two)) => one == two,
             (Refusal::Parse(one), Refusal::Parse(two)) => one == two,
             (Refusal::Request(one), Refusal::Request(two)) => one == two,
             (Refusal::Nothing, Refusal::Nothing) => true,
@@ -739,6 +751,21 @@ impl Fault {
         )
     }
 
+    /// A program fault refusing a part of the program the backend does not
+    /// admit, named by its key (docs/design/solve.md §5.4, §6.3): a single-shot
+    /// backend whose profile excludes a part beyond `base` refuses the program
+    /// at `lower` with it, never naming a statement in the part. Unlocated,
+    /// since a part keeps no provenance: it lowers to no diagnostic, and renders
+    /// through its message. Total; O(part key).
+    pub fn program_part(message: impl Into<String>, part: &PartKey) -> Fault {
+        Fault::new(
+            Locus::Program,
+            message,
+            Refusal::Part(Box::new(part.clone())),
+            false,
+        )
+    }
+
     /// A request whose presupposition fails, naming it (§5.4). Total;
     /// O(message).
     pub fn request(message: impl Into<String>, presupposition: Presupposition) -> Fault {
@@ -808,11 +835,12 @@ impl Fault {
         self.backend_bug
     }
 
-    /// What the fault refused: a statement, a parse, the request, or nothing.
-    /// Total; O(1).
+    /// What the fault refused: a statement, a part, a parse, the request, or
+    /// nothing. Total; O(1).
     pub fn refused(&self) -> Refused<'_> {
         match &self.refusal {
             Refusal::Statement(statement) => Refused::Statement(statement),
+            Refusal::Part(part) => Refused::Part(part),
             Refusal::Parse(refusal) => Refused::Parse(refusal),
             Refusal::Request(presupposition) => Refused::Request(*presupposition),
             Refusal::Nothing => Refused::Nothing,
@@ -820,11 +848,12 @@ impl Fault {
     }
 
     /// The fault lowered to base diagnostics (§5.4): none for an unlocated
-    /// fault; one for a refused statement with a parsed origin — the least such
-    /// origin its primary label, any others secondaries (docs/design/program.md
-    /// §6.3), under the locus's `solve`-space identity, as an error, since a
-    /// fault defeats the operation it reports on; one per diagnostic for a
-    /// refused parse. Total; O(statement), or O(diagnostics).
+    /// fault, a refused part among them; one for a refused statement with a
+    /// parsed origin — the least such origin its primary label, any others
+    /// secondaries (docs/design/program.md §6.3), under the locus's
+    /// `solve`-space identity, as an error, since a fault defeats the operation
+    /// it reports on; one per diagnostic for a refused parse. Total;
+    /// O(statement), or O(diagnostics).
     pub fn diagnostics(&self) -> Vec<Diagnostic> {
         match &self.refusal {
             Refusal::Statement(statement) => {
@@ -857,7 +886,7 @@ impl Fault {
                 })]
             }
             Refusal::Parse(refusal) => refusal.diagnostics(),
-            Refusal::Request(_) | Refusal::Nothing => Vec::new(),
+            Refusal::Part(_) | Refusal::Request(_) | Refusal::Nothing => Vec::new(),
         }
     }
 }

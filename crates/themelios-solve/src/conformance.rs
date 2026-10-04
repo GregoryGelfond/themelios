@@ -52,7 +52,11 @@
 //! degrading silently, while a budget nothing realises refuses as unrealisable;
 //! an enumerating backend's declared budget cuts an enumeration it cannot finish
 //! within, concluding at the budget, never as closing the space; the native
-//! door's answer is its known one, no model over a program with none.
+//! door's answer is its known one, no model over a program with none. **Only
+//! the base grounds** (§6.3): over a program with a part beyond `base`, through
+//! both doors, a single-shot backend answers as its base alone denotes, or
+//! refuses at `lower` naming the part by its key, never grounding the part or
+//! naming a statement in it; a multi-shot backend's is reported not driven.
 //!
 //! The named pathologies are unconstructible in the vocabulary (§5.3). The suite
 //! attempts the two a backend could reach at run time — a touched stream passing
@@ -160,6 +164,7 @@ pub fn run(backend: &mut dyn Backend) -> ConformanceReport {
             capability_is_honest(backend, capability, &corpus),
         )
     }));
+    entries.push((Check::OnlyTheBaseGrounds, only_the_base_grounds(backend)));
     ConformanceReport { entries }
 }
 
@@ -258,6 +263,11 @@ pub enum Check {
     /// capability — a budget, as unrealisable — or answers nothing (§4.1, §4.2,
     /// §6.3).
     Capability(Capability),
+    /// A single-shot solve grounds the `base` part alone (§6.3): over a program
+    /// with a part beyond it, through both doors, the backend answers as its
+    /// base denotes, or refuses at `lower` naming the part by its key, never
+    /// grounding the part or naming a statement in it.
+    OnlyTheBaseGrounds,
 }
 
 impl fmt::Display for Check {
@@ -293,6 +303,9 @@ impl fmt::Display for Check {
                 f.write_str("a backend's own state follows its refusals and rebuilds")
             }
             Check::Capability(capability) => write!(f, "the declaration of {capability} is honest"),
+            Check::OnlyTheBaseGrounds => {
+                f.write_str("a single-shot solve grounds the base part alone")
+            }
         }
     }
 }
@@ -417,6 +430,11 @@ pub enum Skip {
     /// The backend refused, faulted, or ran on at a step before the obligation,
     /// as the failure says — a failure the check that owns that step reports.
     Undriven(Failure),
+    /// The obligation binds a single-shot backend, and this one is multi-shot:
+    /// it instantiates its parts through `ground`, and whether its search
+    /// covers a part lowered but not yet grounded the contract does not yet say
+    /// (§4.1).
+    MultiShot,
 }
 
 impl fmt::Display for Skip {
@@ -428,6 +446,9 @@ impl fmt::Display for Skip {
                 "the backend decides without enumerating, so no search of the suite's stays open to cut",
             ),
             Skip::Undriven(failure) => write!(f, "could not be driven: {failure}"),
+            Skip::MultiShot => f.write_str(
+                "the backend is multi-shot, and its search over parts not yet grounded is unsettled",
+            ),
         }
     }
 }
@@ -644,6 +665,18 @@ const ECHOED_CALL: &str = "p(@echo(1)).";
 /// The source id the unsafe program is raised under: one no corpus program has
 /// (theirs count up from zero), so a location in any of them is not its own.
 const UNSAFE_SOURCE: SourceId = SourceId::new(u32::MAX);
+
+/// The program whose `base` part holds the fact `q` and whose part `step(t)`
+/// holds `p(t)`: obligation 12's probe (§6.3).
+const PARTS: &str = "q. #program step(t). p(t).";
+
+/// The source id obligation 12's probe is admitted under: one no corpus program
+/// has, and not the unsafe program's.
+const PARTS_SOURCE: SourceId = SourceId::new(u32::MAX - 1);
+
+/// The source id the fact obligation 12 lowers before its probe is admitted
+/// under, apart from the probe's.
+const PARTS_FACT_SOURCE: SourceId = SourceId::new(u32::MAX - 2);
 
 /// A corpus entry: how a verdict names the program, its source, and its
 /// models — each answer set beside its display.
@@ -1707,6 +1740,142 @@ fn rebuilt(backend: &mut dyn Backend) -> Result<(), Shortfall> {
         ));
     }
     Ok(())
+}
+
+/// A single-shot solve grounds the `base` part alone (docs/design/solve.md
+/// §6.3, §13.1 obligation 12): over [`PARTS`], through both doors, the backend
+/// answers `{q}` — where it enumerates, its one answer set, its search closing
+/// the space — or refuses at `lower` with a Program fault naming the part
+/// `step(t)` by its key, the fact `a.` lowered before it still answering
+/// `{a}`; never a model holding `p`, never a refusal naming a statement. Not
+/// driven over a multi-shot backend (§4.1).
+fn only_the_base_grounds(backend: &mut dyn Backend) -> Verdict {
+    let capabilities = backend.capabilities();
+    if capabilities.declares(Capability::MultiShot) {
+        return Verdict::Skipped(Skip::MultiShot);
+    }
+    verdict_of(base_alone(backend, &capabilities))
+}
+
+/// Obligation 12's probe, through Door B and then Door A: the fact `a.` lowered
+/// first through the same door and answered `{a}` — a door the backend refuses
+/// outright, or a fact it misanswers, leaves the check undriven — then
+/// [`PARTS`] either answered as its base or refused as the part, the fact then
+/// still answering.
+fn base_alone(backend: &mut dyn Backend, capabilities: &Capabilities) -> Result<(), Shortfall> {
+    let fact = program_of(FACT);
+    let fact_admitted = admitted_under(PARTS_FACT_SOURCE, FACT);
+    let program = program_of(PARTS);
+    let admitted = admitted_under(PARTS_SOURCE, PARTS);
+    let doors = [
+        (Door::Program(&fact), Door::Program(&program)),
+        (Door::Parsed(&fact_admitted), Door::Parsed(&admitted)),
+    ];
+    for (before, door) in doors {
+        backend.lower(before).map_err(|fault| {
+            Shortfall::Undriven(
+                Failure::new(Breach::Refused, refused_program(FACT)).with_fault(fault),
+            )
+        })?;
+        fact_answered(backend).map_err(Shortfall::Undriven)?;
+        match backend.lower(door) {
+            Ok(()) => base_answered(backend, capabilities)?,
+            Err(fault) => {
+                part_refused(&fault)?;
+                fact_stays(backend)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A solve of the fact `a.`, lowered, answers `{a}`; the failure says how it did
+/// not.
+fn fact_answered(backend: &mut dyn Backend) -> Result<(), Failure> {
+    let mut solved = solve(backend)?;
+    let read = pull(&mut solved, 1).map_err(faulted)?;
+    if read.sets == [answer_set([constant("a")])] {
+        Ok(())
+    } else {
+        Err(Failure::new(
+            Breach::Misanswered,
+            "the fact `a.` was not answered as known",
+        ))
+    }
+}
+
+/// After a refused part, the fact `a.` lowered before it, which answered `{a}`
+/// before the refusal, still answers `{a}` (§4.1's transactional `lower`).
+fn fact_stays(backend: &mut dyn Backend) -> Result<(), Shortfall> {
+    fact_answered(backend).map_err(|failure| {
+        let broken = Failure::new(
+            failure.breach(),
+            "a refused part did not leave the program lowered before it",
+        );
+        Shortfall::Broke(match failure.fault() {
+            Some(fault) => broken.with_fault(fault.clone()),
+            None => broken,
+        })
+    })
+}
+
+/// A refusal of [`PARTS`] is a Program fault naming the part `step(t)` by its
+/// key — not a statement in it, another part, or another locus.
+fn part_refused(fault: &Fault) -> Result<(), Shortfall> {
+    let names_the_part = fault.locus() == Locus::Program
+        && matches!(fault.refused(), Refused::Part(part) if is_the_step_part(part));
+    if names_the_part {
+        Ok(())
+    } else {
+        Err(Shortfall::Broke(
+            Failure::new(
+                Breach::Mislocated,
+                "a program with a part beyond the base was refused, but not as that part",
+            )
+            .with_fault(fault.clone()),
+        ))
+    }
+}
+
+/// Whether `part` is [`PARTS`]'s part beyond the base, `step(t)`.
+fn is_the_step_part(part: &PartKey) -> bool {
+    part.name.as_str() == "step" && matches!(&part.formals[..], [formal] if formal.as_str() == "t")
+}
+
+/// A solve of [`PARTS`], lowered, grounds nothing of its part `step(t)`: a model
+/// holding `p` breaks the obligation, and so does a refusal at the solve or in
+/// its stream, since a part the backend does not admit is refused at `lower`.
+/// An answer other than its base's `{q}` — every model `{q}`, and where the
+/// backend enumerates, `{q}` its one answer set, its search closing the space —
+/// is outcome correctness's to fail, leaving this check undriven.
+fn base_answered(backend: &mut dyn Backend, capabilities: &Capabilities) -> Result<(), Shortfall> {
+    let base = answer_set([constant("q")]);
+    let mut solved = solve(backend).map_err(Shortfall::Broke)?;
+    let read = pull(&mut solved, 1).map_err(|fault| Shortfall::Broke(faulted(fault)))?;
+    let holds_the_part = |set: &AnswerSet| {
+        set.iter()
+            .any(|atom| atom.name().is_some_and(|name| name.as_str() == "p"))
+    };
+    if read.sets.iter().any(holds_the_part) {
+        return Err(broke(
+            Breach::Misanswered,
+            "a solve grounded a part beyond the base",
+        ));
+    }
+    let closes_on_the_base = !read.sets.is_empty()
+        && read.sets.iter().all(|set| *set == base)
+        && (!capabilities.enumeration
+            || (read.ended
+                && read.sets.len() == 1
+                && solved.conclusion() == Some(Conclusion::Exhausted)));
+    if closes_on_the_base {
+        Ok(())
+    } else {
+        Err(Shortfall::Undriven(Failure::new(
+            Breach::Misanswered,
+            "the base `{q}` was not answered as known",
+        )))
+    }
 }
 
 /// The shortfall of an obligation broken by `breach`, as `detail` says.
@@ -2867,6 +3036,7 @@ mod tests {
             Skip::Undeclared(Capability::Cancellation),
             Skip::Deciding,
             Skip::Undriven(Failure::new(Breach::Refused, "the solve was refused")),
+            Skip::MultiShot,
         ];
         let reasons: BTreeSet<String> = skips.iter().map(ToString::to_string).collect();
         assert_eq!(reasons.len(), skips.len());

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use themelios_base::span::{ByteOffset, Location, Span};
-use themelios_program::program::Part;
+use themelios_program::program::{Part, PartKey};
 use themelios_program::raise::raise_str;
 use themelios_program::{
     Dialect, Name, Origin, Program, Provenance, Sign, SourceId, Statement, Symbol, WithProvenance,
@@ -99,6 +99,10 @@ const UNBOUNDED: &str = "{ a(1..40) }.";
 /// The even loop the suite's stale pulls solve after: two answer sets.
 const EVEN_LOOP: &str = "a :- not b. b :- not a.";
 
+/// The suite's parts probe: `q` in the base part, `p(t)` in the part `step(t)`
+/// beyond it. A single-shot solve grounds the base alone: `{q}`.
+const PARTS: &str = "q. #program step(t). p(t).";
+
 /// How the stub answers a program.
 enum Answers {
     /// These answer sets, known independently of any engine.
@@ -129,6 +133,7 @@ fn table() -> Vec<(&'static str, Program, Answers)> {
     let known = |sets: Vec<AnswerSet>| Answers::Known(sets);
     vec![
         ("", known(vec![set([])])),
+        (PARTS, known(vec![set([constant("q")])])),
         ("a.", known(vec![set([constant("a")])])),
         (
             "a :- not b. b :- not a.",
@@ -575,6 +580,31 @@ enum Flaw {
     /// None: cuts a cancelled search having yielded exactly the most models the
     /// cut reads after the pull — honest at the cap's edge.
     FillsTheCancellationsCap,
+    /// None: refuses a program with a part beyond the base at `lower`, naming
+    /// the part by its key — a profile that admits the base alone.
+    RefusesThePartBeyondTheBase,
+    /// Grounds the part beyond the base, its formal read as a constant.
+    GroundsThePartBeyondTheBase,
+    /// Refuses a program with a part beyond the base, naming a statement in
+    /// the part.
+    BlamesAStatementInThePart,
+    /// Refuses a program with a part beyond the base as an unsupported request.
+    RefusesThePartAsUnsupported,
+    /// Refuses a program with a part beyond the base, naming the part without
+    /// its formals.
+    MisnamesThePart,
+    /// Refuses a program with a part beyond the base, naming the part, yet holds
+    /// that program in place of the one lowered before.
+    KeepsARefusedPart,
+    /// Refuses a program with a part beyond the base, naming the part, and
+    /// drops the program lowered before.
+    LosesTheProgramOnARefusedPart,
+    /// Admits a program with a part beyond the base, then refuses its solve,
+    /// naming the part.
+    RefusesThePartAtTheSolve,
+    /// Admits a program with a part beyond the base, then faults its stream,
+    /// naming the part.
+    RefusesThePartInTheStream,
     /// Ends its unbudgeted search of the program no search finishes before its
     /// first model, as though its space were empty.
     EndsTheUnboundedSearchAtOnce,
@@ -797,6 +827,60 @@ impl Run for Streaming {
     }
 }
 
+/// The refusal `flaw` makes of the parts probe's `program`, if any: the part
+/// named by its key, honestly; a statement in it, the part without its formals,
+/// or an unsupported request, under the flaws that misname it.
+fn refuse_the_part(flaw: Flaw, program: &Program) -> Result<(), Fault> {
+    let part = program
+        .parts()
+        .find(|part| part.key().name.as_str() == "step")
+        .expect("the probe holds the part step(t)");
+    let refused = "the stub admits the base part alone";
+    match flaw {
+        Flaw::RefusesThePartBeyondTheBase
+        | Flaw::KeepsARefusedPart
+        | Flaw::LosesTheProgramOnARefusedPart => Err(Fault::program_part(refused, part.key())),
+        Flaw::BlamesAStatementInThePart => Err(Fault::program(
+            refused,
+            part.statements().next().expect("the part holds p(t)"),
+        )),
+        Flaw::RefusesThePartAsUnsupported => Err(Fault::unsupported(Capability::MultiShot)),
+        Flaw::MisnamesThePart => Err(Fault::program_part(
+            refused,
+            &PartKey {
+                name: part.key().name.clone(),
+                formals: Vec::new(),
+            },
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// The refusal of the parts probe that `flaw` makes after admitting it, if any:
+/// the part named at the solve, or in its stream, rather than at `lower`.
+fn refuse_the_part_late(flaw: Flaw) -> Option<Result<Solved<'static>, Fault>> {
+    let refusal = || {
+        let part = program(PARTS)
+            .parts()
+            .find(|part| part.key().name.as_str() == "step")
+            .map(|part| part.key().clone())
+            .expect("the probe holds the part step(t)");
+        Fault::program_part("the stub admits the base part alone", &part)
+    };
+    match flaw {
+        Flaw::RefusesThePartAtTheSolve => Some(Err(refusal())),
+        Flaw::RefusesThePartInTheStream => Some(Ok(Solved::running(
+            Box::new(Faulting {
+                first: None,
+                fault: Some(refusal()),
+            }),
+            Scenario::default(),
+            ShowRule::default(),
+        ))),
+        _ => None,
+    }
+}
+
 /// A cancellation primitive that cuts nothing short now and stops the next run
 /// instead — a pull carried past the run it was pulled during.
 struct Carried(Arc<AtomicBool>);
@@ -939,6 +1023,11 @@ impl Stub {
                 sets.push(set([constant("a"), constant("b")]));
             }
             Flaw::ShiftsTheHeadCycle if source == HEAD_CYCLE => sets.clear(),
+            Flaw::GroundsThePartBeyondTheBase if source == PARTS => {
+                for set in &mut sets {
+                    set.insert(atom("p", [constant("t")], Sign::Positive));
+                }
+            }
             Flaw::OptimizesTheSolve if source == OBJECTIVE => sets.retain(AnswerSet::is_empty),
             Flaw::YieldsANumber => {
                 if let Some(first) = sets.first_mut() {
@@ -1334,6 +1423,11 @@ impl Backend for Stub {
                 GroundsAt::Lowering => {}
             }
         }
+        if self.loaded_source() == Some(PARTS)
+            && let Some(late) = refuse_the_part_late(self.flaw)
+        {
+            return late;
+        }
         if request.time.is_some() && self.flaw == Flaw::MisanswersATimedSolve {
             return Ok(self.enumerate(vec![set([constant("stranger")])], Scenario::default()));
         }
@@ -1413,6 +1507,14 @@ impl Backend for Stub {
             .iter()
             .position(|(_, program, _)| program == lowered)
             .ok_or_else(|| Fault::engine("the program is outside the stub's table"))?;
+        if self.table[index].0 == PARTS {
+            match self.flaw {
+                Flaw::KeepsARefusedPart => self.keep(index),
+                Flaw::LosesTheProgramOnARefusedPart => self.loaded.clear(),
+                _ => {}
+            }
+            refuse_the_part(self.flaw, lowered)?;
+        }
         if self.flaw == Flaw::RefusesTheExternalProgram && self.table[index].0 == EXTERNAL {
             return Err(Fault::engine("the stub declares no external atom"));
         }
@@ -1982,6 +2084,42 @@ fn a_cancelling_enumerator_meets_the_cancellation_obligation() {
 }
 
 #[test]
+fn a_single_shot_backend_grounding_the_base_alone_meets_the_base_obligation() {
+    let report = report(enumerating(), Flaw::Faithful);
+    assert_eq!(
+        report.verdict(Check::OnlyTheBaseGrounds),
+        Some(&Verdict::Passed),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_deciding_backend_grounding_the_base_alone_meets_the_base_obligation() {
+    let report = report(deciding(), Flaw::Faithful);
+    assert_eq!(
+        report.verdict(Check::OnlyTheBaseGrounds),
+        Some(&Verdict::Passed),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_refusal_naming_the_part_meets_the_base_obligation() {
+    let report = report(enumerating(), Flaw::RefusesThePartBeyondTheBase);
+    assert!(report.is_conformant(), "{report}");
+}
+
+#[test]
+fn a_multi_shot_backend_s_parts_are_not_driven() {
+    let report = report(realising(), Flaw::Faithful);
+    assert_eq!(
+        skip(&report, Check::OnlyTheBaseGrounds),
+        Some(&Skip::MultiShot),
+        "{report}"
+    );
+}
+
+#[test]
 fn an_ignored_cancellation_fails_as_never_cut() {
     let report = report(realising(), Flaw::IgnoresTheCancellation);
     let Some(Verdict::Failed(failure)) = report.verdict(Check::CancellationIsNotExhaustion) else {
@@ -2117,10 +2255,50 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
     use Check::{
         BackendState as State, CancellationIsNotExhaustion as Cancellation, Capability as Declared,
         Display as Displayed, ExhaustionIsEarned as Earned, FaultLoci as Faults,
-        GroundProgramIsFaithful as Ground, OutcomeCorrectness as Outcome,
-        RebuildLeavesNothingBehind as Rebuild,
+        GroundProgramIsFaithful as Ground, OnlyTheBaseGrounds as Base,
+        OutcomeCorrectness as Outcome, RebuildLeavesNothingBehind as Rebuild,
     };
     let table: Vec<Expectation> = vec![
+        (
+            Flaw::GroundsThePartBeyondTheBase,
+            enumerating(),
+            vec![(Base, Misanswered)],
+        ),
+        (
+            Flaw::BlamesAStatementInThePart,
+            enumerating(),
+            vec![(Base, Mislocated)],
+        ),
+        (
+            Flaw::RefusesThePartAsUnsupported,
+            enumerating(),
+            vec![(Base, Mislocated)],
+        ),
+        (
+            Flaw::MisnamesThePart,
+            enumerating(),
+            vec![(Base, Mislocated)],
+        ),
+        (
+            Flaw::KeepsARefusedPart,
+            enumerating(),
+            vec![(Base, Misanswered)],
+        ),
+        (
+            Flaw::LosesTheProgramOnARefusedPart,
+            enumerating(),
+            vec![(Base, Refused)],
+        ),
+        (
+            Flaw::RefusesThePartAtTheSolve,
+            enumerating(),
+            vec![(Base, Refused)],
+        ),
+        (
+            Flaw::RefusesThePartInTheStream,
+            enumerating(),
+            vec![(Base, Refused)],
+        ),
         (
             Flaw::DropsAnAnswerSet,
             enumerating(),
