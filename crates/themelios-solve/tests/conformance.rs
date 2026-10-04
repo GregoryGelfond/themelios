@@ -96,6 +96,9 @@ const UNSAFE_FACT: &str = "p(X).";
 /// enumerates within a budget — the program the time budget's cut is asked of.
 const UNBOUNDED: &str = "{ a(1..40) }.";
 
+/// The even loop the suite's stale pulls solve after: two answer sets.
+const EVEN_LOOP: &str = "a :- not b. b :- not a.";
+
 /// How the stub answers a program.
 enum Answers {
     /// These answer sets, known independently of any engine.
@@ -555,6 +558,23 @@ enum Flaw {
     /// Discards its lowered program when a grounding fails within its
     /// single-shot solve, staying ready over nothing.
     DiscardsTheProgramOnAFailedSolve,
+    /// Hands out a primitive that cuts nothing: a cancelled search runs on.
+    IgnoresTheCancellation,
+    /// Concludes a cancelled search as closing the space.
+    ExhaustsACancelledSearch,
+    /// Concludes a cancelled search at its budget, though none was set.
+    CutsACancelledSearchAtTheBudget,
+    /// Faults a cancelled search rather than concluding it.
+    FaultsACancelledSearch,
+    /// Carries a pull made with no solve in flight into the next solve, cutting
+    /// the even loop's.
+    CarriesAStalePull,
+    /// Ends its unbudgeted search of the program no search finishes before its
+    /// first model, as though its space were empty.
+    EndsTheUnboundedSearchAtOnce,
+    /// Faults its unbudgeted search of the program no search finishes before its
+    /// first model.
+    FaultsTheUnboundedSearchAtOnce,
     /// Meets another failure than the grounding's on the solve after a failed
     /// one: a resource failure, though the program it grounds is unchanged.
     MeetsAnotherFailureOnASecondSolve,
@@ -702,6 +722,67 @@ impl Cancel for Unheeded {
     fn cancel(&self) {}
 }
 
+/// The stub's own primitive: a pull reaches the slot its streaming run reads.
+/// Each solve opens a fresh window, so a pull made with no solve in flight
+/// reaches no later run.
+struct Pulls(Arc<AtomicBool>);
+
+impl Cancel for Pulls {
+    fn cancel(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// What a streaming run does when it reads a pull.
+#[derive(Clone, Copy)]
+enum OnPull {
+    /// It ends at this conclusion — `Interrupted`, for an honest run.
+    Concludes(Conclusion),
+    /// It ends at a fault, with no conclusion.
+    Faults,
+}
+
+/// A search of the program no search finishes, unbudgeted: a model `{a(n)}`, each
+/// different, on every read, until it reads the pull in `slot`; then the end as
+/// `on_pull` says. A pull it reads closes the window, clearing the slot.
+struct Streaming {
+    slot: Arc<AtomicBool>,
+    on_pull: OnPull,
+    yielded: i32,
+    ended: Option<Conclusion>,
+    faulted: bool,
+}
+
+impl Run for Streaming {
+    fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+        if self.ended.is_some() || self.faulted {
+            return None;
+        }
+        if self.slot.swap(false, Ordering::SeqCst) {
+            return match self.on_pull {
+                OnPull::Concludes(conclusion) => {
+                    self.ended = Some(conclusion);
+                    None
+                }
+                OnPull::Faults => {
+                    self.faulted = true;
+                    Some(Err(Fault::engine("the stub faulted at the cancellation")))
+                }
+            };
+        }
+        self.yielded += 1;
+        Some(Ok(Model::of(set([atom(
+            "a",
+            [Symbol::number(self.yielded)],
+            Sign::Positive,
+        )]))))
+    }
+
+    fn conclusion(&self) -> Option<Conclusion> {
+        self.ended
+    }
+}
+
 /// A cancellation primitive that cuts nothing short now and stops the next run
 /// instead — a pull carried past the run it was pulled during.
 struct Carried(Arc<AtomicBool>);
@@ -746,6 +827,8 @@ struct Stub {
     /// A cancellation pulled and carried to the next run, under the flaw that
     /// carries it.
     carried: Arc<AtomicBool>,
+    /// The slot the stub's own primitive pulls and its streaming run reads.
+    slot: Arc<AtomicBool>,
     /// The last scoped solve's scenario, which a leaking stub keeps.
     leaked: Scenario,
     /// The door the last program lowered came through.
@@ -778,6 +861,7 @@ impl Stub {
             functions: Vec::new(),
             failed_solve: false,
             carried: Arc::new(AtomicBool::new(false)),
+            slot: Arc::new(AtomicBool::new(false)),
             leaked: Scenario::default(),
             through: Through::Program,
         }
@@ -1014,6 +1098,45 @@ impl Stub {
         Solved::running(run, scenario, self.show_rule())
     }
 
+    /// The handle over the unbudgeted search of the program no search finishes:
+    /// it streams until it reads a pull, then ends as the stub's flaw says —
+    /// `Interrupted`, honestly.
+    fn stream(&self, scenario: Scenario) -> Solved<'static> {
+        match self.flaw {
+            Flaw::EndsTheUnboundedSearchAtOnce => {
+                return self.enumerate(Vec::new(), scenario);
+            }
+            Flaw::FaultsTheUnboundedSearchAtOnce => {
+                return Solved::running(
+                    Box::new(Faulting {
+                        first: None,
+                        fault: Some(Fault::engine("the stub's unbounded search faulted at once")),
+                    }),
+                    scenario,
+                    self.show_rule(),
+                );
+            }
+            _ => {}
+        }
+        let on_pull = match self.flaw {
+            Flaw::ExhaustsACancelledSearch => OnPull::Concludes(Conclusion::Exhausted),
+            Flaw::CutsACancelledSearchAtTheBudget => OnPull::Concludes(Conclusion::Budget),
+            Flaw::FaultsACancelledSearch => OnPull::Faults,
+            _ => OnPull::Concludes(Conclusion::Interrupted),
+        };
+        Solved::running(
+            Box::new(Streaming {
+                slot: Arc::clone(&self.slot),
+                on_pull,
+                yielded: 0,
+                ended: None,
+                faulted: false,
+            }),
+            scenario,
+            self.show_rule(),
+        )
+    }
+
     /// The handle over `sets`, ranging over `scenario`: every set when the stub
     /// enumerates; otherwise the first, as a witness.
     fn enumerate(&self, mut sets: Vec<AnswerSet>, scenario: Scenario) -> Solved<'static> {
@@ -1219,8 +1342,30 @@ impl Backend for Stub {
         } else {
             Scenario::default()
         };
+        // Each solve opens a fresh window for the stub's primitive (§4.1): a pull
+        // made with no solve in flight reaches no later run — unless its flaw
+        // carries it, cutting the even loop's solve.
+        let stale = self.slot.swap(false, Ordering::SeqCst);
+        if stale && self.flaw == Flaw::CarriesAStalePull && self.loaded_source() == Some(EVEN_LOOP)
+        {
+            return Ok(Solved::running(
+                Box::new(Enumeration {
+                    sets: Vec::new().into_iter(),
+                    terms: Vec::new(),
+                    terminal: Conclusion::Interrupted,
+                    concludes: true,
+                    ended: false,
+                }),
+                ranged,
+                self.show_rule(),
+            ));
+        }
         if self.loaded_source() == Some(UNBOUNDED) {
-            return Ok(self.cut(sets, ranged));
+            return Ok(if request.time.is_none() && self.capabilities.enumeration {
+                self.stream(ranged)
+            } else {
+                self.cut(sets, ranged)
+            });
         }
         Ok(self.enumerate(sets, ranged))
     }
@@ -1306,12 +1451,12 @@ impl Backend for Stub {
             Flaw::OffersAnUndeclaredInterrupt => true,
             _ => self.capabilities.cancellation,
         };
-        offered.then(|| {
-            if self.flaw == Flaw::CarriesACancellation {
+        offered.then(|| match self.flaw {
+            Flaw::CarriesACancellation => {
                 Box::new(Carried(Arc::clone(&self.carried))) as Box<dyn Cancel>
-            } else {
-                Box::new(Unheeded) as Box<dyn Cancel>
             }
+            Flaw::IgnoresTheCancellation => Box::new(Unheeded) as Box<dyn Cancel>,
+            _ => Box::new(Pulls(Arc::clone(&self.slot))) as Box<dyn Cancel>,
         })
     }
 
@@ -1798,11 +1943,33 @@ fn the_structural_pathologies_are_attempted() {
 }
 
 #[test]
-fn the_cancellation_check_is_skipped_while_no_search_can_be_cancelled() {
+fn a_cancelling_enumerator_meets_the_cancellation_obligation() {
     let report = report(realising(), Flaw::Faithful);
     assert_eq!(
+        report.verdict(Check::CancellationIsNotExhaustion),
+        Some(&Verdict::Passed),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_deciding_backend_s_cancellation_is_not_driven() {
+    let mut capabilities = deciding();
+    capabilities.cancellation = true;
+    let report = report(capabilities, Flaw::Faithful);
+    assert_eq!(
         skip(&report, Check::CancellationIsNotExhaustion),
-        Some(&Skip::Reserved),
+        Some(&Skip::Deciding),
+        "{report}"
+    );
+}
+
+#[test]
+fn an_undeclared_cancellation_skips_its_obligation() {
+    let report = report(enumerating(), Flaw::Faithful);
+    assert_eq!(
+        skip(&report, Check::CancellationIsNotExhaustion),
+        Some(&Skip::Undeclared(Capability::Cancellation)),
         "{report}"
     );
 }
@@ -1878,9 +2045,10 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
     use Breach::{Accepted, Misanswered, Mislocated, Refused};
     use Capability as C;
     use Check::{
-        BackendState as State, Capability as Declared, Display as Displayed,
-        ExhaustionIsEarned as Earned, FaultLoci as Faults, GroundProgramIsFaithful as Ground,
-        OutcomeCorrectness as Outcome, RebuildLeavesNothingBehind as Rebuild,
+        BackendState as State, CancellationIsNotExhaustion as Cancellation, Capability as Declared,
+        Display as Displayed, ExhaustionIsEarned as Earned, FaultLoci as Faults,
+        GroundProgramIsFaithful as Ground, OutcomeCorrectness as Outcome,
+        RebuildLeavesNothingBehind as Rebuild,
     };
     let table: Vec<Expectation> = vec![
         (
@@ -2115,7 +2283,42 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
         (
             Flaw::CarriesACancellation,
             realising(),
-            vec![(Rebuild, Misanswered)],
+            vec![(Cancellation, Misanswered), (Rebuild, Misanswered)],
+        ),
+        (
+            Flaw::IgnoresTheCancellation,
+            realising(),
+            vec![(Cancellation, Misanswered)],
+        ),
+        (
+            Flaw::ExhaustsACancelledSearch,
+            realising(),
+            vec![(Cancellation, Misanswered)],
+        ),
+        (
+            Flaw::CutsACancelledSearchAtTheBudget,
+            realising(),
+            vec![(Cancellation, Misanswered)],
+        ),
+        (
+            Flaw::FaultsACancelledSearch,
+            realising(),
+            vec![(Cancellation, Refused)],
+        ),
+        (
+            Flaw::CarriesAStalePull,
+            realising(),
+            vec![(Cancellation, Misanswered)],
+        ),
+        (
+            Flaw::EndsTheUnboundedSearchAtOnce,
+            realising(),
+            vec![(Cancellation, Misanswered)],
+        ),
+        (
+            Flaw::FaultsTheUnboundedSearchAtOnce,
+            realising(),
+            vec![(Cancellation, Refused)],
         ),
         (
             Flaw::ObservesWhileNeedingARebuild,

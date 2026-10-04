@@ -61,14 +61,16 @@
 //! The third — an enumeration reporting an improving trajectory — is a
 //! compile-time fact the crate's compile-fail witnesses pin, as is the absent
 //! public constructor of a proven optimum, which closes the last gap. That a
-//! cancelled search never concludes as closing the space is reported skipped:
-//! the interrupt handle is reserved, so no search can yet be cancelled through
-//! it.
+//! cancelled search never concludes as closing the space is driven for a backend
+//! that declares cancellation and enumerates: an active, unfinished search is cut
+//! through the backend's primitive, and a pull with no solve in flight cuts no
+//! later solve. A deciding backend's cut is reported not driven.
 //!
 //! Every stream the suite reads, it reads to a bound — one model past its
-//! program's answer sets, or, for the time budget's cut, the cut's cap and one
-//! more — so a run that never ends is caught at that bound rather than holding
-//! the suite: outcome correctness fails it there, as does a capability's probe.
+//! program's answer sets, or, for the time budget's cut and the cancellation's,
+//! the cut's cap and one more — so a run that never ends is caught at that
+//! bound rather than holding the suite: outcome correctness fails it there, as
+//! does a capability's probe, and the cancellation check.
 //! A check that cannot be driven over a backend — its program refused, its
 //! stream faulted or run past its bound — is skipped with the failure that
 //! stopped it, and the check that owns that failure fails. A program only a
@@ -92,8 +94,8 @@ use themelios_syntax::parse;
 use crate::agent::{Assumption, Scenario};
 use crate::bridge::{Admitted, Door};
 use crate::contract::{
-    Backend, Capabilities, Capability, ConsequenceRequest, Fault, GroundOptions, Locus, Mode,
-    OptimizeRequest, Presupposition, Refused, SolveRequest, TruthValue,
+    Backend, Cancel, Capabilities, Capability, ConsequenceRequest, Fault, GroundOptions, Locus,
+    Mode, OptimizeRequest, Presupposition, Refused, SolveRequest, TruthValue,
 };
 use crate::extend::{Function, GroundFault, Propagator};
 use crate::outcome::{
@@ -229,7 +231,8 @@ pub enum Check {
     InconsistencyIsExhausted,
     /// A stream once touched cannot yield a complete collection (§5.3).
     TruncationCannotPoseAsComplete,
-    /// A cancelled search never concludes as closing the space.
+    /// A cancelled search never concludes as closing the space, and a pull with no
+    /// solve in flight cancels no later solve (§4.1, §6.3).
     CancellationIsNotExhaustion,
     /// A declared observer answers once a grounding has finished, every ground
     /// rule naming a statement of the program lowered, and the fact `a.`
@@ -406,9 +409,10 @@ impl fmt::Display for Verdict {
 pub enum Skip {
     /// The obligation rests on a capability the backend does not declare.
     Undeclared(Capability),
-    /// The contract reserves what the check needs — the interrupt handle — so
-    /// no backend can yet be driven through it.
-    Reserved,
+    /// The obligation binds an enumerating backend, and this one decides: over
+    /// the corpus it stops at its first witness, and the suite carries no program
+    /// it can rely on to keep such a backend searching long enough to cut.
+    Deciding,
     /// The backend refused, faulted, or ran on at a step before the obligation,
     /// as the failure says — a failure the check that owns that step reports.
     Undriven(Failure),
@@ -419,8 +423,8 @@ impl fmt::Display for Skip {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Skip::Undeclared(capability) => write!(f, "the backend does not declare {capability}"),
-            Skip::Reserved => f.write_str(
-                "the contract reserves the interrupt handle, so no search can yet be cancelled through it",
+            Skip::Deciding => f.write_str(
+                "the backend decides without enumerating, so no search of the suite's stays open to cut",
             ),
             Skip::Undriven(failure) => write!(f, "could not be driven: {failure}"),
         }
@@ -1249,17 +1253,136 @@ fn truncation_cannot_pose_as_complete(backend: &mut dyn Backend, corpus: &[Case]
     })
 }
 
-/// A cancelled search never concludes as closing the space — nor does a pull
-/// with no search in flight cancel a later one (§4.1). Not yet drivable: the
-/// interrupt handle is reserved, so no search can be cancelled through it.
-fn cancellation_is_not_exhaustion(backend: &dyn Backend) -> Verdict {
-    Verdict::Skipped(
-        if backend.capabilities().declares(Capability::Cancellation) {
-            Skip::Reserved
-        } else {
-            Skip::Undeclared(Capability::Cancellation)
-        },
+/// A cancelled search never concludes as closing the space, nor does a pull
+/// with no solve in flight cancel a later one (§4.1, §6.3). Driven for a backend
+/// that declares cancellation and enumerates: over a program no search
+/// finishes, one model read and then the backend's primitive pulled, the run
+/// concludes `Interrupted` within the cut's cap of further reads; and a pull
+/// before a solve, after a run ended, and after a handle dropped leaves the next
+/// solve of the even loop closing its space with its two answer sets. A deciding
+/// backend's cut is not driven.
+fn cancellation_is_not_exhaustion(backend: &mut dyn Backend) -> Verdict {
+    let capabilities = backend.capabilities();
+    if !capabilities.declares(Capability::Cancellation) {
+        return Verdict::Skipped(Skip::Undeclared(Capability::Cancellation));
+    }
+    if !capabilities.enumeration {
+        return Verdict::Skipped(Skip::Deciding);
+    }
+    let Some(primitive) = backend.interrupt() else {
+        // A declared cancellation with no primitive is the honesty check's to fail.
+        return Verdict::Skipped(Skip::Undriven(Failure::new(
+            Breach::Refused,
+            "the backend declares cancellation but hands out no primitive",
+        )));
+    };
+    verdict_of(
+        cut_concludes_interrupted(backend, primitive.as_ref())
+            .and_then(|()| stale_pulls_cut_nothing(backend, primitive.as_ref())),
     )
+}
+
+/// The active cut (§13.1, obligation 6): over the program no search finishes, a
+/// model read — so the search is active and unfinished — then the primitive
+/// pulled, and the stream read to its end within the cut's cap: it concludes
+/// `Interrupted`, neither faulting, running on past the cap, nor concluding
+/// otherwise.
+fn cut_concludes_interrupted(
+    backend: &mut dyn Backend,
+    primitive: &dyn Cancel,
+) -> Result<(), Shortfall> {
+    load_source(backend, UNBOUNDED).map_err(Shortfall::Undriven)?;
+    let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
+    // A cancelling enumerator owes this program an open search to cut, and no
+    // other check solves it unbudgeted: a search that faults or ends before its
+    // first model breaks the obligation here.
+    match solved.models().next() {
+        Some(Ok(_)) => {}
+        Some(Err(fault)) => {
+            return Err(Shortfall::Broke(
+                Failure::new(
+                    Breach::Refused,
+                    "a search of a program no search finishes faulted before a pull",
+                )
+                .with_fault(fault),
+            ));
+        }
+        None => {
+            return Err(broke(
+                Breach::Misanswered,
+                "a search of a program no search finishes ended before a pull",
+            ));
+        }
+    }
+    primitive.cancel();
+    let read = solved
+        .models()
+        .take(CUT_CAP + 1)
+        .try_fold(0_usize, |read, yielded| yielded.map(|_| read + 1));
+    match read {
+        Err(fault) => Err(Shortfall::Broke(
+            Failure::new(
+                Breach::Refused,
+                "a cancelled search faulted rather than concluding",
+            )
+            .with_fault(fault),
+        )),
+        Ok(read) if read > CUT_CAP => Err(broke(
+            Breach::Misanswered,
+            "a cancelled search ran on past the cut's cap, never cut",
+        )),
+        Ok(_) => match solved.conclusion() {
+            Some(Conclusion::Interrupted) => Ok(()),
+            Some(Conclusion::Exhausted) => Err(broke(
+                Breach::Misanswered,
+                "a cancelled search concluded as closing the space",
+            )),
+            _ => Err(broke(
+                Breach::Misanswered,
+                "a cancelled search concluded other than at its cancellation",
+            )),
+        },
+    }
+}
+
+/// The stale pulls (§4.1, §6.3): a pull before a solve, after a run ended, and
+/// after a handle dropped — each with no solve in flight — leaves the next solve
+/// of the even loop closing its space with its two answer sets.
+fn stale_pulls_cut_nothing(
+    backend: &mut dyn Backend,
+    primitive: &dyn Cancel,
+) -> Result<(), Shortfall> {
+    load_source(backend, EVEN_LOOP).map_err(Shortfall::Undriven)?;
+    primitive.cancel();
+    closes_the_even_loop(backend, "a pull before a solve cut that solve")?;
+    primitive.cancel();
+    closes_the_even_loop(backend, "a pull after a run ended cut the next solve")?;
+    load_source(backend, UNBOUNDED).map_err(Shortfall::Undriven)?;
+    {
+        let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
+        pull(&mut solved, 1).map_err(stream_fault)?;
+    }
+    primitive.cancel();
+    load_source(backend, EVEN_LOOP).map_err(Shortfall::Undriven)?;
+    closes_the_even_loop(backend, "a pull after a handle dropped cut the next solve")
+}
+
+/// A solve of the even loop, loaded, closes its space with its two answer sets,
+/// `{a}` and `{b}`; `otherwise` names the breach where it does not.
+fn closes_the_even_loop(backend: &mut dyn Backend, otherwise: &str) -> Result<(), Shortfall> {
+    let even = [answer_set([constant("a")]), answer_set([constant("b")])];
+    let mut solved = solve(backend).map_err(Shortfall::Undriven)?;
+    let read = pull(&mut solved, even.len()).map_err(stream_fault)?;
+    if !read.ended {
+        return Err(Shortfall::Undriven(past_the_bound()));
+    }
+    let mut sets = read.sets;
+    sets.sort();
+    if sets == even && solved.conclusion() == Some(Conclusion::Exhausted) {
+        Ok(())
+    } else {
+        Err(broke(Breach::Misanswered, otherwise))
+    }
 }
 
 /// A declared observer is faithful (§10.4): once the corpus case's solve,
@@ -2654,7 +2777,7 @@ mod tests {
     fn a_skipped_check_breaks_no_conformance() {
         let report = report_of(vec![(
             Check::CancellationIsNotExhaustion,
-            Verdict::Skipped(Skip::Reserved),
+            Verdict::Skipped(Skip::Deciding),
         )]);
         assert!(report.is_conformant());
     }
@@ -2740,7 +2863,7 @@ mod tests {
     fn every_skip_renders_a_distinct_reason() {
         let skips = [
             Skip::Undeclared(Capability::Cancellation),
-            Skip::Reserved,
+            Skip::Deciding,
             Skip::Undriven(Failure::new(Breach::Refused, "the solve was refused")),
         ];
         let reasons: BTreeSet<String> = skips.iter().map(ToString::to_string).collect();
