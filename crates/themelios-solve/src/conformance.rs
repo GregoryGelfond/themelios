@@ -2038,7 +2038,8 @@ fn registration_kept(backend: &mut dyn Backend) -> Result<(), Shortfall> {
 
 /// A backend's own state follows its refusals and rebuilds (§4.1), through
 /// three sub-checks under one obligation: a refusal its lowering's check makes
-/// adds nothing; a failed grounding leaves it needing its rebuild; and a
+/// adds nothing; a failed grounding leaves a multi-shot backend needing its
+/// rebuild and a single-shot one ready over the program it lowered; and a
 /// registration survives the rebuild.
 fn backend_state(backend: &mut dyn Backend) -> Verdict {
     combined([

@@ -2561,21 +2561,25 @@ necessity where it is declared.
     engine's typed cause. A configured limit read as a budget would be a request field with its declaration,
     grown on need, and an engine's one-model habit is not carried into `solve` (§5.1). The phases are fixed
     (§6.3). `lower` validates and retains, grounding nothing. `solve` creates the run's control state, then
-    grounds and searches. Immutable preparation may be reused across questions, with no mutable search state
-    shared. The time budget is a wall-clock deadline fixed when `solve` is called, covering grounding,
+    grounds and searches. Immutable preparation may be reused across questions, with no mutable search
+    state shared. The time budget is a wall-clock deadline fixed when `solve` is called, covering grounding,
     search, and model delivery, the consumer's time between reads included. A cut during grounding reads
     `Budget`, never a fault. The agent's lowering precedes the deadline, and enforcement is cooperative, not
     hard real-time (§6.3). The interrupt handle gains its operation, `Interrupt::pull`. A pull cuts the
     agent's question in flight, its lowering included. A question pulled before its search begins does not
     begin it, and a pull that lands while `solve` opens the run is forwarded again once it is open. A pull
     with no question in flight is forgotten, and the caller's pull takes precedence over a deadline in the
-    same run, and the next question asked ends one whose run handle was leaked (§6.3). A backend's solve is
-    in flight from `solve` until its run ends or its handle drops; an adapter over a primitive that cuts the
-    following call holds a pull for that whole window. Pulls within one window are one pull, and a pull
-    through a handle that outlives its backend is safe (§4.1). The conformance suite drives obligation 6 for
-    an enumerating backend that declares cancellation — an active, unfinished search cut, and the stale
-    pulls, within the cut's cap of further reads — and names a deciding backend's skip (§13.1). Obligation
-    10 states its single-shot arm beside the multi-shot one, witnessing that the lowered program stays, and
-    the request-side limits beyond time are named a reserved seam (§13.1, §14). The deadline's reason is
-    stated: an engine's own limit is a wall-clock alarm, and a deadline bounds the question's wall-clock
-    time (§6.3).
+    same run (§6.3). A backend's solve is in flight from `solve` until its run ends or its handle drops; an
+    adapter over a primitive that cuts the following call holds a pull for that whole window (§4.1). The
+    conformance suite drives obligation 6 for an enumerating backend that declares cancellation — an active,
+    unfinished search cut, and the stale pulls, within the cut's cap of further reads — and names a deciding
+    backend's skip (§13.1). Obligation 10 states its single-shot arm beside the multi-shot one, witnessing
+    that the lowered program stays, and the request-side limits beyond time are named a reserved seam
+    (§13.1, §14). The deadline's reason is stated: an engine's own limit is a wall-clock alarm, and a
+    deadline bounds the question's wall-clock time (§6.3).
+18. **Repeated pulls, the backend's drop, and a leaked run** (2026-10-04). Pulls within one cancellation
+    window are one pull: the core may forward a caller's pull twice, when it lands and again once the run
+    opens, and a caller may pull more than once, so a primitive must not count or toggle. A pull through a
+    handle that outlives its backend is safe, reaching a slot the backend owns and nothing of the engine
+    (§4.1). The next question asked ends one whose run handle was leaked rather than dropped, so a leaked
+    run keeps no question in flight past it (§6.3).
