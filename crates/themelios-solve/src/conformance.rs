@@ -68,8 +68,9 @@
 //! Every stream the suite reads, it reads to a bound — one model past its
 //! program's answer sets, or, for the time budget's cut, the cut's cap and one
 //! more — so a run that never ends is caught at that bound rather than holding
-//! the suite: outcome correctness fails it there, as does a capability's probe. A check that cannot be driven over a backend — its program refused,
-//! its stream faulted or run past its bound — is skipped with the failure that
+//! the suite: outcome correctness fails it there, as does a capability's probe.
+//! A check that cannot be driven over a backend — its program refused, its
+//! stream faulted or run past its bound — is skipped with the failure that
 //! stopped it, and the check that owns that failure fails. A program only a
 //! capability's probe lowers, refused, fails that capability's check, though:
 //! no other check would see the refusal.
@@ -1267,8 +1268,8 @@ fn cancellation_is_not_exhaustion(backend: &dyn Backend) -> Verdict {
 /// of the program lowered — a statement of the rule's part, equal in content,
 /// carrying an origin, every one of its origins among the member's, since the
 /// set merge unions them, so an occurrence of the parse Door A carries is one at
-/// the per-occurrence grain; and the fact `a.` grounds to a rule. Membership is not correctness: which statement a
-/// rule came from is checked once a rule carries its head and body. An
+/// the per-occurrence grain; and the fact `a.` grounds to a rule. Membership is
+/// not correctness: which statement a rule came from is checked once a rule carries its head and body. An
 /// undeclared observer binds nothing here — that its method answers `None` is
 /// the honesty check's.
 fn ground_program_is_faithful(backend: &mut dyn Backend, corpus: &[Case]) -> Verdict {

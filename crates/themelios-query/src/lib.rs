@@ -619,7 +619,7 @@ impl Bindings {
     }
 }
 
-/// Why an atom is not a binding pattern (docs/design/query.md §2.5): the program
+/// Why an atom is not a binding pattern (docs/design/query.md §2.3): the program
 /// tier's own [`NotAPattern`] (a non-denoting or pooled argument, §3.1) *plus* this
 /// tier's own partition policy — an anonymous position. An anonymous `_` is a
 /// well-formed pattern to the unifier (it denotes, matching anything), but it names
@@ -636,7 +636,7 @@ pub enum NotABindingPattern {
     /// The atom is not a pattern at all (§3.1): a non-denoting or pooled argument —
     /// the program tier's refusal, carried as this refusal's source.
     NotAPattern(NotAPattern),
-    /// An argument bears an anonymous variable `_` (§2.5): well formed to the
+    /// An argument bears an anonymous variable `_` (§2.3): well formed to the
     /// unifier, but naming no binding to key the partition on. Refused here rather
     /// than matched.
     AnonymousPosition,

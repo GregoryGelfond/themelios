@@ -454,8 +454,8 @@ fn ingest(set: &mut BTreeSet<WithProvenance<Statement>>, statement: WithProvenan
 /// content-equal node already present (§6.3) and keeping the newcomer's content with its
 /// nested provenance — the later-written copy (§4.4). A raw `BTreeSet::insert` of a
 /// content-equal node keeps the existing one and drops the newcomer's provenance, and its
-/// symmetric `collect` keeps the first and drops the rest. Generic, so the one merge rule serves the
-/// statement set and every set-shaped child a canonicalization re-collects (§6.2) — a
+/// `collect` keeps one of the equal copies — std promises no more — dropping every other's.
+/// Generic, so the one merge rule serves the statement set and every set-shaped child a canonicalization re-collects (§6.2) — a
 /// counted child merges through its own constructor (§4.4).
 pub(crate) fn merge_insert<T: Ord>(set: &mut BTreeSet<WithProvenance<T>>, node: WithProvenance<T>) {
     let admitted = match set.take(&node) {
