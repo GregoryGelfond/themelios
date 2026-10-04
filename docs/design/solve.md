@@ -936,7 +936,8 @@ pub enum Refutation {
 /// §6.2); a refused part, by its key; a refused parse, by its diagnostics; a refused request, by its
 /// presupposition; and never the cause, which is detail, not identity. `Fault` is not `Hash`: a fault is a
 /// report, not a key — no consumer keys on one — and its opaque cause carries no hash. A fault's clone is
-/// `O(statement)`, or `O(diagnostics)` for a refused parse, the cause shared.
+/// `O(statement)`, `O(part key)` for a refused part, or `O(diagnostics)` for a refused parse, the cause
+/// shared.
 #[non_exhaustive]
 pub struct Fault { /* message + Locus + what it refused + bug bit + optional cause */ }
 pub enum Locus { Program, Request, Resource, Engine, Adapter }
@@ -1012,28 +1013,27 @@ impl std::fmt::Display for Fault {}                        // Fault is Display +
   answerable, typed question (`Refutation` above), scoped by the scenario it ranged over.
 - **Faults** are values with the closed locus taxonomy above, with "is this a backend bug" a closed bit.
   Today the bit and the `Adapter` locus coincide — every adapter-locus fault is a bug, such as a model
-  holding an atom and its contrary (query.md §2.3); the bit is kept apart because the specification
-  mandates it (§9.3) and the case that parts them is real: an engine- or resource-locus failure the
-  adapter should have prevented. A fault lowers to `themelios-base` diagnostics through
-  `Fault::diagnostics` — one for a refused statement with a parsed origin, one per diagnostic for a
-  refused parse, none for an unlocated fault (loci and provenance, solved once, here, for every consumer)
-  — while an unlocated one renders through its own `Display`: a fault is not, in general, a diagnostic. A
-  Program fault refers to its source whether or not it is located — the statement it refused, or the
-  parse — and a Request fault names the presupposition that failed, so a consumer (the agent's
-  `assert`/`retract` register, §6.2; an explanation client, §10.4; a router, §12; a service retrying under a
-  larger budget, or rebuilding) acts on *what was refused* by matching `Refused`, never by reading prose
-  (specification §4, §9.3); and because a location is read from the source's own provenance, a backend
-  cannot invent a source for a statement that has none. No Program fault goes without its source, no
-  Request fault without its presupposition, and a Resource, Engine, or Adapter fault, which refused nothing
-  it can name, is told apart by its locus and its bit, its detail in its message and any cause it carries.
-  A Program fault may arise at `lower` — a construct outside the backend's language (§10.2) — or later,
-  where the engine meets the
-  statement: at grounding, or mid-stream for an engine that grounds as it searches (§5.2's stream carries
-  it as a faulted item). So a backend that can refuse after `lower` retains what names a refused statement
-  — the statements it took, or a map from its engine's locations to them — at Θ(program size) beside its
-  engine's own program, and one that refuses only at `lower` retains nothing for it.
+  holding an atom and its contrary (query.md §2.3); the bit is kept apart because the specification mandates
+  it (§9.3) and the case that parts them is real: an engine- or resource-locus failure the adapter should
+  have prevented. A fault lowers to `themelios-base` diagnostics through `Fault::diagnostics` — one for a
+  refused statement with a parsed origin, one per diagnostic for a refused parse, none for an unlocated
+  fault (loci and provenance, solved once, here, for every consumer) — while an unlocated one renders
+  through its own `Display`: a fault is not, in general, a diagnostic. A Program fault refers to its source
+  whether or not it is located — the statement it refused, the part, or the parse — and a Request fault
+  names the presupposition that failed, so a consumer (the agent's `assert`/`retract` register, §6.2; an
+  explanation client, §10.4; a router, §12; a service retrying under a larger budget, or rebuilding) acts on
+  *what was refused* by matching `Refused`, never by reading prose (specification §4, §9.3); and because a
+  location is read from the source's own provenance, a backend cannot invent a source for a statement that
+  has none, or for a part, which keeps none. No Program fault goes without its source, no Request fault
+  without its presupposition, and a Resource, Engine, or Adapter fault, which refused nothing it can name,
+  is told apart by its locus and its bit, its detail in its message and any cause it carries. A Program
+  fault may arise at `lower` — a construct outside the backend's language (§10.2) — or later, where the
+  engine meets the statement: at grounding, or mid-stream for an engine that grounds as it searches (§5.2's
+  stream carries it as a faulted item). So a backend that can refuse after `lower` retains what names a
+  refused statement — the statements it took, or a map from its engine's locations to them — at Θ(program
+  size) beside its engine's own program, and one that refuses only at `lower` retains nothing for it.
 - **What a fault preserves, and what it does not.** The common fault keeps exactly its message, its
-  locus, the backend-bug bit, what it refused — a statement, a parse, or the request's failed
+  locus, the backend-bug bit, what it refused — a statement, a part, a parse, or the request's failed
   presupposition — and, where the backend attached one, the engine's own typed cause, shared and opaque
   behind `std::error::Error::source` (`Fault::caused_by`). Nothing else
   crosses: no cross-engine taxonomy of causes, and no engine type in the contract's signatures. A backend
@@ -1183,22 +1183,21 @@ readings ride a scenario-scoped snapshot — `snapshot_assuming(&Scenario)` (que
 readings range over the scenario's models — so the `_assuming` surface mirrors the unscoped one, the way
 `solve_assuming` mirrors `solve`.
 
-**Assertion is monotone and clean; retraction is the sharp edge, made honest by owning the knowledge
-base.** `assert` adds one statement — any `Statement` (`program.md` §4.2): a rule, a fact, a
-constraint, an objective (`Optimize`) — and returns a `StatementId` naming it; `ground` instantiates a
-named `#program` part with arguments — the two are the fine- and coarse-grained faces of the same
-monotone extension. `observe` is the bulk assertion of ground facts through the `Facts` pillar (§7.3),
-the loop's *observe* step, returning an `Observation` a later step can `forget`. Because themelios
-**owns the knowledge base as a first-class `Program` value** — which neither Prolog's flat clause
-database nor an engine's write-only backend has — `retract` is a *true* operation on that value: it
-removes the named statement from the knowledge base, and the agent then realises the removal against the
-engine by the cheapest faithful means its declared capabilities allow — **toggling an external** where
-the retracted statement was so guarded and the backend declares `externals`, or **resetting** the
-engine's accumulated program (`Backend::reset`) and reloading the amended program (`lower`) otherwise —
-`lower` accumulates, so a rebuild is a reset then one lowering, never a bare re-lower. The realisation
-is the agent's to choose; the register the caller writes
-stays declarative. This is why themelios can offer retraction where an engine offers only externals: it
-holds the program the external mechanism can only approximate.
+**Assertion is monotone and clean; retraction is the sharp edge, made honest by owning the knowledge base.**
+`assert` adds one statement — any `Statement` (`program.md` §4.2): a rule, a fact, a constraint, an
+objective (`Optimize`) — and returns a `StatementId` naming it; `ground` instantiates a named `#program`
+part, today without its arguments (§14) — the two are the fine- and coarse-grained faces of the same
+monotone extension. `observe` is the bulk assertion of ground facts through the `Facts` pillar (§7.3), the
+loop's *observe* step, returning an `Observation` a later step can `forget`. Because themelios **owns the
+knowledge base as a first-class `Program` value** — which neither Prolog's flat clause database nor an
+engine's write-only backend has — `retract` is a *true* operation on that value: it removes the named
+statement from the knowledge base, and the agent then realises the removal against the engine by the
+cheapest faithful means its declared capabilities allow — **toggling an external** where the retracted
+statement was so guarded and the backend declares `externals`, or **resetting** the engine's accumulated
+program (`Backend::reset`) and reloading the amended program (`lower`) otherwise — `lower` accumulates, so a
+rebuild is a reset then one lowering, never a bare re-lower. The realisation is the agent's to choose; the
+register the caller writes stays declarative. This is why themelios can offer retraction where an engine
+offers only externals: it holds the program the external mechanism can only approximate.
 
 Retraction's two realisations diverge in cost by the whole program size and the loss of the engine's
 warm search, so — following §4.2, which forbids hiding a divergence of that magnitude behind a uniform
@@ -1321,14 +1320,22 @@ two phases, and the contract fixes what each may do:
   that solve alone: the lowered program stays, ready for another question, and partial ground output never
   becomes it (§4.1).
 - **The `base` part alone.** A single-shot solve grounds the `base` part — the statements before any
-  `#program` delimiter, and those under `#program base.` — and no other, as the pinned authority's
-  single-shot run grounds `base` and nothing else (`libclingo/src/clingocontrol.cc`,
-  `ClingoControl::main`). A named part, with formals or without, is instantiated only through a multi-shot
-  backend's `ground` (§6.2). So a single-shot backend either leaves a part beyond the base ungrounded, as
-  the authority does, or refuses the program at `lower` with a Program fault naming the part
-  (`Fault::program_part`, §5.4). It never grounds such a part, and never charges the refusal to a statement
-  in it. The refusal is unlocated: a part keeps no provenance, its `#program` delimiter being no statement
-  (program.md §4.1).
+  `#program` delimiter, and those under `#program base.` — and no other. That is the language's
+  single-shot reading, the one the pinned authority's default run realises: with no `main` script and no
+  `#include <incmode>.`, it grounds `base` and solves (`libclingo/src/clingocontrol.cc`,
+  `ClingoControl::main`, its last branch; a version-scoped claim). themelios's rule holds whatever the
+  program carries, departing from the authority's other branches: a `#script` block is carried and never
+  run, and an `#include` parsed and never resolved (program.md §4.8, §17). A named part, with formals or
+  without, is instantiated only through a multi-shot backend's `ground`, which today takes a part without
+  its arguments (§14). So a single-shot backend either leaves a part beyond the base ungrounded — the
+  language's reading — or refuses the program at `lower` with a Program fault naming the part
+  (`Fault::program_part`, §5.4). The refusal is §12's fragment interim: a backend that admits only `base`
+  refuses a named part as it refuses any construct outside its fragment, until the fragment declaration
+  (§14) discloses that before `lower`. It never grounds such a part, and never charges the refusal to a
+  statement in it. The refusal is unlocated because the program tier keeps no origin for a part, its
+  `#program` delimiter being no statement (program.md §4.1, §8). A located part refusal waits on a part
+  carrying its delimiter's origin (§14); until then it renders through its `Display`, as any unlocated
+  fault does.
 - **What may be reused.** A backend may reuse any immutable preparation of a retained program across
   questions — an index, a dependency graph, a compiled form — since each question reads the same program.
   The contract promises no shared mutable search state, and no incremental grounding between questions.
@@ -1713,13 +1720,13 @@ occurrence rather than the merged statement. Door A is an entry of the contract:
 agent door from an `Admitted` — its first lowering through Door A, its rebuilds through Door B — waits
 for a consumer that needs the occurrences across the loop (§14).
 
-**Every backend takes both doors**, reading Door A in source order or through `Door::program`, so the
-door set is no capability: `Capabilities` declares none, and no program is refused for the door it came
-through. What a backend refuses is a construct outside its language — a theory atom of a theory it does
-not evaluate (§4.1), a term directive it cannot evaluate (§5.1), a form its engine lacks — at `lower`,
-or where its engine meets the statement (§5.4), with a Program fault naming the statement; it never
-routes the input through another door, and never approximates it (§12). The set is closed, so a match
-over the doors is exhaustive without a wildcard, and a new grade is a new variant every backend's
+**Every backend takes both doors**, reading Door A in source order or through `Door::program`, so the door
+set is no capability: `Capabilities` declares none, and no program is refused for the door it came through.
+What a backend refuses is a construct outside its language — a theory atom of a theory it does not evaluate
+(§4.1), a term directive it cannot evaluate (§5.1), a form its engine lacks — at `lower`, or where its
+engine meets the statement (§5.4), with a Program fault naming what it refused — the statement, or the part
+(§5.4); it never routes the input through another door, and never approximates it (§12). The set is closed,
+so a match over the doors is exhaustive without a wildcard, and a new grade is a new variant every backend's
 `lower` answers.
 
 The **discipline is absolute: never render to text and re-parse across the seam.** The fragile, slow
@@ -1921,19 +1928,19 @@ implements the contract over its solving session (§14). Because zetesis reaches
 clingo-shaped, and — sharing the program tier's `Symbol` — the standing check (§4.2) that the contract's
 shapes force no conversion a shared-representation backend would never need.
 
-The contract also opens a **fragment-backend path** a native engine can walk: because
-`themelios-analysis` verdicts are sound in the direction that matters (tight ⇒ no unfounded-set check,
-HCF ⇒ no non-HCF tester, Horn ⇒ no search, stratified ⇒ facts-only domains), a backend can serve a
-fragment and grow it up the lattice over time, what it does not yet cover routed to another backend and
-the differential run on the overlap. Today a backend serves its fragment by refusal: a construct outside
-its language is refused, at `lower` or where its engine meets the statement, with a Program fault naming
-the statement (§5.4), so nothing outside the fragment is approximated. `Capabilities` declares no
+The contract also opens a **fragment-backend path** a native engine can walk: because `themelios-analysis`
+verdicts are sound in the direction that matters (tight ⇒ no unfounded-set check, HCF ⇒ no non-HCF tester,
+Horn ⇒ no search, stratified ⇒ facts-only domains), a backend can serve a fragment and grow it up the
+lattice over time, what it does not yet cover routed to another backend and the differential run on the
+overlap. Today a backend serves its fragment by refusal: a construct outside its language is refused, at
+`lower` or where its engine meets the statement, with a Program fault naming what it refused — the
+statement, or the part (§5.4) — so nothing outside the fragment is approximated. `Capabilities` declares no
 fragment yet. The declaration — with a refusal typed apart from an invalid program and from an exhausted
-resource, which a router reads to send the program on, never telling the three apart by message text — is
-a reserved seam that lands with the first router (§14), typed within §5.4's sum keyed by locus: an
-exhausted resource is a Resource fault already, and a construct outside the fragment will be a Program fault
-whose `Statement` row carries that reason with the statement it names, as a Request fault carries its
-presupposition (§5.4). The ambitious native engine (§14) inherits the contract and this path.
+resource, which a router reads to send the program on, never telling the three apart by message text — is a
+reserved seam that lands with the first router (§14), typed within §5.4's sum keyed by locus: an exhausted
+resource is a Resource fault already, and a construct outside the fragment will be a Program fault whose
+`Statement` or `Part` row carries that reason with the statement or part it names, as a Request fault
+carries its presupposition (§5.4). The ambitious native engine (§14) inherits the contract and this path.
 
 ---
 
@@ -1984,10 +1991,10 @@ obligation a backend's declared capabilities cannot drive is skipped, and the re
    that names it, since the carrier holds a fact as a rule, so membership alone would hold of an observer
    that exposed nothing; and its content qualified per engine by the relation §10.4 names; a backend that
    declares none passes without it.
-8. **Fault loci.** Each fault lands where it belongs: a Program fault names its refused statement, located
-   within it where the statement was parsed and unlocated where it was built in Rust; a Request fault
-   names its presupposition — assigning a truth value to an atom that is not external refuses with
-   `Presupposition::NotExternal` (§5.4).
+8. **Fault loci.** Each fault lands where it belongs: a Program fault names what it refused (§5.4) — a
+   statement, located within it where the statement was parsed and unlocated where it was built in Rust,
+   while a refused part is obligation 12's; a Request fault names its presupposition — assigning a truth
+   value to an atom that is not external refuses with `Presupposition::NotExternal` (§5.4).
 9. **A rebuild leaves nothing behind.** A second `lower` on a single-shot backend, or `reset` then `lower`
    on a multi-shot one, carries no statement, model, or cancellation of the run it replaced into the next
    (§4.1, §6.3).
@@ -2006,14 +2013,15 @@ obligation a backend's declared capabilities cannot drive is skipped, and the re
     `Exhausted` (§5.3, §6.3); the native consequence door's answer is its known one over the corpus through
     both doors, and `NoModel` over a program with no answer set and under a scenario that admits none
     (§5.2); and the observer's declaration is honest by §10.4's law.
-12. **Only the base grounds.** A single-shot solve grounds the `base` part alone (§6.3). Over
-    `q. #program step(t). p(t).`, driven through both doors, a backend either answers as the base alone
-    denotes — its every model `{q}`, and where it enumerates, `{q}` the one answer set, its search closing
-    the space — or refuses at `lower` with a Program fault naming the part `step(t)` by its key, unlocated
-    (§5.4). It never yields a model holding `p`, and never refuses naming a statement. The obligation binds a
-    single-shot backend. A multi-shot backend instantiates its parts through `ground`, and whether its search
-    covers a part lowered but not yet grounded the contract does not yet say (§4.1), so the report says the
-    check was not driven.
+12. **Only the base grounds.** A single-shot solve grounds the `base` part alone (§6.3). Over `q. #program
+    step(t). p(t).`, driven through both doors, a backend either answers as the base alone denotes — its
+    every model `{q}`, and where it enumerates, `{q}` the one answer set, its search closing the space — or
+    refuses at `lower` with a Program fault naming the part `step(t)` by its key, unlocated (§5.4), and the
+    program lowered before it stays: the fact `a.`, lowered first, still answers `{a}` (§4.1's transactional
+    `lower`, witnessed here with a part). It never yields a model holding `p`, and never refuses naming a
+    statement. The obligation binds a single-shot backend. A multi-shot backend instantiates its parts
+    through `ground`, and whether its search covers a part lowered but not yet grounded the contract does
+    not yet say (§4.1), so the report says the check was not driven.
 
 Door A's admission is the core's, before any backend is asked (§10.2), so its refusals are the core's own
 check, not an adapter's. The suite's skeleton is exercisable **engine-free over a stub backend** before any
@@ -2129,7 +2137,15 @@ The **reserved seams** are only the genuinely-separate:
   refusals typed three ways within §5.4's sum keyed by locus — a construct outside this backend's fragment,
   an invalid program, an exhausted resource — which a router reads to send the program on, never by message
   text (§12). Until that router, a backend serves its fragment by refusing, at `lower` or where its engine
-  meets the statement (§5.4);
+  meets the statement, naming the statement or the part it refused (§5.4) — a single-shot backend that
+  admits only `base` among them (§6.3);
+- **a located part refusal** — a part carrying its `#program` delimiter's origin, so a part refused over
+  parsed text lowers to a diagnostic at the delimiter (program.md §4.1, §8). Until a consumer needs it, a
+  part refusal is unlocated and renders through its `Display` (§6.3);
+- **`ground` over part instances** — `ground` taking a part with its ground arguments, `step(3)` for the
+  declared `step(t)` (the distinction §10.4 draws), so a part with formals has a route to its instances.
+  Today `ground` takes declared parts, and the agent's replay retains them (§6.2); the slice that builds
+  multi-shot grounding brings it;
 - **an agent door from an `Admitted`** — an agent whose first lowering is through Door A, its rebuilds
   through Door B, for a consumer that needs the occurrences across the reasoning loop (§10.2); until one
   does, a client composing over `Backend` walks through Door A, and the agent's loop runs over the set;
@@ -2611,6 +2627,11 @@ necessity where it is declared.
     `base` part alone, as the pinned authority's single-shot run does, and a named part is instantiated only
     through a multi-shot backend's `ground` (§6.3). A backend that does not admit a part refuses the program
     at `lower` with a Program fault naming the part by its key — `Refused::Part`, the sum's fifth row, built
-    by `Fault::program_part` — and the fault is unlocated, since a part keeps no provenance (§5.4). The
-    conformance suite gains obligation 12, which holds a single-shot backend to the rule through both doors
-    and says it was not driven for a multi-shot one (§13.1).
+    by `Fault::program_part` — and the fault is unlocated, since the program tier keeps no origin for a
+    part (§5.4). The rule is the language's single-shot reading, which the authority's default run realises
+    and themelios holds whatever a program carries; the refusal is §12's fragment interim (§6.3). Two
+    seams are named: a located part refusal, and `ground` over part instances, which a part with formals
+    needs (§14). §10.2, §12, and obligation 8 cite §5.4's sum for what a Program fault names. The
+    conformance suite gains obligation 12, which holds a single-shot backend to the rule through both doors,
+    a refused part leaving the program lowered before it, and says it was not driven for a multi-shot one
+    (§13.1).
