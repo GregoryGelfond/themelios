@@ -38,6 +38,7 @@
 //! roles.
 
 use themelios_macros::{atom, constraint, external, fact, maximize, minimize, program, rule, show};
+use themelios_program::Dialect;
 use themelios_program::construct;
 use themelios_program::program::{
     Aggregate, AggregateFunction, Atom, Body, BodyAggregateElement, BodyElement, Choice,
@@ -50,7 +51,6 @@ use themelios_program::provenance::Origin;
 use themelios_program::raise::raise_str;
 use themelios_program::symbol::{Name, Sign, Signature, Symbol, VarName};
 use themelios_program::term::{Term, Variable};
-use themelios_syntax::dialect::Dialect;
 
 /// `Name::new(text)`, discharged as the codegen's `.expect()` is (the fixture text is a
 /// valid identifier by inspection).
@@ -634,8 +634,9 @@ fn the_empty_tuple_term_equals_the_constructor() {
     assert_eq!(fact!(p(())), fact_p(Term::tuple([])));
 }
 
-// ---- spacing (grammar §9): a `#` or a `$` opens its own token however closely it follows an
-// operator, as the file lexer reads `S=#sum` — rustc hands such an operator over joined ----
+// ---- reading as a file reads (grammar §9): where Rust's token model joins or spaces what a
+// file lexer reads otherwise — a `#` or a `$` against an operator, an integer before its period,
+// operators written apart or joined in a theory atom — the macro's value equals the file's ----
 
 #[test]
 fn a_keyword_written_against_an_operator_equals_its_spaced_spelling() {

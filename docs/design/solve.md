@@ -2577,9 +2577,9 @@ necessity where it is declared.
     that the lowered program stays, and the request-side limits beyond time are named a reserved seam
     (§13.1, §14). The deadline's reason is stated: an engine's own limit is a wall-clock alarm, and a
     deadline bounds the question's wall-clock time (§6.3).
-18. **Repeated pulls, the backend's drop, and a leaked run** (2026-10-04). Pulls within one cancellation
-    window are one pull: the core may forward a caller's pull twice, when it lands and again once the run
-    opens, and a caller may pull more than once, so a primitive must not count or toggle. A pull through a
-    handle that outlives its backend is safe, reaching a slot the backend owns and nothing of the engine
-    (§4.1). The next question asked ends one whose run handle was leaked rather than dropped, so a leaked
-    run keeps no question in flight past it (§6.3).
+18. **Repeated pulls and a leaked run** (2026-10-04). Pulls within one cancellation window are one pull:
+    the core may forward a caller's pull twice, when it lands and again once the run opens, and a caller may
+    pull more than once, so a primitive must not count or toggle (§4.1). The next question asked ends one
+    whose run handle was leaked rather than dropped, so a leaked run keeps no question in flight past it
+    (§6.3). The drop clause revisions 11 and 12 recorded is restated as the pull's own safety, with no
+    change of rule (§4.1).

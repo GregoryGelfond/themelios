@@ -1864,9 +1864,8 @@ mod tests {
 
     #[test]
     fn codegen_of_a_theory_atom_builds_through_the_theory_constructors() {
-        // A guarded theory atom with an `Operation` element (the numeral kept off
-        // the terminator, inside the braces; the guard bound a constant `n`, so no
-        // `<digit>.` fuses to a Rust float).
+        // A guarded theory atom with an `Operation` element, its numeral inside the
+        // braces and its guard bound a constant `n`.
         let (atom, src) = theory_atom_of(":- &sum { X + 1 } <= n.");
         let ts = codegen_theory_atom(&atom, &src).to_string();
         assert!(ts.contains("TheoryAtom :: new"), "{ts}");
@@ -2328,7 +2327,8 @@ mod tests {
     // deterministic, so a golden is exactly the emitted stream (`::themelios_program::`
     // renders `:: themelios_program ::`); the only cross-file variation is the file's
     // trailing newline, which [`normalized`] trims. A golden freezes the emitted
-    // *spelling* — every path absolute at the default root `::themelios_program::` (§9, §10), every fallible
+    // *spelling* — every program-tier path absolute at the default root `::themelios_program::`,
+    // beside the caller's own `::std` (§9, §10), every fallible
     // door discharged by its invariant-naming `.expect()` (the design's law-2 spelling
     // and totality made visible, §5). The *value* proof beside them — that the emission
     // builds the right value — is the per-macro equality witness (tests/equality.rs;
@@ -2433,7 +2433,8 @@ mod tests {
                 }
                 // The head of an absolute path — an ident preceded by `::` whose pre-`::`
                 // neighbour is not itself an ident — is a crate root. Every root a macro emits is
-                // `themelios_program` (the program tier) or `std` (the caller's own), never a
+                // the runtime root (the program tier's, `themelios_program` by default) or `std`
+                // (the caller's own), never a
                 // third crate: the whitelist holds §10's runtime-closure claim mechanically over
                 // the tokens rather than by review. A continuation segment (`program`, `new`,
                 // `Some`) has an ident before its `::`; a method, field, or spliced operand ident
@@ -2606,8 +2607,8 @@ mod tests {
     fn a_path_without_a_root_is_refused() {
         // Every path an expansion emits is absolute, at the runtime root or at `::std` (§9,
         // §10): a path whose head has no `::` before it resolves in the caller's scope instead.
-        // This exercises that refusal
-        // directly; the absolute program-tier path beside it is what the check admits.
+        // This exercises that refusal directly; the absolute program-tier path beside it is
+        // what the check admits.
         references_only_program(
             ":: themelios_program :: program :: Program :: of ([term :: Term :: abs (x)])",
         );
