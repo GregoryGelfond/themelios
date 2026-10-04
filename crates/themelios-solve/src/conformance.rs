@@ -2108,29 +2108,32 @@ fn misread(found: &NativeAnswer, known: &NativeAnswer) -> &'static str {
     }
 }
 
-/// The native door's probe: over every corpus program, in each mode, its answer
-/// is its known one — the `⋂` or `⋃` of the program's answer sets over a space
-/// closed, and no model over a program with none. Where the backend also
+/// The native door's probe: over every corpus program, through both doors
+/// (§10.2), in each mode, its answer is its known one — the `⋂` or `⋃` of the
+/// program's answer sets over a space closed, and no model over a program with
+/// none. Where the backend also
 /// declares `assumptions` — the only backend handed a non-empty scenario (§6.2)
 /// — the door ranges over the models a request's scenario admits, so it agrees
 /// with the fold over `solve_assuming`.
 fn probe_native_consequences(backend: &mut dyn Backend, corpus: &[Case]) -> Response {
     let assumes = backend.capabilities().assumptions;
     for case in corpus {
-        if let Err(failure) = load(backend, &case.program, case.source) {
-            return Response::Unprobed(failure);
-        }
-        for mode in [Mode::Cautious, Mode::Brave] {
-            let known = native_answer(mode, &case.answer_sets);
-            match backend.consequences_native(mode, &ConsequenceRequest::default()) {
-                Err(fault) => return Response::Refused(fault),
-                Ok(found) if found != known => {
-                    return Response::Misanswered {
-                        case: Some(case.name),
-                        how: misread(&found, &known).to_owned(),
-                    };
+        for through in [Through::Program, Through::Parsed] {
+            if let Err(failure) = load_through(backend, case, through) {
+                return Response::Unprobed(failure);
+            }
+            for mode in [Mode::Cautious, Mode::Brave] {
+                let known = native_answer(mode, &case.answer_sets);
+                match backend.consequences_native(mode, &ConsequenceRequest::default()) {
+                    Err(fault) => return Response::Refused(fault),
+                    Ok(found) if found != known => {
+                        return Response::Misanswered {
+                            case: Some(case.name),
+                            how: misread(&found, &known).to_owned(),
+                        };
+                    }
+                    Ok(_) => {}
                 }
-                Ok(_) => {}
             }
         }
     }
