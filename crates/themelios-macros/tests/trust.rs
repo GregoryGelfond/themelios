@@ -3,7 +3,8 @@
 //! dependencies are exactly the two tiers this crate reads and expands to and
 //! the proc-macro2/quote pair its codegen is written with, `syn` is declined,
 //! the crate carries no build script of its own, and the runtime closure the
-//! expansion names — themelios-program and what it pulls — is FFI-free (§10).
+//! expansion names — themelios-program and what it pulls, under the default
+//! root or a facade's re-export of it (§9) — is FFI-free (§10).
 //! What is in the graph is a question about the resolved graph, so it is read
 //! from `cargo metadata` — Cargo's own account of it — never from a manifest's
 //! text (the reading the tiers beneath established).
@@ -102,13 +103,16 @@ fn resolved_packages(metadata: &Value) -> BTreeMap<String, Package> {
 
 /// The ids reachable from `themelios-program` over normal dependency edges — the
 /// runtime closure a `themelios-macros` consumer links (docs/design/macros.md §10;
-/// docs/specification.md §12.5). The expansion names only the program tier at
-/// runtime (§10: the codegen emits `::themelios_program::` paths alone, and the
-/// equality and law witnesses compile against it alone), so — though Cargo classes
+/// docs/specification.md §12.5). Every path the codegen emits begins at the runtime
+/// root (§9): `::themelios_program` by default, or the crate root a `#![crate = path]`
+/// selection names, which a facade points at its own re-export of the program tier.
+/// Under either the expansion names only the program tier at runtime — and the
+/// equality and law witnesses compile against it alone — so, though Cargo classes
 /// this crate's own edges to the syntax tier and the proc-macro2/quote toolchain as
 /// normal host edges, none distinguishable in the resolved graph as
-/// compile-time-only — the runtime closure is exactly `themelios-program` and what
-/// it pulls. This roots there, the crate the expansion names, and walks its normal
+/// compile-time-only, the runtime closure is exactly `themelios-program` and what it
+/// pulls. A selection naming any other root takes its expansion outside this claim,
+/// by that caller's own act. This roots at the program tier and walks its normal
 /// edges as the sibling tiers' closure checks do (themelios-program's own trust.rs).
 fn program_runtime_closure(
     metadata: &Value,

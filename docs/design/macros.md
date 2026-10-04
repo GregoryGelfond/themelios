@@ -604,9 +604,19 @@ Each of the nine macros gets one such wrapper.
 - **What the consumer writes.** `facade::program! { … }`, or `z::program! { … }`
   under a Cargo rename, or the imported macro (`use facade::program;`). It needs no
   dependency on `themelios-program` and writes no path at the site.
-- **Tokens pass through unchanged.** The wrapper forwards the consumer's tokens as
-  they are, so splices resolve in the consumer's scope and diagnostics land on the
-  consumer's tokens, as at a direct call.
+- **Tokens pass through unchanged, under rustc.** The wrapper forwards the
+  consumer's tokens as they are, so splices resolve in the consumer's scope and
+  diagnostics land on the consumer's tokens, as at a direct call.
+- **rust-analyzer reads a wrapped invocation by its own rule.** Its declarative
+  expansion never joins a forwarded token's last punctuation to what follows it — a
+  deliberate departure from rustc that its transcriber states — and the token
+  positions it hands a macro are placeholders. So in the editor a wrapped `:-`
+  arrives as `:` and `-` apart and reads as `: -`, and so does any operator that is
+  not also a Rust operator (`:~`, `**`, a longer theory operator); the macro cannot
+  tell the two apart. The editor may then show an error, or a different reading,
+  that the build does not have. The build is exact. A facade author tells their
+  consumers so; the facade-owned door of §12 is the remedy, should a client need
+  the editor exact through a facade.
 - **Inside the facade.** The same wrappers work in the facade crate itself, where
   `$crate` names that crate.
 
@@ -752,6 +762,12 @@ gaps (the deferrals of §4 and §6, gathered):
   defines (solve §7.3, §9; spec §9.6).
 - **The solve-adjacent macros** — `scenario!`, `query!` (§4): land with the
   solve session and query surfaces they front.
+- **A facade-owned procedural door** (§9). The source mapping and the codegen as a
+  library a facade's own procedural macro calls with its root, so the facade's
+  macros reach a consumer with no declarative wrapper between, and rust-analyzer
+  reads them as rustc does. It changes what a facade must build, a procedural macro
+  crate of its own, so it arrives with the first client that needs the editor's
+  reading exact through a facade; until then the wrapper is the mechanism.
 
 Non-goals, absolutely: a second parser or grammar of ASP (spec §2 item 3, §5.2)
 — the one grammar is the syntax tier's, reached at compile time through its
@@ -791,7 +807,9 @@ deliberate evolution with its argument, not a drift.
   `#![crate = path]`. A facade forwards each macro through a declarative wrapper
   that selects its own re-export through `$crate`, so a consumer that depends on the
   facade alone, under any name, builds the program tier's own values. The facade
-  witness holds the mechanism.
+  witness holds the mechanism. rustc forwards the tokens unchanged; rust-analyzer
+  re-spaces a forwarded token's punctuation (§9), and a facade-owned procedural door
+  is recorded as the seam that would avoid it (§12).
 - **The statement boundary, stated** (2026-10-03; §8, §12). The constructions
   build rules, optimization statements, `#show`, and `#external`, and the design
   now says so. It had described `program!` as a block of any statements. The other

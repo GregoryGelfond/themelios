@@ -2442,10 +2442,22 @@ mod tests {
                 // has no `::` before it at all — neither is a root. The colon count is robust to
                 // `.to_string()` gluing, as the absolute check above is.
                 //
-                // The whitelist covers absolute-path roots only — `is_root` requires the two leading
-                // `::`s — so it rests on the codegen's invariant of emitting only absolute paths (the
-                // program-tier `::` assertion above; §12.5).
+                // The whitelist reads absolute-path roots — `is_root` requires the two leading
+                // `::`s — so a path whose head has no `::` before it is refused outright: it would
+                // resolve in the caller's scope rather than at the runtime root (§9, §12.5). The
+                // splices these expansions carry hold no path of the caller's own.
                 let after_path = index >= 2 && colon(&trees[index - 1]) && colon(&trees[index - 2]);
+                // A path separator's first colon is joint; a struct field's colon is not, so a
+                // field name before an absolute path (`negation: ::…`) is no path head.
+                let before_path = matches!(
+                    trees.get(index + 1),
+                    Some(proc_macro2::TokenTree::Punct(punct))
+                        if punct.as_char() == ':' && punct.spacing() == proc_macro2::Spacing::Joint
+                ) && trees.get(index + 2).is_some_and(colon);
+                assert!(
+                    after_path || !before_path,
+                    "the expansion emits a path with no root (`{ident}`): {expansion}"
+                );
                 let is_root = after_path && (index < 3 || !is_ident(&trees[index - 3]));
                 assert!(
                     !is_root || ident == root || ident == "std",
@@ -2592,6 +2604,17 @@ mod tests {
         references_only_root(
             ":: tp :: program :: Program :: of ([:: themelios_program :: program :: Statement])",
             "tp",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a path with no root")]
+    fn a_path_without_a_root_is_refused() {
+        // Every path an expansion emits begins at its root (§9): a path whose head has no `::`
+        // before it resolves in the caller's scope instead. This exercises that refusal
+        // directly; the absolute program-tier path beside it is what the check admits.
+        references_only_program(
+            ":: themelios_program :: program :: Program :: of ([term :: Term :: abs (x)])",
         );
     }
 
