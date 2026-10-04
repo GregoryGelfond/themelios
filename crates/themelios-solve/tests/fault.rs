@@ -3,8 +3,8 @@
 //! backend-bug bit, what it refused, and optionally the engine's typed cause —
 //! renders through `Display`, and lowers to zero, one, or several base
 //! diagnostics, never inventing a span for a fault that has none. What it
-//! refused is a closed sum keyed by locus: a statement or a parse at the
-//! program locus, the presupposition that failed at the request locus, and
+//! refused is a closed sum keyed by locus: a statement, a part, or a parse at
+//! the program locus, the presupposition that failed at the request locus, and
 //! nothing at the other three.
 
 use std::collections::HashSet;
