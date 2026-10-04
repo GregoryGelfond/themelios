@@ -1314,14 +1314,19 @@ two phases, and the contract fixes what each may do:
   The contract promises no shared mutable search state, and no incremental grounding between questions.
 
 The time budget is a **wall-clock deadline fixed when `solve` is called**. It covers everything the run then
-does: grounding, search, and the delivery of each model.
+does: grounding, search, and the delivery of each model. It is a deadline rather than a meter of the
+backend's own work, for two reasons. A deadline is what an engine's own limit is: clingo's `--time-limit`
+is a wall-clock alarm armed before grounding begins (`libpotassco/src/application.cpp`,
+`Application::main` and `setAlarm`), so a backend honours `budgets.time` natively, without a clock the core
+would stop and start around each read. And a deadline bounds the question's wall-clock time, the bound a
+service answering callers needs, which a meter would leave open however long a consumer took.
 
 - **The consumer's time counts.** The deadline is an instant, not a meter, so the time a consumer takes
   between reading one model and asking for the next counts against it. A deadline that passes while the
   backend waits on the consumer ends the run at the next read.
 - **A cut during grounding is a cut.** A deadline that passes during grounding, before any model, ends the
-  run there: `solve` returns it concluded `Budget` with no model, its determination `Inconclusive` — never
-  a fault (§5.1).
+  run there: it concludes `Budget` with no model, whether `solve` returns it so or its first read does — as
+  the backend grounds eagerly or lazily — and its determination is `Inconclusive`, never a fault (§5.1).
 - **Lowering is outside the deadline.** The agent brings the engine level before it calls `solve` — its
   `lower`, and on a multi-shot backend its `reset` and replay (§6.2) — so that work runs outside the
   deadline. A budget bounds a question's run, not the whole `Agent::solve_with` call. A multi-shot
@@ -1362,13 +1367,17 @@ impl Interrupt {
   two, after a run has ended or its handle dropped, and after the agent itself has dropped. The core keeps
   no memory of such a pull, so the next question runs as if it had never been pulled. The backend's
   primitive does the same (§4.1).
-- **The caller's act takes precedence, over a deadline alone.** A pulled question reports by what its
-  backend reported. A stop at its time budget, whether the backend's native deadline or the core's timer,
-  is reported `Interrupted` — and a question answered by value refuses with `Unclosed(Interrupted)`, not
-  `Unclosed(Budget)` — while a stop at `Interrupted` stays so. A search that closed the space
-  (`Exhausted`), or met a target or a deciding backend's witness (`Target`), before the cut took effect
-  reports as its backend did: a cut that arrives too late changes nothing. A fault is never reclassified;
-  it stays the fault, with no conclusion (§5.1). A question no one pulled reports as its backend did.
+- **The caller's act takes precedence, over a deadline alone.** For a pulled question the core maps the
+  conclusion its backend reported:
+  - `Budget` ↦ `Interrupted`, whether the deadline was the backend's native one or the core's timer; a
+    question answered by value refuses with `Unclosed(Interrupted)`, not `Unclosed(Budget)`;
+  - `Interrupted` ↦ `Interrupted`;
+  - `Exhausted` ↦ `Exhausted` and `Target` ↦ `Target`: the search closed the space, or met a target or a
+    deciding backend's witness, before the cut took effect, and a cut that arrives too late changes
+    nothing;
+  - a fault ↦ the same fault, with no conclusion (§5.1).
+
+  A question no one pulled reports as its backend did.
 - **Who holds what.** The conformance suite holds a backend's primitive: an active, unfinished search
   that it cuts, and the stale pulls (§13.1). The agent's tests hold the core's part deterministically over
   a test backend: the attribution, the held pull, and a pull after the backend drops. Each adapter's race
@@ -1939,12 +1948,14 @@ obligation a backend's declared capabilities cannot drive is skipped, and the re
 5. **Truncation cannot pose as complete.** A stream once touched yields no complete collection — the one
    named pathology a run can attempt; the others are unconstructible in the vocabulary (§5.3).
 6. **Cancellation is not exhaustion.** A cancelled search never concludes as closing the space. Over a
-   program no search finishes, a search cut after a model it yielded concludes `Interrupted` within a bound
-   — never `Exhausted`, `Budget`, or a fault. A pull with no solve in flight cancels no later solve, whether
-   it lands before a solve, after a run ended, or after a handle dropped. The obligation binds a backend that
-   declares cancellation and enumerates. A deciding backend stops at its first witness, and no program the
-   suite can carry keeps it searching long enough to cut, so the report says the check was not driven
-   (§6.3).
+   program no search finishes, a search cut after a model it yielded concludes `Interrupted` — never
+   `Exhausted`, `Budget`, or a fault — within the suite's bound: it reads at most the cut's cap of further
+   items after the pull, the constant its time-budget probe reads to, and fails a stream still yielding past
+   them, so the probe ends whatever the backend does. A pull with no solve in flight cancels no later solve,
+   whether it lands before a solve, after a run ended, or after a handle dropped. The obligation binds a
+   backend that declares cancellation and enumerates. A deciding backend's cut is not driven: over the corpus
+   it stops at its first witness, and the suite carries no program it can rely on to keep a deciding backend
+   searching, so the report says the check was not driven (§6.3).
 7. **The ground-program observer**, where a backend declares it: `Some` once a grounding has finished,
    every ground rule naming a statement of the program lowered, carrying its provenance — an origin at
    least, each among the merged statement's — the membership §10.4 states, whose correctness the corpus of
@@ -1962,8 +1973,9 @@ obligation a backend's declared capabilities cannot drive is skipped, and the re
 10. **A backend's own state** (§4.1): a refusal `lower`'s check makes adds nothing; a failed grounding — an
     `@`-function that faults while grounding — leaves a multi-shot backend's every method that touches the
     engine refusing with `Presupposition::NeedsRebuild` until the rebuild, while on a single-shot backend it
-    fails its solve alone, refused at the solve or its stream's first item, and the backend stays ready — a
-    replacing `lower` solves (§4.1, §6.3); and a registration survives the rebuild.
+    fails its solve alone, refused at the solve or its stream's first item: a second solve, with no `lower`
+    between, meets the same grounding failure rather than `NeedsRebuild`, the lowered program having stayed,
+    and a replacing `lower` then solves (§4.1, §6.3); and a registration survives the rebuild.
 11. **Capability honesty.** A declared capability's method answers rightly; an undeclared one whose method
     refuses — optimization, native consequences, assumptions, multi-shot, functions, propagators — refuses
     as unsupported, naming its capability (`Presupposition::Unsupported`), while undeclared cancellation
@@ -2555,6 +2567,8 @@ necessity where it is declared.
     same run (§6.3). A backend's solve is in flight from `solve` until its run ends or its handle drops; an
     adapter over a primitive that cuts the following call holds a pull for that whole window (§4.1). The
     conformance suite drives obligation 6 for an enumerating backend that declares cancellation — an active,
-    unfinished search cut, and the stale pulls — and names a deciding backend's skip (§13.1). Obligation 10
-    states its single-shot arm beside the multi-shot one, and the request-side limits beyond time are named
-    a reserved seam (§13.1, §14).
+    unfinished search cut, and the stale pulls, within the cut's cap of further reads — and names a deciding
+    backend's skip (§13.1). Obligation 10 states its single-shot arm beside the multi-shot one, witnessing
+    that the lowered program stays, and the request-side limits beyond time are named a reserved seam
+    (§13.1, §14). The deadline's reason is stated: an engine's own limit is a wall-clock alarm, and a
+    deadline bounds the question's wall-clock time (§6.3).
