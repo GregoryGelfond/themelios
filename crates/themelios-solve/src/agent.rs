@@ -272,15 +272,13 @@ impl<B: Backend> Agent<B> {
     /// `optimization` (§4.2), before anything is lowered.
     pub fn optimize(&mut self, request: &OptimizeRequest) -> Result<Optimized<'_>, Fault> {
         require(&self.backend.capabilities(), Capability::Optimization)?;
-        let asking = Asking::open(&self.questions);
-        self.bring_level()?;
-        if asking.pulled() {
+        let Some(asking) = self.open_question()? else {
             return Ok(Optimized::running(
                 Box::new(Unbegun),
                 Scenario::default(),
                 ShowRule::default(),
             ));
-        }
+        };
         let optimized = self.backend.optimize(request)?;
         asking.forward_held();
         Ok(optimized.map_run(|run| Attributed::over(run, asking)))
@@ -318,9 +316,7 @@ impl<B: Backend> Agent<B> {
     /// question when it ends or drops. Cost: the engine brought level, then the
     /// search, and O(1) besides.
     fn ask(&mut self, search: Search<'_>) -> Result<Solved<'_>, Fault> {
-        let asking = Asking::open(&self.questions);
-        self.bring_level()?;
-        if asking.pulled() {
+        let Some(asking) = self.open_question()? else {
             let scenario = match search {
                 Search::Plain(_) => Scenario::default(),
                 Search::Assuming(scenario) => scenario.clone(),
@@ -330,7 +326,7 @@ impl<B: Backend> Agent<B> {
                 scenario,
                 ShowRule::default(),
             ));
-        }
+        };
         let solved = match search {
             Search::Plain(request) => self.backend.solve(&request)?,
             Search::Assuming(scenario) => self
@@ -339,6 +335,16 @@ impl<B: Backend> Agent<B> {
         };
         asking.forward_held();
         Ok(solved.map_run(|run| Attributed::over(run, asking)))
+    }
+
+    /// Open a question and bring the engine level for it (docs/design/solve.md §6.3):
+    /// the question, its search free to begin — or `None` when a pull already holds
+    /// it, so no search begins and the question closes as it drops. Cost: the engine
+    /// brought level, and O(1) besides.
+    fn open_question(&mut self) -> Result<Option<Asking>, Fault> {
+        let asking = Asking::open(&self.questions);
+        self.bring_level()?;
+        Ok((!asking.pulled()).then_some(asking))
     }
 
     /// The cautious consequences (`⋂`, "what must hold") of the knowledge base
@@ -407,14 +413,12 @@ impl<B: Backend> Agent<B> {
         }
         match self.backend.capabilities().native_consequences {
             ConsequenceSupport::Native => {
-                // The question is open until its answer returns; a pull held
-                // before the search begins it not, and a pulled search's stop at
-                // its budget is the caller's interruption (§6.3).
-                let asking = Asking::open(&self.questions);
-                self.bring_level()?;
-                if asking.pulled() {
+                // The question is open until its answer returns: a pull held before
+                // its search begins means no search begins, and a pulled search's
+                // stop is attributed as a run's is (§6.3).
+                let Some(asking) = self.open_question()? else {
                     return Err(NotExhausted::not_closed(Truncation::Interrupted).into());
-                }
+                };
                 let request = ConsequenceRequest {
                     scenario: scenario.cloned().unwrap_or_default(),
                 };
@@ -422,11 +426,8 @@ impl<B: Backend> Agent<B> {
                 match answer {
                     NativeAnswer::Closed(symbols) => Ok(Consequences { symbols, mode }),
                     NativeAnswer::NoModel => Err(no_answer_set(scenario)),
-                    NativeAnswer::Stopped(Truncation::Budget) if asking.pulled() => {
-                        Err(NotExhausted::not_closed(Truncation::Interrupted).into())
-                    }
-                    NativeAnswer::Stopped(truncation) => {
-                        Err(NotExhausted::not_closed(truncation).into())
+                    NativeAnswer::Stopped(stopped) => {
+                        Err(NotExhausted::not_closed(attributed(stopped, asking.pulled())).into())
                     }
                 }
             }
@@ -1149,10 +1150,22 @@ impl Run for Attributed<'_> {
     }
 
     fn conclusion(&self) -> Option<Conclusion> {
-        match self.run.conclusion() {
-            Some(Conclusion::Budget) if self.pulled => Some(Conclusion::Interrupted),
-            reported => reported,
-        }
+        let reported = self.run.conclusion()?;
+        Some(
+            Truncation::of(reported)
+                .map_or(reported, |stopped| attributed(stopped, self.pulled).into()),
+        )
+    }
+}
+
+/// How the core attributes a question's stop short of its space (docs/design/solve.md
+/// §6.3): the caller's act takes precedence over a deadline alone, so a pulled question's
+/// stop at its budget is its interruption, and every other stop reads as its backend
+/// reported it. The one rule, for a run's conclusion and a by-value answer's alike. O(1).
+fn attributed(stopped: Truncation, pulled: bool) -> Truncation {
+    match stopped {
+        Truncation::Budget if pulled => Truncation::Interrupted,
+        reported => reported,
     }
 }
 
