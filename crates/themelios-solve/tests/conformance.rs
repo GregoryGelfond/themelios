@@ -92,6 +92,10 @@ const REBUILT: &str = "b.";
 /// the unsafe programs names.
 const UNSAFE_FACT: &str = "p(X).";
 
+/// A choice over forty atoms: 2^40 answer sets, more than any search
+/// enumerates within a budget — the program the time budget's cut is asked of.
+const UNBOUNDED: &str = "{ a(1..40) }.";
+
 /// How the stub answers a program.
 enum Answers {
     /// These answer sets, known independently of any engine.
@@ -109,6 +113,9 @@ enum Answers {
     /// called on these numbers; the call's fault, or no function to call,
     /// fails the grounding.
     Calls(Vec<i32>),
+    /// Past counting — 2^40 answer sets — of which a search the stub cuts at
+    /// its budget yields the first few.
+    Unbounded,
 }
 
 /// Every program the suite loads, with its answers — the corpus and the
@@ -177,6 +184,7 @@ fn table() -> Vec<(&'static str, Program, Answers)> {
         (REBUILT, known(vec![set([constant("b")])])),
         ("p(@fault).", Answers::Calls(Vec::new())),
         ("p(@echo(1)).", Answers::Calls(vec![1])),
+        (UNBOUNDED, Answers::Unbounded),
     ]
     .into_iter()
     .map(|(source, answers)| (source, program(source), answers))
@@ -339,6 +347,31 @@ impl Run for Enumeration {
 /// the suite holding on — the hang its bound exists to prevent — stopped
 /// before it can fill memory.
 const ENDLESS_TRIPWIRE: usize = 1024;
+
+/// Past this many models, a search past its budget fails the test outright: the
+/// suite reads at most its cut's cap of models and one more, so a read this far
+/// is the suite holding on past its bound.
+const PAST_ITS_BUDGET_TRIPWIRE: usize = 1 << 21;
+
+/// A search that runs past its budget, yielding the empty set forever.
+struct PastItsBudget {
+    yielded: usize,
+}
+
+impl Run for PastItsBudget {
+    fn next_model(&mut self) -> Option<Result<Model, Fault>> {
+        self.yielded += 1;
+        assert!(
+            self.yielded <= PAST_ITS_BUDGET_TRIPWIRE,
+            "the suite read {PAST_ITS_BUDGET_TRIPWIRE} models of a search past its budget: its cap failed"
+        );
+        Some(Ok(Model::of(AnswerSet::new())))
+    }
+
+    fn conclusion(&self) -> Option<Conclusion> {
+        None
+    }
+}
 
 /// A search that yields the same model forever — the missing blocking clause.
 struct Endless {
@@ -615,6 +648,15 @@ enum Flaw {
     /// Declares a time budget, yet a timed solve yields a set that is no answer
     /// set.
     MisanswersATimedSolve,
+    /// Declares a time budget and cuts a search at it, yet concludes that the
+    /// search closed the space.
+    ConcludesItsCutAsExhaustion,
+    /// Declares a time budget, yet searches past it, never cutting the search.
+    IgnoresTheBudget,
+    /// Declares a time budget, yet faults the search it cuts.
+    FaultsTheCutSearch,
+    /// Refuses to lower the choice over forty atoms.
+    RefusesTheUnboundedProgram,
     /// Registers an `@`-function without declaring `functions`.
     AnswersUndeclaredFunctions,
     /// Registers a propagator without declaring `propagators`.
@@ -889,7 +931,37 @@ impl Stub {
             }],
             Answers::Unsafe { .. } => Vec::new(),
             Answers::Calls(arguments) => vec![self.called(index, arguments)?],
+            Answers::Unbounded => {
+                let a = |n| atom("a", [Symbol::number(n)], Sign::Positive);
+                vec![set([]), set([a(1)]), set([a(2)])]
+            }
         })
+    }
+
+    /// The stub's search of the unbounded program, which it cuts at its budget:
+    /// the first answer sets, then the budget — unless its flaw searches past
+    /// the budget, faults the cut search, or concludes the cut as closing the
+    /// space.
+    fn cut(&self, sets: Vec<AnswerSet>, scenario: Scenario) -> Solved<'static> {
+        let run: Box<dyn Run> = match self.flaw {
+            Flaw::IgnoresTheBudget => Box::new(PastItsBudget { yielded: 0 }),
+            Flaw::FaultsTheCutSearch => Box::new(Faulting {
+                first: sets.into_iter().next(),
+                fault: Some(Fault::engine("the stub's cut search faulted")),
+            }),
+            _ => Box::new(Enumeration {
+                sets: sets.into_iter(),
+                terms: Vec::new(),
+                terminal: if self.flaw == Flaw::ConcludesItsCutAsExhaustion {
+                    Conclusion::Exhausted
+                } else {
+                    Conclusion::Budget
+                },
+                concludes: true,
+                ended: false,
+            }),
+        };
+        Solved::running(run, scenario, self.show_rule())
     }
 
     /// The handle over `sets`, ranging over `scenario`: every set when the stub
@@ -1074,6 +1146,9 @@ impl Backend for Stub {
         } else {
             Scenario::default()
         };
+        if self.loaded_source() == Some(UNBOUNDED) {
+            return Ok(self.cut(sets, ranged));
+        }
         Ok(self.enumerate(sets, ranged))
     }
 
@@ -1096,6 +1171,9 @@ impl Backend for Stub {
         }
         if self.flaw == Flaw::RefusesTheRule && self.table[index].0 == RULE {
             return Err(Fault::engine("the stub lowers no rule over a fact"));
+        }
+        if self.flaw == Flaw::RefusesTheUnboundedProgram && self.table[index].0 == UNBOUNDED {
+            return Err(Fault::engine("the stub lowers no choice over forty atoms"));
         }
         let mut pending = None;
         if let Answers::Unsafe { prefix } = self.table[index].2 {
@@ -1237,6 +1315,9 @@ impl Backend for Stub {
         } else {
             request_scenario.clone()
         };
+        if self.loaded_source() == Some(UNBOUNDED) {
+            return Ok(self.cut(admitted, ranged));
+        }
         Ok(self.enumerate(admitted, ranged))
     }
 
@@ -2188,6 +2269,23 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             vec![(Declared(C::TimeBudget), Misanswered)],
         ),
         (
+            // Cut at its budget, yet read as closing the space: the truncated
+            // search every complete collection would trust.
+            Flaw::ConcludesItsCutAsExhaustion,
+            only(Capability::TimeBudget),
+            vec![(Declared(C::TimeBudget), Misanswered)],
+        ),
+        (
+            Flaw::IgnoresTheBudget,
+            only(Capability::TimeBudget),
+            vec![(Declared(C::TimeBudget), Misanswered)],
+        ),
+        (
+            Flaw::FaultsTheCutSearch,
+            realising(),
+            vec![(Declared(C::TimeBudget), Refused)],
+        ),
+        (
             Flaw::AnswersUndeclaredFunctions,
             enumerating(),
             vec![(Declared(C::Functions), Accepted)],
@@ -2230,6 +2328,13 @@ fn a_failure_names_the_corpus_program_it_broke_on() {
         panic!("the dropped answer set fails its outcome: {report}");
     };
     assert_eq!(failure.case(), Some("an even loop"));
+}
+
+#[test]
+fn a_refused_unbounded_program_leaves_the_time_budget_undriven() {
+    let report = report(realising(), Flaw::RefusesTheUnboundedProgram);
+    let undriven = skip(&report, Check::Capability(Capability::TimeBudget));
+    assert!(matches!(undriven, Some(Skip::Undriven(_))), "{report}");
 }
 
 #[test]
