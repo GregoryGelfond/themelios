@@ -2309,6 +2309,13 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             vec![(Declared(C::TimeBudget), Refused)],
         ),
         (
+            // Only the cut lowers the unbounded program, so its refusal is the
+            // declared budget's to fail.
+            Flaw::RefusesTheUnboundedProgram,
+            realising(),
+            vec![(Declared(C::TimeBudget), Refused)],
+        ),
+        (
             Flaw::AnswersUndeclaredFunctions,
             enumerating(),
             vec![(Declared(C::Functions), Accepted)],
@@ -2367,13 +2374,6 @@ fn a_search_past_its_budget_fails_the_time_budget_as_uncut() {
 fn a_cut_that_fills_its_cap_conforms() {
     let report = report(only(Capability::TimeBudget), Flaw::FillsTheCutsCap);
     assert!(report.is_conformant(), "{report}");
-}
-
-#[test]
-fn a_refused_unbounded_program_leaves_the_time_budget_undriven() {
-    let report = report(realising(), Flaw::RefusesTheUnboundedProgram);
-    let undriven = skip(&report, Check::Capability(Capability::TimeBudget));
-    assert!(matches!(undriven, Some(Skip::Undriven(_))), "{report}");
 }
 
 #[test]
