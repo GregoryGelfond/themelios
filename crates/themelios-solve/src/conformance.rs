@@ -1753,20 +1753,50 @@ fn the_fact() -> [AnswerSet; 1] {
     [answer_set([constant("a")])]
 }
 
-/// A single-shot backend grounds within each solve (§4.1): a solve whose
+/// A single-shot backend grounds within each solve (§4.1, §6.3): a solve whose
 /// grounding's `@`-function faults is refused — at the solve or its stream's
-/// first item — and the backend stays ready: a replacing `lower` of the fact
-/// `a.` solves to `{a}`.
+/// first item — and the lowered program stays: a second solve, with no `lower`
+/// between, grounds it again and meets the same failure, at the same locus,
+/// never a rebuild the backend has none of; and the backend stays ready: a
+/// replacing `lower` of the fact `a.` solves to `{a}`.
 fn ready_after_a_failed_solve(backend: &mut dyn Backend) -> Result<(), Shortfall> {
-    let refused = match backend.solve(&SolveRequest::default()) {
-        Err(_) => true,
-        Ok(mut solved) => matches!(solved.models().next(), Some(Err(_))),
-    };
-    if !refused {
+    let Some(first) = failed_solve(backend) else {
         return Err(broke(
             Breach::Accepted,
             "a solve whose grounding's @-function faults was accepted",
         ));
+    };
+    match failed_solve(backend) {
+        None => {
+            return Err(broke(
+                Breach::Accepted,
+                "a second solve after a failed grounding was accepted: the lowered program was not kept",
+            ));
+        }
+        Some(again)
+            if matches!(
+                again.refused(),
+                Refused::Request(Presupposition::NeedsRebuild)
+            ) =>
+        {
+            return Err(Shortfall::Broke(
+                Failure::new(
+                    Breach::Refused,
+                    "a single-shot backend asked for a rebuild after a failed solve",
+                )
+                .with_fault(again),
+            ));
+        }
+        Some(again) if again.locus() != first.locus() => {
+            return Err(Shortfall::Broke(
+                Failure::new(
+                    Breach::Misanswered,
+                    "a second solve after a failed grounding met another failure than the grounding's",
+                )
+                .with_fault(again),
+            ));
+        }
+        Some(_) => {}
     }
     lower_program(backend, &program_of(FACT), FACT).map_err(Shortfall::Broke)?;
     solves_to(
@@ -1775,6 +1805,18 @@ fn ready_after_a_failed_solve(backend: &mut dyn Backend) -> Result<(), Shortfall
         &[constant("a")],
         "after a failed grounding, the replacing program did not solve",
     )
+}
+
+/// The refusal a solve of the program lowered meets — at the solve, or at its
+/// stream's first item — or `None` where the solve was accepted.
+fn failed_solve(backend: &mut dyn Backend) -> Option<Fault> {
+    match backend.solve(&SolveRequest::default()) {
+        Err(fault) => Some(fault),
+        Ok(mut solved) => match solved.models().next() {
+            Some(Err(fault)) => Some(fault),
+            _ => None,
+        },
+    }
 }
 
 /// A multi-shot backend whose grounding failed needs its rebuild (§4.1): every
