@@ -569,6 +569,12 @@ enum Flaw {
     /// Carries a pull made with no solve in flight into the next solve, cutting
     /// the even loop's.
     CarriesAStalePull,
+    /// Lets a pull made with no solve in flight mark the even loop's next solve:
+    /// it yields both answer sets, then concludes `Interrupted`.
+    MarksAStaleSolveInterrupted,
+    /// None: cuts a cancelled search having yielded exactly the most models the
+    /// cut reads after the pull — honest at the cap's edge.
+    FillsTheCancellationsCap,
     /// Ends its unbudgeted search of the program no search finishes before its
     /// first model, as though its space were empty.
     EndsTheUnboundedSearchAtOnce,
@@ -743,11 +749,14 @@ enum OnPull {
 }
 
 /// A search of the program no search finishes, unbudgeted: a model `{a(n)}`, each
-/// different, on every read, until it reads the pull in `slot`; then the end as
-/// `on_pull` says. A pull it reads closes the window, clearing the slot.
+/// different, on every read, until it reads the pull in `slot`; then `lag` more
+/// empty sets, and the end as `on_pull` says. A pull it reads closes the window,
+/// clearing the slot.
 struct Streaming {
     slot: Arc<AtomicBool>,
     on_pull: OnPull,
+    lag: usize,
+    pulled: bool,
     yielded: i32,
     ended: Option<Conclusion>,
     faulted: bool,
@@ -758,7 +767,12 @@ impl Run for Streaming {
         if self.ended.is_some() || self.faulted {
             return None;
         }
-        if self.slot.swap(false, Ordering::SeqCst) {
+        self.pulled = self.pulled || self.slot.swap(false, Ordering::SeqCst);
+        if self.pulled {
+            if let Some(left) = self.lag.checked_sub(1) {
+                self.lag = left;
+                return Some(Ok(Model::of(AnswerSet::new())));
+            }
             return match self.on_pull {
                 OnPull::Concludes(conclusion) => {
                     self.ended = Some(conclusion);
@@ -1098,6 +1112,22 @@ impl Stub {
         Solved::running(run, scenario, self.show_rule())
     }
 
+    /// The handle over `sets`, ranging over `scenario`, concluding `Interrupted` —
+    /// the even loop's solve under a stale pull its flaw carries.
+    fn interrupted(&self, sets: Vec<AnswerSet>, scenario: Scenario) -> Solved<'static> {
+        Solved::running(
+            Box::new(Enumeration {
+                sets: sets.into_iter(),
+                terms: Vec::new(),
+                terminal: Conclusion::Interrupted,
+                concludes: true,
+                ended: false,
+            }),
+            scenario,
+            self.show_rule(),
+        )
+    }
+
     /// The handle over the unbudgeted search of the program no search finishes:
     /// it streams until it reads a pull, then ends as the stub's flaw says —
     /// `Interrupted`, honestly.
@@ -1128,6 +1158,12 @@ impl Stub {
             Box::new(Streaming {
                 slot: Arc::clone(&self.slot),
                 on_pull,
+                lag: if self.flaw == Flaw::FillsTheCancellationsCap {
+                    CUT_CAP
+                } else {
+                    0
+                },
+                pulled: false,
                 yielded: 0,
                 ended: None,
                 faulted: false,
@@ -1344,21 +1380,14 @@ impl Backend for Stub {
         };
         // Each solve opens a fresh window for the stub's primitive (§4.1): a pull
         // made with no solve in flight reaches no later run — unless its flaw
-        // carries it, cutting the even loop's solve.
+        // carries it into the even loop's solve, cutting it or marking its end.
         let stale = self.slot.swap(false, Ordering::SeqCst);
-        if stale && self.flaw == Flaw::CarriesAStalePull && self.loaded_source() == Some(EVEN_LOOP)
-        {
-            return Ok(Solved::running(
-                Box::new(Enumeration {
-                    sets: Vec::new().into_iter(),
-                    terms: Vec::new(),
-                    terminal: Conclusion::Interrupted,
-                    concludes: true,
-                    ended: false,
-                }),
-                ranged,
-                self.show_rule(),
-            ));
+        if stale && self.loaded_source() == Some(EVEN_LOOP) {
+            match self.flaw {
+                Flaw::CarriesAStalePull => return Ok(self.interrupted(Vec::new(), ranged)),
+                Flaw::MarksAStaleSolveInterrupted => return Ok(self.interrupted(sets, ranged)),
+                _ => {}
+            }
         }
         if self.loaded_source() == Some(UNBOUNDED) {
             return Ok(if request.time.is_none() && self.capabilities.enumeration {
@@ -1953,6 +1982,47 @@ fn a_cancelling_enumerator_meets_the_cancellation_obligation() {
 }
 
 #[test]
+fn an_ignored_cancellation_fails_as_never_cut() {
+    let report = report(realising(), Flaw::IgnoresTheCancellation);
+    let Some(Verdict::Failed(failure)) = report.verdict(Check::CancellationIsNotExhaustion) else {
+        panic!("the ignored cancellation fails its obligation: {report}");
+    };
+    assert!(failure.to_string().contains("never cut"), "{failure}");
+}
+
+#[test]
+fn a_cancelled_search_concluded_exhausted_fails_as_closing_the_space() {
+    let report = report(realising(), Flaw::ExhaustsACancelledSearch);
+    let Some(Verdict::Failed(failure)) = report.verdict(Check::CancellationIsNotExhaustion) else {
+        panic!("the exhausted cancelled search fails its obligation: {report}");
+    };
+    assert!(
+        failure.to_string().contains("closing the space"),
+        "{failure}"
+    );
+}
+
+#[test]
+fn a_cancelled_search_concluded_at_the_budget_fails_as_another_conclusion() {
+    let report = report(realising(), Flaw::CutsACancelledSearchAtTheBudget);
+    let Some(Verdict::Failed(failure)) = report.verdict(Check::CancellationIsNotExhaustion) else {
+        panic!("the cancelled search cut at the budget fails its obligation: {report}");
+    };
+    assert!(
+        failure
+            .to_string()
+            .contains("other than at its cancellation"),
+        "{failure}"
+    );
+}
+
+#[test]
+fn a_cancellation_that_fills_its_cap_conforms() {
+    let report = report(realising(), Flaw::FillsTheCancellationsCap);
+    assert!(report.is_conformant(), "{report}");
+}
+
+#[test]
 fn a_deciding_backend_s_cancellation_is_not_driven() {
     let mut capabilities = deciding();
     capabilities.cancellation = true;
@@ -2307,6 +2377,11 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
         ),
         (
             Flaw::CarriesAStalePull,
+            realising(),
+            vec![(Cancellation, Misanswered)],
+        ),
+        (
+            Flaw::MarksAStaleSolveInterrupted,
             realising(),
             vec![(Cancellation, Misanswered)],
         ),
