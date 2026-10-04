@@ -380,6 +380,11 @@ impl Assembler {
                 Ok(index + 1)
             }
             TokenTree::Literal(literal) => {
+                if let Some(number) = number_before_a_period(literal) {
+                    self.emit(SyntaxKind::NUMBER, &number, literal.span(), false);
+                    self.emit(SyntaxKind::DOT, ".", literal.span(), false);
+                    return Ok(index + 1);
+                }
                 let (kind, text) = classify_literal(literal)?;
                 self.emit(kind, &text, literal.span(), false);
                 Ok(index + 1)
@@ -792,6 +797,21 @@ fn integer_value(spelling: &str) -> Option<String> {
         .map(|value| value.to_string())
 }
 
+/// The number of a literal that is a decimal integer and a trailing period, or `None` for
+/// any other literal (grammar §9). Rust's lexer reads an integer and the period after it as one
+/// float literal, `1.`; ASP has no float, and a file lexer reads the same text as the number
+/// and the statement's period, so the literal maps to both. The integer is mapped by value, as
+/// any integer is; any other float stays a dialect error.
+fn number_before_a_period(literal: &Literal) -> Option<String> {
+    let spelling = literal.to_string();
+    let digits = spelling.strip_suffix('.')?;
+    let decimal = !digits.is_empty()
+        && digits
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'_');
+    decimal.then(|| integer_value(digits)).flatten()
+}
+
 /// Whether `left` ends exactly where `right` begins — the span adjacency
 /// grammar §9 reads a `#`-keyword by. The byte ranges are `proc_macro2`'s
 /// `Span::byte_range`, exact only under its fallback backend — this crate's
@@ -1091,6 +1111,17 @@ mod tests {
             [AMPERSAND, IDENT, L_BRACE, NUMBER, R_BRACE, EOF]
         );
         assert_eq!(source.text(), "&sum{1}");
+    }
+
+    #[test]
+    fn an_integer_before_a_period_is_the_number_and_the_period() {
+        // Rust's lexer reads `1.` as one float literal; a file reads the number and the
+        // statement's period, which ASP, having no float, always means.
+        assert_eq!(kinds(&build("X > 1.")), [VARIABLE, GT, NUMBER, DOT, EOF]);
+        assert_eq!(
+            build("p(X) :- q(X), X > 1_000.").text(),
+            "p(X):-q(X),X>1000."
+        );
     }
 
     #[test]

@@ -334,7 +334,10 @@ removed before it.
 - A Rust identifier lexes by the name classes — lowercase-initial an
   `IDENTIFIER`, uppercase-initial a `VARIABLE`, `_` alone `ANONYMOUS`, `not` the
   keyword; an identifier no class matches whole (`__`, `_1`) is a dialect error.
-- A Rust integer literal is a `NUMBER` **by value**; a simple non-raw Rust string
+- A Rust integer literal is a `NUMBER` **by value**. Rust's lexer reads an integer
+  and the period after it as one float literal, `1.`, as at the end of `X > 1.` or
+  `#show p/1.`; ASP has no float, and a file reads the same text as the number and
+  the statement's period, so such a literal maps to both. A simple non-raw Rust string
   — one whose value grammar §4.4 spells verbatim (printable ASCII, no escape) — is
   a `STRING` **by its spelling**. A raw string or an escape-needing string, whose
   value §4.4 cannot carry verbatim, is a dialect error — refused, never guessed.
@@ -374,8 +377,8 @@ removed before it.
 - Comments do not exist in the dialect (Rust has removed them).
 - `$` emits a `SPLICE` token over its marker and operand (§7).
 - Every Rust token the mapping does not name is a dialect error at its span —
-  float, char, and byte literals, suffixed numerals, lifetimes, raw identifiers
-  (`r#not` is an error, never a way to spell the reserved name).
+  any other float, char, and byte literals, suffixed numerals, lifetimes, raw
+  identifiers (`r#not` is an error, never a way to spell the reserved name).
 
 **The source owns its boundaries.** Because the engine answers `token_at` from
 its own knowledge, two Rust identifiers that abut do not fuse and an intended
@@ -820,3 +823,7 @@ deliberate evolution with its argument, not a drift.
   `#true;#true`, `:-#count`, and `X<$n`, which grammar §9 admits. The design now
   states that the run takes operator characters only, so a keyword and a splice
   each open their own token.
+- **An integer before a period** (2026-10-04; §6). Rust's lexer reads `1.` as one
+  float literal, so `program!` refused any statement whose last token before its
+  period is an integer (`X > 1.`, `#show p/1.`). Such a literal now maps to the
+  number and the period, as a file reads the text.
