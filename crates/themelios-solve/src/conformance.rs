@@ -69,9 +69,9 @@
 //! holding the suite: outcome correctness fails it there, as does a capability's
 //! probe. A check that cannot be driven over a backend — its program refused,
 //! its stream faulted or run past its bound — is skipped with the failure that
-//! stopped it, and the check that owns that failure fails. A capability's own
-//! probe program refused fails that capability's check, though: only a backend
-//! with the capability need carry it, so no other check would.
+//! stopped it, and the check that owns that failure fails. A program only a
+//! capability's probe lowers, refused, fails that capability's check, though:
+//! no other check would see the refusal.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -894,9 +894,9 @@ fn load_source(backend: &mut dyn Backend, source: &str) -> Result<(), Failure> {
     load(backend, &program_of(source), source)
 }
 
-/// Load a capability's own probe program: a refused reset leaves the method
-/// unprobed, but the program refused is the capability's own refusal — only a
-/// backend with the capability need carry it, so no other check would see it.
+/// Load a program only a capability's probe lowers: a refused reset leaves the
+/// method unprobed, but the program refused is the capability's own refusal —
+/// no other check would see it.
 fn load_own(backend: &mut dyn Backend, source: &str) -> Result<(), Response> {
     reset_to_load(backend).map_err(Response::Unprobed)?;
     lower_program(backend, &program_of(source), source).map_err(Response::ProgramRefused)
@@ -2406,8 +2406,8 @@ fn probe_time_budget(backend: &mut dyn Backend, declared: bool) -> Response {
         responses.push(read_the_fact(backend.solve_assuming(&nothing, &budgeted)));
     }
     if solves || assumes {
-        if let Err(failure) = load_source(backend, UNBOUNDED) {
-            return Response::Unprobed(failure);
+        if let Err(response) = load_own(backend, UNBOUNDED) {
+            return response;
         }
         let cut = SolveRequest {
             time: Some(CUT_BUDGET),
@@ -2538,6 +2538,7 @@ mod tests {
                 REBUILT,
                 FAULTING_CALL,
                 ECHOED_CALL,
+                UNBOUNDED,
             ])
             .collect::<Vec<_>>();
         for source in sources {
