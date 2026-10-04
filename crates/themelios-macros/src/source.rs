@@ -104,7 +104,8 @@ impl MacroSource {
     /// # Errors
     ///
     /// Returns [`MapError`] for any token grammar §9 leaves unnamed — a
-    /// float, char, or byte literal, a suffixed numeral, a raw identifier,
+    /// float literal other than an integer and its period (`1.`, which maps
+    /// to the number and the period), a char or byte literal, a suffixed numeral, a raw identifier,
     /// an identifier no name class matches, a detached `#`, a `$` without
     /// an operand — for the corners a later increment maps by value (a
     /// string whose value grammar §4.4 cannot spell verbatim), and for a
@@ -416,11 +417,11 @@ impl Assembler {
                 self.map_group(group)?;
                 Ok(index + 1)
             }
-            TokenTree::Punct(punct) if punct.as_char() == '#' => self.map_hash(trees, index, punct),
-            TokenTree::Punct(punct) if punct.as_char() == '$' => {
-                self.map_splice(trees, index, punct)
-            }
-            TokenTree::Punct(_) => self.map_operator_run(trees, index),
+            TokenTree::Punct(punct) => match opener(punct.as_char()) {
+                Some(Opener::Keyword) => self.map_hash(trees, index, punct),
+                Some(Opener::Splice) => self.map_splice(trees, index, punct),
+                None => self.map_operator_run(trees, index),
+            },
         }
     }
 
@@ -560,7 +561,7 @@ impl Assembler {
             let glued = punct.spacing() == Spacing::Joint
                 && matches!(
                     trees.get(cursor + 1),
-                    Some(TokenTree::Punct(next)) if !matches!(next.as_char(), '#' | '$')
+                    Some(TokenTree::Punct(next)) if opener(next.as_char()).is_none()
                 );
             if glued {
                 cursor += 1;
@@ -666,8 +667,27 @@ fn check_path(path: &[TokenTree], end: Span) -> Result<(), MapError> {
     }
 }
 
+/// The token a punctuation character opens on its own, wherever it stands (grammar
+/// §9): no operator contains a `#` or a `$`, so neither joins an operator run.
+#[derive(Clone, Copy)]
+enum Opener {
+    /// `#` opens a keyword.
+    Keyword,
+    /// `$` opens a splice.
+    Splice,
+}
+
+/// The token `character` opens on its own, or `None` for operator material.
+fn opener(character: char) -> Option<Opener> {
+    match character {
+        '#' => Some(Opener::Keyword),
+        '$' => Some(Opener::Splice),
+        _ => None,
+    }
+}
+
 /// Whether a path separator, `::` — a joint `:` then a `:` — begins at `index`.
-fn is_path_separator(path: &[TokenTree], index: usize) -> bool {
+pub(crate) fn is_path_separator(path: &[TokenTree], index: usize) -> bool {
     matches!(
         (path.get(index), path.get(index + 1)),
         (Some(TokenTree::Punct(first)), Some(TokenTree::Punct(second)))
@@ -735,7 +755,9 @@ fn classify_ident(ident: &Ident) -> Result<(SyntaxKind, String), MapError> {
 /// literal a `NUMBER` by value, and a simple non-raw string — one whose
 /// printable-ASCII value grammar §4.4 spells verbatim — a `STRING` by its
 /// spelling. A float, char, byte, or byte-string literal and a suffixed
-/// numeral are dialect errors, as is a raw or escape-needing string.
+/// numeral are dialect errors here, as is a raw or escape-needing string;
+/// the one float form the dialect names, an integer and its period (`1.`),
+/// is mapped before this door (`number_before_a_period`).
 /// Mapping a string by its *value* instead — a raw string (`r"raw"` → `raw`)
 /// or an escape unescaped, the spellings §4.4 cannot carry verbatim — is a
 /// reserved seam a later increment opens (docs/design/macros.md §7, §12);
@@ -824,19 +846,14 @@ fn integer_value(spelling: &str) -> Option<String> {
         .map(|value| value.to_string())
 }
 
-/// The number of a literal that is a decimal integer and a trailing period, or `None` for
-/// any other literal (grammar §9). Rust's lexer reads an integer and the period after it as one
-/// float literal, `1.`; ASP has no float, and a file lexer reads the same text as the number
-/// and the statement's period, so the literal maps to both. The integer is mapped by value, as
-/// any integer is; any other float stays a dialect error.
+/// The number of a literal that is an integer and a trailing period, or `None` for any other
+/// literal (grammar §9). Rust's lexer reads an integer and the period after it as one float
+/// literal, `1.`, and forms a literal ending in a period from a decimal integer alone; ASP has
+/// no float, and a file lexer reads the same text as the number and the statement's period, so
+/// the literal maps to both. The integer is mapped by value, as any integer is; any other float
+/// stays a dialect error.
 fn number_before_a_period(literal: &Literal) -> Option<String> {
-    let spelling = literal.to_string();
-    let digits = spelling.strip_suffix('.')?;
-    let decimal = !digits.is_empty()
-        && digits
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || byte == b'_');
-    decimal.then(|| integer_value(digits)).flatten()
+    integer_value(literal.to_string().strip_suffix('.')?)
 }
 
 /// Whether `left` ends exactly where `right` begins — the span adjacency

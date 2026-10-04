@@ -56,11 +56,12 @@
 //! consumer that depends on it alone under a Cargo rename, and a direct consumer that selects a
 //! renamed runtime beside an unrelated crate named `themelios_program`.
 //!
-//! Through a wrapper, rustc hands the macro the consumer's tokens unchanged. rust-analyzer never
-//! joins a forwarded token's last punctuation to what follows it, so the editor reads a wrapped
-//! `:-` as `: -`, and so any ASP operator that is not also a Rust operator; it may show an error,
-//! or a different reading, that the build does not have (docs/design/macros.md §9). The build is
-//! exact.
+//! Through a wrapper, rustc hands the macro the consumer's tokens unchanged. rust-analyzer, as
+//! observed at 1.97.1, never joins a forwarded token's last punctuation to what follows it — its
+//! macro-by-example transcriber (`crates/mbe/src/expander/transcriber.rs`) states the rule — so
+//! the editor reads a wrapped `:-` as `: -`, and so any ASP operator that is not also a Rust
+//! operator; it may show an error, or a different reading, that the build does not have
+//! (docs/design/macros.md §9). The build is exact.
 #![forbid(unsafe_code)]
 
 mod codegen;

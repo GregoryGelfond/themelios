@@ -617,8 +617,9 @@ Each of the nine macros gets one such wrapper.
   diagnostics land on the consumer's tokens, as at a direct call.
 - **rust-analyzer reads a wrapped invocation by its own rule.** Its declarative
   expansion never joins a forwarded token's last punctuation to what follows it — a
-  deliberate departure from rustc that its transcriber states — and the token
-  positions it hands a macro are placeholders. So in the editor a wrapped `:-`
+  deliberate departure from rustc that its macro-by-example transcriber states
+  (`crates/mbe/src/expander/transcriber.rs`, observed at rust-analyzer 1.97.1) — and
+  the token positions it hands a macro are placeholders. So in the editor a wrapped `:-`
   arrives as `:` and `-` apart and reads as `: -`, and so does any operator that is
   not also a Rust operator (`:~`, `**`, a longer theory operator); the macro cannot
   tell the two apart. The editor may then show an error, or a different reading,
@@ -815,14 +816,17 @@ deliberate evolution with its argument, not a drift.
   `#![crate = path]`. A facade forwards each macro through a declarative wrapper
   that selects its own re-export through `$crate`, so a consumer that depends on the
   facade alone, under any name, builds the program tier's own values. The facade
-  witness holds the mechanism. rustc forwards the tokens unchanged; rust-analyzer
-  re-spaces a forwarded token's punctuation (§9), and a facade-owned procedural door
-  is recorded as the seam that would avoid it (§12).
+  witness holds the mechanism.
 - **The statement boundary, stated** (2026-10-03; §8, §12). The constructions
   build rules, optimization statements, `#show`, and `#external`, and the design
   now says so. It had described `program!` as a block of any statements. The other
   statement families, and the `#program` delimiter, are located compile errors,
   recorded as reserved seams with their reasons and arriving consumers.
+- **rust-analyzer's reading of a wrapper** (2026-10-04; §9, §12). rustc forwards
+  the consumer's tokens unchanged; rust-analyzer re-spaces a forwarded token's
+  punctuation, so the editor's reading of a wrapped invocation can differ from the
+  build's. The design says so, and records a facade-owned procedural door as the
+  seam that would avoid it.
 - **An operator run ends before `#` and `$`** (2026-10-04; §6). The mapping glued
   a joint `#` or `$` into the operator run before it, refusing `S=#sum`,
   `#true;#true`, `:-#count`, and `X<$n`, which grammar §9 admits. The design now

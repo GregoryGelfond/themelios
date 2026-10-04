@@ -2426,12 +2426,10 @@ mod tests {
                     root == "themelios_program" || ident != "themelios_program",
                     "the expansion names the default root beside the selected one: {expansion}"
                 );
+                let after_path = index >= 2 && colon(&trees[index - 1]) && colon(&trees[index - 2]);
                 if ident == root {
                     names_program = true;
-                    assert!(
-                        index >= 2 && colon(&trees[index - 1]) && colon(&trees[index - 2]),
-                        "a `{root}` path is not absolute: {expansion}"
-                    );
+                    assert!(after_path, "a `{root}` path is not absolute: {expansion}");
                 }
                 // The head of an absolute path — an ident preceded by `::` whose pre-`::`
                 // neighbour is not itself an ident — is a crate root. Every root a macro emits is
@@ -2446,14 +2444,10 @@ mod tests {
                 // `::`s — so a path whose head has no `::` before it is refused outright: it would
                 // resolve in the caller's scope rather than at the runtime root (§9, §12.5). The
                 // splices these expansions carry hold no path of the caller's own.
-                let after_path = index >= 2 && colon(&trees[index - 1]) && colon(&trees[index - 2]);
-                // A path separator's first colon is joint; a struct field's colon is not, so a
-                // field name before an absolute path (`negation: ::…`) is no path head.
-                let before_path = matches!(
-                    trees.get(index + 1),
-                    Some(proc_macro2::TokenTree::Punct(punct))
-                        if punct.as_char() == ':' && punct.spacing() == proc_macro2::Spacing::Joint
-                ) && trees.get(index + 2).is_some_and(colon);
+                // A path separator's first colon is joint; a struct field's colon is not — the
+                // re-lexed `.to_string()` spaces it from the path after it — so a field name
+                // before an absolute path (`negation: ::…`) is no path head.
+                let before_path = crate::source::is_path_separator(trees, index + 1);
                 assert!(
                     after_path || !before_path,
                     "the expansion emits a path with no root (`{ident}`): {expansion}"
@@ -2610,8 +2604,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "a path with no root")]
     fn a_path_without_a_root_is_refused() {
-        // Every path an expansion emits begins at its root (§9): a path whose head has no `::`
-        // before it resolves in the caller's scope instead. This exercises that refusal
+        // Every path an expansion emits is absolute, at the runtime root or at `::std` (§9,
+        // §10): a path whose head has no `::` before it resolves in the caller's scope instead.
+        // This exercises that refusal
         // directly; the absolute program-tier path beside it is what the check admits.
         references_only_program(
             ":: themelios_program :: program :: Program :: of ([term :: Term :: abs (x)])",

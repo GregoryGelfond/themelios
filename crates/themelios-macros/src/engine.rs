@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn run_of_a_dialect_error_is_a_block_expression() {
-        // A float literal is no token the dialect names (§6): the mapping refuses it and
+        // A float such as `1.5` is no token the dialect names (§6): the mapping refuses it and
         // `run` returns a `compile_error!` at its span, never a panic (§2). Like the
         // lowering path, the engine's own error is wrapped in a block, so it stands in
         // expression position without a stray-`;` secondary beside it (§9).

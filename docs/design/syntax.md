@@ -3188,3 +3188,7 @@ document and the code together; the §6.1 and §7.1 amendments below likewise.
   function — so a consuming source (the macro tier its first) is identical to
   it by construction, with no second copy to drift. Additive to the tier's
   public surface: two doors added beside `theory_operator`, nothing removed.
+
+- **§10.5** (2026-10-04): honesty-only. The macro tier's operator run ends before
+  a `#` or a `$`, which open tokens of their own (grammar §9), and the paragraph
+  describing that consumer now says so.
