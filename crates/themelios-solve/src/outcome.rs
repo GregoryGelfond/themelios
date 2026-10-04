@@ -563,6 +563,18 @@ enum Class {
     Faulted(Fault),
 }
 
+impl<'a> LiveRun<'a> {
+    /// This live run with its backend run replaced by `wrap` of it, before
+    /// anything is pulled — the hook through which an agent attributes its
+    /// question's stop (docs/design/solve.md §6.3). O(1).
+    pub(crate) fn map_run(self, wrap: impl FnOnce(Box<dyn Run + 'a>) -> Box<dyn Run + 'a>) -> Self {
+        LiveRun {
+            current: wrap(self.current),
+            ..self
+        }
+    }
+}
+
 impl LiveRun<'_> {
     /// Pull the next item from the run, remembering a witnessed model and a
     /// fault — one the run yields, or its own breach of the terminal obligation
@@ -928,6 +940,14 @@ impl<'a> Solved<'a> {
             },
         }
     }
+
+    /// This handle with its run replaced by `wrap` of it, before anything is
+    /// pulled (docs/design/solve.md §6.3). O(1).
+    pub(crate) fn map_run(self, wrap: impl FnOnce(Box<dyn Run + 'a>) -> Box<dyn Run + 'a>) -> Self {
+        Solved {
+            live: self.live.map_run(wrap),
+        }
+    }
 }
 
 /// A PROVEN optimum (docs/design/solve.md §5.2): its levels, in the terms the
@@ -976,6 +996,23 @@ pub struct Optimized<'a> {
 }
 
 impl<'a> Optimized<'a> {
+    /// An optimization handle over `run`, ranging over `scenario`, under `show` —
+    /// the core's construction (docs/design/solve.md §6.3), the backend's door
+    /// being reserved with the optimum's construction. O(1).
+    pub(crate) fn running(run: Box<dyn Run + 'a>, scenario: Scenario, show: ShowRule) -> Self {
+        Optimized {
+            live: Solved::running(run, scenario, show).live,
+        }
+    }
+
+    /// This handle with its run replaced by `wrap` of it, before anything is
+    /// pulled (docs/design/solve.md §6.3). O(1).
+    pub(crate) fn map_run(self, wrap: impl FnOnce(Box<dyn Run + 'a>) -> Box<dyn Run + 'a>) -> Self {
+        Optimized {
+            live: self.live.map_run(wrap),
+        }
+    }
+
     /// RESOLVE the run into the trichotomy (consuming), threading the engine
     /// borrow `'a`; `Consistent` ranges over the optimal set
     /// (docs/design/solve.md §5.2).
