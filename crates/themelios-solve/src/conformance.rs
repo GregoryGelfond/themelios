@@ -1742,142 +1742,6 @@ fn rebuilt(backend: &mut dyn Backend) -> Result<(), Shortfall> {
     Ok(())
 }
 
-/// A single-shot solve grounds the `base` part alone (docs/design/solve.md
-/// §6.3, §13.1 obligation 12): over [`PARTS`], through both doors, the backend
-/// answers `{q}` — where it enumerates, its one answer set, its search closing
-/// the space — or refuses at `lower` with a Program fault naming the part
-/// `step(t)` by its key, the fact `a.` lowered before it still answering
-/// `{a}`; never a model holding `p`, never a refusal naming a statement. Not
-/// driven over a multi-shot backend (§4.1).
-fn only_the_base_grounds(backend: &mut dyn Backend) -> Verdict {
-    let capabilities = backend.capabilities();
-    if capabilities.declares(Capability::MultiShot) {
-        return Verdict::Skipped(Skip::MultiShot);
-    }
-    verdict_of(base_alone(backend, &capabilities))
-}
-
-/// Obligation 12's probe, through Door B and then Door A: the fact `a.` lowered
-/// first through the same door and answered `{a}` — a door the backend refuses
-/// outright, or a fact it misanswers, leaves the check undriven — then
-/// [`PARTS`] either answered as its base or refused as the part, the fact then
-/// still answering.
-fn base_alone(backend: &mut dyn Backend, capabilities: &Capabilities) -> Result<(), Shortfall> {
-    let fact = program_of(FACT);
-    let fact_admitted = admitted_under(PARTS_FACT_SOURCE, FACT);
-    let program = program_of(PARTS);
-    let admitted = admitted_under(PARTS_SOURCE, PARTS);
-    let doors = [
-        (Door::Program(&fact), Door::Program(&program)),
-        (Door::Parsed(&fact_admitted), Door::Parsed(&admitted)),
-    ];
-    for (before, door) in doors {
-        backend.lower(before).map_err(|fault| {
-            Shortfall::Undriven(
-                Failure::new(Breach::Refused, refused_program(FACT)).with_fault(fault),
-            )
-        })?;
-        fact_answered(backend).map_err(Shortfall::Undriven)?;
-        match backend.lower(door) {
-            Ok(()) => base_answered(backend, capabilities)?,
-            Err(fault) => {
-                part_refused(&fault)?;
-                fact_stays(backend)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// A solve of the fact `a.`, lowered, answers `{a}`; the failure says how it did
-/// not.
-fn fact_answered(backend: &mut dyn Backend) -> Result<(), Failure> {
-    let mut solved = solve(backend)?;
-    let read = pull(&mut solved, 1).map_err(faulted)?;
-    if read.sets == [answer_set([constant("a")])] {
-        Ok(())
-    } else {
-        Err(Failure::new(
-            Breach::Misanswered,
-            "the fact `a.` was not answered as known",
-        ))
-    }
-}
-
-/// After a refused part, the fact `a.` lowered before it, which answered `{a}`
-/// before the refusal, still answers `{a}` (§4.1's transactional `lower`).
-fn fact_stays(backend: &mut dyn Backend) -> Result<(), Shortfall> {
-    fact_answered(backend).map_err(|failure| {
-        let broken = Failure::new(
-            failure.breach(),
-            "a refused part did not leave the program lowered before it",
-        );
-        Shortfall::Broke(match failure.fault() {
-            Some(fault) => broken.with_fault(fault.clone()),
-            None => broken,
-        })
-    })
-}
-
-/// A refusal of [`PARTS`] is a Program fault naming the part `step(t)` by its
-/// key — not a statement in it, another part, or another locus.
-fn part_refused(fault: &Fault) -> Result<(), Shortfall> {
-    let names_the_part = fault.locus() == Locus::Program
-        && matches!(fault.refused(), Refused::Part(part) if is_the_step_part(part));
-    if names_the_part {
-        Ok(())
-    } else {
-        Err(Shortfall::Broke(
-            Failure::new(
-                Breach::Mislocated,
-                "a program with a part beyond the base was refused, but not as that part",
-            )
-            .with_fault(fault.clone()),
-        ))
-    }
-}
-
-/// Whether `part` is [`PARTS`]'s part beyond the base, `step(t)`.
-fn is_the_step_part(part: &PartKey) -> bool {
-    part.name.as_str() == "step" && matches!(&part.formals[..], [formal] if formal.as_str() == "t")
-}
-
-/// A solve of [`PARTS`], lowered, grounds nothing of its part `step(t)`: a model
-/// holding `p` breaks the obligation, and so does a refusal at the solve or in
-/// its stream, since a part the backend does not admit is refused at `lower`.
-/// An answer other than its base's `{q}` — every model `{q}`, and where the
-/// backend enumerates, `{q}` its one answer set, its search closing the space —
-/// is outcome correctness's to fail, leaving this check undriven.
-fn base_answered(backend: &mut dyn Backend, capabilities: &Capabilities) -> Result<(), Shortfall> {
-    let base = answer_set([constant("q")]);
-    let mut solved = solve(backend).map_err(Shortfall::Broke)?;
-    let read = pull(&mut solved, 1).map_err(|fault| Shortfall::Broke(faulted(fault)))?;
-    let holds_the_part = |set: &AnswerSet| {
-        set.iter()
-            .any(|atom| atom.name().is_some_and(|name| name.as_str() == "p"))
-    };
-    if read.sets.iter().any(holds_the_part) {
-        return Err(broke(
-            Breach::Misanswered,
-            "a solve grounded a part beyond the base",
-        ));
-    }
-    let closes_on_the_base = !read.sets.is_empty()
-        && read.sets.iter().all(|set| *set == base)
-        && (!capabilities.enumeration
-            || (read.ended
-                && read.sets.len() == 1
-                && solved.conclusion() == Some(Conclusion::Exhausted)));
-    if closes_on_the_base {
-        Ok(())
-    } else {
-        Err(Shortfall::Undriven(Failure::new(
-            Breach::Misanswered,
-            "the base `{q}` was not answered as known",
-        )))
-    }
-}
-
 /// The shortfall of an obligation broken by `breach`, as `detail` says.
 fn broke(breach: Breach, detail: &str) -> Shortfall {
     Shortfall::Broke(Failure::new(breach, detail))
@@ -2850,6 +2714,182 @@ impl Function for Faulting {
 struct Inert;
 
 impl Propagator for Inert {}
+
+// ---- Only the base grounds (§6.3, §13.1 obligation 12) ----
+
+/// A single-shot solve grounds the `base` part alone (docs/design/solve.md
+/// §6.3, §13.1 obligation 12): over [`PARTS`], through both doors, which must
+/// agree, the backend answers `{q}` — where it enumerates, its one answer set,
+/// its search closing the space — or refuses at `lower` with a Program fault
+/// naming the part `step(t)` by its key, the fact `a.` lowered before it still
+/// answering `{a}`; never a model holding `p`, never another answer, never a
+/// refusal naming a statement. Not driven over a multi-shot backend (§4.1).
+fn only_the_base_grounds(backend: &mut dyn Backend) -> Verdict {
+    let capabilities = backend.capabilities();
+    if capabilities.declares(Capability::MultiShot) {
+        return Verdict::Skipped(Skip::MultiShot);
+    }
+    verdict_of(base_alone(backend, &capabilities))
+}
+
+/// Obligation 12's probe, through Door B and then Door A, the two agreeing:
+/// a program refused at one door and answered at the other is refused for the
+/// door it came through (§10.2).
+fn base_alone(backend: &mut dyn Backend, capabilities: &Capabilities) -> Result<(), Shortfall> {
+    let fact = program_of(FACT);
+    let fact_admitted = admitted_under(PARTS_FACT_SOURCE, FACT);
+    let program = program_of(PARTS);
+    let admitted = admitted_under(PARTS_SOURCE, PARTS);
+    let refused_at_door_b = through_one_door(
+        backend,
+        capabilities,
+        Door::Program(&fact),
+        Door::Program(&program),
+    )?;
+    let refused_at_door_a = through_one_door(
+        backend,
+        capabilities,
+        Door::Parsed(&fact_admitted),
+        Door::Parsed(&admitted),
+    )?;
+    if refused_at_door_b == refused_at_door_a {
+        Ok(())
+    } else {
+        Err(broke(
+            Breach::Refused,
+            "a program with a part beyond the base was refused at one door and answered at the other",
+        ))
+    }
+}
+
+/// Obligation 12's probe through one door, saying whether the backend refused
+/// the part: the fact `a.` lowered first through `fact` and answered exactly —
+/// a door the backend refuses outright, or a fact it misanswers, leaves the
+/// check undriven, the fact being the corpus's own — then [`PARTS`], through
+/// `probe`, either answered as its base or refused as the part, the fact then
+/// still answering.
+fn through_one_door(
+    backend: &mut dyn Backend,
+    capabilities: &Capabilities,
+    fact: Door<'_>,
+    probe: Door<'_>,
+) -> Result<bool, Shortfall> {
+    let at_door_a = matches!(fact, Door::Parsed(_));
+    backend.lower(fact).map_err(|fault| {
+        let refused = if at_door_a {
+            format!("{} at Door A", refused_program(FACT))
+        } else {
+            refused_program(FACT)
+        };
+        Shortfall::Undriven(Failure::new(Breach::Refused, refused).with_fault(fault))
+    })?;
+    fact_answered(backend, capabilities).map_err(Shortfall::Undriven)?;
+    match backend.lower(probe) {
+        Ok(()) => base_answered(backend, capabilities).map(|()| false),
+        Err(fault) => {
+            part_refused(&fault)?;
+            fact_stays(backend, capabilities)?;
+            Ok(true)
+        }
+    }
+}
+
+/// A solve of the fact `a.`, lowered, answers exactly `{a}`; the failure says
+/// how it did not.
+fn fact_answered(backend: &mut dyn Backend, capabilities: &Capabilities) -> Result<(), Failure> {
+    let mut solved = solve(backend)?;
+    let read = pull(&mut solved, 1).map_err(faulted)?;
+    if answers_exactly(&read, &solved, capabilities, &answer_set([constant("a")])) {
+        Ok(())
+    } else {
+        Err(Failure::new(
+            Breach::Misanswered,
+            "the fact `a.` was not answered as known",
+        ))
+    }
+}
+
+/// After a refused part, the fact `a.` lowered before it, which answered `{a}`
+/// before the refusal, still answers `{a}` (§4.1's transactional `lower`).
+fn fact_stays(backend: &mut dyn Backend, capabilities: &Capabilities) -> Result<(), Shortfall> {
+    fact_answered(backend, capabilities).map_err(|failure| {
+        let broken = Failure::new(
+            failure.breach(),
+            "a refused part did not leave the program lowered before it",
+        );
+        Shortfall::Broke(match failure.fault() {
+            Some(fault) => broken.with_fault(fault.clone()),
+            None => broken,
+        })
+    })
+}
+
+/// A refusal of [`PARTS`] names the part `step(t)` by its key — a part fault,
+/// a Program fault by construction — not a statement in it, another part, or
+/// an unsupported request.
+fn part_refused(fault: &Fault) -> Result<(), Shortfall> {
+    if matches!(fault.refused(), Refused::Part(part) if is_the_step_part(part)) {
+        Ok(())
+    } else {
+        Err(Shortfall::Broke(
+            Failure::new(
+                Breach::Mislocated,
+                "a program with a part beyond the base was refused, but not as that part",
+            )
+            .with_fault(fault.clone()),
+        ))
+    }
+}
+
+/// Whether `part` is [`PARTS`]'s part beyond the base, `step(t)`.
+fn is_the_step_part(part: &PartKey) -> bool {
+    part.name.as_str() == "step" && matches!(&part.formals[..], [formal] if formal.as_str() == "t")
+}
+
+/// A solve of [`PARTS`], lowered, answers exactly as its base alone denotes,
+/// `{q}`. No other check lowers the program, and the fact before it was
+/// answered exactly through the same door, so any other answer breaks the
+/// obligation: a model holding `p` grounded the part, and anything else
+/// misanswered the base beside it. So does a refusal at the solve or in its
+/// stream, since a part the backend does not admit is refused at `lower`.
+fn base_answered(backend: &mut dyn Backend, capabilities: &Capabilities) -> Result<(), Shortfall> {
+    let mut solved = solve(backend).map_err(Shortfall::Broke)?;
+    let read = pull(&mut solved, 1).map_err(|fault| Shortfall::Broke(faulted(fault)))?;
+    let holds_the_part = |set: &AnswerSet| {
+        set.iter()
+            .any(|atom| atom.name().is_some_and(|name| name.as_str() == "p"))
+    };
+    if read.sets.iter().any(holds_the_part) {
+        return Err(broke(
+            Breach::Misanswered,
+            "a solve grounded a part beyond the base",
+        ));
+    }
+    if answers_exactly(&read, &solved, capabilities, &answer_set([constant("q")])) {
+        Ok(())
+    } else {
+        Err(broke(
+            Breach::Misanswered,
+            "a solve did not answer the base beside a part as the base alone denotes",
+        ))
+    }
+}
+
+/// Whether `read`, a read of `solved` bounded at one model, answers exactly
+/// `expected`: every model `expected`, and where the backend enumerates, its
+/// one answer set, the stream ending within the bound and the search closing
+/// the space.
+fn answers_exactly(
+    read: &Pulled,
+    solved: &Solved<'_>,
+    capabilities: &Capabilities,
+    expected: &AnswerSet,
+) -> bool {
+    !read.sets.is_empty()
+        && read.sets.iter().all(|set| set == expected)
+        && (!capabilities.enumeration
+            || (read.ended && solved.conclusion() == Some(Conclusion::Exhausted)))
+}
 
 #[cfg(test)]
 mod tests {
