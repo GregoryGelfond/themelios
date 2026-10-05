@@ -16,7 +16,8 @@ editor tool builds on, so none of them has to write its own parser, program
 representation, or analysis.
 
 themelios doesn't ship a solver of its own — an engine plugs in behind its
-solving contract. The clingo and clingcon adapters are next.
+solving contract, as [zetesis](https://github.com/GregoryGelfond/zetesis)
+does. The clingo and clingcon adapters are next.
 
 **Highlights**
 
@@ -230,8 +231,10 @@ at arm's length, pinned to a git revision:
 - [keryx](https://github.com/GregoryGelfond/keryx) — a bidirectional bridge
   between Protocol Buffers and ASP, built on `themelios-program`.
 - [zetesis](https://github.com/GregoryGelfond/zetesis) — a parallel
-  answer-set solver for CPUs and GPUs, with eager and lazy grounding, built on
-  `themelios-syntax`, `themelios-program`, and `themelios-analysis`.
+  answer-set solver for CPUs and GPUs, with eager and lazy grounding. It reads
+  programs through `themelios-syntax`, `themelios-program`, and
+  `themelios-analysis`, and implements `themelios-solve`'s backend contract,
+  held to its conformance suite.
 
 ## License
 

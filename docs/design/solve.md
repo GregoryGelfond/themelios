@@ -1919,15 +1919,15 @@ and is the security audit's object, not this design's.
 
 There is no naive in-house reference solver: clingo and clingcon (§11) are the external backends, and the
 **in-house engine is zetesis** — a real, mature, pure-Rust answer-set solver (candidate-generation +
-Ferraris-reduct checking, deliberately *not* CDNL), a co-designed sibling project — so the properties this
-design leans on are stated on its author's word rather than resolvable from this repository — and already
-a consumer of the base/syntax/program/analysis tiers. `themelios-solve` is designed to be **zetesis's
-first-class programmatic API** — the ergonomic Rust surface a programmer drives it through — and zetesis
-is a further backend behind the same `Backend` contract (§4), integrated through an adapter that
-implements the contract over its solving session (§14). Because zetesis reaches the same contract from a
-*radically different* architecture, it is the **second implementor** that proves the contract is not
-clingo-shaped, and — sharing the program tier's `Symbol` — the standing check (§4.2) that the contract's
-shapes force no conversion a shared-representation backend would never need.
+Ferraris-reduct checking, deliberately *not* CDNL), a co-designed sibling project, public at
+`github.com/GregoryGelfond/zetesis`, so the properties this design leans on are resolvable from its
+repository rather than this one. `themelios-solve` is **zetesis's first-class programmatic API** — the
+ergonomic Rust surface a programmer drives it through — and zetesis is a further backend behind the same
+`Backend` contract (§4): from its 0.3.0 it consumes the tiers from base through query and implements the
+contract over its solver, held to the conformance suite (§13.1, §15 criterion 1). Because zetesis reaches the
+same contract from a *radically different* architecture, it is the **second implementor** that proves the
+contract is not clingo-shaped, and — sharing the program tier's `Symbol` — the standing check (§4.2) that the
+contract's shapes force no conversion a shared-representation backend would never need.
 
 The contract also opens a **fragment-backend path** a native engine can walk: because `themelios-analysis`
 verdicts are sound in the direction that matters (tight ⇒ no unfounded-set check, HCF ⇒ no non-HCF tester,
@@ -2031,8 +2031,9 @@ check, not an adapter's. The suite's skeleton is exercisable **engine-free over 
 adapter — that run is the core's own check (it streams models through the real contract), not an adapter's
 authority. The **clingo and clingcon adapters** run it (clingcon adds the constraint-theory cases),
 differenced against the out-of-band binaries (§13.2). The **second, architecture-independent implementor**
-that proves the contract is not clingo-shaped is **zetesis** as it adopts the contract (§12) — a real engine
-on a radically different architecture, stronger corroboration than a naive built-in oracle would give.
+that proves the contract is not clingo-shaped is **zetesis**, which implements the contract from its 0.3.0
+and passes the suite (§12, §15 criterion 1) — a real engine on a radically different architecture,
+stronger corroboration than a naive built-in oracle would give.
 
 ### 13.2 Differentials and oracles
 
@@ -2046,19 +2047,18 @@ package** is the external oracle for the constraint
 theory — differencing *both* the linked clingcon backend and the in-house CP satellite (§11.2), a theory
 atom's by-occurrence elements among its cases (`&sum{x; x} = 4`, program.md §4.9). Beside them stand the
 native-versus-derived consequence differential the tier gets for free (query.md §2.4) and the bridge
-differential with its worst-case cost tripwires (§10.1). An adapter that
-shares the program tier's `Symbol` (zetesis, §12) adds a further cross-implementation differential when it
-lands. The **spike suite** (specification §5.2, §10.1) holds the design's version-scoped claims about the
-pinned engines' behaviour — the interning compensation (§10.5), the cancellation arming's window (§4.1),
-what a failed grounding leaves in the engine (§4.1, a backend's own state), the display rule (§5.1), the
-consequence search's premise — that it tracks the displayed atoms, or a `#project` directive's, unless
-neither is lowered (§4.1) — and the fidelity of the all-atoms selection,
-which omits an atom with no solver
-literal (`libgringo/src/output/statements.cc`, `Translator::atoms`): the spike establishes that it drops
-no true atom in a single-shot solve and characterizes it across a multi-shot cleanup — and, for an aspif
-ingestion, the stream's naming and the backend's atom–symbol correspondence (§10.3); an engine upgrade
-re-runs it, re-establishing each claim or retiring the compensation it warrants.
-Every instrument documents what it proves *and what it cannot* (specification §10.2).
+differential with its worst-case cost tripwires (§10.1). A backend that
+shares the program tier's `Symbol` (zetesis, §12) adds a further cross-implementation differential, run
+against the Potassco adapters once they land. The **spike suite** (specification §5.2, §10.1) holds the
+design's version-scoped claims about the pinned engines' behaviour — the interning compensation (§10.5), the
+cancellation arming's window (§4.1), what a failed grounding leaves in the engine (§4.1, a backend's own
+state), the display rule (§5.1), the consequence search's premise — that it tracks the displayed atoms, or a
+`#project` directive's, unless neither is lowered (§4.1) — and the fidelity of the all-atoms selection, which
+omits an atom with no solver literal (`libgringo/src/output/statements.cc`, `Translator::atoms`): the spike
+establishes that it drops no true atom in a single-shot solve and characterizes it across a multi-shot cleanup
+— and, for an aspif ingestion, the stream's naming and the backend's atom–symbol correspondence (§10.3); an
+engine upgrade re-runs it, re-establishing each claim or retiring the compensation it warrants. Every
+instrument documents what it proves *and what it cannot* (specification §10.2).
 
 ### 13.3 The mission bar
 
@@ -2113,8 +2113,7 @@ tier ships: the contract, the outcome vocabulary and values, the agent and full 
 reasoning loop), all four centerpieces and extraction, the bridge and its ground-program-IR capability,
 the potassco **clingo and clingcon** adapters, the facade, and the example set (reactive-tier witnesses
 included). The query tier ships with it (`query.md`). The in-house engine **zetesis** is a further
-backend behind the contract, integrated as it and `themelios-solve` line up (below); it is not a member
-crate of this tier.
+backend behind the contract, integrated from its 0.3.0 (below); it is not a member crate of this tier.
 
 The **reserved seams** are only the genuinely-separate:
 
@@ -2162,33 +2161,28 @@ The **reserved seams** are only the genuinely-separate:
 - the **native grounder and solver** — a separate engine that implements this contract and can walk the
   fragment-backend path of §12. This is **not hypothetical**: **zetesis** — a clingo-free answer-set
   engine on a candidate-generation + Ferraris-reduct-checking architecture (deliberately *not* CDNL),
-  a co-designed sibling project — is a real, mature engine, and `themelios-solve` is designed to be its
-  first-class *programmatic* API (§12). Its integration is an **adapter implementing `Backend` over its
-  solving session**, near-term rather than hypothetical, gated on two things lining up: a public zetesis
-  door from a themelios `Parse`/`Program` value (render-then-parse is forbidden, §10.2), and
-  `themelios-solve` **landing on `main`** — the pinnable rev zetesis pins, an event earlier than the
-  whole tier being *done* (§15), so the gate is not circular. The contract's **architecture-neutrality is argued, not
-  asserted**: the `Determination`/`Conclusion` split (§5.1) separates the logical question from the search
-  question, so no engine's operational vocabulary can leak into the surface — and that an engine on a
-  *radically different* (non-CDNL) architecture reaches the very same contract bears that neutrality out
-  (corroboration, not the proof, which is §5.1). zetesis slots in behind `Backend` as a further backend
-  when its adapter is built; being one-shot today, it declares `multi_shot: false` (with `assumptions` and
-  `externals` absent) and refuses the reasoning loop's mechanisms (§4.2) until, if ever, it grows them;
-- the **normalised, cross-backend statistics schema.** v1 *does* ship statistics — the clingo adapter
-  exposes clingo's own, engine-scoped and provenance-marked, behind the **`Statistics` trait whose v1
-  shape §5.4 states**, so a clingo-backed user keeps a capability the comparator has (§15 criterion 2).
-  What is reserved is the
-  *normalised cross-backend schema*: clingo and zetesis measure *different work* by construction — CDNL
-  decisions/conflicts/restarts versus region-candidate search, reduct-closure rounds, and gate coverage —
-  so a normalised schema drafted with one engine live would be guesswork. Because v1's statistics already
-  sit behind the trait, that normalised surface — designed when a second engine (zetesis) is live and both
-  measurement models can be read together — is a **later typed view that consumes the trait, an additive
-  drop-in** (it touches neither the trait nor `Measurement`), not a breaking change; the future
-  **multi-backend benchmarking driver** (themelios-solve as a neutral harness
-  over a corpus) builds on the trait;
-- and the standing specification seams that touch this tier: the ground-program observer's fuller
-  surface beyond what the committed §10.4 capability delivers, formal-methods tooling over the TCB,
-  and additional engine backends beyond the Potassco family.
+  a co-designed sibling project — is a real, mature engine, and `themelios-solve` is its first-class
+  *programmatic* API (§12). Its integration, an **implementation of `Backend` over its solver** that
+  admits a themelios `Program` through both doors (render-then-parse is forbidden, §10.2), landed in its
+  0.3.0, pinned to this tier on `main` — ahead of the whole tier being *done* (§15). The contract's
+  **architecture-neutrality is argued, not asserted**: the `Determination`/`Conclusion` split (§5.1) separates
+  the logical question from the search question, so no engine's operational vocabulary can leak into the
+  surface — and that an engine on a *radically different* (non-CDNL) architecture reaches the very same
+  contract bears that neutrality out (corroboration, not the proof, which is §5.1). Being single-shot, zetesis
+  declares `multi_shot: false` (with `assumptions` and `externals` absent) and refuses the reasoning loop's
+  mechanisms (§4.2) until, if ever, it grows them; - the **normalised, cross-backend statistics schema.** v1
+  *does* ship statistics — the clingo adapter exposes clingo's own, engine-scoped and provenance-marked,
+  behind the **`Statistics` trait whose v1 shape §5.4 states**, so a clingo-backed user keeps a capability the
+  comparator has (§15 criterion 2). What is reserved is the *normalised cross-backend schema*: clingo and
+  zetesis measure *different work* by construction — CDNL decisions/conflicts/restarts versus region-candidate
+  search, reduct-closure rounds, and gate coverage — so a normalised schema drafted with one engine live would
+  be guesswork. Because v1's statistics already sit behind the trait, that normalised surface — designed when
+  a second engine (zetesis) is live and both measurement models can be read together — is a **later typed view
+  that consumes the trait, an additive drop-in** (it touches neither the trait nor `Measurement`), not a
+  breaking change; the future **multi-backend benchmarking driver** (themelios-solve as a neutral harness over
+  a corpus) builds on the trait; - and the standing specification seams that touch this tier: the
+  ground-program observer's fuller surface beyond what the committed §10.4 capability delivers, formal-methods
+  tooling over the TCB, and additional engine backends beyond the Potassco family.
 
 Each is named with its reason; none is a silent gap.
 
@@ -2198,20 +2192,21 @@ Each is named with its reason; none is a silent gap.
 
 The tier is done when all of the following hold:
 
-1. **The contract is real; v1 ships on the Potassco adapters, with the independent-implementor proof a
-   named post-v1 obligation.** *Done* for v1 requires: the potassco **clingo and clingcon** adapters both
+1. **The contract is real; v1 ships on the Potassco adapters, and the independent-implementor proof
+   stands beside them.** *Done* for v1 requires: the potassco **clingo and clingcon** adapters both
    pass the conformance suite; the pathologies are unconstructible; faults land at their loci; capability
    honesty holds. clingo and clingcon share Potassco machinery, so — by the specification's own reading
    (§9.5) — they are **not** the solver-agnostic seam's second *independent* engine; that engine is
    **zetesis** (§12), on a non-CDNL architecture, and its passing the conformance suite is the standing
-   proof the contract is not clingo-shaped — zetesis alone, with no Potassco dependency, driving the
-   conformance corpus through both doors, and a program built in Rust (the constructor macros' among them)
-   through Door B, in each execution configuration it admits — eager, hybrid, and lazy grounding, on its
-   author's word (§12). Because zetesis's integration is
-   gated on `themelios-solve` landing (§14), that proof is a **post-v1 obligation carried with its residual
-   risk** — the risk that the contract is subtly clingo-shaped until a truly independent engine exercises
-   it — not a v1 done-condition.
-   So this criterion is satisfiable as written, and the independent proof is named, not silently dropped.
+   proof the contract is not clingo-shaped. From zetesis 0.3.0 that proof stands, held by zetesis's own
+   tests: zetesis alone, with no Potassco dependency, passes the suite — its corpus through both doors — in
+   its eager and automatic grounding configurations; a program built in Rust with the constructor macros
+   answers through Door B as its parse does through Door A; and its hybrid and lazy groundings, whose
+   profiles are narrower, are held to the contract on the programs they admit. The proof was named a
+   post-v1 obligation, gated on `themelios-solve` landing (§14) and carried with its residual risk — that
+   the contract is subtly clingo-shaped until a truly independent engine exercises it. That engine now
+   does, ahead of v1, so the risk is retired, and this criterion's v1 done-condition is the Potassco
+   adapters' alone.
 2. **The two APIs exceed the evidenced comparators in capability and ergonomics** — a clean
    declarative macro face and a clean composable programmatic face, both first-class, coherent end to
    end, held to the Rust-exemplar bar and the comparator against clingo's Python API (specification
@@ -2234,9 +2229,10 @@ The tier is done when all of the following hold:
    to the linked clingcon backend, coexisting with it (§8.3, §11.1) — on the propagator platform, which
    exercises the deepest seam and against which the design is pressure-tested up front (§8, the worked CP
    witness §13.4); **(3) xclingo**, the explanation half, over the ground-program-IR capability (§10.4).
-   Alongside these, **zetesis** is a first-consumer of a different kind: as `themelios-solve`'s in-house
-   engine adopts the contract, it **audits the solve/query API** as a real independent engine — the
-   keryx/morphe/elenctic first-consumer checkpoint, aimed at the `Backend` seam. A **theory-driven service
+   Alongside these, **zetesis** is a first-consumer of a different kind: adopting the contract as
+   `themelios-solve`'s in-house engine (its 0.3.0), it **audited the solve/query API** as a real
+   independent engine — the keryx/morphe/elenctic first-consumer checkpoint, aimed at the `Backend` seam —
+   and the gaps it found closed in this tier (revisions 17–19). A **theory-driven service
    consumer** (the pythia-class boundary) rides on these. Each is a first-consumer checkpoint that closes
    before the surface it drives is called done and then continues as a product; elenctic, xclingo, and
    zetesis may drive additive surface revisions afterward, the way keryx/morphe drove the program/syntax
@@ -2264,10 +2260,10 @@ The tier is done when all of the following hold:
   implementor a private in-house solver could never be as convincingly; the **small-case oracle** (§2 item
   4, §9.1) is the clingo/clingcon binaries (§11.2) plus the engine-free stub the conformance suite runs
   against; the **build-order item** (§11 item 6) and the **crate-roster entry** (§12.2) are struck. The one
-  clause this *weakens* rather than re-homes is §9.5's "the seam's second engine is the reference solver":
-  the second *independent* engine is now zetesis, a **post-v1 obligation** (§15 criterion 1) gated on the
-  tier landing (§14), so v1 ships with the two Potassco adapters and the independent proof carried forward
-  with its residual risk. This is a considered supersession on the record, not a silent descope.
+  clause this *weakened* rather than re-homed is §9.5's "the seam's second engine is the reference solver":
+  the second *independent* engine is zetesis, named a **post-v1 obligation** (§15 criterion 1) gated on the
+  tier landing (§14), and its proof stands from zetesis 0.3.0, ahead of v1, so the weakening is undone.
+  This is a considered supersession on the record, not a silent descope.
 - **The clingcon adapter (§9.5, §4, §2 item 5, §12.2) — RESTORED.** An earlier revision permanently
   superseded the specification's clingcon adapter with the in-house CP theory; **that supersession is
   reversed.** clingcon is **restored as a first-class native backend** in `themelios-potassco` (§11.1),
@@ -2640,3 +2636,10 @@ necessity where it is declared.
     denotes, or the part refused, the program lowered before it left in place. No other check lowers the
     probe, so any other answer over it fails the obligation; it says it was not driven for a multi-shot
     one (§13.1).
+20. **zetesis behind the contract** (2026-10-04). zetesis, public, implements the contract from its 0.3.0,
+    pinned to this tier on `main`. By its own tests it passes the conformance suite in its eager and
+    automatic grounding configurations, a program built with the constructor macros answers through Door B
+    as its parse does through Door A, and its hybrid and lazy groundings are held to the contract on the
+    programs they admit. §12, §13.1, §13.2, and §14 say so; §15 criterion 1's independent-implementor
+    proof, named a post-v1 obligation, stands ahead of v1, its residual risk retired; and §16 records the
+    reference solver's weakened clause undone.
