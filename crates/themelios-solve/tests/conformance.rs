@@ -2153,6 +2153,15 @@ fn a_refusal_naming_the_part_meets_the_base_obligation() {
     );
 }
 
+#[test]
+fn a_refusal_at_door_a_names_its_door() {
+    let report = report(enumerating(), Flaw::RefusesDoorA);
+    let Some(Verdict::Failed(failure)) = report.verdict(Check::OutcomeCorrectness) else {
+        panic!("a refused Door A fails outcome correctness: {report}");
+    };
+    assert!(failure.to_string().contains("at Door A"), "{failure}");
+}
+
 /// The failure obligation 12 reports for a backend that refuses the parts
 /// probe at Door A alone.
 fn door_disagreement() -> Failure {
