@@ -229,6 +229,9 @@ at arm's length, pinned to a git revision:
   safety-certified formatter for ASP, built on `themelios-syntax`.
 - [keryx](https://github.com/GregoryGelfond/keryx) — a bidirectional bridge
   between Protocol Buffers and ASP, built on `themelios-program`.
+- [zetesis](https://github.com/GregoryGelfond/zetesis) — a parallel
+  answer-set solver for CPUs and GPUs, with eager and lazy grounding, built on
+  `themelios-syntax`, `themelios-program`, and `themelios-analysis`.
 
 ## License
 
