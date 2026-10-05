@@ -1,7 +1,7 @@
 # themelios-base — tier design
 
-2026-08-13. Design, pre-implementation. This document is the
-API design of `themelios-base` — the types, traits, signatures, semantics,
+2026-08-13. The design of record, which the build follows. This document is
+the API design of `themelios-base` — the types, traits, signatures, semantics,
 and computational costs of the foundation's lowest tier — derived from the
 v1 specification (`docs/specification.md`), cited throughout as *spec §n*;
 a bare *§n* cites this document's own sections. It is written to stand

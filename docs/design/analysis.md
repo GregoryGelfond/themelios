@@ -1,16 +1,17 @@
 # themelios-analysis — tier design
 
-2026-08-24. Design, pre-implementation. This document is the API
-design of `themelios-analysis` — the types, traits, signatures, semantics, and
-computational costs of the crate that reads a `Program` and reports its
-structural facts — derived from the v1 specification (`docs/specification.md`,
-cited as *spec §n*), the program tier design (`docs/design/program.md`,
-*program §n*), the base tier design (`docs/design/base.md`, *base §n*), and the
-grammar of record (`docs/grammar.md`, *grammar §n*); a bare *§n* cites this
-document's own sections. It is written to stand alone in the sense the
-specification is: a reader holding this repository and public sources can check
-every claim. Where this document and the specification disagree, the
-specification governs and the disagreement is a defect here.
+2026-08-24, revised through 2026-09-05. The design of record, which the build
+follows. This document is the API design of `themelios-analysis` — the types,
+traits, signatures, semantics, and computational costs of the crate that reads a
+`Program` and reports its structural facts — derived from the v1 specification
+(`docs/specification.md`, cited as *spec §n*), the program tier design
+(`docs/design/program.md`, *program §n*), the base tier design
+(`docs/design/base.md`, *base §n*), and the grammar of record
+(`docs/grammar.md`, *grammar §n*); a bare *§n* cites this document's own
+sections. It is written to stand alone in the sense the specification is: a
+reader holding this repository and public sources can check every claim. Where
+this document and the specification disagree, the specification governs and the
+disagreement is a defect here.
 
 ---
 

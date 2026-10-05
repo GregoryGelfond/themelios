@@ -1,7 +1,9 @@
 # themelios — grammar of record
 
-2026-08-14. Normative, pre-implementation; the document spec §6.1 commits
-to, joining the specification per spec §14 and versioned with the code.
+2026-08-14, revised in place through 2026-10-04, each revision dated where
+it lands (§9, §11). Normative: the document spec §6.1 commits to, joining
+the specification per spec §14 and versioned with the code; the syntax tier
+is held to it.
 Cited throughout as *spec §n*; a bare *§n* cites this document's own
 sections. It is written to stand alone: a reader holding this repository
 and the pinned references (§3) can check every claim, and no claim
