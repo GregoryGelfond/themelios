@@ -112,7 +112,7 @@ fn the_only_dependency_table_is_dev() {
 fn no_build_script() {
     assert!(
         !manifest_dir().join("build.rs").exists(),
-        "docs/specification.md §12.3: no build script outside sys crates"
+        "docs/specification.md §12.3: no build script in a pure crate"
     );
     // Cargo also runs whatever `[package] build = "..."` names.
     let build_keys: Vec<String> = crate_manifest_lines()

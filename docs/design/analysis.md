@@ -1,8 +1,9 @@
 # themelios-analysis — tier design
 
-2026-08-24. The design of record, which the build follows. This document is the
-API design of `themelios-analysis` — the types, traits, signatures, semantics,
-and computational costs of the crate that reads a `Program` and reports its
+2026-08-24, revised through 2026-09-05 (§13). The design of record, which the
+build follows; §13 records each revision. This document is the API design of
+`themelios-analysis` — the types, traits, signatures, semantics, and
+computational costs of the crate that reads a `Program` and reports its
 structural facts — derived from the v1 specification (`docs/specification.md`,
 cited as *spec §n*), the program tier design (`docs/design/program.md`, *program
 §n*), the base tier design (`docs/design/base.md`, *base §n*), and the grammar
@@ -976,3 +977,31 @@ successor carries them.
   program §14 — a parameter only on a carrier/view/decomposition role type, a domain
   object (a verdict included) concrete — so the analysis tier reads uniformly with the
   program tier beneath it.
+
+
+## 13. Revisions
+
+Refinements made after this design was settled, each with the build that surfaced it.
+
+- **§6, §7, §10** (2026-08-27): the program classes and the construct scan as built.
+  Tightness and head-cycle-freeness are sound predicate-level verdicts carrying their
+  positive-cycle witness; stratification, normality, and Horn are definite, with a
+  witnessing rule; the confirmed classes are a routable projection. The construct scan
+  reads, in one structural walk, which of the language's constructs a program uses, each
+  with the first statement that bears it.
+- **§5, §6, §8, §10** (2026-08-28): grounding finiteness's soundness and cost gaps
+  closed — the equality closure near-linear, the carriers congruent with the dependency
+  graph, the deepening walk lazy and iterative, and two cost quadratics removed.
+- **§1, §2, §5, §10, §12** (2026-08-29): safety and finiteness read as the grounder
+  reads them. Finiteness's `Holds` is conditioned on the safe fragment; a choice or
+  disjunction head element is scoped by its own condition; binding, projection, and
+  generation follow gringo's `simplify`; the theory-term and directive safety boundaries
+  are closed and the unsafe witness unified; `#project` and `#heuristic` atoms are
+  schema wildcards; the `#external` value is vetted and a zero-product fold refused; a
+  bounded finiteness-versus-clingo backstop guards the soundness of `Holds`; and an
+  atom-level pool the raise could not yet represent fails closed.
+- **§5, §11, §12** (2026-08-30, 2026-08-31): the raise represents a pool faithfully and
+  the analysis reads the unpooled program, a residual pooled disjunct per alternative.
+- **§5** (2026-09-05): the deepening walk's fifth path — a variable a positive body atom
+  carries through an invertible arithmetic former (`p(X) :- p(X+1).`) deepens, so such a
+  program is `Unknown`, never a false `Holds`.
