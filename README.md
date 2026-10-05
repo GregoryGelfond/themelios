@@ -153,7 +153,8 @@ pattern.
 ## Install
 
 themelios isn't on crates.io yet. Depend on the crates you need by git, and pin
-them all to the same revision:
+them all to the same revision; the one below carries every surface this README
+documents:
 
 ```toml
 [dependencies]
@@ -176,6 +177,7 @@ themelios builds on Rust 1.97 or newer.
 | `themelios-solve` | The engine-agnostic solving contract: the `Backend` trait, the agent, the typed outcomes and faults, and the conformance suite. |
 | `themelios-query` | Reading the solve tier's results: the three-valued answer, cautious and brave consequences, bindings, and the world view. |
 | `themelios-potassco`, `themelios-potassco-sys` | Reserved for the clingo and clingcon adapter; not yet implemented. |
+| `themelios` | The facade: curated re-exports and a prelude, the adapters behind default features, and the witness examples; not yet built. |
 
 ## Documentation
 
@@ -219,6 +221,9 @@ fuzzing of the lexer and parser, and a 90% line-coverage floor (96% measured).
   are next. Until they land, no engine ships in this repository, and Rust
   `@`-functions and custom theory propagators, both declared in the contract,
   wait on a backend that runs them.
+- **The facade.** The `themelios` crate — curated re-exports, the adapters
+  behind default features, and the witness examples — lands after the
+  adapters.
 - **crates.io.** For now, themelios is consumed by git revision.
 
 ## Used by

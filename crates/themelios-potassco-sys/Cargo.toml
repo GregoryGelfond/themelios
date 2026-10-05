@@ -1,18 +1,20 @@
 [package]
 name = "themelios-potassco-sys"
 version = "0.1.0"
-description = "The pinned bindings over the libclingo and libclingcon C APIs — clingo 5.8.2, the vendored authority: the binding half of the potassco trusted computing base. Feature-gated; never in a default build."
+description = "Reserved, not yet implemented: the pinned bindings over the libclingo and libclingcon C APIs, against clingo 5.8.2, the authority to be vendored — the binding half of the potassco trusted computing base. Feature-gated; never in a default build."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-# The one native library this workspace ever links, claimed by name so that no
-# second package can link it (docs/design/solve.md §11.1, §11.3).
+# Reserves the `clingo` link name, so that no second package in a build can link
+# libclingo (docs/design/solve.md §11.1, §11.3); how libclingcon's link sits
+# beside it is designed with the adapter.
 links = "clingo"
 
-# Nothing: the bindings stand on the C ABI alone.
+# Nothing: the bindings, once they land, stand on the C ABI alone.
 [dependencies]
 
-# bindgen will regenerate the vendored bindings from libclingo's C header — an
+# bindgen will regenerate the vendored bindings from the libclingo and
+# libclingcon C headers — an
 # out-of-band act behind the `bindgen` feature, so a default build never
 # compiles or runs it (docs/design/solve.md §2.1, §16). Not yet wired: the build
 # script does nothing.
@@ -21,15 +23,16 @@ bindgen = { version = "0.73", optional = true }
 
 [features]
 # The binding proper, once it lands: the vendored bindings and the link against
-# the pinned clingo 5.8.2 built from the vendored source. Today it enables
+# the pinned clingo 5.8.2 built from the vendored source (libclingcon's is
+# designed with the adapter). Today it enables
 # nothing, and the crate is an empty shell that links nothing under every
 # feature. Off by default, so a default workspace build stays FFI-free
 # (docs/design/solve.md §2.1, §11.3, §16). Reached through themelios-potassco's
 # `potassco` feature.
 clingo = []
-# Regenerating the vendored bindings over `libclingo/clingo.h` with bindgen,
-# once wired: out-of-band, never in a default build (docs/design/solve.md §2.1,
-# §16).
+# Regenerating the vendored bindings over the libclingo and libclingcon C
+# headers with bindgen, once wired: out-of-band, never in a default build
+# (docs/design/solve.md §2.1, §16).
 bindgen = ["dep:bindgen"]
 
 # The workspace lint tables restated — `[lints] workspace = true` admits no
