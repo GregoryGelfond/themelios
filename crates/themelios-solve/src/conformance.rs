@@ -54,9 +54,11 @@
 //! within, concluding at the budget, never as closing the space; the native
 //! door's answer is its known one, no model over a program with none. **Only
 //! the base grounds** (§6.3): over a program with a part beyond `base`, through
-//! both doors, a single-shot backend answers as its base alone denotes, or
-//! refuses at `lower` naming the part by its key, never grounding the part or
-//! naming a statement in it; a multi-shot backend's is reported not driven.
+//! both doors, which must agree, a single-shot backend answers as its base alone
+//! denotes, or refuses at `lower` naming the part by its key, the program
+//! lowered before it left in place — never grounding the part, answering
+//! otherwise, or naming a statement in it; a multi-shot backend's is reported
+//! not driven.
 //!
 //! The named pathologies are unconstructible in the vocabulary (§5.3). The suite
 //! attempts the two a backend could reach at run time — a touched stream passing
@@ -74,12 +76,14 @@
 //! program's answer sets, or, for the time budget's cut and the cancellation's,
 //! the cut's cap and one more — so a run that never ends is caught at that
 //! bound rather than holding the suite: outcome correctness fails it there, as
-//! does a capability's probe, and the cancellation check.
-//! A check that cannot be driven over a backend — its program refused, its
-//! stream faulted or run past its bound — is skipped with the failure that
-//! stopped it, and the check that owns that failure fails. A program only a
-//! capability's probe lowers, refused, fails that capability's check, though:
-//! no other check would see the refusal.
+//! do a capability's probe, the cancellation check, and obligation 12 over its
+//! parts probe. A check that cannot be driven over a backend — its program
+//! refused, its stream faulted or run past its bound — is skipped with the
+//! failure that stopped it, and the check that owns that failure fails. A
+//! program only one check lowers is that check's own, though, since no other
+//! check would see it: a capability's probe, refused, fails that capability's
+//! check, and obligation 12 fails a faulted stream, a run past its bound, or a
+//! misanswer over its parts probe, the fact it lowers first being the corpus's.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -109,17 +113,17 @@ use crate::outcome::{
 // ---- The report ----
 
 /// Run the suite over `backend` (docs/design/solve.md §13.1): the corpus, each
-/// capability as declared, and the pathologies attempted — a [`Verdict`] per
-/// [`Check`] in the returned report. Whatever the backend answers, refuses, or
+/// capability as declared, the pathologies attempted, and obligation 12's parts
+/// probe — a [`Verdict`] per [`Check`] in the returned report. Whatever the backend answers, refuses, or
 /// faults with becomes a verdict, and every stream is read to a bound, so a run
 /// that never ends fails its check rather than holding the suite. The suite
 /// loads its own programs — on a multi-shot backend a `reset` first, since
 /// `lower` accumulates there (§6.2) — and probes every capability, registering
 /// its probe extensions where the backend accepts them, so the backend's state
 /// afterwards is the suite's: run it over a backend kept for it. Cost: a handful
-/// of solves per corpus program, and the time budget's cut — one solve under
-/// its budget, read to at most its cap of models over a backend that never
-/// cuts.
+/// of solves per corpus program; the time budget's cut — one solve under its
+/// budget, read to at most its cap of models over a backend that never cuts;
+/// and four solves over the parts probe's two doors.
 #[must_use]
 pub fn run(backend: &mut dyn Backend) -> ConformanceReport {
     let corpus = corpus();
@@ -265,9 +269,10 @@ pub enum Check {
     /// §6.3).
     Capability(Capability),
     /// A single-shot solve grounds the `base` part alone (§6.3): over a program
-    /// with a part beyond it, through both doors, the backend answers as its
-    /// base denotes, or refuses at `lower` naming the part by its key, never
-    /// grounding the part or naming a statement in it.
+    /// with a part beyond it, through both doors, which must agree, the backend
+    /// answers as its base alone denotes, or refuses at `lower` naming the part
+    /// by its key, the program lowered before it left in place — never
+    /// grounding the part, answering otherwise, or naming a statement in it.
     OnlyTheBaseGrounds,
 }
 
@@ -926,12 +931,13 @@ fn load_parsed(backend: &mut dyn Backend, case: &Case) -> Result<(), Failure> {
     backend
         .lower(Door::Parsed(&case.admitted))
         .map_err(|fault| {
-            Failure::new(
-                Breach::Refused,
-                format!("{} at Door A", refused_program(case.source)),
-            )
-            .with_fault(fault)
+            Failure::new(Breach::Refused, refused_at_door_a(case.source)).with_fault(fault)
         })
+}
+
+/// What a refused `lower` of the parse of `source` at Door A says.
+fn refused_at_door_a(source: &str) -> String {
+    format!("{} at Door A", refused_program(source))
 }
 
 /// Load the program `source` denotes, as [`load`] does.
@@ -2741,30 +2747,46 @@ fn base_alone(backend: &mut dyn Backend, capabilities: &Capabilities) -> Result<
     let fact_admitted = admitted_under(PARTS_FACT_SOURCE, FACT);
     let program = program_of(PARTS);
     let admitted = admitted_under(PARTS_SOURCE, PARTS);
-    let refused_at_door_b = through_one_door(
+    let at_door_b = through_one_door(
         backend,
         capabilities,
         Door::Program(&fact),
         Door::Program(&program),
     )?;
-    let refused_at_door_a = through_one_door(
+    let at_door_a = through_one_door(
         backend,
         capabilities,
         Door::Parsed(&fact_admitted),
         Door::Parsed(&admitted),
     )?;
-    if refused_at_door_b == refused_at_door_a {
-        Ok(())
-    } else {
-        Err(broke(
-            Breach::Refused,
-            "a program with a part beyond the base was refused at one door and answered at the other",
-        ))
+    match (at_door_b, at_door_a) {
+        (Some(refusal), None) => Err(disagreement(
+            "refused at Door B and answered at Door A",
+            refusal,
+        )),
+        (None, Some(refusal)) => Err(disagreement(
+            "answered at Door B and refused at Door A",
+            refusal,
+        )),
+        (None, None) | (Some(_), Some(_)) => Ok(()),
     }
 }
 
-/// Obligation 12's probe through one door, saying whether the backend refused
-/// the part: the fact `a.` lowered first through `fact` and answered exactly —
+/// The shortfall of a program with a part beyond the base that the doors do
+/// not agree on, as `doors` says, carrying the backend's refusal.
+fn disagreement(doors: &str, refusal: Fault) -> Shortfall {
+    Shortfall::Broke(
+        Failure::new(
+            Breach::Refused,
+            format!("a program with a part beyond the base was {doors}"),
+        )
+        .with_fault(refusal),
+    )
+}
+
+/// Obligation 12's probe through one door, returning the backend's refusal of
+/// the part where it refused it: the fact `a.` lowered first through `fact` and
+/// answered exactly —
 /// a door the backend refuses outright, or a fact it misanswers, leaves the
 /// check undriven, the fact being the corpus's own — then [`PARTS`], through
 /// `probe`, either answered as its base or refused as the part, the fact then
@@ -2774,11 +2796,11 @@ fn through_one_door(
     capabilities: &Capabilities,
     fact: Door<'_>,
     probe: Door<'_>,
-) -> Result<bool, Shortfall> {
+) -> Result<Option<Fault>, Shortfall> {
     let at_door_a = matches!(fact, Door::Parsed(_));
     backend.lower(fact).map_err(|fault| {
         let refused = if at_door_a {
-            format!("{} at Door A", refused_program(FACT))
+            refused_at_door_a(FACT)
         } else {
             refused_program(FACT)
         };
@@ -2786,11 +2808,11 @@ fn through_one_door(
     })?;
     fact_answered(backend, capabilities).map_err(Shortfall::Undriven)?;
     match backend.lower(probe) {
-        Ok(()) => base_answered(backend, capabilities).map(|()| false),
+        Ok(()) => base_answered(backend, capabilities).map(|()| None),
         Err(fault) => {
             part_refused(&fault)?;
             fact_stays(backend, capabilities)?;
-            Ok(true)
+            Ok(Some(fault))
         }
     }
 }
@@ -2877,9 +2899,9 @@ fn base_answered(backend: &mut dyn Backend, capabilities: &Capabilities) -> Resu
 }
 
 /// Whether `read`, a read of `solved` bounded at one model, answers exactly
-/// `expected`: every model `expected`, and where the backend enumerates, its
-/// one answer set, the stream ending within the bound and the search closing
-/// the space.
+/// `expected`: its one model `expected`, the stream ending within the bound —
+/// as every stream the suite reads must — and, where the backend enumerates,
+/// the search closing the space.
 fn answers_exactly(
     read: &Pulled,
     solved: &Solved<'_>,
@@ -2888,8 +2910,8 @@ fn answers_exactly(
 ) -> bool {
     !read.sets.is_empty()
         && read.sets.iter().all(|set| set == expected)
-        && (!capabilities.enumeration
-            || (read.ended && solved.conclusion() == Some(Conclusion::Exhausted)))
+        && read.ended
+        && (!capabilities.enumeration || solved.conclusion() == Some(Conclusion::Exhausted))
 }
 
 #[cfg(test)]
