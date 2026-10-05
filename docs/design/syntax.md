@@ -1,16 +1,17 @@
 # themelios-syntax — tier design
 
-2026-08-15. Design, pre-implementation. This document is the
-API design of `themelios-syntax` — the types, traits, signatures,
-semantics, and computational costs of the syntax tier — derived from the
-v1 specification (`docs/specification.md`, cited as *spec §n*), held to
-the grammar of record (`docs/grammar.md`, cited as *grammar §n*), and
-built on the base tier's design (`docs/design/base.md`, cited as
-*base §n*); a bare *§n* cites this document's own sections. It is written
-to stand alone in the same sense those documents are: a reader holding
-this repository and public sources can check every claim. Where this
-document and the specification or the grammar disagree, they govern and
-the disagreement is a defect here.
+2026-08-15, revised through 2026-10-04. The design of record, which the
+build follows; its Revisions section records each refinement made after it
+was settled. This document is the API design of `themelios-syntax` — the
+types, traits, signatures, semantics, and computational costs of the
+syntax tier — derived from the v1 specification (`docs/specification.md`,
+cited as *spec §n*), held to the grammar of record (`docs/grammar.md`,
+cited as *grammar §n*), and built on the base tier's design
+(`docs/design/base.md`, cited as *base §n*); a bare *§n* cites this
+document's own sections. It is written to stand alone in the same sense
+those documents are: a reader holding this repository and public sources
+can check every claim. Where this document and the specification or the
+grammar disagree, they govern and the disagreement is a defect here.
 
 ---
 

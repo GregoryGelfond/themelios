@@ -1,9 +1,21 @@
 # themelios — v1 specification
 
-2026-08-13. Draft, pre-implementation. This document is the
+2026-08-13, the founding specification; its architecture reference (§11,
+§12) brought to the roster as amended, 2026-10-04. This document is the
 normative statement of what themelios v1 is, what it delivers, and what would
 count as failing to deliver it. It is written to stand alone: a reader
 holding only this repository and public sources can check every claim.
+
+The tier designs under `docs/design/` refine it, and where one amends a
+clause it says so in place rather than leaving the change implicit. The
+solve tier's design records its amendments in `solve.md` §16: the removal of
+the reference solver this document names in §1.1, §2, §9, and §13; the
+clingcon adapter's place in the Potassco crates; the deferred record of a
+consequence path; the ground-program observer, now a committed capability;
+intra-propagator parallelism; engine-scoped statistics; and the agent loop
+that presents §9.4's sessions. `analysis.md` §12 adds the analysis crate.
+Those clauses stand here as founded, read through the designs' amendments.
+What is built is the README's to say.
 
 ---
 
@@ -943,18 +955,21 @@ an instrument-less stage is not done.
    costlier to absorb.
 3. `themelios-program` — the Program value, lowering, constructors,
    provenance; then rendering; then transformation, patterns,
-   unification.
+   unification; beside it `themelios-analysis`, the structural reading
+   of the program value (`analysis.md` §12).
 4. `themelios-macros` — the crate exists from the first stage it can
    client; its vocabulary accretes with its enablers: construction
-   macros after stages 2–3, extraction and registration attributes with
-   stages 6–7.
+   macros after stages 2–3, the solve-adjacent macros and registration
+   attributes with stages 5 and 7 (`solve.md` §2.1).
 5. `themelios-solve` — the contract, outcome vocabulary, fault taxonomy,
-   conformance-suite skeleton.
-6. `themelios-reference` — the naive solver; first to pass conformance.
-7. `themelios-clingo-sys` / `themelios-clingo` — the TCB under the
-   manifest discipline; conformance and differential green; then the
-   extension surfaces (`@`-functions, propagators); then
-   `themelios-clingcon-sys` / `themelios-clingcon` as the thin delta.
+   the agent, the conformance suite; beside it `themelios-query`, the
+   epistemic reading over its outcomes (`query.md`).
+6. Removed: the naive reference solver this stage once named
+   (`solve.md` §16).
+7. `themelios-potassco-sys` / `themelios-potassco` — the TCB under the
+   manifest discipline, adapting clingo and clingcon both (`solve.md`
+   §11.1); conformance and differential green; then the extension
+   surfaces (`@`-functions, propagators).
 8. `themelios` facade — the witness roster (§3) complete, including
    comparator evidence; query tier completed against real outcomes.
 
@@ -984,26 +999,34 @@ surface met reality before it froze.
 ### 12.1 Tiers
 
 Four tiers over a shared base, each a separately usable library: syntax
-(§6), program (§7), solve (§9), adapters (§9.5). The pipeline shape and
-its incrementality posture are §7.8.
+(§6); program (§7), with its sibling analysis; solve (§9), with its
+sibling query; and the adapters (§9.5). The macros (§8) sit over syntax
+and program. Each depends only on the tiers beneath it. The pipeline
+shape and its incrementality posture are §7.8.
 
 ### 12.2 Crates
 
-Eleven workspace members. Satellites live in their own repositories.
+Ten crates make up v1's roster; the syntax tier's fuzz targets and the
+macro tier's facade fixtures are workspace members beside them, never
+published. Satellites live in their own repositories.
 
 | crate | unsafe | purpose |
 |---|---|---|
 | `themelios-base` | forbid | Source-text model, spans, line indexing, and the diagnostics model. Zero dependencies. |
 | `themelios-syntax` | forbid | Lexer, parser, lossless tree, trivia policy, typed AST, token-fidelity emit, token-stream equivalence (§6.7), fusion oracle. FFI-free by dependency closure. Importable wholesale. |
 | `themelios-program` | forbid | The Program value, lowering, constructors, provenance, transformation, rendering, patterns and unification. |
+| `themelios-analysis` | forbid | The structural reading of a program: its constructs, the predicate dependency graph, safety and grounding finiteness, and the program classes, as typed verdicts that name their evidence. Engine-free. |
 | `themelios-macros` | forbid | Procedural macros as syntax-tier clients, expanding to public constructors and registration APIs only. |
-| `themelios-solve` | forbid | The backend contract, outcome vocabulary, sessions, fault taxonomy, query surface, conformance suite. Engine-free. |
-| `themelios-clingo-sys` | allow (bindings only) | Vendored, pinned bindgen output over clingo's C API; regeneration out-of-band. |
-| `themelios-clingo` | allow (the TCB) | Mechanism-only kernel over the bindings plus the safe adapter implementing the contract. |
-| `themelios-clingcon-sys` | allow (bindings only) | Vendored, pinned bindings to libclingcon's registration surface. |
-| `themelios-clingcon` | allow (thin TCB delta) | Registration onto a clingo-backed session plus typed assignment retrieval. |
-| `themelios-reference` | forbid, `publish = false` | The naive pure-Rust reference solver: oracle, second implementor, native-backend demonstration. |
+| `themelios-solve` | forbid | The backend contract, outcome vocabulary, the agent and its driving surface, fault taxonomy, the extension-surface traits, the bridge seam, conformance suite. Engine-free. |
+| `themelios-query` | forbid | The epistemic reading — the three-valued answer, the world view, cautious and brave consequence, bindings — over the program tier's patterns and the solve tier's outcomes. Engine-free. |
+| `themelios-potassco-sys` | allow (bindings only) | Vendored, pinned bindgen output over the libclingo and libclingcon C APIs; regeneration out-of-band. Feature-gated; never in a default build. |
+| `themelios-potassco` | allow (the TCB) | Mechanism-only kernel over the bindings plus the safe adapters implementing the contract against clingo and clingcon, both first-class backends. |
 | `themelios` | forbid | The facade: curated re-exports, adapters behind default features — disable them and the stack is FFI-free — and the witness examples, executed on every change. |
+
+The founding roster's separate clingo and clingcon crates collapse into
+the two Potassco crates, the query surface is its own crate, the analysis
+crate joins the program tier, and there is no reference-solver crate
+(`solve.md` §2.1, §16; `analysis.md` §12).
 
 Typed AST placement is deliberate: it lives in `themelios-syntax`
 (syntactic accessors over the tree, no semantic opinions), serving
@@ -1012,11 +1035,12 @@ solver-frontend consumers that want structure without the Program tier.
 ### 12.3 Trust architecture
 
 Three redundant enforcement layers: workspace-level `unsafe_code =
-"deny"` with only the four adapter crates opting back in; per-crate
+"deny"` with only the two Potassco crates opting back in; per-crate
 `forbid`/`allow` attributes; and a structural check asserting
 forbid-in-pure-crates, allow-only-in-the-named-TCB, FFI-free dependency
-closures for `-base`/`-syntax`/`-program`/`-solve`, and no build scripts
-among the workspace's own crates outside the sys crates. A build script
+closures for `-base`/`-syntax`/`-program`/`-analysis`/`-solve`/`-query`
+and for the runtime the macros' expansions name, and no build scripts
+among the workspace's own crates outside the sys crate. A build script
 inside a pure crate's dependency closure is admitted only by name —
 argued in that crate's dependency audit note (§12.5) and allowed by name
 in the structural check — so the closure's build scripts are an
@@ -1080,9 +1104,9 @@ pinned, with a written audit note (internal unsafe acknowledged;
 exercised at scale daily by rust-analyzer) and hand-rolled green/red
 trees recorded as the reserved fallback — plus at most a small hash-map
 utility; the lexer and parser are hand-written with no lexer or parser
-dependencies; `-macros` carries the proc-macro toolchain only; `-solve`
-nothing beyond the lower tiers; the sys crates' bindgen is feature-gated
-and never in a default build.
+dependencies; `-macros` carries the proc-macro toolchain only;
+`-analysis`, `-solve`, and `-query` nothing beyond the lower tiers; the
+sys crate's bindgen is feature-gated and never in a default build.
 
 ---
 
