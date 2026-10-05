@@ -156,8 +156,8 @@ them all to the same revision:
 
 ```toml
 [dependencies]
-themelios-program = { git = "https://github.com/GregoryGelfond/themelios.git", rev = "1c8ef1b" }
-themelios-analysis = { git = "https://github.com/GregoryGelfond/themelios.git", rev = "1c8ef1b" }
+themelios-program = { git = "https://github.com/GregoryGelfond/themelios.git", rev = "3339a8a" }
+themelios-analysis = { git = "https://github.com/GregoryGelfond/themelios.git", rev = "3339a8a" }
 ```
 
 The build fetches the repository over HTTPS, and no credentials are needed.

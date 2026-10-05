@@ -1,7 +1,7 @@
 [package]
 name = "themelios-potassco-sys"
 version = "0.1.0"
-description = "The pinned bindings over libclingo's C API — clingo 5.8.2, the vendored authority: the binding half of the potassco trusted computing base. Feature-gated; never in a default build."
+description = "The pinned bindings over the libclingo and libclingcon C APIs — clingo 5.8.2, the vendored authority: the binding half of the potassco trusted computing base. Feature-gated; never in a default build."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -12,21 +12,24 @@ links = "clingo"
 # Nothing: the bindings stand on the C ABI alone.
 [dependencies]
 
-# bindgen regenerates the vendored bindings from libclingo's C header — an
+# bindgen will regenerate the vendored bindings from libclingo's C header — an
 # out-of-band act behind the `bindgen` feature, so a default build never
-# compiles or runs it (docs/design/solve.md §2.1, §16).
+# compiles or runs it (docs/design/solve.md §2.1, §16). Not yet wired: the build
+# script does nothing.
 [build-dependencies]
 bindgen = { version = "0.73", optional = true }
 
 [features]
-# The binding proper: the vendored bindings and the link against the pinned
-# clingo 5.8.2 built from the vendored source. Off by default, so a default
-# workspace build compiles this crate as an empty shell and links nothing — the
-# stack stays FFI-free (docs/design/solve.md §2.1, §11.3, §16). Reached through
-# themelios-potassco's `potassco` feature.
+# The binding proper, once it lands: the vendored bindings and the link against
+# the pinned clingo 5.8.2 built from the vendored source. Today it enables
+# nothing, and the crate is an empty shell that links nothing under every
+# feature. Off by default, so a default workspace build stays FFI-free
+# (docs/design/solve.md §2.1, §11.3, §16). Reached through themelios-potassco's
+# `potassco` feature.
 clingo = []
-# Regenerating the vendored bindings over `libclingo/clingo.h` with bindgen:
-# out-of-band, never in a default build (docs/design/solve.md §2.1, §16).
+# Regenerating the vendored bindings over `libclingo/clingo.h` with bindgen,
+# once wired: out-of-band, never in a default build (docs/design/solve.md §2.1,
+# §16).
 bindgen = ["dep:bindgen"]
 
 # The workspace lint tables restated — `[lints] workspace = true` admits no
