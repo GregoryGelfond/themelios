@@ -2246,24 +2246,25 @@ The tier is done when all of the following hold:
 
 ## 16. Architecture, trust, and dependency reference
 
-**Amendments to the specification, recorded here:**
+**Amendments to the specification, recorded here** — the authority the specification's status note keys
+its founded clauses to:
 
 - **Crate roster (§12.2).** The four adapter crates collapse to `themelios-potassco(-sys)`, which binds
   **clingo and clingcon** (§11.1); the query surface splits into the `themelios-query` sibling
   (`query.md`). There is **no reference-solver crate** — the in-house engine is zetesis, a separate sibling
   project behind the contract, not a member of this tier (§12).
-- **The reference solver (specification §1.1, §2 item 4, §9.1, §9.5, §10, §11 build-order item 6, §12.2,
-  §12.5) — REMOVED.** The specification's naive pure-Rust reference solver is removed as scope creep. It
-  filled several roles across the specification, each now re-homed or carried forward: the
-  solver-agnostic seam's **second independent implementor** (§9.5, §10) and the **native-backend seed**
-  (§1.1, §12.5) are **zetesis** (§12), which — on a radically different architecture — is the independent
-  implementor a private in-house solver could never be as convincingly; the **small-case oracle** (§2 item
-  4, §9.1) is the clingo/clingcon binaries (§11.2) plus the engine-free stub the conformance suite runs
-  against; the **build-order item** (§11 item 6) and the **crate-roster entry** (§12.2) are struck. The one
-  clause this *weakened* rather than re-homed is §9.5's "the seam's second engine is the reference solver":
-  the second *independent* engine is zetesis, named a **post-v1 obligation** (§15 criterion 1) gated on the
-  tier landing (§14), and its proof stands from zetesis 0.3.0, ahead of v1, so the weakening is undone.
-  This is a considered supersession on the record, not a silent descope.
+- **The reference solver (specification §1.1, §2 item 4, §9.1, §9.5, §9.8, §10.1, §11 build-order item 6,
+  §12.2, §13) — REMOVED.** The specification's naive pure-Rust reference solver is removed as scope creep. It
+  filled several roles across the specification, each now re-homed or carried forward: the solver-agnostic
+  seam's **second independent implementor** (§9.5, §9.8) and the **native-backend seed** (§1.1, §13) are
+  **zetesis** (§12), which — on a radically different architecture — is the independent implementor a private
+  in-house solver could never be as convincingly; the **small-case oracle** (§2 item 4, §9.1, §9.8) and its
+  differential against clingo (§10.1) are the clingo/clingcon binaries (§11.2) plus the engine-free stub the
+  conformance suite runs against; the **build-order item** (§11 item 6) and the **crate-roster entry** (§12.2)
+  are struck. The one clause this *weakened* rather than re-homed is §9.5's "the seam's second engine is the
+  reference solver": the second *independent* engine is zetesis, named a **post-v1 obligation** (§15 criterion
+  1) gated on the tier landing (§14), and its proof stands from zetesis 0.3.0, ahead of v1, so the weakening
+  is undone. This is a considered supersession on the record, not a silent descope.
 - **The clingcon adapter (§9.5, §4, §2 item 5, §12.2) — RESTORED.** An earlier revision permanently
   superseded the specification's clingcon adapter with the in-house CP theory; **that supersession is
   reversed.** clingcon is **restored as a first-class native backend** in `themelios-potassco` (§11.1),
@@ -2642,4 +2643,6 @@ necessity where it is declared.
     as its parse does through Door A, and its hybrid and lazy groundings are held to the contract on the
     programs they admit. §12, §13.1, §13.2, and §14 say so; §15 criterion 1's independent-implementor
     proof, named a post-v1 obligation, stands ahead of v1, its residual risk retired; and §16 records the
-    reference solver's weakened clause undone.
+    reference solver's weakened clause undone. §16's list of the founded clauses the reference solver's
+    removal reaches is corrected (§9.8, §10.1, and §13, not §12.5), and §16 is named the authority the
+    specification's status note keys its founded clauses to.

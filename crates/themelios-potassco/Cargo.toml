@@ -1,7 +1,7 @@
 [package]
 name = "themelios-potassco"
 version = "0.1.0"
-description = "The Potassco adapter: the mechanism-only kernel over the bindings and the safe adapters implementing the solve tier's backend contract against clingo 5.8.2 and clingcon — the trusted computing base, named for the engine family it adapts."
+description = "Reserved, not yet implemented: the Potassco adapter — the mechanism-only kernel over the bindings and the safe adapters implementing the solve tier's backend contract against clingo 5.8.2 and clingcon, the trusted computing base, named for the engine family it adapts."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

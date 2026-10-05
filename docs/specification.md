@@ -1,21 +1,31 @@
 # themelios — v1 specification
 
-2026-08-13, the founding specification; its architecture reference (§11,
-§12) brought to the roster as amended, 2026-10-04. This document is the
-normative statement of what themelios v1 is, what it delivers, and what would
-count as failing to deliver it. It is written to stand alone: a reader
-holding only this repository and public sources can check every claim.
+2026-08-13, the founding specification; its build order and architecture
+reference (§11, §12) rewritten to the roster as the designs amended it,
+2026-10-04. This document is the normative statement of what themelios v1
+is, what it delivers, and what would count as failing to deliver it. It is
+written to stand alone: a reader holding only this repository and public
+sources can check every claim.
 
 The tier designs under `docs/design/` refine it, and where one amends a
-clause it says so in place rather than leaving the change implicit. The
-solve tier's design records its amendments in `solve.md` §16: the removal of
-the reference solver this document names in §1.1, §2, §9, and §13; the
-clingcon adapter's place in the Potassco crates; the deferred record of a
-consequence path; the ground-program observer, now a committed capability;
-intra-propagator parallelism; engine-scoped statistics; and the agent loop
-that presents §9.4's sessions. `analysis.md` §12 adds the analysis crate.
-Those clauses stand here as founded, read through the designs' amendments.
-What is built is the README's to say.
+clause it says so in place. Elsewhere the founded clauses stand as written,
+read through these amendments, whose authority is `solve.md` §16:
+
+- the reference solver is removed — §1.1, §2 item 4, §9.1, §9.5, §9.8,
+  §10.1, §13 — its roles re-homed: zetesis as the independent implementor,
+  the clingo and clingcon binaries and the engine-free stub as the
+  small-case oracle;
+- the clingcon adapter lives in the Potassco crates — §2 item 5, §9.5;
+- the agent loop presents §9.4's sessions — §9.4;
+- the record of which consequence path ran is deferred to its first
+  consumer — §9.1;
+- the ground-program observer is a committed capability, not a reserved
+  seam — §9.6, §13;
+- intra-propagator parallelism is a v1 capability — §9.6;
+- engine-scoped statistics are an addition no founded clause states.
+
+`analysis.md` §12 adds the analysis crate. What is built is the README's to
+say.
 
 ---
 
@@ -959,8 +969,9 @@ an instrument-less stage is not done.
    of the program value (`analysis.md` §12).
 4. `themelios-macros` — the crate exists from the first stage it can
    client; its vocabulary accretes with its enablers: construction
-   macros after stages 2–3, the solve-adjacent macros and registration
-   attributes with stages 5 and 7 (`solve.md` §2.1).
+   macros after stages 2–3, the solve-adjacent macros with stage 5
+   (`solve.md` §2.1), the registration attributes with stage 7's extension
+   surfaces (`macros.md` §12).
 5. `themelios-solve` — the contract, outcome vocabulary, fault taxonomy,
    the agent, the conformance suite; beside it `themelios-query`, the
    epistemic reading over its outcomes (`query.md`).
@@ -1039,8 +1050,8 @@ Three redundant enforcement layers: workspace-level `unsafe_code =
 `forbid`/`allow` attributes; and a structural check asserting
 forbid-in-pure-crates, allow-only-in-the-named-TCB, FFI-free dependency
 closures for `-base`/`-syntax`/`-program`/`-analysis`/`-solve`/`-query`
-and for the runtime the macros' expansions name, and no build scripts
-among the workspace's own crates outside the sys crate. A build script
+and for the runtime the macros' expansions name, and no build script in
+any of those pure crates. A build script
 inside a pure crate's dependency closure is admitted only by name —
 argued in that crate's dependency audit note (§12.5) and allowed by name
 in the structural check — so the closure's build scripts are an
