@@ -117,7 +117,7 @@ reach(Y) :- edge(X, Y), reach(X).
 start(1).
 ```
 
-There are nine macros in all: `program!`, `rule!`, `fact!`, `constraint!`,
+There are nine construction macros: `program!`, `rule!`, `fact!`, `constraint!`,
 `minimize!`, `maximize!`, `show!`, `external!`, and `atom!`. Their expansions
 name `themelios_program`; a crate that renames that dependency, or re-exports
 the macros under its own name, opens an invocation with `#![crate = path]` to
@@ -221,6 +221,10 @@ fuzzing of the lexer and parser, and a 90% line-coverage floor (96% measured).
   are next. Until they land, no engine ships in this repository, and Rust
   `@`-functions and custom theory propagators, both declared in the contract,
   wait on a backend that runs them.
+- **The solve-adjacent macros and attributes.** `scenario!`, `query!`,
+  `#[external]`, `#[derive(Extract)]`, and `#[derive(Facts)]` are designed and
+  land with the surfaces they front ([macros design](docs/design/macros.md) §4,
+  §12).
 - **The facade.** The `themelios` crate — curated re-exports, the adapters
   behind default features, and the witness examples — lands after the
   adapters.

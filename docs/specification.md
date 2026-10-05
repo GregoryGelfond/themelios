@@ -969,9 +969,9 @@ an instrument-less stage is not done.
    of the program value (`analysis.md` §12).
 4. `themelios-macros` — the crate exists from the first stage it can
    client; its vocabulary accretes with its enablers: construction
-   macros after stages 2–3, the solve-adjacent macros with stage 5
-   (`solve.md` §2.1), the registration attributes with stage 7's extension
-   surfaces (`macros.md` §12).
+   macros after stages 2–3, then the solve-adjacent macros and the
+   extraction and registration attributes as `macros.md` §4 and §12
+   schedule them.
 5. `themelios-solve` — the contract, outcome vocabulary, fault taxonomy,
    the agent, the conformance suite; beside it `themelios-query`, the
    epistemic reading over its outcomes (`query.md`).
