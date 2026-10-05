@@ -18,10 +18,12 @@ use themelios_program::{
 };
 use themelios_solve::agent::{Assumption, Scenario};
 use themelios_solve::bridge::{Door, GroundProgram, NotAdmitted};
-use themelios_solve::conformance::{self, Breach, Check, ConformanceReport, Skip, Verdict};
+use themelios_solve::conformance::{
+    self, Breach, Check, ConformanceReport, Failure, Skip, Verdict,
+};
 use themelios_solve::contract::{
     Backend, Cancel, Capabilities, Capability, ConsequenceRequest, ConsequenceSupport, Fault,
-    GroundOptions, Locus, Mode, Presupposition, SolveRequest, TruthValue,
+    GroundOptions, Locus, Mode, Presupposition, Refused, SolveRequest, TruthValue,
 };
 use themelios_solve::extend::{Function, Propagator};
 use themelios_solve::outcome::{
@@ -615,6 +617,13 @@ enum Flaw {
     /// Door B, and refuses it at Door A, naming the part: a program refused for
     /// the door it came through.
     RefusesThePartAtDoorAOnly,
+    /// Refuses a program with a part beyond the base at Door B, naming the part,
+    /// and answers it at Door A as its base denotes: a program refused for the
+    /// door it came through.
+    RefusesThePartAtDoorBOnly,
+    /// Yields its base's model forever over a program with a part beyond the
+    /// base, never ending the search.
+    NeverEndsBesideAPart,
     /// Ends its unbudgeted search of the program no search finishes before its
     /// first model, as though its space were empty.
     EndsTheUnboundedSearchAtOnce,
@@ -848,15 +857,25 @@ fn the_step_part(program: &Program) -> &Part {
         .expect("the probe holds the part step(t)")
 }
 
-/// The refusal `flaw` makes of the parts probe's `program`, if any: the part
-/// named by its key, honestly; a statement in it, the part without its formals,
-/// or an unsupported request, under the flaws that misname it.
-fn refuse_the_part(flaw: Flaw, program: &Program) -> Result<(), Fault> {
+/// The refusal `flaw` makes at `lower` of the parts probe's `program`, lowered
+/// at Door A where `at_door_a`, if any: the part named by its key, honestly —
+/// at either door, or at one door alone under the flaws that refuse there only;
+/// a statement in it, the part without its formals, or an unsupported request,
+/// under the flaws that misname it.
+fn refuse_the_part(flaw: Flaw, at_door_a: bool, program: &Program) -> Result<(), Fault> {
     let part = the_step_part(program);
-    match flaw {
+    let honest = match flaw {
         Flaw::RefusesThePartBeyondTheBase
         | Flaw::KeepsARefusedPart
-        | Flaw::LosesTheProgramOnARefusedPart => Err(Fault::program_part(PART_REFUSAL, part.key())),
+        | Flaw::LosesTheProgramOnARefusedPart => true,
+        Flaw::RefusesThePartAtDoorAOnly => at_door_a,
+        Flaw::RefusesThePartAtDoorBOnly => !at_door_a,
+        _ => false,
+    };
+    if honest {
+        return Err(Fault::program_part(PART_REFUSAL, part.key()));
+    }
+    match flaw {
         Flaw::BlamesAStatementInThePart => Err(Fault::program(
             PART_REFUSAL,
             part.statements().next().expect("the part holds p(t)"),
@@ -1294,7 +1313,9 @@ impl Stub {
         if self.flaw == Flaw::YieldsAStranger && !sets.is_empty() {
             sets.insert(0, set([constant("stranger")]));
         }
-        if self.flaw == Flaw::NeverEnds && !sets.is_empty() {
+        let endless = self.flaw == Flaw::NeverEnds
+            || (self.flaw == Flaw::NeverEndsBesideAPart && self.loaded_source() == Some(PARTS));
+        if endless && !sets.is_empty() {
             return Solved::running(
                 Box::new(Endless {
                     model: sets.swap_remove(0),
@@ -1532,13 +1553,7 @@ impl Backend for Stub {
                 Flaw::LosesTheProgramOnARefusedPart => self.loaded.clear(),
                 _ => {}
             }
-            if self.flaw == Flaw::RefusesThePartAtDoorAOnly && matches!(door, Door::Parsed(_)) {
-                return Err(Fault::program_part(
-                    PART_REFUSAL,
-                    the_step_part(lowered).key(),
-                ));
-            }
-            refuse_the_part(self.flaw, lowered)?;
+            refuse_the_part(self.flaw, matches!(door, Door::Parsed(_)), lowered)?;
         }
         if self.flaw == Flaw::RefusesTheExternalProgram && self.table[index].0 == EXTERNAL {
             return Err(Fault::engine("the stub declares no external atom"));
@@ -2138,6 +2153,34 @@ fn a_refusal_naming_the_part_meets_the_base_obligation() {
     );
 }
 
+/// The failure obligation 12 reports for a backend that refuses the parts
+/// probe at Door A alone.
+fn door_disagreement() -> Failure {
+    let report = report(enumerating(), Flaw::RefusesThePartAtDoorAOnly);
+    let Some(Verdict::Failed(failure)) = report.verdict(Check::OnlyTheBaseGrounds) else {
+        panic!("the doors' disagreement fails the obligation: {report}");
+    };
+    failure.clone()
+}
+
+#[test]
+fn a_door_disagreement_carries_the_backend_s_refusal() {
+    let failure = door_disagreement();
+    assert!(
+        matches!(failure.fault().map(Fault::refused), Some(Refused::Part(_))),
+        "{failure}"
+    );
+}
+
+#[test]
+fn a_door_disagreement_names_the_door_that_refused() {
+    let failure = door_disagreement();
+    assert!(
+        failure.to_string().contains("refused at Door A"),
+        "{failure}"
+    );
+}
+
 #[test]
 fn a_multi_shot_backend_s_parts_are_not_driven() {
     let report = report(realising(), Flaw::Faithful);
@@ -2327,6 +2370,16 @@ fn each_flaw_fails_exactly_the_checks_that_name_it() {
             Flaw::RefusesThePartAtDoorAOnly,
             enumerating(),
             vec![(Base, Refused)],
+        ),
+        (
+            Flaw::RefusesThePartAtDoorBOnly,
+            enumerating(),
+            vec![(Base, Refused)],
+        ),
+        (
+            Flaw::NeverEndsBesideAPart,
+            deciding(),
+            vec![(Base, Misanswered)],
         ),
         (
             Flaw::LosesTheProgramOnARefusedPart,
