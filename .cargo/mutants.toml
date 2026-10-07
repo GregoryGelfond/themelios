@@ -79,25 +79,26 @@ exclude_re = [
 
     # ---- The syntax tier (stage 2): equivalent mutants ----
     # The peek (`self.peeked`) is dropped on every `bump`, `set_mode`, statement
-    # boundary, and breach in src/parse/machine.rs, and the cursor moves while it is held
-    # only by placing the trivia before its token. So while it is held the cursor stands
+    # boundary, breach, and change of `skipping` in src/parse/machine.rs — but a term
+    # fragment's first, made before any peek is taken — and the cursor moves while it is
+    # held only by placing the trivia before its token. So while it is held the cursor stands
     # at its `from` or at its token's `start`, under the mode and doc-comment reading it
     # was taken with: every conjunct of `standing_peek`'s test holds on any held peek. Its
     # form is therefore immaterial: a mutant accepts a held peek or reads again the same
     # token from the kept answers, and the trivia placement then finds no trivia or
     # places the same. Behavior-equivalent, as is answering no peek at all.
-    "machine\\.rs:276:9: replace Parser<'s, S>::standing_peek -> Option<Peeked<'s>> with None",
-    "machine\\.rs:278:26: replace == with != in Parser<'s, S>::standing_peek",
-    "machine\\.rs:278:37: replace \\|\\| with && in Parser<'s, S>::standing_peek",
-    "machine\\.rs:278:53: replace == with != in Parser<'s, S>::standing_peek",
-    "machine\\.rs:279:17: replace && with \\|\\| in Parser<'s, S>::standing_peek",
-    "machine\\.rs:279:32: replace == with != in Parser<'s, S>::standing_peek",
-    "machine\\.rs:280:17: replace && with \\|\\| in Parser<'s, S>::standing_peek",
-    "machine\\.rs:280:43: replace == with != in Parser<'s, S>::standing_peek",
+    "machine\\.rs:\\d+:\\d+: replace Parser<'s, S>::standing_peek -> Option<Peeked<'s>> with None",
+    "machine\\.rs:271:26: replace == with != in Parser<'s, S>::standing_peek",
+    "machine\\.rs:271:37: replace \\|\\| with && in Parser<'s, S>::standing_peek",
+    "machine\\.rs:271:53: replace == with != in Parser<'s, S>::standing_peek",
+    "machine\\.rs:272:17: replace && with \\|\\| in Parser<'s, S>::standing_peek",
+    "machine\\.rs:272:32: replace == with != in Parser<'s, S>::standing_peek",
+    "machine\\.rs:273:17: replace && with \\|\\| in Parser<'s, S>::standing_peek",
+    "machine\\.rs:273:43: replace == with != in Parser<'s, S>::standing_peek",
     # After its trivia a lawful source's cursor stands at the peeked token, so `bump`'s
     # test that it does only chooses between placing the peek and reading the same token
     # again from the kept answers: the same token either way.
-    "machine\\.rs:\\d+:\\d+: replace == with != in Parser<'s, S>::bump",
+    "machine\\.rs:429:32: replace == with != in Parser<'s, S>::bump",
     # The term loop's frame stack is kept between runs for its capacity alone: a run that
     # starts from a fresh stack, or hands none back, runs the loop the same.
     "machine\\.rs:\\d+:\\d+: replace Parser<'s, S>::take_frame_stack -> Vec<Frame> with vec!\\[\\]",
