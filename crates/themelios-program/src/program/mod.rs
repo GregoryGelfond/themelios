@@ -406,7 +406,7 @@ impl Program {
     /// the raise (§8) — only `of_keyed_nodes` comes here; the others, the raise among them,
     /// collect through `ingest_run`.
     pub(crate) fn ingest_into(&mut self, key: PartKey, statement: WithProvenance<Statement>) {
-        ingest(&mut self.part_entry(key).statements, statement);
+        ingest(&mut self.part_entry(key).statements, [statement]);
     }
 
     /// Admit a run of statements into one part through the one ingest door (§6.3), looking
@@ -419,10 +419,7 @@ impl Program {
         key: &PartKey,
         statements: impl IntoIterator<Item = WithProvenance<Statement>>,
     ) {
-        let part = self.part_entry(key.clone());
-        for statement in statements {
-            ingest(&mut part.statements, statement);
-        }
+        ingest(&mut self.part_entry(key.clone()).statements, statements);
     }
 
     /// The part named `key`, opened empty when it is not yet present (§4.1). O(key · log
@@ -443,11 +440,25 @@ pub(crate) fn base_key() -> PartKey {
     }
 }
 
-/// The one ingest/merge door (§6.3): canonicalize the statement, then admit it into the
-/// part's set through the provenance-merging insert. This is the only path that mutates a
-/// part's set, so the preservation law is structural.
-fn ingest(set: &mut BTreeSet<WithProvenance<Statement>>, statement: WithProvenance<Statement>) {
-    merge_insert(set, statement.map(canonicalize_statement));
+/// The one ingest/merge door (§6.3): canonicalize each statement of a run, then admit the run
+/// into the part's set through the provenance merge — collected whole when it opens the part,
+/// which merges exactly as admitting it statement by statement would, and statement by
+/// statement into a part already holding some. This is the only path that mutates a part's
+/// set, so the preservation law is structural.
+fn ingest(
+    set: &mut BTreeSet<WithProvenance<Statement>>,
+    statements: impl IntoIterator<Item = WithProvenance<Statement>>,
+) {
+    let canonical = statements
+        .into_iter()
+        .map(|statement| statement.map(canonicalize_statement));
+    if set.is_empty() {
+        *set = merge_collect(canonical);
+    } else {
+        for statement in canonical {
+            merge_insert(set, statement);
+        }
+    }
 }
 
 /// Admit a provenance-carrying node into a set, **unioning** provenance with any
@@ -458,32 +469,46 @@ fn ingest(set: &mut BTreeSet<WithProvenance<Statement>>, statement: WithProvenan
 /// Generic, so the one merge rule serves the statement set and every set-shaped child a canonicalization re-collects (§6.2) — a
 /// counted child merges through its own constructor (§4.4).
 pub(crate) fn merge_insert<T: Ord>(set: &mut BTreeSet<WithProvenance<T>>, node: WithProvenance<T>) {
-    let admitted = match set.take(&node) {
-        Some(existing) => {
-            // The union moves the accumulated provenance and extends it with the newcomer's —
-            // large with small — so a run of n content-equal nodes costs O(n log n), not the
-            // Θ(n²) of cloning the accumulation at every collision.
-            let (_, accumulated) = existing.into_parts();
-            let (value, provenance) = node.into_parts();
-            WithProvenance::new(value, accumulated.merge(provenance))
-        }
-        None => node,
-    };
-    set.insert(admitted);
+    // A new content is admitted in one search; a collision then takes the newcomer back out
+    // and admits it with the displaced node's provenance unioned in.
+    if let Some(existing) = set.replace(node) {
+        let mut admitted = set
+            .take(&existing)
+            .expect("the content `replace` just admitted is present");
+        // The union moves the accumulated provenance and extends it with the newcomer's —
+        // large with small — so a run of n content-equal nodes costs O(n log n), not the
+        // Θ(n²) of cloning the accumulation at every collision.
+        admitted.absorb_earlier(existing);
+        set.insert(admitted);
+    }
 }
 
-/// Collect provenance-carrying nodes into a set through [`merge_insert`], so a content-equal
-/// collision **unions** provenance rather than dropping it (§6.3). The set-shaped children's
-/// canonicalization re-collect uses this, not a raw `collect`; a counted child uses its own
-/// constructor (§4.4).
+/// Collect provenance-carrying nodes into a set exactly as [`merge_insert`] admitting them one
+/// by one in order would, so a content-equal collision **unions** provenance rather than
+/// dropping it (§6.3): each class of content-equal nodes keeps its last node's content, with
+/// its nested provenance, and the union of the class's provenances. The positions are sorted
+/// by content — stably, so each class stays in the nodes' own order, and by position, so a
+/// large node is compared where it lies rather than moved — then each class folds into one
+/// node, and the set is built from the ascending result. O(n log n) comparisons, against two
+/// searches of a growing set per node. The set-shaped children's canonicalization
+/// re-collect uses this, not a raw `collect`; a counted child uses its own constructor (§4.4).
 pub(crate) fn merge_collect<T: Ord>(
     nodes: impl IntoIterator<Item = WithProvenance<T>>,
 ) -> BTreeSet<WithProvenance<T>> {
-    let mut set = BTreeSet::new();
-    for node in nodes {
-        merge_insert(&mut set, node);
+    let mut slots: Vec<Option<WithProvenance<T>>> = nodes.into_iter().map(Some).collect();
+    let mut order: Vec<usize> = (0..slots.len()).collect();
+    order.sort_by(|&left, &right| slots[left].cmp(&slots[right]));
+    let mut folded: Vec<WithProvenance<T>> = Vec::with_capacity(slots.len());
+    for position in order {
+        let node = slots[position]
+            .take()
+            .expect("the sorted positions name each node once");
+        match folded.last_mut() {
+            Some(class) if *class == node => class.absorb_later(node),
+            _ => folded.push(node),
+        }
     }
-    set
+    folded.into_iter().collect()
 }
 
 /// Canonicalize a statement (§5.1): the boolean-head fold, and the term-level collapse
@@ -513,8 +538,87 @@ pub(crate) fn canonicalize_statement(statement: Statement) -> Statement {
 
 #[cfg(test)]
 mod tests {
-    use super::{WithProvenance, merge_collect};
+    use std::collections::BTreeSet;
+
+    use proptest::prelude::*;
+
+    use super::{WithProvenance, merge_collect, merge_insert};
     use crate::provenance::{Origin, Provenance, TransformTag};
+
+    /// A probe node: content `value`, its own provenance `outer`, and a nested node whose
+    /// provenance `inner` tells two content-equal copies apart — the nested provenance a
+    /// statement's atoms carry (§6.3).
+    type Probe = WithProvenance<WithProvenance<u8>>;
+
+    fn probe((value, outer, inner): (u8, u8, u8)) -> Probe {
+        let origin =
+            |tag: u8| Provenance::from(Origin::Transformed(TransformTag::new(tag.to_string())));
+        WithProvenance::new(WithProvenance::new(value, origin(inner)), origin(outer))
+    }
+
+    /// What a merge decides for each kept node: its content, its unioned provenance, and
+    /// the nested provenance of the copy it kept.
+    fn observed<'a>(
+        nodes: impl IntoIterator<Item = &'a Probe>,
+    ) -> Vec<(u8, Provenance, Provenance)> {
+        nodes
+            .into_iter()
+            .map(|node| {
+                let nested = node.get();
+                (
+                    *nested.get(),
+                    node.provenance().clone(),
+                    nested.provenance().clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// The merge rule of §6.3, stated naively: each node in turn either joins the kept node
+    /// of equal content — its content replacing the kept one's, the provenances unioned — or
+    /// is kept itself; the result in content order.
+    fn naive_merge(nodes: impl IntoIterator<Item = Probe>) -> Vec<(u8, Provenance, Provenance)> {
+        let mut kept: Vec<Probe> = Vec::new();
+        for node in nodes {
+            match kept.iter().position(|each| *each == node) {
+                Some(at) => {
+                    let earlier = kept.remove(at).provenance().clone();
+                    let (value, later) = (node.get().clone(), node.provenance().clone());
+                    kept.push(WithProvenance::new(value, earlier.merge(later)));
+                }
+                None => kept.push(node),
+            }
+        }
+        kept.sort();
+        observed(&kept)
+    }
+
+    proptest! {
+        /// Collecting a run whole merges exactly as the rule states (§6.3): the same
+        /// contents, each with the same unioned provenance and the same kept copy.
+        #[test]
+        fn collecting_a_run_merges_by_the_rule(
+            run in proptest::collection::vec((0_u8..6, 0_u8..8, 0_u8..8), 0..48)
+        ) {
+            let collected = merge_collect(run.iter().copied().map(probe));
+            prop_assert_eq!(observed(&collected), naive_merge(run.iter().copied().map(probe)));
+        }
+
+        /// Admitting a run node by node merges exactly as the rule states (§6.3), from an
+        /// empty set or one already holding nodes.
+        #[test]
+        fn admitting_a_run_merges_by_the_rule(
+            held in proptest::collection::vec((0_u8..6, 0_u8..8, 0_u8..8), 0..12),
+            run in proptest::collection::vec((0_u8..6, 0_u8..8, 0_u8..8), 0..48)
+        ) {
+            let mut admitted: BTreeSet<Probe> = BTreeSet::new();
+            for node in held.iter().chain(&run).copied().map(probe) {
+                merge_insert(&mut admitted, node);
+            }
+            let expected = naive_merge(held.iter().chain(&run).copied().map(probe));
+            prop_assert_eq!(observed(&admitted), expected);
+        }
+    }
 
     /// The provenance-merging collect the set-shaped children use unions provenance on a
     /// content collision, dropping nothing (§6.3) — the same law the statement door keeps,

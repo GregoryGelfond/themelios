@@ -66,6 +66,23 @@ impl<T> WithProvenance<T> {
         (self.value, self.provenance)
     }
 
+    /// Fold a later content-equal node into this one, as the set merge does (§6.3): the
+    /// later node's content, with its nested provenance, and this node's provenance unioned
+    /// with the later one's. Crate-internal; O(the union).
+    pub(crate) fn absorb_later(&mut self, later: WithProvenance<T>) {
+        let accumulated = std::mem::take(&mut self.provenance);
+        self.value = later.value;
+        self.provenance = accumulated.merge(later.provenance);
+    }
+
+    /// Fold an earlier content-equal node into this one, as the set merge does (§6.3): this
+    /// node's content stays, with its nested provenance, and its provenance becomes the
+    /// earlier one's unioned with its own. Crate-internal; O(the union).
+    pub(crate) fn absorb_earlier(&mut self, earlier: WithProvenance<T>) {
+        let newer = std::mem::take(&mut self.provenance);
+        self.provenance = earlier.provenance.merge(newer);
+    }
+
     /// Rewrite the content, carrying the provenance through unchanged — the transform
     /// surface's workhorse (§6.2, §9.1).
     #[must_use]
