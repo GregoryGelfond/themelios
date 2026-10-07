@@ -453,6 +453,11 @@ impl Term {
     /// every door that admits a term into a program runs this.
     #[must_use]
     pub fn canonicalize(self) -> Term {
+        // A variable or a ground leaf — most of the terms a program holds — is canonical
+        // as it stands, and is returned without a fold.
+        if matches!(self, Term::Variable(_) | Term::Symbolic(_)) {
+            return self;
+        }
         let mut nested_pool = false;
         let folded = self.fold(|parts| match parts {
             TermParts::Function { name, arguments } => match into_symbols(arguments) {
@@ -1018,105 +1023,109 @@ impl Ord for Term {
         // then the children by count-then-elements (length-major, so equal counts
         // descend and the work list never needs a mid-walk prefix comparison).
         // Iterative, returning on the first difference. The naive twin holds it
-        // honest (tests/term_laws.rs).
+        // honest (tests/term_laws.rs). A pair the roots decide — a leaf pair, or one
+        // whose rank or head scalars differ — is answered before any work list is
+        // built.
+        let at_root = node_order(self, other);
+        if at_root != Ordering::Equal || is_childless(self) {
+            return at_root;
+        }
         let mut pairs = WorkList::new((self, other));
         while let Some((a, b)) = pairs.pop() {
-            let by_rank = term_rank(a).cmp(&term_rank(b));
-            if by_rank != Ordering::Equal {
-                return by_rank;
-            }
-            let here = match (a, b) {
-                (Term::Variable(x), Term::Variable(y)) => x.cmp(y),
-                (Term::Symbolic(x), Term::Symbolic(y)) => x.cmp(y),
-                (
-                    Term::Function {
-                        name: n1,
-                        arguments: a1,
-                    },
-                    Term::Function {
-                        name: n2,
-                        arguments: a2,
-                    },
-                ) => (n1, a1.len()).cmp(&(n2, a2.len())).then_with(|| {
-                    push_pairs_reversed(&mut pairs, a1, a2);
-                    Ordering::Equal
-                }),
-                (Term::Tuple(a1), Term::Tuple(a2)) => a1.len().cmp(&a2.len()).then_with(|| {
-                    push_pairs_reversed(&mut pairs, a1, a2);
-                    Ordering::Equal
-                }),
-                (Term::Pool(a1), Term::Pool(a2)) => a1.len().cmp(&a2.len()).then_with(|| {
-                    push_pairs_reversed(&mut pairs, a1, a2);
-                    Ordering::Equal
-                }),
-                (
-                    Term::UnaryOperation {
-                        operator: o1,
-                        argument: g1,
-                    },
-                    Term::UnaryOperation {
-                        operator: o2,
-                        argument: g2,
-                    },
-                ) => o1.cmp(o2).then_with(|| {
-                    pairs.push((&**g1, &**g2));
-                    Ordering::Equal
-                }),
-                (
-                    Term::BinaryOperation {
-                        operator: o1,
-                        left: l1,
-                        right: r1,
-                    },
-                    Term::BinaryOperation {
-                        operator: o2,
-                        left: l2,
-                        right: r2,
-                    },
-                ) => o1.cmp(o2).then_with(|| {
-                    pairs.push((&**r1, &**r2));
-                    pairs.push((&**l1, &**l2));
-                    Ordering::Equal
-                }),
-                (
-                    Term::Interval {
-                        lower: lo1,
-                        upper: up1,
-                    },
-                    Term::Interval {
-                        lower: lo2,
-                        upper: up2,
-                    },
-                ) => {
-                    pairs.push((&**up1, &**up2));
-                    pairs.push((&**lo1, &**lo2));
-                    Ordering::Equal
-                }
-                (Term::Absolute(t1), Term::Absolute(t2)) => {
-                    pairs.push((&**t1, &**t2));
-                    Ordering::Equal
-                }
-                (
-                    Term::External {
-                        name: n1,
-                        arguments: a1,
-                    },
-                    Term::External {
-                        name: n2,
-                        arguments: a2,
-                    },
-                ) => (n1, a1.len()).cmp(&(n2, a2.len())).then_with(|| {
-                    push_pairs_reversed(&mut pairs, a1, a2);
-                    Ordering::Equal
-                }),
-                // Unreachable: equal rank implies the same variant.
-                _ => Ordering::Equal,
-            };
+            let here = node_order(a, b);
             if here != Ordering::Equal {
                 return here;
             }
+            push_child_pairs_reversed(a, b, &mut pairs);
         }
         Ordering::Equal
+    }
+}
+
+/// Two terms' order at their roots alone (§3.3): the variant rank, then the head
+/// scalars — a name and child count, a child count, or an operator. `Equal` for
+/// equal leaves and for nodes of one variant and equal heads, hence of equal child
+/// counts, whose children decide. O(the names compared).
+fn node_order(a: &Term, b: &Term) -> Ordering {
+    term_rank(a).cmp(&term_rank(b)).then_with(|| match (a, b) {
+        (Term::Variable(x), Term::Variable(y)) => x.cmp(y),
+        (Term::Symbolic(x), Term::Symbolic(y)) => x.cmp(y),
+        (
+            Term::Function {
+                name: n1,
+                arguments: a1,
+            },
+            Term::Function {
+                name: n2,
+                arguments: a2,
+            },
+        )
+        | (
+            Term::External {
+                name: n1,
+                arguments: a1,
+            },
+            Term::External {
+                name: n2,
+                arguments: a2,
+            },
+        ) => (n1, a1.len()).cmp(&(n2, a2.len())),
+        (Term::Tuple(a1), Term::Tuple(a2)) | (Term::Pool(a1), Term::Pool(a2)) => {
+            a1.len().cmp(&a2.len())
+        }
+        (Term::UnaryOperation { operator: o1, .. }, Term::UnaryOperation { operator: o2, .. }) => {
+            o1.cmp(o2)
+        }
+        (
+            Term::BinaryOperation { operator: o1, .. },
+            Term::BinaryOperation { operator: o2, .. },
+        ) => o1.cmp(o2),
+        // An interval or an absolute value has no head scalar; a mixed pair is
+        // unreachable, equal rank implying one variant.
+        _ => Ordering::Equal,
+    })
+}
+
+/// Pushes the child pairs of two terms whose roots tie (one variant, equal child
+/// counts) onto `pairs`, reversed so the leftmost child pair is compared first.
+fn push_child_pairs_reversed<'a>(
+    a: &'a Term,
+    b: &'a Term,
+    pairs: &mut WorkList<(&'a Term, &'a Term)>,
+) {
+    match (a, b) {
+        (Term::Function { arguments: a1, .. }, Term::Function { arguments: a2, .. })
+        | (Term::External { arguments: a1, .. }, Term::External { arguments: a2, .. })
+        | (Term::Tuple(a1), Term::Tuple(a2))
+        | (Term::Pool(a1), Term::Pool(a2)) => pairs.extend(a1.iter().zip(a2).rev()),
+        (Term::UnaryOperation { argument: g1, .. }, Term::UnaryOperation { argument: g2, .. })
+        | (Term::Absolute(g1), Term::Absolute(g2)) => pairs.push((&**g1, &**g2)),
+        (
+            Term::BinaryOperation {
+                left: l1,
+                right: r1,
+                ..
+            },
+            Term::BinaryOperation {
+                left: l2,
+                right: r2,
+                ..
+            },
+        )
+        | (
+            Term::Interval {
+                lower: l1,
+                upper: r1,
+            },
+            Term::Interval {
+                lower: l2,
+                upper: r2,
+            },
+        ) => {
+            pairs.push((&**r1, &**r2));
+            pairs.push((&**l1, &**l2));
+        }
+        _ => {}
     }
 }
 
@@ -1133,18 +1142,6 @@ fn term_rank(term: &Term) -> u8 {
         Term::Interval { .. } => 7,
         Term::Absolute(_) => 8,
         Term::External { .. } => 9,
-    }
-}
-
-/// Pushes the element pairs of two equal-length slices onto `pairs`, reversed so the
-/// leftmost is compared first (the length was compared in the head).
-fn push_pairs_reversed<'a>(
-    pairs: &mut WorkList<(&'a Term, &'a Term)>,
-    a: &'a [Term],
-    b: &'a [Term],
-) {
-    for pair in a.iter().zip(b.iter()).rev() {
-        pairs.push(pair);
     }
 }
 

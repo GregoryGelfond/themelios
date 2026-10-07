@@ -632,37 +632,45 @@ impl Ord for Symbol {
         // equal only to an identical symbol, so it agrees with `Eq`. Where the
         // anonymous name and the bands fall in the printed order is the authority's,
         // the differential (§16) confirming it without disturbing totality; the
-        // naive twin holds the iteration honest.
+        // naive twin holds the iteration honest. A pair the roots decide — a leaf
+        // pair, or one whose rank or head differs — is answered before any work
+        // list is built.
+        let at_root = node_order(self, other);
+        if at_root != Ordering::Equal || self.arguments().is_empty() {
+            return at_root;
+        }
         let mut pairs = WorkList::new((self, other));
         while let Some((a, b)) = pairs.pop() {
-            let by_rank = order_rank(a).cmp(&order_rank(b));
-            if by_rank != Ordering::Equal {
-                return by_rank;
-            }
-            let here = match (a, b) {
-                (Symbol::Number(x), Symbol::Number(y)) => x.cmp(y),
-                (Symbol::String(x), Symbol::String(y)) => x.cmp(y),
-                // A function and/or a tuple at the same rank: order by the
-                // function-like head (a tuple's name is anonymous, `None`), so this
-                // one arm serves function/function, tuple/tuple, and the mixed case
-                // and no distinct pair falls through to `Equal`; then, when the
-                // heads match, descend the arguments (leftmost on top).
-                (
-                    Symbol::Function { .. } | Symbol::Tuple(_),
-                    Symbol::Function { .. } | Symbol::Tuple(_),
-                ) => head_key(a).cmp(&head_key(b)).then_with(|| {
-                    pairs.extend(a.arguments().iter().zip(b.arguments()).rev());
-                    Ordering::Equal
-                }),
-                // Equal-rank leaves (`Infimum`/`Supremum`) are equal here.
-                _ => Ordering::Equal,
-            };
+            let here = node_order(a, b);
             if here != Ordering::Equal {
                 return here;
             }
+            // Equal heads have equal arities: descend the arguments, leftmost on top.
+            pairs.extend(a.arguments().iter().zip(b.arguments()).rev());
         }
         Ordering::Equal
     }
+}
+
+/// Two symbols' order at their roots alone (§3.1): the rank band, then the leaf
+/// value or the function-like head — a function and/or a tuple at the same rank
+/// order by (sign, arity, name), a tuple's name anonymous, so this one arm serves
+/// function/function, tuple/tuple, and the mixed case, and no distinct pair falls
+/// through to `Equal`. `Equal` for equal leaves (`Infimum`/`Supremum` among them)
+/// and for function-likes of equal heads, hence of equal arities, whose arguments
+/// decide. O(the names compared).
+fn node_order(a: &Symbol, b: &Symbol) -> Ordering {
+    order_rank(a)
+        .cmp(&order_rank(b))
+        .then_with(|| match (a, b) {
+            (Symbol::Number(x), Symbol::Number(y)) => x.cmp(y),
+            (Symbol::String(x), Symbol::String(y)) => x.cmp(y),
+            (
+                Symbol::Function { .. } | Symbol::Tuple(_),
+                Symbol::Function { .. } | Symbol::Tuple(_),
+            ) => head_key(a).cmp(&head_key(b)),
+            _ => Ordering::Equal,
+        })
 }
 
 /// The variant's position in the ground-term order (§3.1, grammar §5.1). A
