@@ -59,6 +59,10 @@ pub(super) struct GreenBuilder {
 /// fragment's few slots up to a large file's thousand.
 const TOKEN_SLOTS: (usize, usize) = (16, 1024);
 
+/// The text's bytes per slot before the bounds apply: about one slot per
+/// token, a token and its trivia running some eight bytes.
+const BYTES_PER_SLOT: usize = 8;
+
 /// The longest token the cache holds. A longer one — a comment, a string,
 /// a script body — seldom repeats, and is built afresh.
 const CACHED_TOKEN_LEN: usize = 16;
@@ -68,7 +72,9 @@ impl GreenBuilder {
     /// of `text_len` bytes.
     pub(super) fn new(text_len: usize) -> GreenBuilder {
         let (fewest, most) = TOKEN_SLOTS;
-        let slots = (text_len / 8).next_power_of_two().clamp(fewest, most);
+        let slots = (text_len / BYTES_PER_SLOT)
+            .next_power_of_two()
+            .clamp(fewest, most);
         GreenBuilder {
             parents: Vec::new(),
             children: Vec::new(),
@@ -161,7 +167,7 @@ fn slot_of(kind: SyntaxKind, text: &str, slots: usize) -> usize {
 mod tests {
     use rowan::{GreenTokenData, Language, NodeOrToken};
 
-    use super::GreenBuilder;
+    use super::{GreenBuilder, slot_of};
     use crate::tree::{Asp, SyntaxKind};
 
     /// The tokens of a one-node tree built from `(kind, text)` pairs.
@@ -197,6 +203,33 @@ mod tests {
             [tokens[0].kind(), tokens[1].kind()],
             [SyntaxKind::IDENT, SyntaxKind::VARIABLE].map(Asp::kind_to_raw)
         );
+    }
+
+    #[test]
+    fn a_clash_overwrites_the_slot() {
+        // Two short tokens whose hashes share a slot: the second takes it,
+        // so the first, repeated after it, is built afresh rather than kept.
+        let slots = GreenBuilder::new(64).tokens.len();
+        let kind = Asp::kind_to_raw(SyntaxKind::IDENT);
+        let names: Vec<String> = (0..).map(|i| format!("n{i}")).take(64).collect();
+        let (first, second) = names
+            .iter()
+            .enumerate()
+            .find_map(|(i, a)| {
+                names[i + 1..]
+                    .iter()
+                    .find(|b| slot_of(kind, a, slots) == slot_of(kind, b, slots))
+                    .map(|b| (a.as_str(), b.as_str()))
+            })
+            .expect("among 64 names, two share one of the slots");
+        let root = built(&[
+            (SyntaxKind::IDENT, first),
+            (SyntaxKind::IDENT, second),
+            (SyntaxKind::IDENT, first),
+        ]);
+        let tokens = token_data(&root);
+        assert!(!std::ptr::eq(tokens[0], tokens[2]));
+        assert_eq!(tokens[0], tokens[2]);
     }
 
     #[test]
