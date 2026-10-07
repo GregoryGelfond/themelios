@@ -1281,7 +1281,8 @@ whatever the loop happened to do.
 A parse is a pure function of the token source's text and dialect and
 the entry point (§5.4, law 4). Time is O(text): every token is requested
 a fixed number of times at most (§4.2), consumed once, and lookahead is
-bounded by a constant; the frame loop does constant work per token; the
+bounded by a constant; the frame loop does constant work per token, its
+frame stack kept from one term to the next rather than built afresh; the
 builder's work is O(tokens + nodes) — the parser's own, cache-free
 builder (§14; crates/themelios-syntax/src/parse/builder.rs), since
 rowan's interning `GreenNodeBuilder` is O(depth²) on the deep, narrow
@@ -3199,8 +3200,9 @@ document and the code together; the §6.1 and §7.1 amendments below likewise.
   six times as it peeked past the trivia, placed the trivia, and placed the token,
   against §4.2's bound of twice; it now keeps the source's last few answers and
   places a peeked token as peeked, so each token is asked for once as a rule (§4.2,
-  §6.8), and §12.1 says what lives inside a parse. It changes cost, not the parse:
-  a parse is byte-for-byte the tree and the diagnostics it was.
+  §6.8), and §12.1 says what lives inside a parse. The frame loop keeps its frame
+  stack from one term to the next (§6.8). Each changes cost, not the parse: a parse
+  is byte-for-byte the tree and the diagnostics it was.
 
 - **§10.5** (2026-10-04): honesty-only. The macro tier's operator run ends before
   a `#` or a `$`, which open tokens of their own (grammar §9), and the paragraph
