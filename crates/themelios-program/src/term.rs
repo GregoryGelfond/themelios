@@ -834,13 +834,9 @@ fn push_child_refs_reversed<'a>(term: &'a Term, stack: &mut WorkList<&'a Term>) 
 
 impl Clone for Term {
     fn clone(&self) -> Term {
-        // A term at most one level deep — nearly every one a program holds — is copied
-        // directly, its children leaf by leaf, with no work list.
-        if at_most_one_level(self) {
-            clone_shallow(self)
-        } else {
-            clone_deep(self)
-        }
+        // The root is copied here, and each child directly when it is a leaf — nearly every
+        // term a program holds is no deeper — any deeper child through the work list (§13).
+        copy_node(self, clone_child)
     }
 }
 
@@ -892,23 +888,23 @@ impl Drop for Term {
     }
 }
 
-/// A copy of a term whose children are all leaves, made directly: the node's own data
-/// cloned and each child copied as the leaf it is (§3.6). O(children).
-fn clone_shallow(term: &Term) -> Term {
-    let leaves = |children: &[Term]| children.iter().map(clone_leaf).collect();
-    let leaf = |child: &Term| Box::new(clone_leaf(child));
+/// A copy of a term's own node — its variant, its name or operator, its leaf — with each
+/// child term copied by `copy_child` (§3.6). O(the node's children).
+fn copy_node(term: &Term, copy_child: impl Fn(&Term) -> Term) -> Term {
+    let children = |items: &[Term]| items.iter().map(&copy_child).collect();
+    let boxed = |item: &Term| Box::new(copy_child(item));
     match term {
         Term::Variable(v) => Term::Variable(v.clone()),
         Term::Symbolic(s) => Term::Symbolic(s.clone()),
         Term::Function { name, arguments } => Term::Function {
             name: name.clone(),
-            arguments: leaves(arguments),
+            arguments: children(arguments),
         },
-        Term::Tuple(items) => Term::Tuple(leaves(items)),
-        Term::Pool(items) => Term::Pool(leaves(items)),
+        Term::Tuple(items) => Term::Tuple(children(items)),
+        Term::Pool(items) => Term::Pool(children(items)),
         Term::UnaryOperation { operator, argument } => Term::UnaryOperation {
             operator: *operator,
-            argument: leaf(argument),
+            argument: boxed(argument),
         },
         Term::BinaryOperation {
             operator,
@@ -916,38 +912,28 @@ fn clone_shallow(term: &Term) -> Term {
             right,
         } => Term::BinaryOperation {
             operator: *operator,
-            left: leaf(left),
-            right: leaf(right),
+            left: boxed(left),
+            right: boxed(right),
         },
         Term::Interval { lower, upper } => Term::Interval {
-            lower: leaf(lower),
-            upper: leaf(upper),
+            lower: boxed(lower),
+            upper: boxed(upper),
         },
-        Term::Absolute(inner) => Term::Absolute(leaf(inner)),
+        Term::Absolute(inner) => Term::Absolute(boxed(inner)),
         Term::External { name, arguments } => Term::External {
             name: name.clone(),
-            arguments: leaves(arguments),
+            arguments: children(arguments),
         },
     }
 }
 
-/// A copy of a leaf term — one with no child terms — made directly; a term with
-/// children is copied by the walk instead.
-fn clone_leaf(term: &Term) -> Term {
-    match term {
-        Term::Variable(v) => Term::Variable(v.clone()),
-        Term::Symbolic(s) => Term::Symbolic(s.clone()),
-        Term::Function { name, arguments } if arguments.is_empty() => Term::Function {
-            name: name.clone(),
-            arguments: Vec::new(),
-        },
-        Term::Tuple(items) if items.is_empty() => Term::Tuple(Vec::new()),
-        Term::Pool(items) if items.is_empty() => Term::Pool(Vec::new()),
-        Term::External { name, arguments } if arguments.is_empty() => Term::External {
-            name: name.clone(),
-            arguments: Vec::new(),
-        },
-        compound => clone_deep(compound),
+/// A copy of a child term: a leaf's node directly — it has no children for the copy to
+/// reach — and anything deeper through the work list (§13).
+fn clone_child(child: &Term) -> Term {
+    if is_childless(child) {
+        copy_node(child, clone_deep)
+    } else {
+        clone_deep(child)
     }
 }
 
@@ -972,8 +958,7 @@ fn is_childless(term: &Term) -> bool {
     every_child(term, |_| false)
 }
 
-/// Whether a term is at most one level deep, its children leaves — the depth a clone
-/// copies directly (§13). O(children).
+/// Whether a term is at most one level deep, its children leaves. O(children).
 fn at_most_one_level(term: &Term) -> bool {
     every_child(term, is_childless)
 }
@@ -1112,7 +1097,9 @@ impl Ord for Term {
         if at_root != Ordering::Equal || is_childless(self) {
             return at_root;
         }
-        let mut pairs = WorkList::new((self, other));
+        // The roots tie: their children decide, the leftmost pair first.
+        let mut pairs = WorkList::empty((self, other));
+        push_child_pairs_reversed(self, other, &mut pairs);
         while let Some((a, b)) = pairs.pop() {
             let here = node_order(a, b);
             if here != Ordering::Equal {

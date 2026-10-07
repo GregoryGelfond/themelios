@@ -291,8 +291,7 @@ fn children(term: &TheoryTerm) -> &[TheoryTerm] {
     }
 }
 
-/// Whether a theory term is at most one level deep, its children leaves — the depth a
-/// clone copies directly (§13). O(children).
+/// Whether a theory term is at most one level deep, its children leaves. O(children).
 fn at_most_one_level(term: &TheoryTerm) -> bool {
     children(term)
         .iter()
@@ -307,47 +306,44 @@ fn at_most_two_levels(term: &TheoryTerm) -> bool {
 
 impl Clone for TheoryTerm {
     fn clone(&self) -> TheoryTerm {
-        // A theory term at most one level deep — nearly every one a program holds — is
-        // copied directly, its children leaf by leaf, with no work list.
-        if at_most_one_level(self) {
-            clone_shallow(self)
-        } else {
-            clone_deep(self)
-        }
+        // The root is copied here, and each child directly when it is a leaf — nearly every
+        // theory term a program holds is no deeper — any deeper child through the work list
+        // (§13).
+        copy_node(self, clone_child)
     }
 }
 
-/// A copy of a theory term whose children are all leaves, made directly: the node's own
-/// data cloned and each child copied as the leaf it is (§3.6). O(children).
-fn clone_shallow(term: &TheoryTerm) -> TheoryTerm {
-    let leaves = |children: &[TheoryTerm]| children.iter().map(clone_leaf).collect();
+/// A copy of a theory term's own node — its variant, its name or operator runs, its leaf —
+/// with each child copied by `copy_child` (§3.6). O(the node's children).
+fn copy_node(term: &TheoryTerm, copy_child: impl Fn(&TheoryTerm) -> TheoryTerm) -> TheoryTerm {
+    let children = |items: &[TheoryTerm]| items.iter().map(&copy_child).collect();
     match term {
         TheoryTerm::Symbolic(s) => TheoryTerm::Symbolic(s.clone()),
         TheoryTerm::Variable(v) => TheoryTerm::Variable(v.clone()),
         TheoryTerm::Function { name, arguments } => TheoryTerm::Function {
             name: name.clone(),
-            arguments: leaves(arguments),
+            arguments: children(arguments),
         },
-        TheoryTerm::Tuple(items) => TheoryTerm::Tuple(leaves(items)),
-        TheoryTerm::List(items) => TheoryTerm::List(leaves(items)),
-        TheoryTerm::Set(items) => TheoryTerm::Set(leaves(items)),
+        TheoryTerm::Tuple(items) => TheoryTerm::Tuple(children(items)),
+        TheoryTerm::List(items) => TheoryTerm::List(children(items)),
+        TheoryTerm::Set(items) => TheoryTerm::Set(children(items)),
         TheoryTerm::Operation {
             operators,
             operands,
         } => TheoryTerm::Operation {
             operators: operators.clone(),
-            operands: leaves(operands),
+            operands: children(operands),
         },
     }
 }
 
-/// A copy of a leaf theory term — one with no children — made directly; a theory term
-/// with children is copied by the walk instead.
-fn clone_leaf(term: &TheoryTerm) -> TheoryTerm {
-    if children(term).is_empty() {
-        clone_shallow(term)
+/// A copy of a child theory term: a leaf's node directly — it has no children for the copy
+/// to reach — and anything deeper through the work list (§13).
+fn clone_child(child: &TheoryTerm) -> TheoryTerm {
+    if children(child).is_empty() {
+        copy_node(child, clone_deep)
     } else {
-        clone_deep(term)
+        clone_deep(child)
     }
 }
 
@@ -477,7 +473,10 @@ impl Ord for TheoryTerm {
         if at_root != Ordering::Equal || children(self).is_empty() {
             return at_root;
         }
-        let mut pairs = WorkList::new((self, other));
+        // The roots tie, so their child counts match: the children decide, the leftmost pair
+        // first.
+        let mut pairs = WorkList::empty((self, other));
+        pairs.extend(children(self).iter().zip(children(other)).rev());
         while let Some((a, b)) = pairs.pop() {
             let here = node_order(a, b);
             if here != Ordering::Equal {

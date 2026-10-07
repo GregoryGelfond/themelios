@@ -479,31 +479,14 @@ impl From<SymbolParts<Symbol>> for Symbol {
 
 impl Clone for Symbol {
     fn clone(&self) -> Symbol {
-        // A symbol at most one level deep — nearly every one a program holds — is
-        // copied directly, its arguments leaf by leaf, with no work list.
-        if !at_most_one_level(self) {
-            return clone_deep(self);
-        }
-        match self {
-            Symbol::Function {
-                name,
-                arguments,
-                sign,
-            } => Symbol::Function {
-                name: name.clone(),
-                arguments: arguments.iter().map(clone_childless).collect(),
-                sign: *sign,
-            },
-            Symbol::Tuple(elements) => {
-                Symbol::Tuple(elements.iter().map(clone_childless).collect())
-            }
-            leaf => clone_childless(leaf),
-        }
+        // The root is copied here, and each argument directly when it is a leaf — nearly
+        // every symbol a program holds is no deeper — any deeper argument through the work
+        // list (§13).
+        copy_node(self, clone_child)
     }
 }
 
-/// Whether a symbol is at most one level deep, its arguments leaves — the depth a clone
-/// copies directly (§13). O(arguments).
+/// Whether a symbol is at most one level deep, its arguments leaves. O(arguments).
 fn at_most_one_level(symbol: &Symbol) -> bool {
     symbol
         .arguments()
@@ -517,9 +500,9 @@ fn at_most_two_levels(symbol: &Symbol) -> bool {
     symbol.arguments().iter().all(at_most_one_level)
 }
 
-/// A copy of a symbol with no arguments, made directly; a symbol with arguments is
-/// copied by the walk instead.
-fn clone_childless(symbol: &Symbol) -> Symbol {
+/// A copy of a symbol's own node — its variant and leaf value, or its name and sign — with
+/// each argument copied by `copy_child` (§3.6). O(the node's arguments).
+fn copy_node(symbol: &Symbol, copy_child: impl Fn(&Symbol) -> Symbol) -> Symbol {
     match symbol {
         Symbol::Infimum => Symbol::Infimum,
         Symbol::Number(n) => Symbol::Number(*n),
@@ -529,13 +512,22 @@ fn clone_childless(symbol: &Symbol) -> Symbol {
             name,
             arguments,
             sign,
-        } if arguments.is_empty() => Symbol::Function {
+        } => Symbol::Function {
             name: name.clone(),
-            arguments: Vec::new(),
+            arguments: arguments.iter().map(&copy_child).collect(),
             sign: *sign,
         },
-        Symbol::Tuple(elements) if elements.is_empty() => Symbol::Tuple(Vec::new()),
-        Symbol::Function { .. } | Symbol::Tuple(_) => clone_deep(symbol),
+        Symbol::Tuple(elements) => Symbol::Tuple(elements.iter().map(&copy_child).collect()),
+    }
+}
+
+/// A copy of an argument: a leaf's node directly — it has no arguments for the copy to
+/// reach — and anything deeper through the work list (§13).
+fn clone_child(child: &Symbol) -> Symbol {
+    if child.arguments().is_empty() {
+        copy_node(child, clone_deep)
+    } else {
+        clone_deep(child)
     }
 }
 
@@ -695,7 +687,9 @@ impl Ord for Symbol {
         if at_root != Ordering::Equal || self.arguments().is_empty() {
             return at_root;
         }
-        let mut pairs = WorkList::new((self, other));
+        // The roots tie, so their arities match: the arguments decide, the leftmost pair first.
+        let mut pairs = WorkList::empty((self, other));
+        pairs.extend(self.arguments().iter().zip(other.arguments()).rev());
         while let Some((a, b)) = pairs.pop() {
             let here = node_order(a, b);
             if here != Ordering::Equal {
