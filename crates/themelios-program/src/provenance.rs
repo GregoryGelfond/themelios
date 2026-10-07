@@ -378,7 +378,40 @@ impl fmt::Debug for Annotations {
 
 #[cfg(test)]
 mod tests {
-    use super::{Origin, WithProvenance};
+    use super::{Annotations, Kinds, Origin, Provenance, WithProvenance};
+
+    #[test]
+    fn the_kinds_a_provenance_never_set_read_empty() {
+        // Only `with_doc` builds an annotation (§6.2): the other kinds read empty beside it,
+        // and every kind reads empty on an unannotated node.
+        let documented = Provenance::from(Origin::Constructed).with_doc("d");
+        let annotations = documented.annotations();
+        assert_eq!(annotations.doc().collect::<Vec<_>>(), ["d"]);
+        assert_eq!(annotations.label().count(), 0);
+        assert_eq!(annotations.reference().count(), 0);
+        assert_eq!(annotations.trace().count(), 0);
+        let bare = Provenance::from(Origin::Constructed);
+        assert_eq!(bare.annotations().doc().count(), 0);
+        assert_eq!(bare.annotations().trace().count(), 0);
+    }
+
+    #[test]
+    fn boxed_empty_kinds_equal_no_annotations() {
+        // Equality reads the strings, not the box (§6.2): kinds boxed but all empty are no
+        // annotation at all.
+        let boxed = Annotations {
+            kinds: Some(Box::default()),
+        };
+        assert_eq!(boxed, Annotations::default());
+        assert_eq!(Annotations::default(), boxed);
+        let documented = Annotations {
+            kinds: Some(Box::new(Kinds {
+                doc: ["d".to_owned()].into(),
+                ..Kinds::default()
+            })),
+        };
+        assert_ne!(documented, Annotations::default());
+    }
 
     // ---- `constructed_with_doc`: origin and doc block in one call (§6.2, §6.3) ----
 
