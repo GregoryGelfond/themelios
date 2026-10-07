@@ -209,6 +209,35 @@ fn shallow_theory_term() -> impl Strategy<Value = TheoryTerm> {
 }
 
 proptest! {
+    /// A clone is its original, node for node: the derived-shaped `Debug` reads the
+    /// copy's structure independently of the hand-written `Eq` (§13).
+    #[test]
+    fn a_clone_is_its_original(t in shallow_theory_term()) {
+        let copy = t.clone();
+        prop_assert_eq!(format!("{copy:?}"), format!("{t:?}"));
+    }
+
+    /// Two operations of one operand count agree with the naive twin (§16): their operator
+    /// runs decide before their operands — a pair two independent draws almost never make.
+    #[test]
+    fn operations_of_one_operand_count_match_the_naive_twin(
+        factors in prop::collection::vec(
+            (any_operator_run(), any_operator_run(), shallow_theory_term(), shallow_theory_term()),
+            1..4,
+        )
+    ) {
+        let left = TheoryTerm::Operation {
+            operators: factors.iter().map(|factor| factor.0.clone()).collect(),
+            operands: factors.iter().map(|factor| factor.2.clone()).collect(),
+        };
+        let right = TheoryTerm::Operation {
+            operators: factors.iter().map(|factor| factor.1.clone()).collect(),
+            operands: factors.iter().map(|factor| factor.3.clone()).collect(),
+        };
+        prop_assert_eq!(left == right, naive::eq(&left, &right));
+        prop_assert_eq!(left.cmp(&right), naive::cmp(&left, &right));
+    }
+
     /// The iterative `Eq` and `Ord` agree with the naive twin (§16).
     #[test]
     fn iterative_walks_match_the_naive_twin(a in shallow_theory_term(), b in shallow_theory_term()) {
