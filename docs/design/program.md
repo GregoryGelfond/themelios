@@ -2553,7 +2553,11 @@ conditional literals do not nest, a head is one layer. So:
   `Ord`/`Eq`/`Hash` are the subtle ones: they are written *once each*, as one
   content projection (§5), and checked against a derived twin by the mirror
   differential (§16), which is what catches a hand-written walk that disagrees
-  with the naive one.
+  with the naive one. The work list keeps its first entries inline and spills to
+  the heap only past them, so a walk over a shallow value — nearly every term a
+  program holds — allocates nothing; and a value at most two levels deep is
+  dropped through the compiler's field glue, a fixed depth rather than a walk,
+  anything deeper being dismantled through the work list.
 - **The structural layers recurse by grammar-bounded iteration.** A walk from a
   program to a term crosses a fixed number of layers (§4), so those functions may
   use the call stack: their depth is the grammar's, not the input's.

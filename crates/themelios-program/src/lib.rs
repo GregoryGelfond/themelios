@@ -40,6 +40,7 @@ pub mod analyze;
 pub mod unify;
 pub mod transform;
 pub mod render;
+mod work_list;
 
 pub mod prelude;
 
