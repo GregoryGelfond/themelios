@@ -472,8 +472,8 @@ impl From<TheoryTerm> for TheoryOpTermItem {
 /// documentation.
 pub trait HasDocs: AstNode<Language = Asp> {
     /// The leading DOC_COMMENT tokens, in order — the statement's
-    /// documentation. Empty when undocumented. Total; O(the statement's
-    /// leading trivia): one forward pass over the prefix the documentation
+    /// documentation. Empty when undocumented. Total; O(the leading
+    /// prefix): one forward pass over the prefix the documentation
     /// lives in (`tree::documentation_of`), ending where the prefix ends,
     /// so a k-line block costs O(k), where a reading of `role` per line
     /// would scan the lines before it, O(k²), and an undocumented

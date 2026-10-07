@@ -210,10 +210,10 @@ impl AstToken for DocLine {
 impl DocLine {
     /// The wrapper over a token the caller has established is a doc line
     /// — kind `DOC_COMMENT`, role `Documentation` — without re-reading
-    /// `role`: the doc-line accessor reads a statement's roles in one
-    /// pass (`tree::roles_of`) and builds these from what it read, where
-    /// `cast`'s own reading per token would scan the preceding siblings
-    /// again, O(k²) over a k-line block.
+    /// `role`: the doc-line accessor reads a statement's leading prefix in
+    /// one pass (`tree::documentation_of`) and builds these from what it
+    /// read, where `cast`'s own reading per token would scan the preceding
+    /// siblings again, O(k²) over a k-line block.
     pub(crate) fn from_doc_line(token: SyntaxToken) -> DocLine {
         DocLine(token)
     }

@@ -575,10 +575,12 @@ pub(crate) fn keeps_leading(element: &SyntaxElement) -> bool {
 /// passing the prefix's end. O(the leading prefix).
 pub(crate) fn documentation_of(node: &SyntaxNode) -> impl Iterator<Item = SyntaxToken> + use<> {
     let is_statement = node.kind().is_statement();
+    // Every element the prefix admits is leading, so the role of each token
+    // in it is the rule's own reading with `leading` true.
     node.children_with_tokens()
         .take_while(move |element| is_statement && keeps_leading(element))
         .filter_map(SyntaxElement::into_token)
-        .filter(|token| token.kind() == SyntaxKind::DOC_COMMENT)
+        .filter(move |token| role_of(token.kind(), is_statement, true) == TokenRole::Documentation)
 }
 
 /// The roles of `node`'s token children, in order, computed in one
