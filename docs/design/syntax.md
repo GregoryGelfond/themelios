@@ -2877,6 +2877,13 @@ what it proves and what it cannot (spec §10.2).
   whitespace facts constant in the tree size (each reads only the trivia
   between its two elements, §9.3). Shape assertions in the checks
   (`tests/scaling_shape.rs`); absolute numbers out of band (spec §10.2).
+- **The ask bound** (§4.2), in the parser's unit tests: a token source
+  that counts its answers, over the file lexer, is asked for each token
+  about once on a plain program and at most twice on the cases §4.2
+  names — a region boundary, a lookahead, a long run of trivia. The
+  margins are measured, not derived, and set to trip on a change to the
+  answers the parser keeps; what they cannot show is the bound on a
+  program the tests do not parse.
 - **The identity table**, snapshot-tested: Appendix B is the shipped
   table; a change is a visible diff.
 - **The trust checks:** the closure allow-list over Cargo's resolved
@@ -3209,12 +3216,12 @@ document and the code together; the §6.1 and §7.1 amendments below likewise.
   a `#` or a `$`, which open tokens of their own (grammar §9), and the paragraph
   describing that consumer now says so.
 
-- **§1, §4.2, §5.4, §5.5, §6.2, §6.3, §6.8, §12.1, §14** (2026-10-07): the parse made
-  faster. The parser asked the token source for each token three to six times as it
+- **§1, §4.2, §5.4, §5.5, §6.2, §6.3, §6.8, §12.1, §14, §16** (2026-10-07): the parse
+  made faster. The parser asked the token source for each token three to six times as it
   peeked past the trivia, placed the trivia, and placed the token, against §4.2's bound
   of twice; it now keeps the source's last few answers and places a peeked token as
   peeked, so each token is asked for once as a rule, and §4.2 and §6.3 state the bound
-  as it now stands, which tests hold (§6.8). The frame loop keeps its frame stack from
+  as it now stands, which tests hold (§16). The frame loop keeps its frame stack from
   one term to the next (§6.8). The builder shares a repeated short token through a cache
   of fixed slots, at one hash and one comparison per token whatever the input, while
   still interning no node (§6.8, §14), so §1's crate facts name the cache, §12.1 says
@@ -3223,8 +3230,8 @@ document and the code together; the §6.1 and §7.1 amendments below likewise.
   the leading prefix alone (§5.4). Each changes cost, not the parse: a parse of any
   lawful source is byte-for-byte the tree and the diagnostics it was. For an unlawful
   source, whose tree §4.3 leaves unspecified beyond totality and the breaches it
-  witnesses, the parser now reads each answer once and decides on the text it places,
-  so a source breaking the slice law or determinism may parse differently; and a breach
-  now ends the input at its own offset, so a breach met while looking ahead leaves the
+  witnesses, the parser now reads each answer once and decides on the text it places, so
+  a source breaking the slice law or determinism may parse differently; and a breach now
+  ends the input at its own offset, so a breach met while looking ahead leaves the
   tokens tiled before it in the tree, as law 1 states (§5.4), where an end-of-input
   token was placed and a debug build panicked.
