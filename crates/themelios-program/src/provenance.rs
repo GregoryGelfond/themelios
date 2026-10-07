@@ -368,7 +368,24 @@ impl fmt::Debug for Annotations {
 
 #[cfg(test)]
 mod tests {
-    use super::{Origin, Provenance, WithProvenance};
+    use super::{Annotations, Origin, Provenance, WithProvenance};
+
+    #[test]
+    fn each_annotation_kind_reads_its_own_strings() {
+        // The four kinds are four sets (§6.2): each accessor reads its own, so a string
+        // written to one kind is read from that kind alone. Only `with_doc` writes from
+        // outside this module; the others are written here through the kinds' one builder.
+        let mut annotations = Annotations::default();
+        let kinds = annotations.kinds_mut();
+        kinds.doc.insert("d".to_owned());
+        kinds.label.insert("l".to_owned());
+        kinds.reference.insert("r".to_owned());
+        kinds.trace.insert("t".to_owned());
+        assert_eq!(annotations.doc().collect::<Vec<_>>(), ["d"]);
+        assert_eq!(annotations.label().collect::<Vec<_>>(), ["l"]);
+        assert_eq!(annotations.reference().collect::<Vec<_>>(), ["r"]);
+        assert_eq!(annotations.trace().collect::<Vec<_>>(), ["t"]);
+    }
 
     #[test]
     fn the_kinds_a_provenance_never_set_read_empty() {
