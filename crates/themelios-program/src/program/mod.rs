@@ -508,15 +508,29 @@ pub(crate) fn merge_insert<T: Ord>(set: &mut BTreeSet<WithProvenance<T>>, node: 
 /// Collect provenance-carrying nodes into a set exactly as [`merge_insert`] admitting them one
 /// by one in order would, so a content-equal collision **unions** provenance rather than
 /// dropping it (§6.3): each class of content-equal nodes keeps its last node's content, with
-/// its nested provenance, and the union of the class's provenances. The positions are sorted
-/// by content — stably, so each class stays in the nodes' own order, and by position, so a
-/// large node is compared where it lies rather than moved — then each class folds into one
-/// node, and the set is built from the ascending result. O(n log n) comparisons, against two
-/// searches of a growing set per node. The set-shaped children's canonicalization
-/// re-collect uses this, not a raw `collect`; a counted child uses its own constructor (§4.4).
+/// its nested provenance, and the union of the class's provenances — [`sort_and_fold`] with
+/// every content-equal pair merging — and the set is built from the ascending result. O(n log
+/// n) comparisons, against two searches of a growing set per node. The set-shaped children's
+/// canonicalization re-collect uses this, not a raw `collect`; a counted child uses its own
+/// constructor (§4.4), over the same sort and fold.
 pub(crate) fn merge_collect<T: Ord>(
     nodes: impl IntoIterator<Item = WithProvenance<T>>,
 ) -> BTreeSet<WithProvenance<T>> {
+    sort_and_fold(nodes, |earlier, later| earlier == later)
+        .into_iter()
+        .collect()
+}
+
+/// The merge procedure the set and the counted collections share (§4.4, §6.3): the nodes in
+/// content order — a stable sort, so content-equal nodes keep their own order, and a sort of
+/// positions, so a large node is compared where it lies rather than moved — with each node
+/// that `merges` joins to the one before it folded into it, the later content kept with its
+/// nested provenance and the provenances unioned. `merges` sees adjacent nodes only, so it
+/// joins content-equal ones alone when it holds only of those. O(n log n) comparisons.
+pub(crate) fn sort_and_fold<T: Ord>(
+    nodes: impl IntoIterator<Item = WithProvenance<T>>,
+    merges: impl Fn(&WithProvenance<T>, &WithProvenance<T>) -> bool,
+) -> Vec<WithProvenance<T>> {
     let mut slots: Vec<Option<WithProvenance<T>>> = nodes.into_iter().map(Some).collect();
     let mut order: Vec<usize> = (0..slots.len()).collect();
     // The comparison is a total order — §5.2's standing precondition, held by each algebra's
@@ -528,11 +542,11 @@ pub(crate) fn merge_collect<T: Ord>(
             .take()
             .expect("the sorted positions name each node once");
         match folded.last_mut() {
-            Some(class) if *class == node => class.absorb_later(node),
+            Some(earlier) if merges(earlier, &node) => earlier.absorb_later(node),
             _ => folded.push(node),
         }
     }
-    folded.into_iter().collect()
+    folded
 }
 
 /// Canonicalize a statement (§5.1): the boolean-head fold, and the term-level collapse
