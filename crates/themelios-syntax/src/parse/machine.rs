@@ -32,13 +32,6 @@ pub(super) fn expected(items: &[Expected]) -> ExpectedSet {
 /// The parser over one token source: a cursor, a builder, and the
 /// diagnostics it accumulates. Constructed per parse and dropped with
 /// it — no state outlives a call (docs/design/syntax.md §12.1).
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "the four flags are distinct pieces of parser state — the witnessed breach, the \
-              docs-are-trivia region, the silenced lexical diagnostics, and the depth refusal \
-              (docs/design/syntax.md §4.2, §4.3, §4.5, §6.6); folding them into one field would \
-              obscure, not clarify"
-)]
 pub(super) struct Parser<'s, S: TokenSource> {
     source: &'s S,
     text: &'s str,
@@ -52,11 +45,12 @@ pub(super) struct Parser<'s, S: TokenSource> {
     at: u32,
     /// The mode the next token is requested under (docs/design/syntax.md §4.2).
     mode: LexMode,
-    /// A breach was witnessed: every peek answers `EOF` from here on —
-    /// written only by `end_input`, which drops the standing peek with it.
-    /// A legitimate end of input is not recorded — the door answers `EOF`
-    /// at the text's end as often as it is asked.
-    ended: bool,
+    /// Where a witnessed breach ended the input (docs/design/syntax.md
+    /// §4.3): every token at or past it answers `EOF`, while the tokens
+    /// tiled before it stand. Written only by `end_input`, which drops the
+    /// standing peek with it. A legitimate end of input is not recorded —
+    /// the door answers `EOF` at the text's end as often as it is asked.
+    end: Option<u32>,
     /// How many statement nodes are open: inside one, a doc comment is
     /// trivia with a warning; at program level the loop reads the run.
     statement_depth: u32,
@@ -157,7 +151,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
             diagnostics: Vec::new(),
             at: 0,
             mode: LexMode::Normal,
-            ended: false,
+            end: None,
             statement_depth: 0,
             skipping: false,
             lexical_diagnostics: true,
@@ -196,7 +190,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
             kind: SyntaxKind::EOF,
             text: "",
         };
-        if self.ended {
+        if self.ended_at(at) {
             return eof;
         }
         if let Some(token) = self.recent.get(at, self.mode) {
@@ -246,7 +240,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
     }
 
     fn breach(&mut self, breach: SourceBreach, at: u32) {
-        self.end_input();
+        self.end_input(at);
         let location = self.location(at, at);
         self.diagnostics.push(SyntaxError::new(
             SyntaxErrorKind::TokenSourceBreach { breach },
@@ -254,11 +248,17 @@ impl<'s, S: TokenSource> Parser<'s, S> {
         ));
     }
 
-    /// End the input where the cursor stands: every peek answers `EOF` from
-    /// here on, the standing peek dropped with it — the one write of `ended`.
-    fn end_input(&mut self) {
-        self.ended = true;
+    /// End the input at `at`: every token at or past it answers `EOF` from
+    /// here on, and the standing peek is dropped with it, to be read again
+    /// up to the end — the one write of `end`. An earlier end stands.
+    fn end_input(&mut self, at: u32) {
+        self.end = Some(self.end.map_or(at, |end| end.min(at)));
         self.peeked = None;
+    }
+
+    /// Whether a breach ended the input at or before `at`.
+    fn ended_at(&self, at: u32) -> bool {
+        self.end.is_some_and(|end| at >= end)
     }
 
     /// The last peek, if it still stands where the cursor is: taken from
@@ -420,17 +420,13 @@ impl<'s, S: TokenSource> Parser<'s, S> {
             return;
         }
         self.eat_trivia();
-        // A breach met while placing the trivia ended the input before the
-        // token, and nothing more is placed.
-        if self.ended {
-            return;
-        }
         // After its trivia the cursor stands at the peeked token — a source
         // answers each position one way (§4.3) — and it is placed as the
-        // source answered it, not asked for again. Only a source breaking
-        // that law can land the cursor elsewhere, and there the token is read
-        // as any other is, its extent checked against the text.
-        let token = if self.at == peeked.start {
+        // source answered it, not asked for again, unless a breach met since
+        // ended the input there. Elsewhere — only a source breaking that law
+        // lands the cursor elsewhere — the token is read as any other is: its
+        // extent checked against the text, and `EOF` at or past a breach.
+        let token = if self.at == peeked.start && !self.ended_at(self.at) {
             Token {
                 kind: peeked.kind,
                 text: peeked.text,
@@ -867,7 +863,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
         self.builder
             .token(Asp::kind_to_raw(SyntaxKind::ERROR), self.text);
         self.at = u32::try_from(self.text.len()).unwrap_or(u32::MAX);
-        self.end_input();
+        self.end_input(self.at);
     }
 
     /// The program's statements: at each position, the leading trivia,

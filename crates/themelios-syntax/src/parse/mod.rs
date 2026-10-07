@@ -492,10 +492,10 @@ mod tests {
     }
 
     #[test]
-    fn a_breach_met_looking_ahead_ends_the_input_before_the_peeked_token() {
-        // §4.3: a breach the parser meets while looking past a peeked token ends the
-        // input there, and the peeked token is not placed after it — no end-of-input
-        // token in the tree, and no panic.
+    fn a_breach_met_looking_ahead_ends_the_input_at_the_breach() {
+        // §4.3, §5.4 law 1: a breach the parser meets while looking past a peeked token
+        // ends the input at the breach, so the tokens tiled before it — the peeked token
+        // and its trailing space — are placed, and nothing past it; no panic.
         struct EarlyTiling<'a>(Lexer<'a>);
         impl TokenSource for EarlyTiling<'_> {
             fn id(&self) -> SourceId {
@@ -526,6 +526,7 @@ mod tests {
             &EarlyTiling(Lexer::new(&source, Dialect::Clingo)),
             NestingLimit::DEFAULT,
         );
+        assert_eq!(parse.syntax().text(), "f ", "the prefix tiled");
         assert!(
             parse
                 .syntax()
