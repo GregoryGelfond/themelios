@@ -238,6 +238,23 @@ proptest! {
         prop_assert_eq!(left.cmp(&right), naive::cmp(&left, &right));
     }
 
+    /// Two theory leaves agree with the naive twin (§16): a variable orders by its name and a
+    /// symbol by its value — pairs of one kind that two independent draws seldom make.
+    #[test]
+    fn theory_leaves_match_the_naive_twin(
+        a in prop_oneof![
+            simple_symbol().prop_map(TheoryTerm::Symbolic),
+            any_variable().prop_map(TheoryTerm::Variable),
+        ],
+        b in prop_oneof![
+            simple_symbol().prop_map(TheoryTerm::Symbolic),
+            any_variable().prop_map(TheoryTerm::Variable),
+        ],
+    ) {
+        prop_assert_eq!(a == b, naive::eq(&a, &b));
+        prop_assert_eq!(a.cmp(&b), naive::cmp(&a, &b));
+    }
+
     /// The iterative `Eq` and `Ord` agree with the naive twin (§16).
     #[test]
     fn iterative_walks_match_the_naive_twin(a in shallow_theory_term(), b in shallow_theory_term()) {

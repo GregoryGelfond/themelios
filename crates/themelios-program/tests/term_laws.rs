@@ -366,6 +366,22 @@ proptest! {
         prop_assert_eq!(format!("{copy:?}"), format!("{t:?}"));
     }
 
+    /// Two prefix operations agree with the naive twin (§16): their operators decide before
+    /// their operands — a pair two independent draws seldom make.
+    #[test]
+    fn prefix_operations_match_the_naive_twin(
+        left in (any_unary_op(), shallow_term()),
+        right in (any_unary_op(), shallow_term()),
+    ) {
+        let operation = |(operator, argument): (UnaryOp, Term)| Term::UnaryOperation {
+            operator,
+            argument: Box::new(argument),
+        };
+        let (a, b) = (operation(left), operation(right));
+        prop_assert_eq!(a == b, naive::eq(&a, &b));
+        prop_assert_eq!(a.cmp(&b), naive::cmp(&a, &b));
+    }
+
     /// The iterative `Eq` and `Ord` agree with the naive twin on shallow terms (§16).
     #[test]
     fn iterative_walks_match_the_naive_twin(a in shallow_term(), b in shallow_term()) {

@@ -77,6 +77,28 @@ exclude_re = [
     # scaling proofs out. Excluded as held-out, not as equivalent.
     "raise\\.rs:\\d+:\\d+: replace match guard Arc::ptr_eq\\(key, &part\\) with false in collect_runs",
 
+    # ---- The program tier: the fixed-depth paths and the origin set (equivalent mutants) ----
+    # The depth predicates choose a path, never a result. Forced false, each sends every
+    # value down the general one: a drop dismantles through the work list, a clone copies
+    # each child through `clone_deep`, and an order whose roots tie walks their children —
+    # none, for a leaf — so every value is dropped, copied, and ordered as the fixed-depth
+    # path would. Only the walk's cost moves, which no law reads.
+    "symbol\\.rs:\\d+:\\d+: replace at_most_one_level -> bool with false",
+    "symbol\\.rs:\\d+:\\d+: replace at_most_two_levels -> bool with false",
+    "term\\.rs:\\d+:\\d+: replace every_child -> bool with false",
+    "term\\.rs:\\d+:\\d+: replace is_childless -> bool with false",
+    "term\\.rs:\\d+:\\d+: replace at_most_one_level -> bool with false",
+    "term\\.rs:\\d+:\\d+: replace at_most_two_levels -> bool with false",
+    "directive\\.rs:\\d+:\\d+: replace at_most_one_level -> bool with false",
+    "directive\\.rs:\\d+:\\d+: replace at_most_two_levels -> bool with false",
+    # Two origin sets of two or more facts union with the smaller inserted into the larger,
+    # which bounds the union's work. Which side is extended never changes the set the union
+    # yields — the balancing heuristic of `Nodes::union` above, in another place — and the
+    # duplication tripwire's merges add one origin at a time, so they never reach this branch.
+    "provenance\\.rs:\\d+:\\d+: replace < with == in Origins::union",
+    "provenance\\.rs:\\d+:\\d+: replace < with <= in Origins::union",
+    "provenance\\.rs:\\d+:\\d+: replace < with > in Origins::union",
+
     # ---- The syntax tier (stage 2): equivalent mutants ----
     # The peek cache (`self.peeked`) is set to None on every `bump`, `set_mode`,
     # and statement boundary in src/parse/machine.rs, so it is Some only while

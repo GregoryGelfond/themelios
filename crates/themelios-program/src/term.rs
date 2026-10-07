@@ -1479,11 +1479,39 @@ impl std::error::Error for EvalError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{BinaryOp, Term, UnaryOp, Variable, canonicalize_one_level, split_parts};
+    use super::{
+        BinaryOp, Term, UnaryOp, Variable, at_most_one_level, at_most_two_levels,
+        canonicalize_one_level, split_parts,
+    };
     use crate::symbol::{Name, Sign, Symbol, VarName};
 
     fn name(text: &str) -> Name {
         Name::new(text).expect("a valid identifier")
+    }
+
+    #[test]
+    fn a_term_is_as_deep_as_its_deepest_child() {
+        // The depth predicates (§13) read every child: an operation or an interval with a
+        // leaf on one side and a deeper term on the other is as deep as that other side,
+        // whichever side it stands on.
+        let leaf = || Term::Variable(Variable::Anonymous);
+        let deeper = || Term::Absolute(Box::new(Term::Absolute(Box::new(leaf()))));
+        let pairs = [(leaf(), deeper()), (deeper(), leaf())];
+        for (left, right) in pairs {
+            let operation = Term::BinaryOperation {
+                operator: BinaryOp::Add,
+                left: Box::new(left.clone()),
+                right: Box::new(right.clone()),
+            };
+            let interval = Term::Interval {
+                lower: Box::new(left),
+                upper: Box::new(right),
+            };
+            for term in [&operation, &interval] {
+                assert!(!at_most_one_level(term));
+                assert!(!at_most_two_levels(term));
+            }
+        }
     }
 
     fn variable(text: &str) -> Term {
