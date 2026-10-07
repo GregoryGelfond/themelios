@@ -39,31 +39,18 @@ pub(crate) struct Counted<T> {
 }
 
 impl<T: Identified> Counted<T> {
-    /// The one construction door (§4.4): a stable sort into `Ord` order, then one adjacent pass
-    /// that joins a by-content repeat to its equal neighbour — the later entry's value kept,
-    /// as a set's merge keeps it (§6.3), and the provenances unioned by move — and leaves a
-    /// by-occurrence repeat as an entry of its own, content-equal entries keeping the order
-    /// they were written or built in. `O(n log n)` comparisons for `n` elements, and each
-    /// union `O(m log k)` for `m` origins joining `k`.
+    /// The one construction door (§4.4): the set's merge procedure (`sort_and_fold`, §6.3) —
+    /// a stable sort into `Ord` order, then one adjacent pass — with a by-content repeat joined
+    /// to its equal neighbour, the later entry's value kept and the provenances unioned by
+    /// move, and a by-occurrence repeat left an entry of its own, content-equal entries keeping
+    /// the order they were written or built in. `O(n log n)` comparisons for `n` elements, and
+    /// each union `O(m log k)` for `m` origins joining `k`.
     pub(crate) fn from_elements(
         elements: impl IntoIterator<Item = WithProvenance<T>>,
     ) -> Counted<T> {
-        let mut sorted: Vec<WithProvenance<T>> = elements.into_iter().collect();
-        // Stable: content-equal entries keep their written order, which only their
-        // provenance observes (§5.1).
-        sorted.sort();
-        let mut entries: Vec<WithProvenance<T>> = Vec::with_capacity(sorted.len());
-        for entry in sorted {
-            match entries.last_mut() {
-                Some(earlier)
-                    if entry.get().identity() == Identity::ByContent
-                        && earlier.get() == entry.get() =>
-                {
-                    earlier.absorb_later(entry);
-                }
-                _ => entries.push(entry),
-            }
-        }
+        let entries = super::sort_and_fold(elements, |earlier, later| {
+            later.get().identity() == Identity::ByContent && earlier.get() == later.get()
+        });
         Counted { entries }
     }
 }
