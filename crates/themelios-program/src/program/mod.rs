@@ -220,7 +220,8 @@ impl Query {
     }
 
     /// A query over an already-provenanced atom — the raise's door, carrying the atom's
-    /// parsed origin (§6.2, §8). Canonicalization runs at the ingest door (§6.3).
+    /// parsed origin (§6.2, §8). Canonicalization runs as the statement leaves the lowering
+    /// (§8).
     pub(crate) fn from_nodes(atom: WithProvenance<Atom>) -> Query {
         Query { atom }
     }
@@ -403,9 +404,9 @@ impl Program {
     /// for a statement that carries its own key, as `of_keyed_nodes`' do. `base` is seeded
     /// at construction; every other part is opened by a statement joining it.
     /// Crate-internal: of the public doors — `of`, `of_nodes`, and `of_keyed_nodes` (§7.1), and
-    /// the raise (§8) — only `of_keyed_nodes` comes here; the others, the raise among them,
-    /// collect through `ingest_run`, save `Occurrences::into_raised`, whose statements are
-    /// canonical already and enter through `ingest_canonical_run`.
+    /// the raise (§8) — only `of_keyed_nodes` comes here; `of` and `of_nodes` collect through
+    /// `ingest_run`, and the raise, whose lowering yields canonical statements, through
+    /// `ingest_canonical_run`.
     pub(crate) fn ingest_into(&mut self, key: PartKey, statement: WithProvenance<Statement>) {
         ingest(
             &mut self.part_entry(key).statements,
@@ -432,9 +433,9 @@ impl Program {
     }
 
     /// Admit a run of statements already canonical (§5.1) into one part — [`ingest_run`]
-    /// without its canonicalization, for the occurrence stream, whose statements are
-    /// canonical by construction (§8). Canonicalization is idempotent, so the part holds
-    /// what `ingest_run` would build from the same statements.
+    /// without its canonicalization, for the raise, whose lowering yields canonical
+    /// statements (§8). Canonicalization is idempotent, so the part holds what `ingest_run`
+    /// would build from the same statements.
     ///
     /// [`ingest_run`]: Program::ingest_run
     pub(crate) fn ingest_canonical_run(
@@ -499,8 +500,7 @@ pub(crate) fn merge_insert<T: Ord>(set: &mut BTreeSet<WithProvenance<T>>, node: 
             .take(&existing)
             .expect("the content `replace` just admitted is present");
         // The union moves the accumulated provenance and extends it with the newcomer's —
-        // large with small — so a run of n content-equal nodes costs O(n log n), not the
-        // Θ(n²) of cloning the accumulation at every collision.
+        // large with small — so a run of n content-equal nodes costs O(n log n).
         admitted.absorb_earlier(existing);
         set.insert(admitted);
     }
@@ -511,9 +511,8 @@ pub(crate) fn merge_insert<T: Ord>(set: &mut BTreeSet<WithProvenance<T>>, node: 
 /// dropping it (§6.3): each class of content-equal nodes keeps its last node's content, with
 /// its nested provenance, and the union of the class's provenances — [`sort_and_fold`] with
 /// every content-equal pair merging — and the set is built from the ascending result. O(n log
-/// n) comparisons, against two searches of a growing set per node. The set-shaped children's
-/// canonicalization re-collect uses this, not a raw `collect`; a counted child uses its own
-/// constructor (§4.4), over the same sort and fold.
+/// n) comparisons. The set-shaped children's canonicalization re-collect uses this, not a raw
+/// `collect`; a counted child uses its own constructor (§4.4), over the same sort and fold.
 pub(crate) fn merge_collect<T: Ord>(
     nodes: impl IntoIterator<Item = WithProvenance<T>>,
 ) -> BTreeSet<WithProvenance<T>> {

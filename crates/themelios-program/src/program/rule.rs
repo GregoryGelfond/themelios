@@ -601,7 +601,7 @@ impl Rule {
 
     /// A rule over an already-provenanced head and body — the raise's door,
     /// carrying the parsed origin of each (§6.2, §8). The program-level
-    /// canonicalization runs at the ingest door (§6.3).
+    /// canonicalization runs as the statement leaves the lowering (§8).
     pub(crate) fn from_nodes(head: WithProvenance<Head>, body: WithProvenance<Body>) -> Rule {
         Rule { head, body }
     }
@@ -661,7 +661,8 @@ impl WeakConstraint {
     }
 
     /// A weak constraint over an already-provenanced body — the raise's door, carrying
-    /// the body's parsed origin (§6.2, §8). Canonicalization runs at the ingest door (§6.3).
+    /// the body's parsed origin (§6.2, §8). Canonicalization runs as the statement leaves the
+    /// lowering (§8).
     pub(crate) fn from_nodes(
         body: WithProvenance<Body>,
         weight: Weight,
@@ -879,7 +880,7 @@ impl BodyElement {
 impl Rule {
     /// Canonicalize a rule (§5.1): the boolean-head fold and the term-level collapse across
     /// the head and the body, each part's provenance preserved by the carrier's `map`
-    /// (§6.2). Run at the ingest door (§6.3).
+    /// (§6.2). Run at the ingest door (§6.3) and as the raise's lowering yields a rule (§8).
     pub(crate) fn canonicalize(self) -> Rule {
         Rule {
             head: self.head.map(Head::canonicalize),
