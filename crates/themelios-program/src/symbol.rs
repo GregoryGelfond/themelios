@@ -486,20 +486,6 @@ impl Clone for Symbol {
     }
 }
 
-/// Whether a symbol is at most one level deep, its arguments leaves. O(arguments).
-fn at_most_one_level(symbol: &Symbol) -> bool {
-    symbol
-        .arguments()
-        .iter()
-        .all(|argument| argument.arguments().is_empty())
-}
-
-/// Whether a symbol is at most two levels deep, its arguments at most one — the depth a
-/// drop leaves to the field glue (§13). O(arguments and theirs).
-fn at_most_two_levels(symbol: &Symbol) -> bool {
-    symbol.arguments().iter().all(at_most_one_level)
-}
-
 /// A copy of a symbol's own node — its variant and leaf value, or its name and sign — with
 /// each argument copied by `copy_child` (§3.6). O(the node's arguments).
 fn copy_node(symbol: &Symbol, copy_child: impl Fn(&Symbol) -> Symbol) -> Symbol {
@@ -593,6 +579,20 @@ fn clone_deep(symbol: &Symbol) -> Symbol {
         }
     }
     done.pop().expect("the root's clone")
+}
+
+/// Whether a symbol is at most one level deep, its arguments leaves. O(arguments).
+fn at_most_one_level(symbol: &Symbol) -> bool {
+    symbol
+        .arguments()
+        .iter()
+        .all(|argument| argument.arguments().is_empty())
+}
+
+/// Whether a symbol is at most two levels deep, its arguments at most one — the depth a
+/// drop leaves to the field glue (§13). O(arguments and theirs).
+fn at_most_two_levels(symbol: &Symbol) -> bool {
+    symbol.arguments().iter().all(at_most_one_level)
 }
 
 impl Drop for Symbol {

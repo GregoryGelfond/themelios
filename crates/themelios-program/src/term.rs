@@ -840,54 +840,6 @@ impl Clone for Term {
     }
 }
 
-/// A deep copy of any term through the work list (§13).
-fn clone_deep(term: &Term) -> Term {
-    // Post-order deep copy (§13): enter each node, then rebuild bottom-up from a
-    // stack of finished clones. A `Symbolic` leaf clones its symbol whole (the
-    // symbol's own clone is iterative, §3.1).
-    enum Frame<'a> {
-        Enter(&'a Term),
-        Assemble(Shell, usize),
-    }
-    let mut work = vec![Frame::Enter(term)];
-    let mut done: Vec<Term> = Vec::new();
-    while let Some(frame) = work.pop() {
-        match frame {
-            Frame::Enter(term) => {
-                let (shell, children) = split_refs(term);
-                work.push(Frame::Assemble(shell, children.len()));
-                for child in children.into_iter().rev() {
-                    work.push(Frame::Enter(child));
-                }
-            }
-            Frame::Assemble(shell, arity) => {
-                let children = done.split_off(done.len() - arity);
-                done.push(Term::from(assemble_parts(shell, children)));
-            }
-        }
-    }
-    done.pop().expect("the root's clone")
-}
-
-impl Drop for Term {
-    fn drop(&mut self) {
-        // A term at most two levels deep — nearly every term a program holds — drops
-        // through the field glue: its children, then theirs, each finding this test
-        // true, a fixed depth rather than a walk (§13), with no work list built.
-        if at_most_two_levels(self) {
-            return;
-        }
-        // Dismantle iteratively (§13): move every descendant onto a work list and
-        // drop them one at a time, so a deep term drops without recursion. A
-        // `Symbolic`'s symbol drops through the symbol's own iterative `Drop`.
-        let mut stack: Vec<Term> = Vec::new();
-        take_children(self, &mut stack);
-        while let Some(mut term) = stack.pop() {
-            take_children(&mut term, &mut stack);
-        }
-    }
-}
-
 /// A copy of a term's own node — its variant, its name or operator, its leaf — with each
 /// child term copied by `copy_child` (§3.6). O(the node's children).
 fn copy_node(term: &Term, copy_child: impl Fn(&Term) -> Term) -> Term {
@@ -937,6 +889,35 @@ fn clone_child(child: &Term) -> Term {
     }
 }
 
+/// A deep copy of any term through the work list (§13).
+fn clone_deep(term: &Term) -> Term {
+    // Post-order deep copy (§13): enter each node, then rebuild bottom-up from a
+    // stack of finished clones. A `Symbolic` leaf clones its symbol whole (the
+    // symbol's own clone is iterative, §3.1).
+    enum Frame<'a> {
+        Enter(&'a Term),
+        Assemble(Shell, usize),
+    }
+    let mut work = vec![Frame::Enter(term)];
+    let mut done: Vec<Term> = Vec::new();
+    while let Some(frame) = work.pop() {
+        match frame {
+            Frame::Enter(term) => {
+                let (shell, children) = split_refs(term);
+                work.push(Frame::Assemble(shell, children.len()));
+                for child in children.into_iter().rev() {
+                    work.push(Frame::Enter(child));
+                }
+            }
+            Frame::Assemble(shell, arity) => {
+                let children = done.split_off(done.len() - arity);
+                done.push(Term::from(assemble_parts(shell, children)));
+            }
+        }
+    }
+    done.pop().expect("the root's clone")
+}
+
 /// Whether `test` holds of every immediate child term of `term` — vacuously for a
 /// leaf. A `Symbolic` leaf has no term children (§3.6). O(children).
 fn every_child(term: &Term, test: impl Fn(&Term) -> bool) -> bool {
@@ -967,6 +948,25 @@ fn at_most_one_level(term: &Term) -> bool {
 /// drop leaves to the field glue (§13). O(children and grandchildren).
 fn at_most_two_levels(term: &Term) -> bool {
     every_child(term, at_most_one_level)
+}
+
+impl Drop for Term {
+    fn drop(&mut self) {
+        // A term at most two levels deep — nearly every term a program holds — drops
+        // through the field glue: its children, then theirs, each finding this test
+        // true, a fixed depth rather than a walk (§13), with no work list built.
+        if at_most_two_levels(self) {
+            return;
+        }
+        // Dismantle iteratively (§13): move every descendant onto a work list and
+        // drop them one at a time, so a deep term drops without recursion. A
+        // `Symbolic`'s symbol drops through the symbol's own iterative `Drop`.
+        let mut stack: Vec<Term> = Vec::new();
+        take_children(self, &mut stack);
+        while let Some(mut term) = stack.pop() {
+            take_children(&mut term, &mut stack);
+        }
+    }
 }
 
 /// Moves a term's immediate child terms onto `out`, leaving it childless. A boxed
