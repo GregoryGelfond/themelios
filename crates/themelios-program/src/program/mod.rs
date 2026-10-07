@@ -414,11 +414,11 @@ impl Program {
         );
     }
 
-    /// Admit a run of statements into one part through the one ingest door (§6.3), looking
-    /// the part up once for the run rather than once per statement — the collection's door
-    /// for the raise, which shares one part key across a `#program` delimiter's statements
-    /// (§8), and for the rewrites, which rebuild part by part. O(key · log parts) once, then
-    /// each statement's ingest.
+    /// Admit a run of statements into one part through the one ingest door (§6.3),
+    /// canonicalizing each and looking the part up once for the run rather than once per
+    /// statement — the door for `of_nodes` and for the rewrites, which rebuild part by part;
+    /// the raise, whose statements are canonical as its lowering yields them, collects
+    /// through `ingest_canonical_run`. O(key · log parts) once, then each statement's ingest.
     pub(crate) fn ingest_run(
         &mut self,
         key: &PartKey,

@@ -1098,8 +1098,8 @@ impl Heuristic {
     }
 
     /// A heuristic over an already-provenanced atom and body — the raise's door,
-    /// carrying each's parsed origin (§6.2, §8). Canonicalization runs at the ingest
-    /// door (§6.3).
+    /// carrying each's parsed origin (§6.2, §8). Canonicalization runs as the statement
+    /// leaves the lowering (§8).
     pub(crate) fn from_nodes(
         atom: WithProvenance<Atom>,
         body: WithProvenance<Body>,
@@ -1163,8 +1163,8 @@ impl External {
     }
 
     /// An external over an already-provenanced atom and body — the raise's door,
-    /// carrying each's parsed origin (§6.2, §8). Canonicalization runs at the ingest
-    /// door (§6.3).
+    /// carrying each's parsed origin (§6.2, §8). Canonicalization runs as the statement
+    /// leaves the lowering (§8).
     pub(crate) fn from_nodes(
         atom: WithProvenance<Atom>,
         body: WithProvenance<Body>,

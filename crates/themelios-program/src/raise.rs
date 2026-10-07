@@ -1338,8 +1338,9 @@ fn raise_rule(
     Some(Statement::Rule(Rule::from_nodes(head, body)))
 }
 
-/// Raise a head (§4.4): the `#true`/`#false` fold to `Verum`/`Falsum` runs at the ingest
-/// door (§5.1), so a boolean head-literal is raised as its literal here; a set form is a
+/// Raise a head (§4.4): the `#true`/`#false` fold to `Verum`/`Falsum` runs with the rest of
+/// the canonicalization as the statement leaves the lowering (§5.1), so a boolean
+/// head-literal is raised as its literal here; a set form is a
 /// [`Head::Choice`], a function aggregate a [`Head::Aggregate`] — the position the tree
 /// records (§4.4).
 fn raise_head(head: ast::Head, parse: &dyn Reads, errors: &mut Vec<LowerError>) -> Option<Head> {
