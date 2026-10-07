@@ -15,6 +15,7 @@ use themelios_syntax::dialect::Dialect;
 
 use crate::render::Unspellable;
 use crate::symbol::{Name, Sign, Symbol, VarName};
+use crate::work_list::WorkList;
 
 /// The non-ground term algebra (§3.3). A term carries **no** strong sign — the `-`
 /// of `-p` is arithmetic `Negate` in term position and the atom's sign in literal
@@ -385,7 +386,7 @@ impl Term {
     /// children, a contract (§3.6). A `Symbolic` leaf is one subterm (the ground
     /// algebra is not descended here). Iterative; O(nodes).
     pub fn subterms(&self) -> impl Iterator<Item = &Term> {
-        let mut stack = vec![self];
+        let mut stack = WorkList::new(self);
         std::iter::from_fn(move || {
             let term = stack.pop()?;
             push_child_refs_reversed(term, &mut stack);
@@ -806,7 +807,7 @@ fn gather_pool_spine(alternatives: Vec<Term>) -> Vec<Term> {
 
 /// Pushes a term's immediate child references onto `stack`, reversed so a pre-order
 /// walk pops them left-to-right (§3.6). A `Symbolic` leaf has no term children.
-fn push_child_refs_reversed<'a>(term: &'a Term, stack: &mut Vec<&'a Term>) {
+fn push_child_refs_reversed<'a>(term: &'a Term, stack: &mut WorkList<&'a Term>) {
     match term {
         Term::Variable(_) | Term::Symbolic(_) => {}
         Term::Function { arguments, .. } | Term::External { arguments, .. } => {
@@ -858,6 +859,12 @@ impl Clone for Term {
 
 impl Drop for Term {
     fn drop(&mut self) {
+        // A term at most two levels deep — nearly every term a program holds — drops
+        // through the field glue: its children, then theirs, each finding this test
+        // true, a fixed depth rather than a walk (§13), with no work list built.
+        if every_child(self, |child| every_child(child, is_childless)) {
+            return;
+        }
         // Dismantle iteratively (§13): move every descendant onto a work list and
         // drop them one at a time, so a deep term drops without recursion. A
         // `Symbolic`'s symbol drops through the symbol's own iterative `Drop`.
@@ -867,6 +874,27 @@ impl Drop for Term {
             take_children(&mut term, &mut stack);
         }
     }
+}
+
+/// Whether `test` holds of every immediate child term of `term` — vacuously for a
+/// leaf. A `Symbolic` leaf has no term children (§3.6). O(children).
+fn every_child(term: &Term, test: impl Fn(&Term) -> bool) -> bool {
+    match term {
+        Term::Variable(_) | Term::Symbolic(_) => true,
+        Term::Function { arguments, .. } | Term::External { arguments, .. } => {
+            arguments.iter().all(test)
+        }
+        Term::Tuple(items) | Term::Pool(items) => items.iter().all(test),
+        Term::UnaryOperation { argument, .. } => test(argument),
+        Term::BinaryOperation { left, right, .. } => test(left) && test(right),
+        Term::Interval { lower, upper } => test(lower) && test(upper),
+        Term::Absolute(inner) => test(inner),
+    }
+}
+
+/// Whether a term has no child terms — a leaf of the term walks (§3.6). O(1).
+fn is_childless(term: &Term) -> bool {
+    every_child(term, |_| false)
 }
 
 /// Moves a term's immediate child terms onto `out`, leaving it childless. A boxed
@@ -900,7 +928,7 @@ impl PartialEq for Term {
     fn eq(&self, other: &Term) -> bool {
         // Iterative structural equality (§13): a work list of pairs, returning on the
         // first mismatch.
-        let mut pairs: Vec<(&Term, &Term)> = vec![(self, other)];
+        let mut pairs = WorkList::new((self, other));
         while let Some((a, b)) = pairs.pop() {
             match (a, b) {
                 (Term::Variable(x), Term::Variable(y)) if x == y => {}
@@ -991,7 +1019,7 @@ impl Ord for Term {
         // descend and the work list never needs a mid-walk prefix comparison).
         // Iterative, returning on the first difference. The naive twin holds it
         // honest (tests/term_laws.rs).
-        let mut pairs: Vec<(&Term, &Term)> = vec![(self, other)];
+        let mut pairs = WorkList::new((self, other));
         while let Some((a, b)) = pairs.pop() {
             let by_rank = term_rank(a).cmp(&term_rank(b));
             if by_rank != Ordering::Equal {
@@ -1110,7 +1138,11 @@ fn term_rank(term: &Term) -> u8 {
 
 /// Pushes the element pairs of two equal-length slices onto `pairs`, reversed so the
 /// leftmost is compared first (the length was compared in the head).
-fn push_pairs_reversed<'a>(pairs: &mut Vec<(&'a Term, &'a Term)>, a: &'a [Term], b: &'a [Term]) {
+fn push_pairs_reversed<'a>(
+    pairs: &mut WorkList<(&'a Term, &'a Term)>,
+    a: &'a [Term],
+    b: &'a [Term],
+) {
     for pair in a.iter().zip(b.iter()).rev() {
         pairs.push(pair);
     }

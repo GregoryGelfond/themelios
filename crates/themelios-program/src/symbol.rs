@@ -17,6 +17,7 @@ use themelios_syntax::token::{LexMode, TokenSource};
 use themelios_syntax::tree::SyntaxKind;
 
 use crate::render::Unspellable;
+use crate::work_list::WorkList;
 
 /// Strong (explicit) negation — the `-` of `-p` (§3.1; the precise register:
 /// strong, not classical-logic, negation). Distinct in the type from default
@@ -370,7 +371,7 @@ impl Symbol {
     /// The immediate and transitive subsymbols in pre-order — a contract (§3.6).
     /// Iterative; O(nodes) over the walk.
     pub fn subsymbols(&self) -> impl Iterator<Item = &Symbol> {
-        let mut stack = vec![self];
+        let mut stack = WorkList::new(self);
         std::iter::from_fn(move || {
             let symbol = stack.pop()?;
             // Push children in reverse so they are yielded left-to-right.
@@ -543,6 +544,18 @@ impl Clone for Symbol {
 
 impl Drop for Symbol {
     fn drop(&mut self) {
+        // A symbol at most two levels deep — nearly every one a program holds —
+        // drops through the field glue: its arguments, then theirs, each finding
+        // this test true, a fixed depth rather than a walk (§13), with no work list
+        // built.
+        if self.arguments().iter().all(|child| {
+            child
+                .arguments()
+                .iter()
+                .all(|grandchild| grandchild.arguments().is_empty())
+        }) {
+            return;
+        }
         // Dismantle iteratively (§13): move every descendant onto a work list
         // and drop them one at a time, so a deep value drops without recursion.
         let mut stack: Vec<Symbol> = Vec::new();
@@ -567,7 +580,7 @@ impl PartialEq for Symbol {
     fn eq(&self, other: &Symbol) -> bool {
         // Iterative structural equality (§13): a work list of pairs, returning on
         // the first mismatch.
-        let mut pairs: Vec<(&Symbol, &Symbol)> = vec![(self, other)];
+        let mut pairs = WorkList::new((self, other));
         while let Some((a, b)) = pairs.pop() {
             match (a, b) {
                 (Symbol::Infimum, Symbol::Infimum) | (Symbol::Supremum, Symbol::Supremum) => {}
@@ -620,7 +633,7 @@ impl Ord for Symbol {
         // anonymous name and the bands fall in the printed order is the authority's,
         // the differential (§16) confirming it without disturbing totality; the
         // naive twin holds the iteration honest.
-        let mut pairs: Vec<(&Symbol, &Symbol)> = vec![(self, other)];
+        let mut pairs = WorkList::new((self, other));
         while let Some((a, b)) = pairs.pop() {
             let by_rank = order_rank(a).cmp(&order_rank(b));
             if by_rank != Ordering::Equal {
