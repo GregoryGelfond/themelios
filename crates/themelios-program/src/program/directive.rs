@@ -18,6 +18,7 @@ use super::rule::{Atom, Body, Condition};
 use crate::provenance::WithProvenance;
 use crate::symbol::{Name, Signature, Symbol};
 use crate::term::{Term, Variable};
+use crate::work_list::WorkList;
 
 /// A theory operator symbol (grammar §5.8's `THEORY-OP` or `not`). This tier does not
 /// interpret it — a `#theory` definition gives it precedence and associativity, above
@@ -138,12 +139,10 @@ impl TheoryTerm {
     /// The immediate and transitive subterms in pre-order — the node before its children
     /// (§3.6). Iterative; O(nodes).
     pub fn subterms(&self) -> impl Iterator<Item = &TheoryTerm> {
-        let mut stack = vec![self];
+        let mut stack = WorkList::new(self);
         std::iter::from_fn(move || {
             let term = stack.pop()?;
-            for child in children_refs(term).into_iter().rev() {
-                stack.push(child);
-            }
+            stack.extend(children(term).iter().rev());
             Some(term)
         })
     }
@@ -281,48 +280,104 @@ fn assemble_parts<T>(shell: TheoryShell, children: Vec<T>) -> TheoryTermParts<T>
     }
 }
 
-/// A theory term's immediate child references, in document order (§3.6). The operators
-/// are leaf data, not children.
-fn children_refs(term: &TheoryTerm) -> Vec<&TheoryTerm> {
+/// A theory term's immediate children, in document order (§3.6) — none for a leaf. The
+/// operators are leaf data, not children.
+fn children(term: &TheoryTerm) -> &[TheoryTerm] {
     match term {
-        TheoryTerm::Symbolic(_) | TheoryTerm::Variable(_) => Vec::new(),
-        TheoryTerm::Function { arguments, .. } => arguments.iter().collect(),
-        TheoryTerm::Tuple(items) | TheoryTerm::List(items) | TheoryTerm::Set(items) => {
-            items.iter().collect()
-        }
-        TheoryTerm::Operation { operands, .. } => operands.iter().collect(),
+        TheoryTerm::Symbolic(_) | TheoryTerm::Variable(_) => &[],
+        TheoryTerm::Function { arguments, .. } => arguments,
+        TheoryTerm::Tuple(items) | TheoryTerm::List(items) | TheoryTerm::Set(items) => items,
+        TheoryTerm::Operation { operands, .. } => operands,
     }
 }
 
 impl Clone for TheoryTerm {
     fn clone(&self) -> TheoryTerm {
-        enum Frame<'a> {
-            Enter(&'a TheoryTerm),
-            Assemble(TheoryShell, usize),
+        // A theory term at most one level deep — nearly every one a program holds — is
+        // copied directly, its children leaf by leaf, with no work list.
+        if children(self)
+            .iter()
+            .all(|child| children(child).is_empty())
+        {
+            clone_shallow(self)
+        } else {
+            clone_deep(self)
         }
-        let mut work = vec![Frame::Enter(self)];
-        let mut done: Vec<TheoryTerm> = Vec::new();
-        while let Some(frame) = work.pop() {
-            match frame {
-                Frame::Enter(term) => {
-                    let (shell, children) = split_refs(term);
-                    work.push(Frame::Assemble(shell, children.len()));
-                    for child in children.into_iter().rev() {
-                        work.push(Frame::Enter(child));
-                    }
-                }
-                Frame::Assemble(shell, arity) => {
-                    let children = done.split_off(done.len() - arity);
-                    done.push(TheoryTerm::from(assemble_parts(shell, children)));
+    }
+}
+
+/// A copy of a theory term whose children are all leaves, made directly: the node's own
+/// data cloned and each child copied as the leaf it is (§3.6). O(children).
+fn clone_shallow(term: &TheoryTerm) -> TheoryTerm {
+    let leaves = |children: &[TheoryTerm]| children.iter().map(clone_leaf).collect();
+    match term {
+        TheoryTerm::Symbolic(s) => TheoryTerm::Symbolic(s.clone()),
+        TheoryTerm::Variable(v) => TheoryTerm::Variable(v.clone()),
+        TheoryTerm::Function { name, arguments } => TheoryTerm::Function {
+            name: name.clone(),
+            arguments: leaves(arguments),
+        },
+        TheoryTerm::Tuple(items) => TheoryTerm::Tuple(leaves(items)),
+        TheoryTerm::List(items) => TheoryTerm::List(leaves(items)),
+        TheoryTerm::Set(items) => TheoryTerm::Set(leaves(items)),
+        TheoryTerm::Operation {
+            operators,
+            operands,
+        } => TheoryTerm::Operation {
+            operators: operators.clone(),
+            operands: leaves(operands),
+        },
+    }
+}
+
+/// A copy of a leaf theory term — one with no children — made directly; a theory term
+/// with children is copied by the walk instead.
+fn clone_leaf(term: &TheoryTerm) -> TheoryTerm {
+    if children(term).is_empty() {
+        clone_shallow(term)
+    } else {
+        clone_deep(term)
+    }
+}
+
+/// A deep copy of any theory term through the work list (§13).
+fn clone_deep(term: &TheoryTerm) -> TheoryTerm {
+    enum Frame<'a> {
+        Enter(&'a TheoryTerm),
+        Assemble(TheoryShell, usize),
+    }
+    let mut work = vec![Frame::Enter(term)];
+    let mut done: Vec<TheoryTerm> = Vec::new();
+    while let Some(frame) = work.pop() {
+        match frame {
+            Frame::Enter(term) => {
+                let (shell, children) = split_refs(term);
+                work.push(Frame::Assemble(shell, children.len()));
+                for child in children.into_iter().rev() {
+                    work.push(Frame::Enter(child));
                 }
             }
+            Frame::Assemble(shell, arity) => {
+                let children = done.split_off(done.len() - arity);
+                done.push(TheoryTerm::from(assemble_parts(shell, children)));
+            }
         }
-        done.pop().expect("the root's clone")
     }
+    done.pop().expect("the root's clone")
 }
 
 impl Drop for TheoryTerm {
     fn drop(&mut self) {
+        // A theory term at most two levels deep — nearly every one a program holds —
+        // drops through the field glue: its children, then theirs, each finding this
+        // test true, a fixed depth rather than a walk (§13), with no work list built.
+        if children(self).iter().all(|child| {
+            children(child)
+                .iter()
+                .all(|grandchild| children(grandchild).is_empty())
+        }) {
+            return;
+        }
         let mut stack: Vec<TheoryTerm> = Vec::new();
         take_children(self, &mut stack);
         while let Some(mut term) = stack.pop() {
@@ -358,7 +413,7 @@ fn theory_rank(term: &TheoryTerm) -> u8 {
 
 impl PartialEq for TheoryTerm {
     fn eq(&self, other: &TheoryTerm) -> bool {
-        let mut pairs: Vec<(&TheoryTerm, &TheoryTerm)> = vec![(self, other)];
+        let mut pairs = WorkList::new((self, other));
         while let Some((a, b)) = pairs.pop() {
             match (a, b) {
                 (TheoryTerm::Symbolic(x), TheoryTerm::Symbolic(y)) if x == y => {}
@@ -408,71 +463,62 @@ impl Ord for TheoryTerm {
     fn cmp(&self, other: &TheoryTerm) -> Ordering {
         // A consistent total order agreeing with `Eq` (§4.9): no external authority, like
         // `Term`. Rank, then the head scalars, then the children by count-then-elements;
-        // iterative, the naive twin holds it honest (tests/theory_term_laws.rs).
-        let mut pairs: Vec<(&TheoryTerm, &TheoryTerm)> = vec![(self, other)];
+        // iterative, the naive twin holds it honest (tests/theory_term_laws.rs). A pair the
+        // roots decide — a leaf pair, or one whose rank or head scalars differ — is answered
+        // before any work list is built.
+        let at_root = node_order(self, other);
+        if at_root != Ordering::Equal || children(self).is_empty() {
+            return at_root;
+        }
+        let mut pairs = WorkList::new((self, other));
         while let Some((a, b)) = pairs.pop() {
-            let by_rank = theory_rank(a).cmp(&theory_rank(b));
-            if by_rank != Ordering::Equal {
-                return by_rank;
-            }
-            let here = match (a, b) {
-                (TheoryTerm::Symbolic(x), TheoryTerm::Symbolic(y)) => x.cmp(y),
-                (TheoryTerm::Variable(x), TheoryTerm::Variable(y)) => x.cmp(y),
-                (
-                    TheoryTerm::Function {
-                        name: n1,
-                        arguments: a1,
-                    },
-                    TheoryTerm::Function {
-                        name: n2,
-                        arguments: a2,
-                    },
-                ) => (n1, a1.len()).cmp(&(n2, a2.len())).then_with(|| {
-                    push_pairs_reversed(&mut pairs, a1, a2);
-                    Ordering::Equal
-                }),
-                (TheoryTerm::Tuple(a1), TheoryTerm::Tuple(a2))
-                | (TheoryTerm::List(a1), TheoryTerm::List(a2))
-                | (TheoryTerm::Set(a1), TheoryTerm::Set(a2)) => {
-                    a1.len().cmp(&a2.len()).then_with(|| {
-                        push_pairs_reversed(&mut pairs, a1, a2);
-                        Ordering::Equal
-                    })
-                }
-                (
-                    TheoryTerm::Operation {
-                        operators: o1,
-                        operands: p1,
-                    },
-                    TheoryTerm::Operation {
-                        operators: o2,
-                        operands: p2,
-                    },
-                ) => (o1, p1.len()).cmp(&(o2, p2.len())).then_with(|| {
-                    push_pairs_reversed(&mut pairs, p1, p2);
-                    Ordering::Equal
-                }),
-                // Unreachable: equal rank implies the same variant.
-                _ => Ordering::Equal,
-            };
+            let here = node_order(a, b);
             if here != Ordering::Equal {
                 return here;
             }
+            // Equal heads have equal child counts: descend, the leftmost pair on top.
+            pairs.extend(children(a).iter().zip(children(b)).rev());
         }
         Ordering::Equal
     }
 }
 
-/// Pushes the element pairs of two equal-length slices onto `pairs`, reversed so the
-/// leftmost is compared first.
-fn push_pairs_reversed<'a>(
-    pairs: &mut Vec<(&'a TheoryTerm, &'a TheoryTerm)>,
-    a: &'a [TheoryTerm],
-    b: &'a [TheoryTerm],
-) {
-    for pair in a.iter().zip(b.iter()).rev() {
-        pairs.push(pair);
-    }
+/// Two theory terms' order at their roots alone (§4.9): the variant rank, then the head
+/// scalars — a leaf's value, a name and child count, a child count, or the operator runs
+/// and operand count. `Equal` for equal leaves and for nodes of one variant and equal
+/// heads, hence of equal child counts, whose children decide. O(the heads compared).
+fn node_order(a: &TheoryTerm, b: &TheoryTerm) -> Ordering {
+    theory_rank(a)
+        .cmp(&theory_rank(b))
+        .then_with(|| match (a, b) {
+            (TheoryTerm::Symbolic(x), TheoryTerm::Symbolic(y)) => x.cmp(y),
+            (TheoryTerm::Variable(x), TheoryTerm::Variable(y)) => x.cmp(y),
+            (
+                TheoryTerm::Function {
+                    name: n1,
+                    arguments: a1,
+                },
+                TheoryTerm::Function {
+                    name: n2,
+                    arguments: a2,
+                },
+            ) => (n1, a1.len()).cmp(&(n2, a2.len())),
+            (TheoryTerm::Tuple(a1), TheoryTerm::Tuple(a2))
+            | (TheoryTerm::List(a1), TheoryTerm::List(a2))
+            | (TheoryTerm::Set(a1), TheoryTerm::Set(a2)) => a1.len().cmp(&a2.len()),
+            (
+                TheoryTerm::Operation {
+                    operators: o1,
+                    operands: p1,
+                },
+                TheoryTerm::Operation {
+                    operators: o2,
+                    operands: p2,
+                },
+            ) => (o1, p1.len()).cmp(&(o2, p2.len())),
+            // Unreachable: equal rank implies the same variant.
+            _ => Ordering::Equal,
+        })
 }
 
 impl Hash for TheoryTerm {
