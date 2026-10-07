@@ -86,14 +86,14 @@ exclude_re = [
     # form is therefore immaterial: a mutant accepts a held peek or reads again the same
     # token from the kept answers, and the trivia placement then finds no trivia or
     # places the same. Behavior-equivalent, as is answering no peek at all.
-    "machine\\.rs:269:9: replace Parser<'s, S>::standing_peek -> Option<Peeked<'s>> with None",
-    "machine\\.rs:271:26: replace == with != in Parser<'s, S>::standing_peek",
-    "machine\\.rs:271:37: replace \\|\\| with && in Parser<'s, S>::standing_peek",
-    "machine\\.rs:271:53: replace == with != in Parser<'s, S>::standing_peek",
-    "machine\\.rs:272:17: replace && with \\|\\| in Parser<'s, S>::standing_peek",
-    "machine\\.rs:272:32: replace == with != in Parser<'s, S>::standing_peek",
-    "machine\\.rs:273:17: replace && with \\|\\| in Parser<'s, S>::standing_peek",
-    "machine\\.rs:273:43: replace == with != in Parser<'s, S>::standing_peek",
+    "machine\\.rs:276:9: replace Parser<'s, S>::standing_peek -> Option<Peeked<'s>> with None",
+    "machine\\.rs:278:26: replace == with != in Parser<'s, S>::standing_peek",
+    "machine\\.rs:278:37: replace \\|\\| with && in Parser<'s, S>::standing_peek",
+    "machine\\.rs:278:53: replace == with != in Parser<'s, S>::standing_peek",
+    "machine\\.rs:279:17: replace && with \\|\\| in Parser<'s, S>::standing_peek",
+    "machine\\.rs:279:32: replace == with != in Parser<'s, S>::standing_peek",
+    "machine\\.rs:280:17: replace && with \\|\\| in Parser<'s, S>::standing_peek",
+    "machine\\.rs:280:43: replace == with != in Parser<'s, S>::standing_peek",
     # After its trivia a lawful source's cursor stands at the peeked token, so `bump`'s
     # test that it does only chooses between placing the peek and reading the same token
     # again from the kept answers: the same token either way.
@@ -151,10 +151,10 @@ exclude_re = [
     "nodes\\.rs:890:38: replace != with == in AtomDefinition::type_name",
     # `tuple_terms` is read only by operand's `(,)` empty-tuple guard, whose fire
     # and fall-through paths both place the comma in the same tuple node — so
-    # neither the counter (335) nor the guard's disjunction (600) changes the
+    # neither the counter nor the guard's disjunction changes the
     # tree. Verified: `p((a,,))` and `p(f(,))` parse identically under both.
     "terms\\.rs:\\d+:\\d+: replace \\+= with \\*= in Parser<'_, S>::begin_operand",
-    "terms\\.rs:604:53: replace && with \\|\\| in Parser<'_, S>::operand",
+    "terms\\.rs:621:53: replace && with \\|\\| in Parser<'_, S>::operand",
     # The theory-loop synchronizers: on the reaching inputs — a theory element's
     # condition colon, a stray token between elements — these mutations produce
     # identical trees. Direct-checked (each applied, the full `cargo test
@@ -164,7 +164,7 @@ exclude_re = [
     # (`a_directive_after_a_broken_body_ends_the_body`) kills it.
     "terms\\.rs:\\d+:\\d+: replace && with \\|\\| in Parser<'_, S>::theory_synchronizes",
     "terms\\.rs:\\d+:\\d+: replace == with != in Parser<'_, S>::theory_synchronizes",
-    "terms\\.rs:851:27: replace == with != in Parser<'_, S>::theory_operand",
+    "terms\\.rs:864:27: replace == with != in Parser<'_, S>::theory_operand",
     # `follows_a_condition`'s condition detection gives the same mode for every
     # reaching token: a separator between empty elements (204, killed by a test)
     # exercises the walk; these two branches (the child-is-element early return

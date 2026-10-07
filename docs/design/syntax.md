@@ -885,11 +885,12 @@ with `SyntaxClass::EndOfInput` in its expected set (§7.1).
 ### 6.2 The parser's shape
 
 A hand-written recursive-descent parser to grammar §5 (spec §6.5),
-building the green tree through its own builder (§6.8, §14) as it goes: one function
-per grammar-bounded production, each opening its node at its first
-significant token and closing it at its last (§5.4's placement law);
-rowan's *checkpoint* — a mark that lets a node be opened retroactively
-around already-built children — is what realizes left-recursive and
+building the green tree through its own builder (§6.8, §14) as it
+goes: one function per grammar-bounded production, each opening its
+node at its first significant token and closing it at its last (§5.4's
+placement law); the builder's *checkpoint* — a mark that lets a node be
+opened retroactively around already-built children — is what realizes
+left-recursive and
 precedence shapes (`term BINOP term`, a comparison's chain, the docs
 wrapped into their statement) without a second pass. The parser reads
 its tokens through the source door under the mode it decides (§4.2),
@@ -3212,15 +3213,18 @@ document and the code together; the §6.1 and §7.1 amendments below likewise.
   faster. The parser asked the token source for each token three to six times as it
   peeked past the trivia, placed the trivia, and placed the token, against §4.2's bound
   of twice; it now keeps the source's last few answers and places a peeked token as
-  peeked, so each token is asked for once as a rule (§4.2, §6.8), and tests hold the
-  asks per token. The frame loop keeps its frame stack from one term to the next (§6.8).
-  The builder shares a repeated short token through a cache of fixed slots, at one hash
-  and one comparison per token whatever the input, while still interning no node (§6.8,
-  §14), so §1's crate facts name the cache, §12.1 says what lives inside a parse instead
-  of denying a table, and §5.5, §6.2, §6.3, and §14 lose their last references to
-  rowan's builder and node cache. `HasDocs::doc_lines` reads the leading prefix alone
-  (§5.4). Each changes cost, not the parse — a parse of any lawful source is
-  byte-for-byte the tree and the diagnostics it was — save one change for an unlawful
-  source: a breach now drops the peek standing before it, so a breach met while looking
-  ahead ends the input before the peeked token rather than placing an end-of-input token
-  in its stead, and a debug build no longer panics there (§4.3).
+  peeked, so each token is asked for once as a rule, and §4.2 and §6.3 state the bound
+  as it now stands, which tests hold (§6.8). The frame loop keeps its frame stack from
+  one term to the next (§6.8). The builder shares a repeated short token through a cache
+  of fixed slots, at one hash and one comparison per token whatever the input, while
+  still interning no node (§6.8, §14), so §1's crate facts name the cache, §12.1 says
+  what lives inside a parse instead of denying a table, and §5.5, §6.2, and §14 lose
+  their last references to rowan's builder and node cache. `HasDocs::doc_lines` reads
+  the leading prefix alone (§5.4). Each changes cost, not the parse: a parse of any
+  lawful source is byte-for-byte the tree and the diagnostics it was. For an unlawful
+  source, whose tree §4.3 leaves unspecified beyond totality and the breaches it
+  witnesses, the parser now reads each answer once and decides on the text it places,
+  so a source breaking the slice law or determinism may parse differently; and a breach
+  now ends the input at its own offset, so a breach met while looking ahead leaves the
+  tokens tiled before it in the tree, as law 1 states (§5.4), where an end-of-input
+  token was placed and a debug build panicked.

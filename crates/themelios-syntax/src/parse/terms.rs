@@ -332,7 +332,6 @@ impl<S: TokenSource> Parser<'_, S> {
     /// rather than being allocated afresh for every term.
     fn frames_from(&mut self, base: Frame) -> Vec<Frame> {
         let mut frames = self.take_frame_stack();
-        frames.clear();
         frames.push(base);
         frames
     }
