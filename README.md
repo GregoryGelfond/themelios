@@ -158,8 +158,8 @@ documents:
 
 ```toml
 [dependencies]
-themelios-program = { git = "https://github.com/GregoryGelfond/themelios.git", rev = "3339a8a" }
-themelios-analysis = { git = "https://github.com/GregoryGelfond/themelios.git", rev = "3339a8a" }
+themelios-program = { git = "https://github.com/GregoryGelfond/themelios.git", rev = "4c163d0" }
+themelios-analysis = { git = "https://github.com/GregoryGelfond/themelios.git", rev = "4c163d0" }
 ```
 
 The build fetches the repository over HTTPS, and no credentials are needed.
