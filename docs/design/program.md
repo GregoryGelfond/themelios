@@ -140,8 +140,9 @@ specification's own rules (spec §4, §7); a §7 amendment owes its form here.
   equivalence** — ordinary or strong (spec §7.1); or two structurally-equal
   programs compare unequal, or two structurally-distinct programs compare equal,
   once provenance is set aside.
-- A walk over user-reachable structure **recurses on the call stack** (spec
-  §7.2, grammar §10); or a value's admissible depth is bounded by anything but a
+- A walk over user-reachable structure **recurses on the call stack in the value's
+  depth** (spec §7.2, grammar §10, as §18 states it); or a value's admissible depth is
+  bounded by anything but a
   **stated, refused** limit; or a value deep enough to overflow a walk can be
   constructed and not refused.
 - **render → parse → raise is not identity up to provenance** on a program the
@@ -2538,7 +2539,8 @@ literature's — the analysis of a program — never a borrowed project name, §
 ## 13. Totality and the depth discipline
 
 All values are owned and total, and no walk over user-reachable structure
-recurses on the call stack (spec §5.2, §7.2). Grammar §10 maps exactly where the
+recurses on the call stack in the value's depth (spec §5.2, §7.2, as §18 states it).
+Grammar §10 maps exactly where the
 discipline bites: the **four self-recursive families** — the term, the
 constant-term subset, the value-term subset, and the theory term — nest without
 bound, and *only* they. Everything above a term is grammar-bounded: statements
@@ -3061,9 +3063,9 @@ evolution with its argument, not a drift.
   must keep the public surface and its semantics, so no law moves. The provenance carrier
   holds a lone origin inline and boxes its annotation kinds only once one holds a string
   (§6.2), so the common node's provenance allocates nothing — the cost §6.3 stated, which
-  the representation had drifted from. `into_raised` collects the occurrences without
-  canonicalizing them again, canonicalization being idempotent and the occurrences
-  canonical by construction (§8). The borrowing walks keep their work list's first entries
+  the representation had drifted from. The raise canonicalizes each statement once, as its
+  lowering yields it, so `raise` and `into_raised` both collect through the ingest door
+  without canonicalizing again, canonicalization being idempotent (§8). The borrowing walks keep their work list's first entries
   inline; a shallow value is dropped, and every value's root and leaf children are cloned,
   at a constant depth the depth proof's stated stack covers, anything deeper through the
   work list (§13). With that, §13 states
