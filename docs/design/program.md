@@ -1446,7 +1446,7 @@ is the span of the atom or comparison that carries it.
 /// associative — a bounded join-semilattice — which is what lets a content-equal
 /// collapse (§5) *union* both nodes' provenance rather than keep one arbitrarily.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
-pub struct Provenance { /* origins: BTreeSet<Origin>, annotations: Annotations */ }
+pub struct Provenance { /* origins: a set holding a lone fact inline, annotations: Annotations */ }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Origin {
@@ -1460,7 +1460,7 @@ pub enum Origin {
 /// trace directive an explanation tool attaches (§2). Each kind is a set,
 /// unioned on merge.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
-pub struct Annotations { /* private: doc, label, reference, trace — sets */ }
+pub struct Annotations { /* private: doc, label, reference, trace — sets, boxed once one holds a string */ }
 ```
 
 **Erasure is written once.** A structural node carries its `Provenance` through a
@@ -1578,10 +1578,11 @@ origin, a governance tool citing a regulation reference — must never be handed
 dropping one. Idempotence is what the safety half leans on when the same
 reference recurs across content-equal rules.
 
-**Computational cost.** A node's provenance is one optional heap allocation — the
-common no-provenance case is a null pointer, so a program with provenance nowhere
-costs nothing per node — and a set of small facts otherwise, `O(facts)` per node
-and linear overall (spec §7.4's small constant per node). Merge is `O(facts)` per
+**Computational cost.** A node's provenance allocates nothing in the common case —
+a lone origin, the parsed span or the constructed mark, is held inline, and an
+unannotated node's annotations are a null pointer — and a set of small facts on the
+heap otherwise, `O(facts)` per node and linear overall (spec §7.4's small constant
+per node). Merge is `O(facts)` per
 collision. Equality, ordering, and hashing skip provenance entirely, so carrying
 it never changes their cost or their result.
 
