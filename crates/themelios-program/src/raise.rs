@@ -772,15 +772,15 @@ fn placeholder() -> Term {
 // ============================================================================
 // The statement and program raise (docs/design/program.md §8): the AST → Program
 // lowering. A `#program` directive is lifted into part structure (§4.1); each
-// statement is lowered, tagged with its parsed origin and its documentation (§6),
-// and routed through the ingest door (§6.3). A recovered statement the value cannot
+// statement is lowered, canonicalized, tagged with its parsed origin and its
+// documentation (§6), and routed through the ingest door (§6.3). A recovered statement the value cannot
 // complete is diagnosed and skipped, and its neighbors still raise (§8).
 // ============================================================================
 
 /// One source statement, lowered but **not yet collected** into the set (§8): the part it
-/// joins, its raw (pre-canonical) statement carrying the `Parsed` root origin, and this
-/// statement's own lowering diagnostics. Private: produced by the shared lowering walk,
-/// threaded once over the parse.
+/// joins, its canonical statement carrying the `Parsed` root origin, and this statement's
+/// own lowering diagnostics. Private: produced by the shared lowering walk, threaded once
+/// over the parse.
 struct Lowered {
     part: Arc<PartKey>,
     statement: WithProvenance<Statement>,
@@ -820,8 +820,7 @@ fn lower_each(parse: &Parse<ast::Program>) -> (Vec<Lowered>, Vec<LowerError>) {
             // is a second occurrence to it, one statement to the set (§6.3).
             if raised.is_global_definition() {
                 let location = repeat_location(&statement, parse);
-                let canonical = crate::program::canonicalize_statement(raised.clone());
-                if let Some(first) = firsts.repeat_of(&part, canonical, location) {
+                if let Some(first) = firsts.repeat_of(&part, raised.clone(), location) {
                     diagnostics.push(LowerError {
                         location,
                         kind: LowerErrorKind::RepeatedDefinition { first },
@@ -937,10 +936,7 @@ fn repeat_location(statement: &ast::Statement, parse: &Parse<ast::Program>) -> L
 pub fn raise(parse: &Parse<ast::Program>) -> Raised {
     let (lowered, diagnostics) = lower_each(parse);
     Raised {
-        program: collect_runs(
-            lowered.into_iter().map(|each| (each.part, each.statement)),
-            Program::ingest_run,
-        ),
+        program: collect_runs(lowered.into_iter().map(|each| (each.part, each.statement))),
         diagnostics,
     }
 }
@@ -948,12 +944,11 @@ pub fn raise(parse: &Parse<ast::Program>) -> Raised {
 /// Collect lowered statements into a program, one part lookup per run of statements that share
 /// a part (§8): consecutive statements of one `#program` delimiter share its `Arc`, so a run
 /// ends where the delimiter changes, and a re-opened part — a fresh `Arc` over an equal key —
-/// starts a run that joins the same part. Each run enters through `admit`: the canonicalizing
-/// door for freshly lowered statements, the canonical one for the occurrence stream's.
-/// O(Σ statement ingests + Σ run keys).
+/// starts a run that joins the same part. The statements are canonical as the lowering
+/// yields them, so each run enters through the canonical door. O(Σ statement ingests + Σ
+/// run keys).
 fn collect_runs(
     statements: impl IntoIterator<Item = (Arc<PartKey>, WithProvenance<Statement>)>,
-    admit: fn(&mut Program, &PartKey, Vec<WithProvenance<Statement>>),
 ) -> Program {
     let mut program = Program::default();
     let mut run: Option<(Arc<PartKey>, Vec<WithProvenance<Statement>>)> = None;
@@ -962,14 +957,14 @@ fn collect_runs(
             Some((key, batch)) if Arc::ptr_eq(key, &part) => batch.push(statement),
             _ => {
                 if let Some((key, batch)) = run.take() {
-                    admit(&mut program, &key, batch);
+                    program.ingest_canonical_run(&key, batch);
                 }
                 run = Some((part, vec![statement]));
             }
         }
     }
     if let Some((key, batch)) = run {
-        admit(&mut program, &key, batch);
+        program.ingest_canonical_run(&key, batch);
     }
     program
 }
@@ -988,8 +983,7 @@ pub fn raise_statement(
         .tree()
         .statement()
         .filter(|statement| !matches!(statement, ast::Statement::ProgramPart(_)))
-        .and_then(|statement| raise_one(&statement, parse, &mut errors))
-        .map(crate::program::canonicalize_statement);
+        .and_then(|statement| raise_one(&statement, parse, &mut errors));
     (statement, errors)
 }
 
@@ -1102,7 +1096,7 @@ impl Occurrences {
             .into_iter()
             .map(|each| (each.part, each.statement));
         Raised {
-            program: collect_runs(statements, Program::ingest_canonical_run),
+            program: collect_runs(statements),
             diagnostics: self.diagnostics,
         }
     }
@@ -1121,9 +1115,7 @@ pub fn raise_occurrences(parse: &Parse<ast::Program>) -> Occurrences {
         .into_iter()
         .map(|lowered| StatementOccurrence {
             part: lowered.part,
-            statement: lowered
-                .statement
-                .map(crate::program::canonicalize_statement),
+            statement: lowered.statement,
             diagnostics: lowered.diagnostics,
         })
         .collect();
@@ -1282,10 +1274,20 @@ fn doc_lines(statement: &ast::Statement) -> Vec<String> {
 }
 
 /// Lower one statement (a `#program` delimiter is handled by [`raise`] before this
-/// door) to a program statement (§8), or diagnose-and-skip a recovered one the value
-/// cannot complete. The match is exhaustive with no wildcard, so a new statement family
-/// is a compile error here, never a silent drop.
+/// door) to a canonical program statement (§5.1, §8), or diagnose-and-skip a recovered one
+/// the value cannot complete. The statement is canonicalized here, as it leaves the
+/// lowering, once for every door the raise serves. The match is exhaustive with no
+/// wildcard, so a new statement family is a compile error here, never a silent drop.
 fn raise_one(
+    statement: &ast::Statement,
+    parse: &dyn Reads,
+    errors: &mut Vec<LowerError>,
+) -> Option<Statement> {
+    lower_one(statement, parse, errors).map(crate::program::canonicalize_statement)
+}
+
+/// The statement as read, before its canonicalization (`raise_one`).
+fn lower_one(
     statement: &ast::Statement,
     parse: &dyn Reads,
     errors: &mut Vec<LowerError>,
@@ -2555,8 +2557,8 @@ fn incomplete<T>(node: &SyntaxNode, parse: &dyn Reads, errors: &mut Vec<LowerErr
 }
 
 /// Raise one AST term to a raw `term::Term` (§8): the statement door's terms canonicalize
-/// with the rest of the statement at the ingest door (§5.1), so this returns the term as
-/// assembled — iteratively (§13).
+/// with the rest of the statement as it leaves the lowering (§5.1), so this returns the
+/// term as assembled — iteratively (§13).
 fn raise_term_node(term: &ast::Term, parse: &dyn Reads, errors: &mut Vec<LowerError>) -> Term {
     assemble_tree(term.clone(), parse, errors)
 }

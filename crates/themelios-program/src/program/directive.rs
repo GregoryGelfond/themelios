@@ -492,7 +492,8 @@ impl Ord for TheoryTerm {
 /// Two theory terms' order at their roots alone (§4.9): the variant rank, then the head
 /// scalars — a leaf's value, a name and child count, a child count, or the operator runs
 /// and operand count. `Equal` for equal leaves and for nodes of one variant and equal
-/// heads, hence of equal child counts, whose children decide. O(the heads compared).
+/// heads, hence of equal child counts, whose children decide. O(the heads compared), a
+/// `Symbolic` leaf's being its symbol's whole comparison.
 fn node_order(a: &TheoryTerm, b: &TheoryTerm) -> Ordering {
     theory_rank(a)
         .cmp(&theory_rank(b))
@@ -725,8 +726,8 @@ impl TheoryAtom {
     /// A theory atom over already-provenanced elements, through the counted constructor,
     /// which keeps every repeat, a theory element counting by occurrence (§4.4, §4.9) — the
     /// raise's door, carrying each element's parsed origin (§6.2, §8). The ordinary-term
-    /// arguments canonicalize at the ingest door with the rest of the statement, so they are
-    /// stored as read. O(size · log elements).
+    /// arguments canonicalize with the rest of the statement as it leaves the lowering, so
+    /// they are stored as read. O(size · log elements).
     pub(crate) fn from_nodes(
         name: Name,
         arguments: Vec<Term>,
@@ -1049,7 +1050,8 @@ impl Edge {
     }
 
     /// An edge over an already-provenanced body — the raise's door, carrying the body's
-    /// parsed origin (§6.2, §8). Canonicalization runs at the ingest door (§6.3).
+    /// parsed origin (§6.2, §8). Canonicalization runs as the statement leaves the lowering
+    /// (§8).
     pub(crate) fn from_nodes(pairs: Vec<(Term, Term)>, body: WithProvenance<Body>) -> Edge {
         Edge { pairs, body }
     }
