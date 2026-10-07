@@ -291,19 +291,6 @@ fn children(term: &TheoryTerm) -> &[TheoryTerm] {
     }
 }
 
-/// Whether a theory term is at most one level deep, its children leaves. O(children).
-fn at_most_one_level(term: &TheoryTerm) -> bool {
-    children(term)
-        .iter()
-        .all(|child| children(child).is_empty())
-}
-
-/// Whether a theory term is at most two levels deep, its children at most one — the depth
-/// a drop leaves to the field glue (§13). O(children and grandchildren).
-fn at_most_two_levels(term: &TheoryTerm) -> bool {
-    children(term).iter().all(at_most_one_level)
-}
-
 impl Clone for TheoryTerm {
     fn clone(&self) -> TheoryTerm {
         // The root is copied here, and each child directly when it is a leaf — nearly every
@@ -371,6 +358,19 @@ fn clone_deep(term: &TheoryTerm) -> TheoryTerm {
         }
     }
     done.pop().expect("the root's clone")
+}
+
+/// Whether a theory term is at most one level deep, its children leaves. O(children).
+fn at_most_one_level(term: &TheoryTerm) -> bool {
+    children(term)
+        .iter()
+        .all(|child| children(child).is_empty())
+}
+
+/// Whether a theory term is at most two levels deep, its children at most one — the depth
+/// a drop leaves to the field glue (§13). O(children and grandchildren).
+fn at_most_two_levels(term: &TheoryTerm) -> bool {
+    children(term).iter().all(at_most_one_level)
 }
 
 impl Drop for TheoryTerm {
