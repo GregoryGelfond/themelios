@@ -67,7 +67,11 @@ pub(super) struct Parser<'s, S: TokenSource> {
     /// one diagnostic stands for the whole (docs/design/syntax.md §4.5).
     lexical_diagnostics: bool,
     /// The last peek, so a repeated peek at one position costs nothing.
-    peeked: Option<Peeked>,
+    peeked: Option<Peeked<'s>>,
+    /// The tokens the source answered last, by offset and mode, so the
+    /// peek, the trivia placement, and the bump read each token once
+    /// (docs/design/syntax.md §4.2, §6.8).
+    recent: Recent<'s>,
     /// The kind and end offset of the last token placed, trivia included.
     last_placed: Option<(SyntaxKind, u32)>,
     /// The frame loop refused a frame past the constant: the rest of the
@@ -76,16 +80,59 @@ pub(super) struct Parser<'s, S: TokenSource> {
     depth_refused: bool,
 }
 
+/// The last few tokens the source answered, each under the offset and mode
+/// it was asked at. The cursor asks for the token at one position up to
+/// three times — peeking past the trivia, placing the trivia, placing the
+/// token — and a source answers the same each time (its determinism law,
+/// docs/design/syntax.md §4.3), so the later asks are read here. Only a
+/// token that passed the breach checks is kept: a breach is witnessed once,
+/// where the source first answers it. The source's own `Token` is kept,
+/// text and all, so nothing is re-sliced.
+struct Recent<'s> {
+    slots: [Option<(u32, LexMode, Token<'s>)>; RECENT],
+    next: usize,
+}
+
+/// How many answers the cursor keeps: a significant token and the trivia
+/// run before it, as most runs are.
+const RECENT: usize = 4;
+
+impl<'s> Recent<'s> {
+    fn new() -> Recent<'s> {
+        Recent {
+            slots: [None; RECENT],
+            next: 0,
+        }
+    }
+
+    /// The token the source answered at `at` under `mode`, if kept.
+    fn get(&self, at: u32, mode: LexMode) -> Option<Token<'s>> {
+        self.slots.iter().find_map(|slot| match *slot {
+            Some((offset, kept_mode, token)) if offset == at && kept_mode == mode => Some(token),
+            _ => None,
+        })
+    }
+
+    /// Keep an answer, displacing the oldest.
+    fn keep(&mut self, at: u32, mode: LexMode, token: Token<'s>) {
+        if let Some(slot) = self.slots.get_mut(self.next) {
+            *slot = Some((at, mode, token));
+        }
+        self.next = (self.next + 1) % RECENT;
+    }
+}
+
 /// One significant token found ahead of the cursor: where the trivia
-/// before it ends, and the token.
+/// before it ends, and the token, its text as the source answered it.
 #[derive(Clone, Copy)]
-struct Peeked {
+struct Peeked<'s> {
     from: u32,
     mode: LexMode,
     docs_are_trivia: bool,
     start: u32,
     kind: SyntaxKind,
     len: u32,
+    text: &'s str,
 }
 
 impl<'s, S: TokenSource> Parser<'s, S> {
@@ -104,6 +151,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
             skipping: false,
             lexical_diagnostics: true,
             peeked: None,
+            recent: Recent::new(),
             last_placed: None,
             depth_refused: false,
         }
@@ -127,6 +175,9 @@ impl<'s, S: TokenSource> Parser<'s, S> {
         };
         if self.ended {
             return eof;
+        }
+        if let Some(token) = self.recent.get(at, self.mode) {
+            return token;
         }
         let end = u32::try_from(self.text.len()).unwrap_or(u32::MAX);
         match self.source.token_at(ByteOffset::new(at), self.mode) {
@@ -165,6 +216,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
                     );
                     return eof;
                 }
+                self.recent.keep(at, self.mode, token);
                 token
             }
         }
@@ -194,10 +246,13 @@ impl<'s, S: TokenSource> Parser<'s, S> {
     /// consuming anything: trivia is looked past, never placed, so a
     /// node that finishes after a peek ends where its last significant
     /// token ended (docs/design/syntax.md §5.4, law 2).
-    fn peek_token(&mut self) -> Peeked {
+    fn peek_token(&mut self) -> Peeked<'s> {
         let docs_are_trivia = self.docs_are_trivia();
+        // A peek holds from where it was taken and, once the trivia before
+        // its token is placed, from that token's own start — while no breach
+        // stands to end the input there.
         let cached = self.peeked.filter(|peeked| {
-            peeked.from == self.at
+            (peeked.from == self.at || (peeked.start == self.at && !self.ended))
                 && peeked.mode == self.mode
                 && peeked.docs_are_trivia == docs_are_trivia
         });
@@ -219,6 +274,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
                 start,
                 kind: token.kind,
                 len,
+                text: token.text,
             };
             self.peeked = Some(peeked);
             return peeked;
@@ -294,6 +350,15 @@ impl<'s, S: TokenSource> Parser<'s, S> {
     /// are placed and warned where they are trivia; at program level the
     /// loop reads them and this stops before them.
     fn eat_trivia(&mut self) {
+        // The peek already stands at its token: no trivia is left to place.
+        let docs_are_trivia = self.docs_are_trivia();
+        if self.peeked.is_some_and(|peeked| {
+            peeked.start == self.at
+                && peeked.mode == self.mode
+                && peeked.docs_are_trivia == docs_are_trivia
+        }) {
+            return;
+        }
         loop {
             let token = self.raw(self.at);
             if token.kind == SyntaxKind::EOF || !self.is_trivia_here(token.kind) {
@@ -328,7 +393,17 @@ impl<'s, S: TokenSource> Parser<'s, S> {
             return;
         }
         self.eat_trivia();
-        let token = self.raw(self.at);
+        // After its trivia the cursor stands at the peeked token, which is
+        // placed as the source answered it — not asked for again — unless a
+        // breach since ended the input.
+        let token = if self.at == peeked.start && !self.ended {
+            Token {
+                kind: peeked.kind,
+                text: peeked.text,
+            }
+        } else {
+            self.raw(self.at)
+        };
         debug_assert_eq!(token.kind, peeked.kind);
         let start = self.at;
         let len = u32::try_from(token.text.len()).unwrap_or(0);
