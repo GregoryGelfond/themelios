@@ -479,67 +479,120 @@ impl From<SymbolParts<Symbol>> for Symbol {
 
 impl Clone for Symbol {
     fn clone(&self) -> Symbol {
-        // Post-order deep copy (§13): visit each node, then rebuild bottom-up
-        // from a stack of finished clones.
-        enum Step<'a> {
-            Enter(&'a Symbol),
-            AssembleFunction {
-                name: &'a Name,
-                sign: Sign,
-                arity: usize,
-            },
-            AssembleTuple {
-                arity: usize,
-            },
-        }
-        let mut work = vec![Step::Enter(self)];
-        let mut done: Vec<Symbol> = Vec::new();
-        while let Some(step) = work.pop() {
-            match step {
-                Step::Enter(symbol) => match symbol {
-                    Symbol::Infimum => done.push(Symbol::Infimum),
-                    Symbol::Number(n) => done.push(Symbol::Number(*n)),
-                    Symbol::String(s) => done.push(Symbol::String(s.clone())),
-                    Symbol::Supremum => done.push(Symbol::Supremum),
-                    Symbol::Function {
-                        name,
-                        arguments,
-                        sign,
-                    } => {
-                        work.push(Step::AssembleFunction {
-                            name,
-                            sign: *sign,
-                            arity: arguments.len(),
-                        });
-                        for argument in arguments.iter().rev() {
-                            work.push(Step::Enter(argument));
-                        }
-                    }
-                    Symbol::Tuple(elements) => {
-                        work.push(Step::AssembleTuple {
-                            arity: elements.len(),
-                        });
-                        for element in elements.iter().rev() {
-                            work.push(Step::Enter(element));
-                        }
-                    }
-                },
-                Step::AssembleFunction { name, sign, arity } => {
-                    let arguments = done.split_off(done.len() - arity);
-                    done.push(Symbol::Function {
-                        name: name.clone(),
-                        arguments,
-                        sign,
-                    });
-                }
-                Step::AssembleTuple { arity } => {
-                    let elements = done.split_off(done.len() - arity);
-                    done.push(Symbol::Tuple(elements));
+        // A symbol at most one level deep — nearly every one a program holds — is
+        // copied directly, its arguments leaf by leaf, with no work list.
+        match self {
+            Symbol::Function {
+                name,
+                arguments,
+                sign,
+            } if arguments
+                .iter()
+                .all(|argument| argument.arguments().is_empty()) =>
+            {
+                Symbol::Function {
+                    name: name.clone(),
+                    arguments: arguments.iter().map(clone_childless).collect(),
+                    sign: *sign,
                 }
             }
+            Symbol::Tuple(elements)
+                if elements
+                    .iter()
+                    .all(|element| element.arguments().is_empty()) =>
+            {
+                Symbol::Tuple(elements.iter().map(clone_childless).collect())
+            }
+            Symbol::Function { .. } | Symbol::Tuple(_) => clone_deep(self),
+            leaf => clone_childless(leaf),
         }
-        done.pop().expect("the root's clone")
     }
+}
+
+/// A copy of a symbol with no arguments, made directly; a symbol with arguments is
+/// copied by the walk instead.
+fn clone_childless(symbol: &Symbol) -> Symbol {
+    match symbol {
+        Symbol::Infimum => Symbol::Infimum,
+        Symbol::Number(n) => Symbol::Number(*n),
+        Symbol::String(s) => Symbol::String(s.clone()),
+        Symbol::Supremum => Symbol::Supremum,
+        Symbol::Function {
+            name,
+            arguments,
+            sign,
+        } if arguments.is_empty() => Symbol::Function {
+            name: name.clone(),
+            arguments: Vec::new(),
+            sign: *sign,
+        },
+        Symbol::Tuple(elements) if elements.is_empty() => Symbol::Tuple(Vec::new()),
+        Symbol::Function { .. } | Symbol::Tuple(_) => clone_deep(symbol),
+    }
+}
+
+/// A deep copy of any symbol through the work list (§13).
+fn clone_deep(symbol: &Symbol) -> Symbol {
+    // Post-order deep copy (§13): visit each node, then rebuild bottom-up
+    // from a stack of finished clones.
+    enum Step<'a> {
+        Enter(&'a Symbol),
+        AssembleFunction {
+            name: &'a Name,
+            sign: Sign,
+            arity: usize,
+        },
+        AssembleTuple {
+            arity: usize,
+        },
+    }
+    let mut work = vec![Step::Enter(symbol)];
+    let mut done: Vec<Symbol> = Vec::new();
+    while let Some(step) = work.pop() {
+        match step {
+            Step::Enter(symbol) => match symbol {
+                Symbol::Infimum => done.push(Symbol::Infimum),
+                Symbol::Number(n) => done.push(Symbol::Number(*n)),
+                Symbol::String(s) => done.push(Symbol::String(s.clone())),
+                Symbol::Supremum => done.push(Symbol::Supremum),
+                Symbol::Function {
+                    name,
+                    arguments,
+                    sign,
+                } => {
+                    work.push(Step::AssembleFunction {
+                        name,
+                        sign: *sign,
+                        arity: arguments.len(),
+                    });
+                    for argument in arguments.iter().rev() {
+                        work.push(Step::Enter(argument));
+                    }
+                }
+                Symbol::Tuple(elements) => {
+                    work.push(Step::AssembleTuple {
+                        arity: elements.len(),
+                    });
+                    for element in elements.iter().rev() {
+                        work.push(Step::Enter(element));
+                    }
+                }
+            },
+            Step::AssembleFunction { name, sign, arity } => {
+                let arguments = done.split_off(done.len() - arity);
+                done.push(Symbol::Function {
+                    name: name.clone(),
+                    arguments,
+                    sign,
+                });
+            }
+            Step::AssembleTuple { arity } => {
+                let elements = done.split_off(done.len() - arity);
+                done.push(Symbol::Tuple(elements));
+            }
+        }
+    }
+    done.pop().expect("the root's clone")
 }
 
 impl Drop for Symbol {

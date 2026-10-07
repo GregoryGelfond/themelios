@@ -358,6 +358,14 @@ fn shallow_term_or_empty_pool() -> impl Strategy<Value = Term> {
 }
 
 proptest! {
+    /// A clone is its original, node for node: the derived-shaped `Debug` reads the
+    /// copy's structure independently of the hand-written `Eq` (§13).
+    #[test]
+    fn a_clone_is_its_original(t in shallow_term()) {
+        let copy = t.clone();
+        prop_assert_eq!(format!("{copy:?}"), format!("{t:?}"));
+    }
+
     /// The iterative `Eq` and `Ord` agree with the naive twin on shallow terms (§16).
     #[test]
     fn iterative_walks_match_the_naive_twin(a in shallow_term(), b in shallow_term()) {
