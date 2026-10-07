@@ -233,6 +233,24 @@ mod tests {
     }
 
     #[test]
+    fn a_token_repeated_after_others_is_still_shared() {
+        // The hash spreads a text's tokens over the slots, so a token met again after a
+        // run of others is found where it was left — here `(`, whose slot none of the five
+        // tokens between its two places shares.
+        let root = built(&[
+            (SyntaxKind::L_PAREN, "("),
+            (SyntaxKind::IDENT, "a"),
+            (SyntaxKind::COMMA, ","),
+            (SyntaxKind::NUMBER, "1"),
+            (SyntaxKind::R_PAREN, ")"),
+            (SyntaxKind::DOT, "."),
+            (SyntaxKind::L_PAREN, "("),
+        ]);
+        let tokens = token_data(&root);
+        assert!(std::ptr::eq(tokens[0], tokens[6]));
+    }
+
+    #[test]
     fn a_long_token_is_built_afresh() {
         // Past the cached length, a token is not looked up: two equal comment
         // tokens are two allocations, equal in content.
