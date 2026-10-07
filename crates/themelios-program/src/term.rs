@@ -834,32 +834,43 @@ fn push_child_refs_reversed<'a>(term: &'a Term, stack: &mut WorkList<&'a Term>) 
 
 impl Clone for Term {
     fn clone(&self) -> Term {
-        // Post-order deep copy (§13): enter each node, then rebuild bottom-up from a
-        // stack of finished clones. A `Symbolic` leaf clones its symbol whole (the
-        // symbol's own clone is iterative, §3.1).
-        enum Frame<'a> {
-            Enter(&'a Term),
-            Assemble(Shell, usize),
+        // A term at most one level deep — nearly every one a program holds — is copied
+        // directly, its children leaf by leaf, with no work list.
+        if every_child(self, is_childless) {
+            clone_shallow(self)
+        } else {
+            clone_deep(self)
         }
-        let mut work = vec![Frame::Enter(self)];
-        let mut done: Vec<Term> = Vec::new();
-        while let Some(frame) = work.pop() {
-            match frame {
-                Frame::Enter(term) => {
-                    let (shell, children) = split_refs(term);
-                    work.push(Frame::Assemble(shell, children.len()));
-                    for child in children.into_iter().rev() {
-                        work.push(Frame::Enter(child));
-                    }
-                }
-                Frame::Assemble(shell, arity) => {
-                    let children = done.split_off(done.len() - arity);
-                    done.push(Term::from(assemble_parts(shell, children)));
+    }
+}
+
+/// A deep copy of any term through the work list (§13).
+fn clone_deep(term: &Term) -> Term {
+    // Post-order deep copy (§13): enter each node, then rebuild bottom-up from a
+    // stack of finished clones. A `Symbolic` leaf clones its symbol whole (the
+    // symbol's own clone is iterative, §3.1).
+    enum Frame<'a> {
+        Enter(&'a Term),
+        Assemble(Shell, usize),
+    }
+    let mut work = vec![Frame::Enter(term)];
+    let mut done: Vec<Term> = Vec::new();
+    while let Some(frame) = work.pop() {
+        match frame {
+            Frame::Enter(term) => {
+                let (shell, children) = split_refs(term);
+                work.push(Frame::Assemble(shell, children.len()));
+                for child in children.into_iter().rev() {
+                    work.push(Frame::Enter(child));
                 }
             }
+            Frame::Assemble(shell, arity) => {
+                let children = done.split_off(done.len() - arity);
+                done.push(Term::from(assemble_parts(shell, children)));
+            }
         }
-        done.pop().expect("the root's clone")
     }
+    done.pop().expect("the root's clone")
 }
 
 impl Drop for Term {
@@ -878,6 +889,65 @@ impl Drop for Term {
         while let Some(mut term) = stack.pop() {
             take_children(&mut term, &mut stack);
         }
+    }
+}
+
+/// A copy of a term whose children are all leaves, made directly: the node's own data
+/// cloned and each child copied as the leaf it is (§3.6). O(children).
+fn clone_shallow(term: &Term) -> Term {
+    let leaves = |children: &[Term]| children.iter().map(clone_leaf).collect();
+    let leaf = |child: &Term| Box::new(clone_leaf(child));
+    match term {
+        Term::Variable(v) => Term::Variable(v.clone()),
+        Term::Symbolic(s) => Term::Symbolic(s.clone()),
+        Term::Function { name, arguments } => Term::Function {
+            name: name.clone(),
+            arguments: leaves(arguments),
+        },
+        Term::Tuple(items) => Term::Tuple(leaves(items)),
+        Term::Pool(items) => Term::Pool(leaves(items)),
+        Term::UnaryOperation { operator, argument } => Term::UnaryOperation {
+            operator: *operator,
+            argument: leaf(argument),
+        },
+        Term::BinaryOperation {
+            operator,
+            left,
+            right,
+        } => Term::BinaryOperation {
+            operator: *operator,
+            left: leaf(left),
+            right: leaf(right),
+        },
+        Term::Interval { lower, upper } => Term::Interval {
+            lower: leaf(lower),
+            upper: leaf(upper),
+        },
+        Term::Absolute(inner) => Term::Absolute(leaf(inner)),
+        Term::External { name, arguments } => Term::External {
+            name: name.clone(),
+            arguments: leaves(arguments),
+        },
+    }
+}
+
+/// A copy of a leaf term — one with no child terms — made directly; a term with
+/// children is copied by the walk instead.
+fn clone_leaf(term: &Term) -> Term {
+    match term {
+        Term::Variable(v) => Term::Variable(v.clone()),
+        Term::Symbolic(s) => Term::Symbolic(s.clone()),
+        Term::Function { name, arguments } if arguments.is_empty() => Term::Function {
+            name: name.clone(),
+            arguments: Vec::new(),
+        },
+        Term::Tuple(items) if items.is_empty() => Term::Tuple(Vec::new()),
+        Term::Pool(items) if items.is_empty() => Term::Pool(Vec::new()),
+        Term::External { name, arguments } if arguments.is_empty() => Term::External {
+            name: name.clone(),
+            arguments: Vec::new(),
+        },
+        compound => clone_deep(compound),
     }
 }
 

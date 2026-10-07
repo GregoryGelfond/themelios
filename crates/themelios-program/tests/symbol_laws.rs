@@ -213,6 +213,14 @@ fn shallow_symbol() -> impl Strategy<Value = Symbol> {
 }
 
 proptest! {
+    /// A clone is its original, node for node: the derived-shaped `Debug` reads the
+    /// copy's structure independently of the hand-written `Eq` (§13).
+    #[test]
+    fn a_clone_is_its_original(s in shallow_symbol()) {
+        let copy = s.clone();
+        prop_assert_eq!(format!("{copy:?}"), format!("{s:?}"));
+    }
+
     /// The iterative `Eq` and `Ord` agree with the naive twin on shallow values (§16).
     #[test]
     fn iterative_walks_match_the_naive_twin(a in shallow_symbol(), b in shallow_symbol()) {
