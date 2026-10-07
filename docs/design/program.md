@@ -1,6 +1,6 @@
 # themelios-program — tier design
 
-2026-08-24, revised through 2026-10-03 (§18). The design of record, which the build
+2026-08-24, revised through 2026-10-07 (§18). The design of record, which the build
 follows; §18 records each revision. This document is the API
 design of `themelios-program` — the types, traits, signatures, semantics, and
 computational costs of the foundation's program tier — derived from the v1
@@ -2546,7 +2546,8 @@ are flat, aggregates do not nest (an aggregate is an element, never a literal),
 conditional literals do not nest, a head is one layer. So:
 
 - **Every walk over `Term` and `Symbol` is iterative** — an explicit work list,
-  not call-stack recursion — *including the ones the compiler would derive*:
+  not call-stack recursion in the value's depth — *including the ones the compiler
+  would derive*:
   `Clone`, `Drop`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`, `Hash`, the concrete
   rendering (§10), and `into_parts`/`fold`/`subterms`/`canonicalize`/`substitute`/
   `evaluate`. A ground value tens of thousands of levels deep — which recursive
@@ -2555,12 +2556,15 @@ conditional literals do not nest, a head is one layer. So:
   `Ord`/`Eq`/`Hash` are the subtle ones: they are written *once each*, as one
   content projection (§5), and checked against a derived twin by the mirror
   differential (§16), which is what catches a hand-written walk that disagrees
-  with the naive one. The work list keeps its first entries inline and spills to
-  the heap only past them, so a walk over a shallow value — nearly every term a
-  program holds — allocates nothing; a value at most two levels deep is dropped
-  through the compiler's field glue, and one at most one level deep is cloned
-  directly, each a fixed depth rather than a walk, anything deeper going through
-  the work list.
+  with the naive one. The borrowing walks — `subterms`, `PartialEq`, `Ord`, and
+  `Hash` through `subterms` — share a work list whose first entries live inline,
+  spilling to the heap only past them, so on a shallow value (nearly every term a
+  program holds) they allocate nothing; the owned rebuilds (`fold`, `canonicalize`
+  past a leaf, a deep `Clone`) and `Debug` build their work lists on the heap. A
+  value at most two levels deep is dropped through the compiler's field glue, and
+  one at most one level deep is cloned directly: a constant depth, the same for every
+  value, which the depth proof's stated stack (§16) covers; anything deeper goes
+  through the work list.
 - **The structural layers recurse by grammar-bounded iteration.** A walk from a
   program to a term crosses a fixed number of layers (§4), so those functions may
   use the call stack: their depth is the grammar's, not the input's.
@@ -3051,3 +3055,19 @@ evolution with its argument, not a drift.
   which admits any number of blocks, is wider than it. A program built in Rust may carry
   more, which the render writes in `Ord` order (§10); the ordered carrier that would keep
   their order is a reserved seam, retired by a consumer that needs two blocks (§17).
+
+- **The carrier's representation, one canonicalization, and the walks' work lists (§6.2,
+  §6.3, §8, §13).** A reconciliation to a measured performance pass the principal ruled
+  must keep the public surface and its semantics, so no law moves. The provenance carrier
+  holds a lone origin inline and boxes its annotation kinds only once one holds a string
+  (§6.2), so the common node's provenance allocates nothing — the cost §6.3 stated, which
+  the representation had drifted from. `into_raised` collects the occurrences without
+  canonicalizing them again, canonicalization being idempotent and the occurrences
+  canonical by construction (§8). The borrowing walks keep their work list's first entries
+  inline, and a shallow value is dropped and cloned at a constant depth the depth proof's
+  stated stack covers, anything deeper through the work list (§13). With that, §13 states
+  spec §7.2's depth discipline as the property spec §7.1 names — stack cost independent
+  of a value's depth — rather than its letter, "no walk … recurses", which no drop has
+  met: freeing a node runs that node's drop, so even the work-list teardown nests one call
+  per node it frees. A walk may nest a fixed number of calls, the same for every value,
+  which the stated stack covers, and none in the value's depth.
