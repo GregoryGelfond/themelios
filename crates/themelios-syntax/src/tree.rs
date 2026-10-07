@@ -569,6 +569,18 @@ pub(crate) fn keeps_leading(element: &SyntaxElement) -> bool {
     }
 }
 
+/// The tokens of `node`'s children whose role is `Documentation`, in
+/// order: its leading prefix's `DOC_COMMENT`s when `node` is a statement,
+/// none otherwise — what `roles_of` marks `Documentation`, read without
+/// passing the prefix's end. O(the leading prefix).
+pub(crate) fn documentation_of(node: &SyntaxNode) -> impl Iterator<Item = SyntaxToken> + use<> {
+    let is_statement = node.kind().is_statement();
+    node.children_with_tokens()
+        .take_while(move |element| is_statement && keeps_leading(element))
+        .filter_map(SyntaxElement::into_token)
+        .filter(|token| token.kind() == SyntaxKind::DOC_COMMENT)
+}
+
 /// The roles of `node`'s token children, in order, computed in one
 /// forward pass — so a consumer reads a node's roles without the
 /// per-token scan of the preceding siblings `role` makes. Nodes carry no

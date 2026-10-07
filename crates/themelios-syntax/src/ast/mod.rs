@@ -13,7 +13,7 @@ use rowan::ast::support;
 
 use crate::tree::{
     Asp, AstChildren, AstNode, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, TextRange,
-    TokenRole, roles_of,
+    documentation_of,
 };
 
 pub use self::nodes::{
@@ -473,16 +473,16 @@ impl From<TheoryTerm> for TheoryOpTermItem {
 pub trait HasDocs: AstNode<Language = Asp> {
     /// The leading DOC_COMMENT tokens, in order — the statement's
     /// documentation. Empty when undocumented. Total; O(the statement's
-    /// children): one forward pass reads every child's role
-    /// (`tree::roles_of`), so a k-line block costs O(k), where a reading
-    /// of `role` per line would scan the lines before it, O(k²).
+    /// leading trivia): one forward pass over the prefix the documentation
+    /// lives in (`tree::documentation_of`), ending where the prefix ends,
+    /// so a k-line block costs O(k), where a reading of `role` per line
+    /// would scan the lines before it, O(k²), and an undocumented
+    /// statement reads its first child alone.
     fn doc_lines(&self) -> impl Iterator<Item = DocLine> {
-        // A `Documentation` role is `DocLine`'s own test of kind and
-        // role, read once by the pass — so the wrapper is built from it,
+        // A token the pass yields has the `Documentation` role, `DocLine`'s
+        // own test of kind and role — so the wrapper is built from it,
         // never by `cast`, which would read `role` a second time.
-        roles_of(self.syntax())
-            .filter(|(_, role)| *role == TokenRole::Documentation)
-            .map(|(token, _)| DocLine::from_doc_line(token))
+        documentation_of(self.syntax()).map(DocLine::from_doc_line)
     }
 
     /// The covering range of the documentation, if any. Total.
@@ -543,8 +543,8 @@ mod tests {
     use super::*;
     use crate::dialect::Dialect;
     use crate::parse::parse;
-    use crate::tree::role;
     use crate::tree::role_shapes::role_corpus;
+    use crate::tree::{TokenRole, role};
 
     fn program(text: &str) -> crate::parse::Parse<Program> {
         let source = Source::new(SourceId::new(0), text.to_owned()).expect("admits");
