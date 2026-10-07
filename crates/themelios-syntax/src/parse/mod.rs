@@ -415,7 +415,130 @@ mod tests {
     use super::*;
     use crate::diagnostic::{Expected, MisplacedDoc, SourceBreach, SyntaxClass, SyntaxErrorKind};
     use crate::token::{LexMode, Token, TokenSource};
-    use crate::tree::SyntaxKind;
+    use crate::tree::{SyntaxElement, SyntaxKind};
+
+    /// A source over the file lexer that counts what the parser asks of it.
+    struct Counting<'a> {
+        lexer: Lexer<'a>,
+        asks: std::cell::Cell<usize>,
+    }
+
+    impl TokenSource for Counting<'_> {
+        fn id(&self) -> SourceId {
+            self.lexer.id()
+        }
+        fn dialect(&self) -> Dialect {
+            self.lexer.dialect()
+        }
+        fn text(&self) -> &str {
+            self.lexer.text()
+        }
+        fn token_at(&self, at: ByteOffset, mode: LexMode) -> Result<Token<'_>, PositionRefusal> {
+            self.asks.set(self.asks.get() + 1);
+            self.lexer.token_at(at, mode)
+        }
+    }
+
+    /// How many times parsing `text` asks for a token, beside how many tokens the tree holds.
+    fn asks_and_tokens(text: &str) -> (usize, usize) {
+        let source = admitted(text);
+        let counting = Counting {
+            lexer: Lexer::new(&source, Dialect::Clingo),
+            asks: std::cell::Cell::new(0),
+        };
+        let parse = parse_program(&counting, NestingLimit::DEFAULT);
+        let tokens = parse
+            .syntax()
+            .descendants_with_tokens()
+            .filter(|element| element.as_token().is_some())
+            .count();
+        (counting.asks.get(), tokens)
+    }
+
+    #[test]
+    fn a_plain_program_asks_for_each_token_about_once() {
+        // §4.2's rule: with no region boundary, lookahead, or long trivia run, each
+        // token is asked for once, the end of input besides — where asking again at
+        // each placement cost three to four asks a token.
+        for text in [
+            "p(1). q(X) :- p(X), not r(X). % a comment\nr(2).\n",
+            "char(m,1).\nchar(4,2).\nchar(4,3).\n",
+            "{ a(X) : b(X) } = 1 :- c.\n",
+        ] {
+            let (asks, tokens) = asks_and_tokens(text);
+            assert!(
+                asks <= tokens + tokens / 8 + 2,
+                "{asks} asks for {tokens} tokens in {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_named_exceptions_ask_at_most_twice_a_token() {
+        // §4.2's exceptions — a region boundary, a lookahead, a trivia run longer
+        // than the answers kept — ask again, a fixed number of times.
+        for text in [
+            "&sum { x : p } <= 3.\n",
+            "#show p/1.\n",
+            "p.   % a\n  % b\n  % c\n  % d\n  q.\n",
+            "#minimize { W,X : d(X,W) }.\n",
+        ] {
+            let (asks, tokens) = asks_and_tokens(text);
+            assert!(
+                asks <= 2 * tokens + 2,
+                "{asks} asks for {tokens} tokens in {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_breach_met_looking_ahead_ends_the_input_before_the_peeked_token() {
+        // §4.3: a breach the parser meets while looking past a peeked token ends the
+        // input there, and the peeked token is not placed after it — no end-of-input
+        // token in the tree, and no panic.
+        struct EarlyTiling<'a>(Lexer<'a>);
+        impl TokenSource for EarlyTiling<'_> {
+            fn id(&self) -> SourceId {
+                self.0.id()
+            }
+            fn dialect(&self) -> Dialect {
+                Dialect::Clingo
+            }
+            fn text(&self) -> &str {
+                self.0.text()
+            }
+            fn token_at(
+                &self,
+                at: ByteOffset,
+                mode: LexMode,
+            ) -> Result<Token<'_>, PositionRefusal> {
+                if at.get() >= 2 {
+                    return Ok(Token {
+                        kind: SyntaxKind::IDENT,
+                        text: "",
+                    });
+                }
+                self.0.token_at(at, mode)
+            }
+        }
+        let source = admitted("f x");
+        let parse = parse_term(
+            &EarlyTiling(Lexer::new(&source, Dialect::Clingo)),
+            NestingLimit::DEFAULT,
+        );
+        assert!(
+            parse
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(SyntaxElement::into_token)
+                .all(|token| token.kind() != SyntaxKind::EOF)
+        );
+        assert!(parse.diagnostics().iter().any(|d| matches!(
+            d.kind(),
+            SyntaxErrorKind::TokenSourceBreach { breach: SourceBreach::Tiling { at, .. } }
+                if *at == ByteOffset::new(2)
+        )));
+    }
 
     fn admitted(text: &str) -> Source {
         Source::new(SourceId::new(7), text.to_owned()).expect("test text admits")

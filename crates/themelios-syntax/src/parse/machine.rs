@@ -52,7 +52,8 @@ pub(super) struct Parser<'s, S: TokenSource> {
     at: u32,
     /// The mode the next token is requested under (docs/design/syntax.md §4.2).
     mode: LexMode,
-    /// A breach was witnessed: every peek answers `EOF` from here on.
+    /// A breach was witnessed: every peek answers `EOF` from here on —
+    /// written only by `end_input`, which drops the standing peek with it.
     /// A legitimate end of input is not recorded — the door answers `EOF`
     /// at the text's end as often as it is asked.
     ended: bool,
@@ -76,7 +77,7 @@ pub(super) struct Parser<'s, S: TokenSource> {
     /// The kind and end offset of the last token placed, trivia included.
     last_placed: Option<(SyntaxKind, u32)>,
     /// The term loop's frame stack between runs — empty, its capacity kept
-    /// for the next run (docs/design/syntax.md §6.2).
+    /// for the next run (docs/design/syntax.md §6.8).
     frame_stack: Vec<Frame>,
     /// The frame loop refused a frame past the constant: the rest of the
     /// statement is already carried in an `ERROR` node, and the statement
@@ -135,8 +136,14 @@ struct Peeked<'s> {
     docs_are_trivia: bool,
     start: u32,
     kind: SyntaxKind,
-    len: u32,
     text: &'s str,
+}
+
+impl Peeked<'_> {
+    /// The token's extent — its text's length, the one fact (§4.2).
+    fn len(&self) -> u32 {
+        u32::try_from(self.text.len()).unwrap_or(0)
+    }
 }
 
 impl<'s, S: TokenSource> Parser<'s, S> {
@@ -239,12 +246,32 @@ impl<'s, S: TokenSource> Parser<'s, S> {
     }
 
     fn breach(&mut self, breach: SourceBreach, at: u32) {
-        self.ended = true;
+        self.end_input();
         let location = self.location(at, at);
         self.diagnostics.push(SyntaxError::new(
             SyntaxErrorKind::TokenSourceBreach { breach },
             location,
         ));
+    }
+
+    /// End the input where the cursor stands: every peek answers `EOF` from
+    /// here on, the standing peek dropped with it — the one write of `ended`.
+    fn end_input(&mut self) {
+        self.ended = true;
+        self.peeked = None;
+    }
+
+    /// The last peek, if it still stands where the cursor is: taken from
+    /// here, or from earlier with only the trivia before its token placed
+    /// since, under the mode and the doc-comment reading in force. A peek
+    /// taken before a breach does not stand, `end_input` having dropped it.
+    fn standing_peek(&self) -> Option<Peeked<'s>> {
+        let docs_are_trivia = self.docs_are_trivia();
+        self.peeked.filter(|peeked| {
+            (peeked.from == self.at || peeked.start == self.at)
+                && peeked.mode == self.mode
+                && peeked.docs_are_trivia == docs_are_trivia
+        })
     }
 
     /// Whether a doc comment is trivia where the cursor stands
@@ -263,18 +290,10 @@ impl<'s, S: TokenSource> Parser<'s, S> {
     /// node that finishes after a peek ends where its last significant
     /// token ended (docs/design/syntax.md §5.4, law 2).
     fn peek_token(&mut self) -> Peeked<'s> {
-        let docs_are_trivia = self.docs_are_trivia();
-        // A peek holds from where it was taken and, once the trivia before
-        // its token is placed, from that token's own start — while no breach
-        // stands to end the input there.
-        let cached = self.peeked.filter(|peeked| {
-            (peeked.from == self.at || (peeked.start == self.at && !self.ended))
-                && peeked.mode == self.mode
-                && peeked.docs_are_trivia == docs_are_trivia
-        });
-        if let Some(peeked) = cached {
+        if let Some(peeked) = self.standing_peek() {
             return peeked;
         }
+        let docs_are_trivia = self.docs_are_trivia();
         let mut start = self.at;
         loop {
             let token = self.raw(start);
@@ -289,7 +308,6 @@ impl<'s, S: TokenSource> Parser<'s, S> {
                 docs_are_trivia,
                 start,
                 kind: token.kind,
-                len,
                 text: token.text,
             };
             self.peeked = Some(peeked);
@@ -302,18 +320,10 @@ impl<'s, S: TokenSource> Parser<'s, S> {
         self.peek_token().kind
     }
 
-    /// The text of the next significant token.
+    /// The text of the next significant token, as the source answered it —
+    /// the text `bump` places.
     pub(super) fn peek_text(&mut self) -> &'s str {
-        let peeked = self.peek_token();
-        let start = peeked.start as usize;
-        // Slice by `get`, not by index: a lawful source lands `start + len`
-        // on a char boundary of the text, but the slice law is trusted, not
-        // checked (§4.3), and every entry point stays total on any input,
-        // unlawful token sources included (§13). An unlawful span reads as
-        // the empty string.
-        self.text
-            .get(start..start + peeked.len as usize)
-            .unwrap_or("")
+        self.peek_token().text
     }
 
     /// The kind of the `n`th significant token ahead (`lookahead(0)` is
@@ -321,21 +331,23 @@ impl<'s, S: TokenSource> Parser<'s, S> {
     /// bounded by the caller to the grammar's five (docs/design/syntax.md
     /// §6.2, §6.3).
     pub(super) fn lookahead(&mut self, n: usize) -> SyntaxKind {
-        let mut at = self.peek_token().start;
-        let mut kind = self.peek_token().kind;
+        let peeked = self.peek_token();
+        let (mut at, mut kind, mut len) = (peeked.start, peeked.kind, peeked.len());
         for _ in 0..n {
             if kind == SyntaxKind::EOF {
                 return kind;
             }
-            let mut probe = at + u32::try_from(self.raw(at).text.len()).unwrap_or(0);
+            // Each step starts past the token the last one found, its extent
+            // already read — no token is asked for a second time here.
+            let mut probe = at + len;
             loop {
                 let token = self.raw(probe);
+                let token_len = u32::try_from(token.text.len()).unwrap_or(0);
                 if token.kind != SyntaxKind::EOF && self.is_trivia_here(token.kind) {
-                    probe += u32::try_from(token.text.len()).unwrap_or(0);
+                    probe += token_len;
                     continue;
                 }
-                at = probe;
-                kind = token.kind;
+                (at, kind, len) = (probe, token.kind, token_len);
                 break;
             }
         }
@@ -352,8 +364,9 @@ impl<'s, S: TokenSource> Parser<'s, S> {
     }
 
     /// Sets the mode for the tokens that follow. A token peeked under
-    /// the old mode is dropped unread — the twice-per-token bound of
-    /// docs/design/syntax.md §4.2.
+    /// the old mode is dropped unread, and asked for again under the new one
+    /// — the region boundary's bounded re-lexing of docs/design/syntax.md
+    /// §4.2.
     pub(super) fn set_mode(&mut self, mode: LexMode) {
         self.mode = mode;
         self.peeked = None;
@@ -367,12 +380,10 @@ impl<'s, S: TokenSource> Parser<'s, S> {
     /// loop reads them and this stops before them.
     fn eat_trivia(&mut self) {
         // The peek already stands at its token: no trivia is left to place.
-        let docs_are_trivia = self.docs_are_trivia();
-        if self.peeked.is_some_and(|peeked| {
-            peeked.start == self.at
-                && peeked.mode == self.mode
-                && peeked.docs_are_trivia == docs_are_trivia
-        }) {
+        if self
+            .standing_peek()
+            .is_some_and(|peeked| peeked.start == self.at)
+        {
             return;
         }
         loop {
@@ -409,10 +420,17 @@ impl<'s, S: TokenSource> Parser<'s, S> {
             return;
         }
         self.eat_trivia();
-        // After its trivia the cursor stands at the peeked token, which is
-        // placed as the source answered it — not asked for again — unless a
-        // breach since ended the input.
-        let token = if self.at == peeked.start && !self.ended {
+        // A breach met while placing the trivia ended the input before the
+        // token, and nothing more is placed.
+        if self.ended {
+            return;
+        }
+        // After its trivia the cursor stands at the peeked token — a source
+        // answers each position one way (§4.3) — and it is placed as the
+        // source answered it, not asked for again. Only a source breaking
+        // that law can land the cursor elsewhere, and there the token is read
+        // as any other is, its extent checked against the text.
+        let token = if self.at == peeked.start {
             Token {
                 kind: peeked.kind,
                 text: peeked.text,
@@ -420,7 +438,9 @@ impl<'s, S: TokenSource> Parser<'s, S> {
         } else {
             self.raw(self.at)
         };
-        debug_assert_eq!(token.kind, peeked.kind);
+        if token.kind == SyntaxKind::EOF {
+            return;
+        }
         let start = self.at;
         let len = u32::try_from(token.text.len()).unwrap_or(0);
         self.builder.token(Asp::kind_to_raw(token.kind), token.text);
@@ -530,7 +550,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
 
     /// The length of the next significant token.
     pub(super) fn peek_len(&mut self) -> u32 {
-        self.peek_token().len
+        self.peek_token().len()
     }
 
     /// The missing-child form with a related locus (a missing closer
@@ -555,7 +575,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
                 && self.last_placed == Some((SyntaxKind::NUMBER, peeked.start)))
             .then_some(Hint::LeadingZeroNumeral)
         });
-        let location = self.location(peeked.start, peeked.start + peeked.len);
+        let location = self.location(peeked.start, peeked.start + peeked.len());
         if let Some(last) = self.diagnostics.last_mut()
             && last.primary() == location
             && last.extend_expected(&expected, hint)
@@ -847,7 +867,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
         self.builder
             .token(Asp::kind_to_raw(SyntaxKind::ERROR), self.text);
         self.at = u32::try_from(self.text.len()).unwrap_or(u32::MAX);
-        self.ended = true;
+        self.end_input();
     }
 
     /// The program's statements: at each position, the leading trivia,
@@ -881,7 +901,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
         let mut lines: Vec<(u32, u32)> = Vec::new();
         while self.peek() == SyntaxKind::DOC_COMMENT {
             let start = self.peek_start();
-            let len = self.peek_token().len;
+            let len = self.peek_token().len();
             self.bump();
             lines.push((start, start + len));
             self.eat_trivia();
