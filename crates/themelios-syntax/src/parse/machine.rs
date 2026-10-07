@@ -146,7 +146,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
             text: source.text(),
             dialect: source.dialect(),
             nesting_limit: limit.frames(),
-            builder: GreenBuilder::new(),
+            builder: GreenBuilder::new(source.text().len()),
             diagnostics: Vec::new(),
             at: 0,
             mode: LexMode::Normal,

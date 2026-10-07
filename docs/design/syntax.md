@@ -68,7 +68,8 @@ shipped library's dependency closure is `themelios-base` and **rowan**
 with rowan's own closure — the one named exception of spec §12.5, pinned,
 with its audit note in §14 and the hand-rolled green/red tree recorded as
 the reserved fallback (§17). No lexer or parser dependency; no
-hash-map utility of this crate's own (rowan's suffice internally). The
+hash-map utility of this crate's own (rowan's suffice internally) beyond
+the builder's token cache, a fixed array of slots (§6.8). The
 closure is FFI-free and holds no build script of this workspace's own;
 the one build script inside it is admitted by name under spec §12.3's
 closure clause and argued in §14 — both asserted structurally over
@@ -1283,11 +1284,14 @@ the entry point (§5.4, law 4). Time is O(text): every token is requested
 a fixed number of times at most (§4.2), consumed once, and lookahead is
 bounded by a constant; the frame loop does constant work per token, its
 frame stack kept from one term to the next rather than built afresh; the
-builder's work is O(tokens + nodes) — the parser's own, cache-free
-builder (§14; crates/themelios-syntax/src/parse/builder.rs), since
-rowan's interning `GreenNodeBuilder` is O(depth²) on the deep, narrow
-trees this bound admits, which would make a nested-bracket input's parse
-quadratic.
+builder's work is O(tokens + nodes) — the parser's own builder (§14;
+crates/themelios-syntax/src/parse/builder.rs), which interns no node,
+since rowan's interning `GreenNodeBuilder` is O(depth²) on the deep,
+narrow trees this bound admits, which would make a nested-bracket input's
+parse quadratic. It shares a repeated short token instead, through a
+cache of fixed slots, each found by a hash of kind and text and
+overwritten on a clash: one hash and one comparison per token, which no
+input can degrade.
 Memory is O(text) for the tree plus
 O(frames × levels) for the frame and level stacks, themselves bounded
 by the constant and the grammar's level count. There is no
@@ -2520,10 +2524,11 @@ this tier adds or qualifies.
 ### 12.1 A parse is a pure function
 
 Same text, dialect, and entry, same tree and diagnostics (§5.4, law 4).
-No cache survives a call: the cursor's last few answers from the token
-source (§4.2) live inside one parse and die with it; there is no
-interning table, no global, and nothing kept from one call to the next —
-spec §7.8's incrementality preconditions bought without its machinery. Where mechanism wants mutation — the frame stack, the
+No cache survives a call: the builder's token cache (§6.8) and the
+cursor's last few answers from the token source (§4.2) live inside one
+parse and die with it; there is no global and nothing kept from one call
+to the next — spec §7.8's incrementality preconditions bought without
+its machinery. Where mechanism wants mutation — the frame stack, the
 builder, the diagnostics vector under construction — it is local and
 invisible at the surface (base §8.1).
 
@@ -2704,9 +2709,11 @@ subtree as the cache grows, so for a deep, narrow tree — every node at
 most three children, hence every node cached — building is O(depth²)
 (the cache saves memory on a wide tree and costs quadratic time on a
 narrow one). Interning only shares memory, and every relation this tier
-reads is structural, so the parser builds through its own cache-free
-builder (§6.8; crates/themelios-syntax/src/parse/builder.rs), keeping
-the O(text) cost §6.8 states; the depth proof surfaced the quadratic. And at 0.17.0 rowan carries no
+reads is structural, so the parser builds through its own builder, which
+interns no node (§6.8; crates/themelios-syntax/src/parse/builder.rs),
+keeping the O(text) cost §6.8 states; the depth proof surfaced the
+quadratic. A token has no subtree to rehash, and the builder shares tokens
+through fixed slots of its own instead. And at 0.17.0 rowan carries no
 mutable-tree API — the release removed it — so the read-only posture of
 §5.1 is rowan's own, and the tree-editing seam (§17) will ride on
 green-level splicing if a consumer ever names it.
@@ -3195,14 +3202,17 @@ document and the code together; the §6.1 and §7.1 amendments below likewise.
   it by construction, with no second copy to drift. Additive to the tier's
   public surface: two doors added beside `theory_operator`, nothing removed.
 
-- **§4.2, §6.8, §12.1** (2026-10-07): the parse made faster with its tree and
-  diagnostics unchanged. The parser asked the token source for each token three to
-  six times as it peeked past the trivia, placed the trivia, and placed the token,
-  against §4.2's bound of twice; it now keeps the source's last few answers and
-  places a peeked token as peeked, so each token is asked for once as a rule (§4.2,
-  §6.8), and §12.1 says what lives inside a parse. The frame loop keeps its frame
-  stack from one term to the next (§6.8). Each changes cost, not the parse: a parse
-  is byte-for-byte the tree and the diagnostics it was.
+- **§1, §4.2, §6.8, §12.1, §14** (2026-10-07): the parse made faster with its tree
+  and diagnostics unchanged. The parser asked the token source for each token three
+  to six times as it peeked past the trivia, placed the trivia, and placed the
+  token, against §4.2's bound of twice; it now keeps the source's last few answers
+  and places a peeked token as peeked, so each token is asked for once as a rule
+  (§4.2, §6.8). The frame loop keeps its frame stack from one term to the next
+  (§6.8). The builder shares a repeated short token through a cache of fixed slots,
+  at one hash and one comparison per token whatever the input, while still interning
+  no node (§6.8, §14), so §1's crate facts name the cache and §12.1 says what lives
+  inside a parse instead of denying a table. Each changes cost, not the parse: a
+  parse is byte-for-byte the tree and the diagnostics it was.
 
 - **§10.5** (2026-10-04): honesty-only. The macro tier's operator run ends before
   a `#` or a `$`, which open tokens of their own (grammar §9), and the paragraph
