@@ -60,9 +60,9 @@ impl<T> WithProvenance<T> {
         self.value
     }
 
-    /// The value and its provenance, owned — the door to a union that moves rather than
-    /// clones, for the counted constructor and the set merge (§6.3), and to a rewrite that
-    /// rebuilds a node it owns (§9.1). Crate-internal. O(1).
+    /// The value and its provenance, owned — the door to a rewrite that rebuilds a node it owns
+    /// (§9.1). A merge unions provenance through `absorb_later` and `absorb_earlier` (§6.3).
+    /// Crate-internal. O(1).
     pub(crate) fn into_parts(self) -> (T, Provenance) {
         (self.value, self.provenance)
     }
@@ -269,8 +269,10 @@ impl TransformTag {
 /// comment, §8), a label, a reference, and a trace directive an explanation tool
 /// attaches (§2). Each kind is a set, unioned on merge. Nearly every node carries none,
 /// so the kinds are boxed only once one holds a string: an unannotated node's
-/// annotations are a null pointer (§6.3).
-#[derive(Clone, Default)]
+/// annotations are a null pointer (§6.3). The box is there only while some kind holds a
+/// string — the builder boxes as it inserts, and a merge keeps either side's box — so
+/// each annotation has one form and structural equality is set equality.
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct Annotations {
     kinds: Option<Box<Kinds>>,
 }
@@ -337,24 +339,12 @@ impl Annotations {
             .map(String::as_str)
     }
 
-    /// The kinds, boxed on first use, for a builder to insert into.
+    /// The kinds, boxed on first use, for a builder that inserts into them at once — the
+    /// box is never left empty.
     fn kinds_mut(&mut self) -> &mut Kinds {
         self.kinds.get_or_insert_with(Box::default)
     }
 }
-
-/// Equal when every kind holds the same strings — an unannotated node and one whose kinds
-/// are all empty alike.
-impl PartialEq for Annotations {
-    fn eq(&self, other: &Annotations) -> bool {
-        match (self.kinds.as_deref(), other.kinds.as_deref()) {
-            (Some(left), Some(right)) => left == right,
-            (None, None) => true,
-            (Some(kinds), None) | (None, Some(kinds)) => *kinds == Kinds::default(),
-        }
-    }
-}
-impl Eq for Annotations {}
 
 /// Rendered with every kind as the set it is, boxed or not.
 impl fmt::Debug for Annotations {
@@ -378,7 +368,7 @@ impl fmt::Debug for Annotations {
 
 #[cfg(test)]
 mod tests {
-    use super::{Annotations, Kinds, Origin, Provenance, WithProvenance};
+    use super::{Origin, Provenance, WithProvenance};
 
     #[test]
     fn the_kinds_a_provenance_never_set_read_empty() {
@@ -394,26 +384,6 @@ mod tests {
         assert_eq!(bare.annotations().doc().count(), 0);
         assert_eq!(bare.annotations().trace().count(), 0);
     }
-
-    #[test]
-    fn boxed_empty_kinds_equal_no_annotations() {
-        // Equality reads the strings, not the box (§6.2): kinds boxed but all empty are no
-        // annotation at all.
-        let boxed = Annotations {
-            kinds: Some(Box::default()),
-        };
-        assert_eq!(boxed, Annotations::default());
-        assert_eq!(Annotations::default(), boxed);
-        let documented = Annotations {
-            kinds: Some(Box::new(Kinds {
-                doc: ["d".to_owned()].into(),
-                ..Kinds::default()
-            })),
-        };
-        assert_ne!(documented, Annotations::default());
-    }
-
-    // ---- `constructed_with_doc`: origin and doc block in one call (§6.2, §6.3) ----
 
     #[test]
     fn constructed_with_doc_records_the_constructed_origin() {

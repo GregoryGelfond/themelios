@@ -836,7 +836,7 @@ impl Clone for Term {
     fn clone(&self) -> Term {
         // A term at most one level deep — nearly every one a program holds — is copied
         // directly, its children leaf by leaf, with no work list.
-        if every_child(self, is_childless) {
+        if at_most_one_level(self) {
             clone_shallow(self)
         } else {
             clone_deep(self)
@@ -878,7 +878,7 @@ impl Drop for Term {
         // A term at most two levels deep — nearly every term a program holds — drops
         // through the field glue: its children, then theirs, each finding this test
         // true, a fixed depth rather than a walk (§13), with no work list built.
-        if every_child(self, |child| every_child(child, is_childless)) {
+        if at_most_two_levels(self) {
             return;
         }
         // Dismantle iteratively (§13): move every descendant onto a work list and
@@ -970,6 +970,18 @@ fn every_child(term: &Term, test: impl Fn(&Term) -> bool) -> bool {
 /// Whether a term has no child terms — a leaf of the term walks (§3.6). O(1).
 fn is_childless(term: &Term) -> bool {
     every_child(term, |_| false)
+}
+
+/// Whether a term is at most one level deep, its children leaves — the depth a clone
+/// copies directly (§13). O(children).
+fn at_most_one_level(term: &Term) -> bool {
+    every_child(term, is_childless)
+}
+
+/// Whether a term is at most two levels deep, its children at most one — the depth a
+/// drop leaves to the field glue (§13). O(children and grandchildren).
+fn at_most_two_levels(term: &Term) -> bool {
+    every_child(term, at_most_one_level)
 }
 
 /// Moves a term's immediate child terms onto `out`, leaving it childless. A boxed
@@ -1112,10 +1124,11 @@ impl Ord for Term {
     }
 }
 
-/// Two terms' order at their roots alone (§3.3): the variant rank, then the head
-/// scalars — a name and child count, a child count, or an operator. `Equal` for
+/// Two terms' order at their roots alone (§3.3): the variant rank, then a leaf's value or
+/// the head scalars — a name and child count, a child count, or an operator. `Equal` for
 /// equal leaves and for nodes of one variant and equal heads, hence of equal child
-/// counts, whose children decide. O(the names compared).
+/// counts, whose children decide. O(the heads compared), a `Symbolic` leaf's being its
+/// symbol's whole comparison.
 fn node_order(a: &Term, b: &Term) -> Ordering {
     term_rank(a).cmp(&term_rank(b)).then_with(|| match (a, b) {
         (Term::Variable(x), Term::Variable(y)) => x.cmp(y),

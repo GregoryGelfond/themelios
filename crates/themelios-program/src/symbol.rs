@@ -481,32 +481,40 @@ impl Clone for Symbol {
     fn clone(&self) -> Symbol {
         // A symbol at most one level deep — nearly every one a program holds — is
         // copied directly, its arguments leaf by leaf, with no work list.
+        if !at_most_one_level(self) {
+            return clone_deep(self);
+        }
         match self {
             Symbol::Function {
                 name,
                 arguments,
                 sign,
-            } if arguments
-                .iter()
-                .all(|argument| argument.arguments().is_empty()) =>
-            {
-                Symbol::Function {
-                    name: name.clone(),
-                    arguments: arguments.iter().map(clone_childless).collect(),
-                    sign: *sign,
-                }
-            }
-            Symbol::Tuple(elements)
-                if elements
-                    .iter()
-                    .all(|element| element.arguments().is_empty()) =>
-            {
+            } => Symbol::Function {
+                name: name.clone(),
+                arguments: arguments.iter().map(clone_childless).collect(),
+                sign: *sign,
+            },
+            Symbol::Tuple(elements) => {
                 Symbol::Tuple(elements.iter().map(clone_childless).collect())
             }
-            Symbol::Function { .. } | Symbol::Tuple(_) => clone_deep(self),
             leaf => clone_childless(leaf),
         }
     }
+}
+
+/// Whether a symbol is at most one level deep, its arguments leaves — the depth a clone
+/// copies directly (§13). O(arguments).
+fn at_most_one_level(symbol: &Symbol) -> bool {
+    symbol
+        .arguments()
+        .iter()
+        .all(|argument| argument.arguments().is_empty())
+}
+
+/// Whether a symbol is at most two levels deep, its arguments at most one — the depth a
+/// drop leaves to the field glue (§13). O(arguments and theirs).
+fn at_most_two_levels(symbol: &Symbol) -> bool {
+    symbol.arguments().iter().all(at_most_one_level)
 }
 
 /// A copy of a symbol with no arguments, made directly; a symbol with arguments is
@@ -601,12 +609,7 @@ impl Drop for Symbol {
         // drops through the field glue: its arguments, then theirs, each finding
         // this test true, a fixed depth rather than a walk (§13), with no work list
         // built.
-        if self.arguments().iter().all(|child| {
-            child
-                .arguments()
-                .iter()
-                .all(|grandchild| grandchild.arguments().is_empty())
-        }) {
+        if at_most_two_levels(self) {
             return;
         }
         // Dismantle iteratively (§13): move every descendant onto a work list
