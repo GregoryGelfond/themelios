@@ -541,6 +541,68 @@ mod tests {
         )));
     }
 
+    #[test]
+    fn a_breach_met_placing_the_trivia_ends_the_input_at_the_breach() {
+        // §4.3, §5.4 law 1: a breach the parser meets while placing the trivia before a
+        // peeked token ends the input there, so the token is not placed. The trivia run is
+        // longer than the answers the parser keeps (§4.2), so placing it asks for the
+        // statement's dot again, and this source, lawful the first time it is asked there,
+        // refuses after.
+        struct Fickle<'a> {
+            lexer: Lexer<'a>,
+            at: u32,
+            asks: std::cell::Cell<usize>,
+        }
+        impl TokenSource for Fickle<'_> {
+            fn id(&self) -> SourceId {
+                self.lexer.id()
+            }
+            fn dialect(&self) -> Dialect {
+                Dialect::Clingo
+            }
+            fn text(&self) -> &str {
+                self.lexer.text()
+            }
+            fn token_at(
+                &self,
+                at: ByteOffset,
+                mode: LexMode,
+            ) -> Result<Token<'_>, PositionRefusal> {
+                if at.get() == self.at {
+                    self.asks.set(self.asks.get() + 1);
+                    if self.asks.get() > 1 {
+                        return Err(PositionRefusal::NotCharBoundary(
+                            themelios_base::source::NotCharBoundary { offset: at },
+                        ));
+                    }
+                }
+                self.lexer.token_at(at, mode)
+            }
+        }
+        let text = "p :- q % a\n% b\n% c\n% d\n% e\n.";
+        let token = text.rfind('.').expect("the token");
+        let at = u32::try_from(token).expect("a short text");
+        let source = admitted(text);
+        let parse = parse_program(
+            &Fickle {
+                lexer: Lexer::new(&source, Dialect::Clingo),
+                at,
+                asks: std::cell::Cell::new(0),
+            },
+            NestingLimit::DEFAULT,
+        );
+        assert_eq!(
+            parse.syntax().text(),
+            &text[..token],
+            "the trivia, not the token"
+        );
+        assert!(parse.diagnostics().iter().any(|d| matches!(
+            d.kind(),
+            SyntaxErrorKind::TokenSourceBreach { breach: SourceBreach::Refusal { at: refused } }
+                if *refused == ByteOffset::new(at)
+        )));
+    }
+
     fn admitted(text: &str) -> Source {
         Source::new(SourceId::new(7), text.to_owned()).expect("test text admits")
     }
