@@ -1,9 +1,10 @@
-//! The work list the iterative walks over `Term` and `Symbol` share (docs/design/program.md
-//! §13): a last-in, first-out stack whose first entries live inline, so a walk over a shallow
-//! value — nearly every term a program holds — allocates nothing, and only a value deeper or
-//! wider than the inline part spills to the heap. The walks stay what §13 requires, an
-//! explicit work list rather than call-stack recursion; this only decides where its entries
-//! live.
+//! The work list the borrowing walks over `Term`, `Symbol`, and `TheoryTerm` share — the
+//! pre-order `subterms`, equality, ordering, and the hash through `subterms`
+//! (docs/design/program.md §13): a last-in, first-out stack whose first entries live inline,
+//! so such a walk over a shallow value — nearly every term a program holds — allocates
+//! nothing, and only a value deeper or wider than the inline part spills to the heap. The
+//! walks stay what §13 requires, an explicit work list rather than call-stack recursion; this
+//! only decides where its entries live.
 
 /// How many entries a work list keeps inline before it spills to the heap: past the peak a
 /// typical atom's arguments reach, at a small fixed cost of stack.

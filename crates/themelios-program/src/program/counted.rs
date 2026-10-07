@@ -54,20 +54,14 @@ impl<T: Identified> Counted<T> {
         sorted.sort();
         let mut entries: Vec<WithProvenance<T>> = Vec::with_capacity(sorted.len());
         for entry in sorted {
-            match entries.pop() {
+            match entries.last_mut() {
                 Some(earlier)
                     if entry.get().identity() == Identity::ByContent
                         && earlier.get() == entry.get() =>
                 {
-                    let (_, accumulated) = earlier.into_parts();
-                    let (value, provenance) = entry.into_parts();
-                    entries.push(WithProvenance::new(value, accumulated.merge(provenance)));
+                    earlier.absorb_later(entry);
                 }
-                Some(earlier) => {
-                    entries.push(earlier);
-                    entries.push(entry);
-                }
-                None => entries.push(entry),
+                _ => entries.push(entry),
             }
         }
         Counted { entries }

@@ -291,14 +291,25 @@ fn children(term: &TheoryTerm) -> &[TheoryTerm] {
     }
 }
 
+/// Whether a theory term is at most one level deep, its children leaves — the depth a
+/// clone copies directly (§13). O(children).
+fn at_most_one_level(term: &TheoryTerm) -> bool {
+    children(term)
+        .iter()
+        .all(|child| children(child).is_empty())
+}
+
+/// Whether a theory term is at most two levels deep, its children at most one — the depth
+/// a drop leaves to the field glue (§13). O(children and grandchildren).
+fn at_most_two_levels(term: &TheoryTerm) -> bool {
+    children(term).iter().all(at_most_one_level)
+}
+
 impl Clone for TheoryTerm {
     fn clone(&self) -> TheoryTerm {
         // A theory term at most one level deep — nearly every one a program holds — is
         // copied directly, its children leaf by leaf, with no work list.
-        if children(self)
-            .iter()
-            .all(|child| children(child).is_empty())
-        {
+        if at_most_one_level(self) {
             clone_shallow(self)
         } else {
             clone_deep(self)
@@ -371,11 +382,7 @@ impl Drop for TheoryTerm {
         // A theory term at most two levels deep — nearly every one a program holds —
         // drops through the field glue: its children, then theirs, each finding this
         // test true, a fixed depth rather than a walk (§13), with no work list built.
-        if children(self).iter().all(|child| {
-            children(child)
-                .iter()
-                .all(|grandchild| children(grandchild).is_empty())
-        }) {
+        if at_most_two_levels(self) {
             return;
         }
         let mut stack: Vec<TheoryTerm> = Vec::new();

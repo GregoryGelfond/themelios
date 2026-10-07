@@ -490,7 +490,9 @@ fn ingest(
 /// counted child merges through its own constructor (§4.4).
 pub(crate) fn merge_insert<T: Ord>(set: &mut BTreeSet<WithProvenance<T>>, node: WithProvenance<T>) {
     // A new content is admitted in one search; a collision then takes the newcomer back out
-    // and admits it with the displaced node's provenance unioned in.
+    // and admits it with the displaced node's provenance unioned in. The take finds what
+    // `replace` admitted because the order agrees with equality — §5.2's standing
+    // precondition, held by each algebra's total-order laws.
     if let Some(existing) = set.replace(node) {
         let mut admitted = set
             .take(&existing)
@@ -517,6 +519,8 @@ pub(crate) fn merge_collect<T: Ord>(
 ) -> BTreeSet<WithProvenance<T>> {
     let mut slots: Vec<Option<WithProvenance<T>>> = nodes.into_iter().map(Some).collect();
     let mut order: Vec<usize> = (0..slots.len()).collect();
+    // The comparison is a total order — §5.2's standing precondition, held by each algebra's
+    // total-order laws — which the sort requires.
     order.sort_by(|&left, &right| slots[left].cmp(&slots[right]));
     let mut folded: Vec<WithProvenance<T>> = Vec::with_capacity(slots.len());
     for position in order {
