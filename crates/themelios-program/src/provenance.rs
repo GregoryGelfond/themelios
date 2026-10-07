@@ -8,6 +8,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
+use std::fmt;
 use std::hash::{Hash, Hasher};
 
 use themelios_base::span::Location;
@@ -125,7 +126,7 @@ impl<T: Hash> Hash for WithProvenance<T> {
 /// collapse (§5) *union* both nodes' provenance rather than keep one arbitrarily.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Provenance {
-    origins: BTreeSet<Origin>,
+    origins: Origins,
     annotations: Annotations,
 }
 
@@ -135,7 +136,7 @@ impl Provenance {
         Provenance::default()
     }
 
-    /// The origin facts (§6.2).
+    /// The origin facts, in `Origin` order (§6.2).
     pub fn origins(&self) -> impl Iterator<Item = &Origin> {
         self.origins.iter()
     }
@@ -150,17 +151,18 @@ impl Provenance {
     /// merge (below) but have no builder here.
     #[must_use]
     pub fn with_doc(mut self, doc: impl Into<String>) -> Provenance {
-        self.annotations.doc.insert(doc.into());
+        self.annotations.kinds_mut().doc.insert(doc.into());
         self
     }
 
     /// The union of two provenances — a join-semilattice (§6.3): the origin sets and
     /// each annotation kind unioned, nothing lost and nothing fabricated.
     #[must_use]
-    pub fn merge(mut self, other: Provenance) -> Provenance {
-        self.origins.extend(other.origins);
-        self.annotations = self.annotations.merge(other.annotations);
-        self
+    pub fn merge(self, other: Provenance) -> Provenance {
+        Provenance {
+            origins: self.origins.union(other.origins),
+            annotations: self.annotations.merge(other.annotations),
+        }
     }
 }
 
@@ -169,12 +171,69 @@ impl Provenance {
 /// surface §6.2 leaves implicit, named here.
 impl From<Origin> for Provenance {
     fn from(origin: Origin) -> Provenance {
-        let mut origins = BTreeSet::new();
-        origins.insert(origin);
         Provenance {
-            origins,
+            origins: Origins::One(origin),
             annotations: Annotations::default(),
         }
+    }
+}
+
+/// A provenance's origin facts: a set (§6.2) that holds a lone fact inline. Nearly every
+/// node carries exactly one origin — its parsed span, or the constructed mark — so the
+/// common provenance allocates nothing (§6.3); a union of two or more facts is an ordered
+/// set on the heap. Each size has one form — no fact, one, or a set of at least two — so
+/// structural equality is set equality.
+#[derive(Clone, PartialEq, Eq, Default)]
+enum Origins {
+    #[default]
+    None,
+    One(Origin),
+    Many(BTreeSet<Origin>),
+}
+
+impl Origins {
+    /// The facts, in `Origin` order. O(1) per fact.
+    fn iter(&self) -> impl Iterator<Item = &Origin> {
+        let (one, many) = match self {
+            Origins::None => (None, None),
+            Origins::One(origin) => (Some(origin), None),
+            Origins::Many(set) => (None, Some(set.iter())),
+        };
+        one.into_iter().chain(many.into_iter().flatten())
+    }
+
+    /// The union, moving both: the smaller side is inserted into the larger, so a run of
+    /// n merges into one accumulating set costs O(n log n) (§6.3).
+    fn union(self, other: Origins) -> Origins {
+        match (self, other) {
+            (Origins::None, origins) | (origins, Origins::None) => origins,
+            (Origins::One(left), Origins::One(right)) => {
+                if left == right {
+                    Origins::One(left)
+                } else {
+                    Origins::Many(BTreeSet::from([left, right]))
+                }
+            }
+            (Origins::One(origin), Origins::Many(mut set))
+            | (Origins::Many(mut set), Origins::One(origin)) => {
+                set.insert(origin);
+                Origins::Many(set)
+            }
+            (Origins::Many(mut larger), Origins::Many(mut smaller)) => {
+                if larger.len() < smaller.len() {
+                    std::mem::swap(&mut larger, &mut smaller);
+                }
+                larger.extend(smaller);
+                Origins::Many(larger)
+            }
+        }
+    }
+}
+
+/// Rendered as the set it is, as the standard ordered set renders.
+impl fmt::Debug for Origins {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_set().entries(self.iter()).finish()
     }
 }
 
@@ -208,9 +267,17 @@ impl TransformTag {
 
 /// Tool and modeler annotations (§6.2): a documentation string (from a `%!` doc
 /// comment, §8), a label, a reference, and a trace directive an explanation tool
-/// attaches (§2). Each kind is a set, unioned on merge.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+/// attaches (§2). Each kind is a set, unioned on merge. Nearly every node carries none,
+/// so the kinds are boxed only once one holds a string: an unannotated node's
+/// annotations are a null pointer (§6.3).
+#[derive(Clone, Default)]
 pub struct Annotations {
+    kinds: Option<Box<Kinds>>,
+}
+
+/// The four annotation kinds of an annotated node (§6.2).
+#[derive(Clone, PartialEq, Eq, Default)]
+struct Kinds {
     doc: BTreeSet<String>,
     label: BTreeSet<String>,
     reference: BTreeSet<String>,
@@ -220,32 +287,92 @@ pub struct Annotations {
 impl Annotations {
     /// The documentation strings (§6.2).
     pub fn doc(&self) -> impl Iterator<Item = &str> {
-        self.doc.iter().map(String::as_str)
+        self.strings(|kinds| &kinds.doc)
     }
 
     /// The labels (§6.2).
     pub fn label(&self) -> impl Iterator<Item = &str> {
-        self.label.iter().map(String::as_str)
+        self.strings(|kinds| &kinds.label)
     }
 
     /// The references (§6.2).
     pub fn reference(&self) -> impl Iterator<Item = &str> {
-        self.reference.iter().map(String::as_str)
+        self.strings(|kinds| &kinds.reference)
     }
 
     /// The trace directives (§6.2).
     pub fn trace(&self) -> impl Iterator<Item = &str> {
-        self.trace.iter().map(String::as_str)
+        self.strings(|kinds| &kinds.trace)
     }
 
     /// The union of two annotation sets, each kind unioned (§6.3).
     #[must_use]
-    pub fn merge(mut self, other: Annotations) -> Annotations {
-        self.doc.extend(other.doc);
-        self.label.extend(other.label);
-        self.reference.extend(other.reference);
-        self.trace.extend(other.trace);
-        self
+    pub fn merge(self, other: Annotations) -> Annotations {
+        let kinds = match (self.kinds, other.kinds) {
+            (None, kinds) | (kinds, None) => kinds,
+            (Some(mut left), Some(right)) => {
+                let Kinds {
+                    doc,
+                    label,
+                    reference,
+                    trace,
+                } = *right;
+                left.doc.extend(doc);
+                left.label.extend(label);
+                left.reference.extend(reference);
+                left.trace.extend(trace);
+                Some(left)
+            }
+        };
+        Annotations { kinds }
+    }
+
+    /// One kind's strings, in order; none when the node is unannotated.
+    fn strings(&self, kind: impl Fn(&Kinds) -> &BTreeSet<String>) -> impl Iterator<Item = &str> {
+        self.kinds
+            .as_deref()
+            .map(kind)
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+    }
+
+    /// The kinds, boxed on first use, for a builder to insert into.
+    fn kinds_mut(&mut self) -> &mut Kinds {
+        self.kinds.get_or_insert_with(Box::default)
+    }
+}
+
+/// Equal when every kind holds the same strings — an unannotated node and one whose kinds
+/// are all empty alike.
+impl PartialEq for Annotations {
+    fn eq(&self, other: &Annotations) -> bool {
+        match (self.kinds.as_deref(), other.kinds.as_deref()) {
+            (Some(left), Some(right)) => left == right,
+            (None, None) => true,
+            (Some(kinds), None) | (None, Some(kinds)) => *kinds == Kinds::default(),
+        }
+    }
+}
+impl Eq for Annotations {}
+
+/// Rendered with every kind as the set it is, boxed or not.
+impl fmt::Debug for Annotations {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        /// One kind, rendered as the standard ordered set renders.
+        struct Set<'a>(Option<&'a BTreeSet<String>>);
+        impl fmt::Debug for Set<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_set().entries(self.0.into_iter().flatten()).finish()
+            }
+        }
+        let kinds = self.kinds.as_deref();
+        f.debug_struct("Annotations")
+            .field("doc", &Set(kinds.map(|kinds| &kinds.doc)))
+            .field("label", &Set(kinds.map(|kinds| &kinds.label)))
+            .field("reference", &Set(kinds.map(|kinds| &kinds.reference)))
+            .field("trace", &Set(kinds.map(|kinds| &kinds.trace)))
+            .finish()
     }
 }
 

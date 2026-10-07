@@ -92,4 +92,45 @@ proptest! {
         prop_assert_eq!(Provenance::empty().merge(p.clone()), p.clone());
         prop_assert_eq!(p.clone().merge(Provenance::empty()), p);
     }
+
+    /// A merge's origins are exactly both sides' origins, each once, in `Origin` order
+    /// (§6.2) — whether each side holds none, one, or several.
+    #[test]
+    fn a_merge_s_origins_are_the_ordered_union(a in any_provenance(), b in any_provenance()) {
+        let union: BTreeSet<Origin> = a.origins().chain(b.origins()).cloned().collect();
+        let merged: Vec<Origin> = a.merge(b).origins().cloned().collect();
+        prop_assert_eq!(merged, union.into_iter().collect::<Vec<_>>());
+    }
+
+    /// A merge's documentation strings are exactly both sides' strings, each once, in order
+    /// (§6.2) — whether either side is annotated or not.
+    #[test]
+    fn a_merge_s_docs_are_the_ordered_union(a in any_provenance(), b in any_provenance()) {
+        let union: BTreeSet<String> = a
+            .annotations()
+            .doc()
+            .chain(b.annotations().doc())
+            .map(str::to_owned)
+            .collect();
+        let merged = a.merge(b);
+        let docs: Vec<&str> = merged.annotations().doc().collect();
+        prop_assert_eq!(docs, union.iter().map(String::as_str).collect::<Vec<_>>());
+    }
+}
+
+#[test]
+fn debug_renders_origins_and_annotations_as_sets() {
+    // The carrier's `Debug` names its two fields and renders each set as an ordered set
+    // does, whether it holds one fact inline or several.
+    let one = Provenance::from(Origin::Constructed).with_doc("d");
+    assert_eq!(
+        format!("{one:?}"),
+        r#"Provenance { origins: {Constructed}, annotations: Annotations { doc: {"d"}, label: {}, reference: {}, trace: {} } }"#
+    );
+    let two = Provenance::from(Origin::Transformed(TransformTag::new("t")))
+        .merge(Provenance::from(Origin::Constructed));
+    assert_eq!(
+        format!("{two:?}"),
+        r#"Provenance { origins: {Constructed, Transformed(TransformTag("t"))}, annotations: Annotations { doc: {}, label: {}, reference: {}, trace: {} } }"#
+    );
 }
