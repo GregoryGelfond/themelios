@@ -1,6 +1,6 @@
 # themelios-syntax — tier design
 
-2026-08-15, revised through 2026-10-04. The design of record, which the
+2026-08-15, revised through 2026-10-07. The design of record, which the
 build follows; its Revisions section records each refinement made after it
 was settled. This document is the API design of `themelios-syntax` — the
 types, traits, signatures, semantics, and computational costs of the
@@ -288,8 +288,11 @@ it does not extend the region — the guard-end rule of §6.3, which is
 greedy — and takes it again under normal mode. The token-source door is
 a pure function of `(offset, mode)` (§4.3), so taking a token again is
 calling that function again at the same offset; no state is unwound.
-Every token is requested at most a fixed number of times (twice, at a
-region boundary), which keeps parsing linear (§6.8). A lexical
+Every token is requested at most a fixed number of times — once as a
+rule, since the parser keeps the source's last few answers for the peek
+past a token's trivia, the trivia's placement, and the token's own, and
+again at a region boundary, after a lookahead (§6.3) that read it, or
+past a long run of trivia — which keeps parsing linear (§6.8). A lexical
 diagnostic is raised when an `ERROR` token is *placed in the tree*,
 never at the door: a token peeked under one mode and discarded at a
 region boundary raises nothing, so the token that lexes as an unknown
@@ -1277,12 +1280,13 @@ whatever the loop happened to do.
 
 A parse is a pure function of the token source's text and dialect and
 the entry point (§5.4, law 4). Time is O(text): every token is requested
-at most twice (§4.2), consumed once, and lookahead is bounded by a
-constant; the frame loop does constant work per token; the builder's
-work is O(tokens + nodes) — the parser's own, cache-free builder (§14;
-crates/themelios-syntax/src/parse/builder.rs), since rowan's interning
-`GreenNodeBuilder` is O(depth²) on the deep, narrow trees this bound
-admits, which would make a nested-bracket input's parse quadratic.
+a fixed number of times at most (§4.2), consumed once, and lookahead is
+bounded by a constant; the frame loop does constant work per token; the
+builder's work is O(tokens + nodes) — the parser's own, cache-free
+builder (§14; crates/themelios-syntax/src/parse/builder.rs), since
+rowan's interning `GreenNodeBuilder` is O(depth²) on the deep, narrow
+trees this bound admits, which would make a nested-bracket input's parse
+quadratic.
 Memory is O(text) for the tree plus
 O(frames × levels) for the frame and level stacks, themselves bounded
 by the constant and the grammar's level count. There is no
@@ -2515,10 +2519,10 @@ this tier adds or qualifies.
 ### 12.1 A parse is a pure function
 
 Same text, dialect, and entry, same tree and diagnostics (§5.4, law 4).
-No cache survives a call: rowan's node cache lives inside one builder
-and dies with it; there is no interning table, no global, no
-memoization — spec §7.8's incrementality preconditions bought without
-its machinery. Where mechanism wants mutation — the frame stack, the
+No cache survives a call: the cursor's last few answers from the token
+source (§4.2) live inside one parse and die with it; there is no
+interning table, no global, and nothing kept from one call to the next —
+spec §7.8's incrementality preconditions bought without its machinery. Where mechanism wants mutation — the frame stack, the
 builder, the diagnostics vector under construction — it is local and
 invisible at the surface (base §8.1).
 
@@ -3189,6 +3193,14 @@ document and the code together; the §6.1 and §7.1 amendments below likewise.
   function — so a consuming source (the macro tier its first) is identical to
   it by construction, with no second copy to drift. Additive to the tier's
   public surface: two doors added beside `theory_operator`, nothing removed.
+
+- **§4.2, §6.8, §12.1** (2026-10-07): the parse made faster with its tree and
+  diagnostics unchanged. The parser asked the token source for each token three to
+  six times as it peeked past the trivia, placed the trivia, and placed the token,
+  against §4.2's bound of twice; it now keeps the source's last few answers and
+  places a peeked token as peeked, so each token is asked for once as a rule (§4.2,
+  §6.8), and §12.1 says what lives inside a parse. It changes cost, not the parse:
+  a parse is byte-for-byte the tree and the diagnostics it was.
 
 - **§10.5** (2026-10-04): honesty-only. The macro tier's operator run ends before
   a `#` or a `$`, which open tokens of their own (grammar §9), and the paragraph
