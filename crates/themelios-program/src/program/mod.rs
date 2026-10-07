@@ -404,7 +404,8 @@ impl Program {
     /// at construction; every other part is opened by a statement joining it.
     /// Crate-internal: of the public doors — `of`, `of_nodes`, and `of_keyed_nodes` (§7.1), and
     /// the raise (§8) — only `of_keyed_nodes` comes here; the others, the raise among them,
-    /// collect through `ingest_run`.
+    /// collect through `ingest_run`, save `Occurrences::into_raised`, whose statements are
+    /// canonical already and enter through `ingest_canonical_run`.
     pub(crate) fn ingest_into(&mut self, key: PartKey, statement: WithProvenance<Statement>) {
         ingest(
             &mut self.part_entry(key).statements,

@@ -1094,7 +1094,8 @@ impl Occurrences {
     /// Collect the occurrences into the part-structured set through the one ingest door (§6.3),
     /// pairing the merged program with the batch — so `raise` is `raise_occurrences` then
     /// `into_raised`: it yields the program and diagnostics `raise` builds directly. A consumer
-    /// needing both the merged program and the un-merged occurrences pays one lowering, not two.
+    /// needing both the merged program and the un-merged occurrences pays one lowering and one
+    /// canonicalization, not two.
     pub fn into_raised(self) -> Raised {
         let statements = self
             .occurrences

@@ -23,9 +23,17 @@ pub(crate) struct WorkList<T: Copy> {
 impl<T: Copy> WorkList<T> {
     /// A work list holding one entry, the walk's root. O(1); allocates nothing.
     pub(crate) fn new(root: T) -> WorkList<T> {
+        let mut list = WorkList::empty(root);
+        list.push(root);
+        list
+    }
+
+    /// An empty work list. `filler` only fills the inline slots — it is never popped — since
+    /// they need a value of `T` before any entry is pushed. O(1); allocates nothing.
+    pub(crate) fn empty(filler: T) -> WorkList<T> {
         WorkList {
-            inline: [root; INLINE],
-            len: 1,
+            inline: [filler; INLINE],
+            len: 0,
             spill: Vec::new(),
         }
     }
@@ -75,6 +83,16 @@ mod tests {
         let popped: Vec<usize> = std::iter::from_fn(|| list.pop()).collect();
         let expected: Vec<usize> = (0..count).rev().collect();
         assert_eq!(popped, expected);
+    }
+
+    /// An empty list yields nothing — its filler is never an entry — until it is pushed to.
+    #[test]
+    fn an_empty_list_yields_only_what_is_pushed() {
+        let mut list = WorkList::empty(7);
+        assert_eq!(list.pop(), None);
+        list.push(1);
+        assert_eq!(list.pop(), Some(1));
+        assert_eq!(list.pop(), None);
     }
 
     /// Interleaved pushes and pops agree with a `Vec` used as a stack, including pushes made

@@ -2560,11 +2560,11 @@ conditional literals do not nest, a head is one layer. So:
   `Hash` through `subterms` — share a work list whose first entries live inline,
   spilling to the heap only past them, so on a shallow value (nearly every term a
   program holds) they allocate nothing; the owned rebuilds (`fold`, `canonicalize`
-  past a leaf, a deep `Clone`) and `Debug` build their work lists on the heap. A
-  value at most two levels deep is dropped through the compiler's field glue, and
-  one at most one level deep is cloned directly: a constant depth, the same for every
-  value, which the depth proof's stated stack (§16) covers; anything deeper goes
-  through the work list.
+  past a leaf, the copy of a child with children of its own) and `Debug` build their
+  work lists on the heap. A value at most two levels deep is dropped through the
+  compiler's field glue, and a clone copies a value's root and its leaf children
+  directly: a constant depth, the same for every value, which the depth proof's
+  stated stack (§16) covers; anything deeper goes through the work list.
 - **The structural layers recurse by grammar-bounded iteration.** A walk from a
   program to a term crosses a fixed number of layers (§4), so those functions may
   use the call stack: their depth is the grammar's, not the input's.
@@ -3064,8 +3064,9 @@ evolution with its argument, not a drift.
   the representation had drifted from. `into_raised` collects the occurrences without
   canonicalizing them again, canonicalization being idempotent and the occurrences
   canonical by construction (§8). The borrowing walks keep their work list's first entries
-  inline, and a shallow value is dropped and cloned at a constant depth the depth proof's
-  stated stack covers, anything deeper through the work list (§13). With that, §13 states
+  inline; a shallow value is dropped, and every value's root and leaf children are cloned,
+  at a constant depth the depth proof's stated stack covers, anything deeper through the
+  work list (§13). With that, §13 states
   spec §7.2's depth discipline as the property spec §7.1 names — stack cost independent
   of a value's depth — rather than its letter, "no walk … recurses", which no drop has
   met: freeing a node runs that node's drop, so even the work-list teardown nests one call
