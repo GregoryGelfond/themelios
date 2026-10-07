@@ -406,7 +406,10 @@ impl Program {
     /// the raise (§8) — only `of_keyed_nodes` comes here; the others, the raise among them,
     /// collect through `ingest_run`.
     pub(crate) fn ingest_into(&mut self, key: PartKey, statement: WithProvenance<Statement>) {
-        ingest(&mut self.part_entry(key).statements, [statement]);
+        ingest(
+            &mut self.part_entry(key).statements,
+            [statement.map(canonicalize_statement)],
+        );
     }
 
     /// Admit a run of statements into one part through the one ingest door (§6.3), looking
@@ -415,6 +418,25 @@ impl Program {
     /// (§8), and for the rewrites, which rebuild part by part. O(key · log parts) once, then
     /// each statement's ingest.
     pub(crate) fn ingest_run(
+        &mut self,
+        key: &PartKey,
+        statements: impl IntoIterator<Item = WithProvenance<Statement>>,
+    ) {
+        self.ingest_canonical_run(
+            key,
+            statements
+                .into_iter()
+                .map(|statement| statement.map(canonicalize_statement)),
+        );
+    }
+
+    /// Admit a run of statements already canonical (§5.1) into one part — [`ingest_run`]
+    /// without its canonicalization, for the occurrence stream, whose statements are
+    /// canonical by construction (§8). Canonicalization is idempotent, so the part holds
+    /// what `ingest_run` would build from the same statements.
+    ///
+    /// [`ingest_run`]: Program::ingest_run
+    pub(crate) fn ingest_canonical_run(
         &mut self,
         key: &PartKey,
         statements: impl IntoIterator<Item = WithProvenance<Statement>>,
@@ -440,22 +462,20 @@ pub(crate) fn base_key() -> PartKey {
     }
 }
 
-/// The one ingest/merge door (§6.3): canonicalize each statement of a run, then admit the run
-/// into the part's set through the provenance merge — collected whole when it opens the part,
-/// which merges exactly as admitting it statement by statement would, and statement by
-/// statement into a part already holding some. This is the only path that mutates a part's
-/// set, so the preservation law is structural.
+/// The one ingest/merge door (§6.3): admit a run of canonical statements — each entry point
+/// canonicalizes what it is handed, or holds statements canonical by construction — into the
+/// part's set through the provenance merge: collected whole when it opens the part, which merges
+/// exactly as admitting it statement by statement would, and statement by statement into a part
+/// already holding some. This is the only path that mutates a part's set, so the preservation
+/// law is structural.
 fn ingest(
     set: &mut BTreeSet<WithProvenance<Statement>>,
     statements: impl IntoIterator<Item = WithProvenance<Statement>>,
 ) {
-    let canonical = statements
-        .into_iter()
-        .map(|statement| statement.map(canonicalize_statement));
     if set.is_empty() {
-        *set = merge_collect(canonical);
+        *set = merge_collect(statements);
     } else {
-        for statement in canonical {
+        for statement in statements {
             merge_insert(set, statement);
         }
     }

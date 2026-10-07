@@ -1954,10 +1954,11 @@ shallow `O(facts)` merge with no consumer forced to read those origins *from it*
 because such a consumer reads them *here*. `Program` construction, equality, and
 merge are unchanged by the stream, which only exposes the lowering. A
 consumer that wants the merged program too takes `Occurrences::into_raised`, which
-collects the occurrences through the same ingest door `raise` uses (§6.3): `raise`
-is exactly `raise_occurrences` then `into_raised`, so a consumer needing both grains
-pays one lowering, not two, while `raise` stays the direct door when only the merged
-program is wanted.
+collects the occurrences through the same ingest door `raise` uses (§6.3), without
+canonicalizing them again — they are canonical already, and canonicalization is
+idempotent: `raise` is exactly `raise_occurrences` then `into_raised`, so a consumer
+needing both grains pays one lowering and one canonicalization, not two, while `raise`
+stays the direct door when only the merged program is wanted.
 
 **A stream, not a selected node.** Every occurrence is drawn from the parse's own
 tree, so its dialect and coordinates are the owning parse's *by construction*: no
