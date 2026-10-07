@@ -8,6 +8,7 @@
 use rowan::Language;
 
 use super::builder::{Checkpoint, GreenBuilder};
+use super::terms::Frame;
 use themelios_base::span::{ByteOffset, Location, Span};
 
 use crate::ast;
@@ -74,6 +75,9 @@ pub(super) struct Parser<'s, S: TokenSource> {
     recent: Recent<'s>,
     /// The kind and end offset of the last token placed, trivia included.
     last_placed: Option<(SyntaxKind, u32)>,
+    /// The term loop's frame stack between runs — empty, its capacity kept
+    /// for the next run (docs/design/syntax.md §6.2).
+    frame_stack: Vec<Frame>,
     /// The frame loop refused a frame past the constant: the rest of the
     /// statement is already carried in an `ERROR` node, and the statement
     /// closes without further diagnostics (docs/design/syntax.md §6.6).
@@ -153,6 +157,7 @@ impl<'s, S: TokenSource> Parser<'s, S> {
             peeked: None,
             recent: Recent::new(),
             last_placed: None,
+            frame_stack: Vec::new(),
             depth_refused: false,
         }
     }
@@ -161,6 +166,17 @@ impl<'s, S: TokenSource> Parser<'s, S> {
     /// `NestingLimit`, docs/design/syntax.md §6.6).
     pub(super) fn nesting_limit(&self) -> u32 {
         self.nesting_limit
+    }
+
+    /// The term loop's kept frame stack, taken for a run; a run nested
+    /// inside another finds it taken and starts from an empty one.
+    pub(super) fn take_frame_stack(&mut self) -> Vec<Frame> {
+        std::mem::take(&mut self.frame_stack)
+    }
+
+    /// Keep a run's emptied frame stack for the next run.
+    pub(super) fn give_frame_stack(&mut self, frames: Vec<Frame>) {
+        self.frame_stack = frames;
     }
 
     // ---- the cursor -------------------------------------------------

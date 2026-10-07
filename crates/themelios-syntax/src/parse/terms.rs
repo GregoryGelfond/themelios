@@ -113,7 +113,7 @@ enum Shape {
               (docs/design/syntax.md §6.2); folding them into one enum would obscure the \
               frame's shape, not clarify it"
 )]
-struct Frame {
+pub(super) struct Frame {
     shape: Shape,
     /// The open precedence levels, tighter on top, each with the
     /// checkpoint before its first operand.
@@ -255,12 +255,8 @@ impl<S: TokenSource> Parser<'_, S> {
         if !self.term_begins() {
             return false;
         }
-        self.run(
-            context,
-            vec![Frame::new(Shape::Base, None, NO_OPENER)],
-            Next::Operand,
-            false,
-        );
+        let frames = self.frames_from(Frame::new(Shape::Base, None, NO_OPENER));
+        self.run(context, frames, Next::Operand, false);
         true
     }
 
@@ -271,7 +267,8 @@ impl<S: TokenSource> Parser<'_, S> {
     pub(super) fn term_continue(&mut self, context: TermContext, checkpoint: Checkpoint) {
         let mut base = Frame::new(Shape::Base, None, NO_OPENER);
         base.operand = Some(checkpoint);
-        self.run(context, vec![base], Next::Operator, false);
+        let frames = self.frames_from(base);
+        self.run(context, frames, Next::Operator, false);
     }
 
     /// An argument list at the next significant token, `(`, on its own
@@ -279,9 +276,11 @@ impl<S: TokenSource> Parser<'_, S> {
     /// node is not a term. Returns when the frame
     /// closes; nothing is read at the base after it.
     pub(super) fn arguments(&mut self, context: TermContext) {
-        let mut frames = vec![Frame::new(Shape::Base, None, NO_OPENER)];
+        let mut frames = self.frames_from(Frame::new(Shape::Base, None, NO_OPENER));
         let next = self.open_frame(&mut frames, Shape::Arguments, None, None);
-        if next != Next::Done {
+        if next == Next::Done {
+            self.keep_frames(frames);
+        } else {
             self.run(context, frames, next, true);
         }
     }
@@ -315,6 +314,7 @@ impl<S: TokenSource> Parser<'_, S> {
                     !frames[0].opterm_open,
                     "a stop_at_base run must not leave the base opterm open",
                 );
+                self.keep_frames(frames);
                 return;
             }
         }
@@ -324,6 +324,24 @@ impl<S: TokenSource> Parser<'_, S> {
             self.finish_node();
             base.opterm_open = false;
         }
+        self.keep_frames(frames);
+    }
+
+    /// The frame stack for a run of the loop, holding `base` alone — the
+    /// parser's own, emptied, so its capacity carries from run to run
+    /// rather than being allocated afresh for every term.
+    fn frames_from(&mut self, base: Frame) -> Vec<Frame> {
+        let mut frames = self.take_frame_stack();
+        frames.clear();
+        frames.push(base);
+        frames
+    }
+
+    /// Hand a run's frame stack back to the parser, emptied, for the next
+    /// run to reuse.
+    fn keep_frames(&mut self, mut frames: Vec<Frame>) {
+        frames.clear();
+        self.give_frame_stack(frames);
     }
 
     /// The checkpoint the operand about to begin opens its own node at,
@@ -821,12 +839,8 @@ impl<S: TokenSource> Parser<'_, S> {
         if !self.theory_term_begins() && !self.theory_operator_here() {
             return false;
         }
-        self.run(
-            TermContext::Theory,
-            vec![Frame::new(Shape::Base, None, NO_OPENER)],
-            Next::Operand,
-            false,
-        );
+        let frames = self.frames_from(Frame::new(Shape::Base, None, NO_OPENER));
+        self.run(TermContext::Theory, frames, Next::Operand, false);
         true
     }
 
