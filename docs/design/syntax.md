@@ -786,9 +786,9 @@ law 3.
 **Computational cost.** `syntax()` is O(1) (a root cursor); `tree()` is
 O(1) (a cast); `has_errors` and `is_incomplete` are O(diagnostics);
 `location` O(1); `string_value` O(token); clone O(diagnostics) — the
-tree is shared. The tree's memory is O(tokens + nodes), with rowan's
-per-parse node cache sharing identical tokens and small identical
-subtrees — a per-builder cache, never a global one (spec §1.2).
+tree is shared. The tree's memory is O(tokens + nodes), with the
+builder's token cache sharing repeated short tokens (§6.8) — a per-parse
+cache, never a global one (spec §1.2).
 
 ## 6. The parser
 
@@ -885,7 +885,7 @@ with `SyntaxClass::EndOfInput` in its expected set (§7.1).
 ### 6.2 The parser's shape
 
 A hand-written recursive-descent parser to grammar §5 (spec §6.5),
-building the green tree through rowan's builder as it goes: one function
+building the green tree through its own builder (§6.8, §14) as it goes: one function
 per grammar-bounded production, each opening its node at its first
 significant token and closing it at its last (§5.4's placement law);
 rowan's *checkpoint* — a mark that lets a node be opened retroactively
@@ -1016,7 +1016,7 @@ a fixed, bounded decision in the parser:
   and diagnoses the missing term, where the letter, read literally,
   would re-lex an unbounded run. That is this design's own recovery
   choice (grammar §13 leaves recovery to it), named here so §6.2's
-  one-token lookahead and §4.2's twice-per-token bound are honest.
+  one-token lookahead and §4.2's fixed bound on asks per token are honest.
   Inside a `#theory` definition, only the operator positions lex under
   theory mode. The mode the parser requested for each token is what
   `lex_mode_of` reconstructs (§10.2), and the law binding the two is
@@ -2640,9 +2640,10 @@ rust-analyzer's lock file. Every rowan upgrade re-reads this note.
 
 **What it is used for.** The green/red tree of §5 — structural sharing,
 positional identity, cursors with parent links, iterative preorder,
-`text()`, `SyntaxNodePtr`, and the builder with checkpoints and its
-per-builder node cache. The `serde1` feature is off. Nothing else of
-rowan's is reached for.
+`text()`, `SyntaxNodePtr`, and the green node and token constructors
+the parser's own builder assembles a tree from (§6.8) — rowan's builder
+and its node cache serve tests alone. The `serde1` feature is off.
+Nothing else of rowan's is reached for.
 
 **The closure, enumerated, and held by the trust check.** With default
 features off where rowan turns them off, the shipped closure of this
@@ -3203,19 +3204,23 @@ document and the code together; the §6.1 and §7.1 amendments below likewise.
   it by construction, with no second copy to drift. Additive to the tier's
   public surface: two doors added beside `theory_operator`, nothing removed.
 
-- **§1, §4.2, §5.4, §6.8, §12.1, §14** (2026-10-07): the parse made faster with
-  its tree and diagnostics unchanged. The parser asked the token source for each
-  token three to six times as it peeked past the trivia, placed the trivia, and
-  placed the token, against §4.2's bound of twice; it now keeps the source's last
-  few answers and places a peeked token as peeked, so each token is asked for once
-  as a rule (§4.2, §6.8). The frame loop keeps its frame stack from one term to the
-  next (§6.8). The builder shares a repeated short token through a cache of fixed
-  slots, at one hash and one comparison per token whatever the input, while still
-  interning no node (§6.8, §14), so §1's crate facts name the cache and §12.1 says
-  what lives inside a parse instead of denying a table. `HasDocs::doc_lines` reads
-  the leading prefix alone (§5.4). Each changes cost, not the parse: a parse is
-  byte-for-byte the tree and the diagnostics it was.
-
 - **§10.5** (2026-10-04): honesty-only. The macro tier's operator run ends before
   a `#` or a `$`, which open tokens of their own (grammar §9), and the paragraph
   describing that consumer now says so.
+
+- **§1, §4.2, §5.4, §5.5, §6.2, §6.3, §6.8, §12.1, §14** (2026-10-07): the parse made
+  faster. The parser asked the token source for each token three to six times as it
+  peeked past the trivia, placed the trivia, and placed the token, against §4.2's bound
+  of twice; it now keeps the source's last few answers and places a peeked token as
+  peeked, so each token is asked for once as a rule (§4.2, §6.8), and tests hold the
+  asks per token. The frame loop keeps its frame stack from one term to the next (§6.8).
+  The builder shares a repeated short token through a cache of fixed slots, at one hash
+  and one comparison per token whatever the input, while still interning no node (§6.8,
+  §14), so §1's crate facts name the cache, §12.1 says what lives inside a parse instead
+  of denying a table, and §5.5, §6.2, §6.3, and §14 lose their last references to
+  rowan's builder and node cache. `HasDocs::doc_lines` reads the leading prefix alone
+  (§5.4). Each changes cost, not the parse — a parse of any lawful source is
+  byte-for-byte the tree and the diagnostics it was — save one change for an unlawful
+  source: a breach now drops the peek standing before it, so a breach met while looking
+  ahead ends the input before the peeked token rather than placing an end-of-input token
+  in its stead, and a debug build no longer panics there (§4.3).
