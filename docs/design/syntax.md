@@ -707,10 +707,11 @@ parent's children is a trivia-kind token or a `DOC_COMMENT` — a
 significant token or a child node ends that leading prefix. `role` reads
 the rule for one token; `roles_of` reads it for a whole node's children
 in one pass, for a consumer that reads a node's roles together — as the
-crate's own bulk readers do: `HasDocs::doc_lines` (§8.2), the bulk
-attachment walk (§9.3), and the token-stream projections (§11.1) read a
-node's roles in one forward pass, so a k-line doc block costs them O(k),
-never the O(k²) of `role` per line.
+crate's own bulk readers do: `HasDocs::doc_lines` (§8.2) reads the
+leading prefix in one forward pass that ends where the prefix does, and
+the bulk attachment walk (§9.3) and the token-stream projections (§11.1)
+read a node's roles in one forward pass, so a k-line doc block costs them
+O(k), never the O(k²) of `role` per line.
 When the reserved inner-docs form (§17) arrives, this definition moves
 and the sites do not.
 
@@ -3202,17 +3203,18 @@ document and the code together; the §6.1 and §7.1 amendments below likewise.
   it by construction, with no second copy to drift. Additive to the tier's
   public surface: two doors added beside `theory_operator`, nothing removed.
 
-- **§1, §4.2, §6.8, §12.1, §14** (2026-10-07): the parse made faster with its tree
-  and diagnostics unchanged. The parser asked the token source for each token three
-  to six times as it peeked past the trivia, placed the trivia, and placed the
-  token, against §4.2's bound of twice; it now keeps the source's last few answers
-  and places a peeked token as peeked, so each token is asked for once as a rule
-  (§4.2, §6.8). The frame loop keeps its frame stack from one term to the next
-  (§6.8). The builder shares a repeated short token through a cache of fixed slots,
-  at one hash and one comparison per token whatever the input, while still interning
-  no node (§6.8, §14), so §1's crate facts name the cache and §12.1 says what lives
-  inside a parse instead of denying a table. Each changes cost, not the parse: a
-  parse is byte-for-byte the tree and the diagnostics it was.
+- **§1, §4.2, §5.4, §6.8, §12.1, §14** (2026-10-07): the parse made faster with
+  its tree and diagnostics unchanged. The parser asked the token source for each
+  token three to six times as it peeked past the trivia, placed the trivia, and
+  placed the token, against §4.2's bound of twice; it now keeps the source's last
+  few answers and places a peeked token as peeked, so each token is asked for once
+  as a rule (§4.2, §6.8). The frame loop keeps its frame stack from one term to the
+  next (§6.8). The builder shares a repeated short token through a cache of fixed
+  slots, at one hash and one comparison per token whatever the input, while still
+  interning no node (§6.8, §14), so §1's crate facts name the cache and §12.1 says
+  what lives inside a parse instead of denying a table. `HasDocs::doc_lines` reads
+  the leading prefix alone (§5.4). Each changes cost, not the parse: a parse is
+  byte-for-byte the tree and the diagnostics it was.
 
 - **§10.5** (2026-10-04): honesty-only. The macro tier's operator run ends before
   a `#` or a `$`, which open tokens of their own (grammar §9), and the paragraph
