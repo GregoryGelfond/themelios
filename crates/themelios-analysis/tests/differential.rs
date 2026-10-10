@@ -578,9 +578,10 @@ enum Grounding {
 /// bounds such a grinder. Its size is set by the slowest cap-witnessed corpus rows — the pooled
 /// *disjunctive* growers (`pooled-disjunct-grows`, `heterogeneous-pooled-disjunct-grows`), a
 /// disjunctive rule per step — which reach the cap in some ten seconds on a laptop, and by a hosted
-/// CI runner that can be several times slower than one on single-threaded python + clingo: two
-/// minutes keeps a wide margin over both. And an `Inconclusive` is never read as a verdict.
-const GROUND_TIMEOUT: Duration = Duration::from_mins(2);
+/// CI runner, which has taken more than twelve times a laptop's time on single-threaded python +
+/// clingo. So the deadline is the laptop's ten seconds at the sixty-fourfold ceiling the tiers'
+/// scaling tripwires hold. And an `Inconclusive` is never read as a verdict.
+const GROUND_TIMEOUT: Duration = Duration::from_secs(10 * 64);
 
 /// The poll interval of the deadline loop.
 const GROUND_POLL: Duration = Duration::from_millis(50);
