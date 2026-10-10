@@ -362,7 +362,7 @@ section were read in the pinned sources and are version-scoped, each named in th
     refuses that repair: the message faults the call with a Program fault naming the statement it maps back to
     (`solve.md` §11.1), as the program tier's own evaluator refuses the same case (`program.md` §3.5);
   - *runtime error* — it accompanies an engine error the call then reports; it becomes that fault's text;
-    - *undefined atom* — an atom, or a shown signature, no rule defines when its rule is grounded. The program is
+  - *undefined atom* — an atom, or a shown signature, no rule defines when its rule is grounded. The program is
     well-defined — such an atom is false there — so the message is informational and dropped. On a multi-shot backend
     it also marks the stepwise reading `solve.md` §4.1 states, where a later definition does not reach the rules
     grounded now; that is the language's semantics, and no fault;
@@ -528,8 +528,9 @@ changes the answers, and no check above the seam can see it (`solve.md` §10.1).
   the atom `#external` first (`solve.md` §4.1). The engine searches only what was grounded, grounds a part over the
   atoms grounded before it, instantiates a statement lowered into a grounded part only when that instance is grounded
   again, and resets the externals a part declares whenever it grounds the part again; so the adapter grounds what is
-  pending — `base`'s statements first, then each grounded instance with statements pending — before anything else
-  reads it, restores the external values it holds after each grounding it performs, and refuses an instance that
+  pending — `base`'s statements first, as a step of their own — before anything else reads it, lowers each lowering
+  into an engine part of its own and grounds that part once per instance, so the engine never re-instantiates a
+  statement over a grown domain or re-declares an external an assignment has set, and refuses an instance that
   matches no lowered part, which the engine would ground as nothing and report nowhere (`solve.md` §4.1, §11.1).
 - **Cancellation**, when realised, reaches the backend-owned slot and never a pointer into a freed control
   (`solve.md` §4.1). Until then the adapter declares `cancellation` false, and a budgeted request over it refuses
@@ -686,10 +687,12 @@ Every claim this document's §5 and `solve.md` make about the pinned engines' be
 clingcon 5.2.1 as their pinned sources build, and this table is the one register of them: exhaustive over those
 claims, each with a stable name, the sections that cite it, and its holder — *held* by a case that fails if the claim
 does, or *read* in the named source at that version, where no suite can exercise it without ending the process or
-where it is a fact about the code's shape. The spike suite holds every claim marked *held* by a spike, each spike
-case carrying the claim's name, and `solve.md` §13.2 cites this register rather than listing its own. An engine
-upgrade re-runs the held claims and re-reads the read ones, re-establishing each compensation's necessity or retiring
-it (specification §5.2, §10.1). A claim cited without a row here is a defect of this document (§8). The lower tiers'
+where it is a fact about the code's shape. A holder holds the claim itself: where the adapter's compensation for a
+claim has a holder of its own — a case that passes whatever the engine does — the row names it apart, as the
+compensation's, never as the claim's. The spike suite holds every claim marked *held* by a spike, each spike case
+carrying the claim's name, and `solve.md` §13.2 cites this register rather than listing its own. An engine upgrade
+re-runs the held claims and re-reads the read ones, re-establishing each compensation's necessity or retiring it
+(specification §5.2, §10.1). A claim cited without a row here is a defect of this document (§8). The lower tiers'
 claims about the authority — the text parser's measured ceiling, the grounder's wrapping arithmetic, the safety and
 finiteness boundaries — are held where those tiers measure them, in grammar §11's register and the program and
 analysis differentials (`syntax.md` §6.6; `program.md` §3.5; `analysis.md` §10), and §3 cites them there rather than
@@ -697,7 +700,7 @@ here.
 
 | Name | Claim | Cited at | Holder |
 |---|---|---|---|
-| `build-defaults` | The engines' build defaults detect a script runtime and build the applications. | §5.1 | *read*, the engines' CMake files; *held* by the build script's flags and version check |
+| `build-defaults` | The engines' build defaults detect a script runtime and build the applications. | §5.1 | *read*, the engines' CMake files; the compensation — the build script's flags, and its version check — held by the build |
 | `thread-local-errors` | The engine's error state is thread-local, unless `CLINGO_NO_THREAD_LOCAL` is defined, which the `-sys` build leaves undefined. | §5.2 | *read*, `libclingo/src/control.cc`; *held* by the race harness |
 | `process-ending-calls` | `clingo_solve_handle_wait` with a positive timeout outside asynchronous mode, and a solve-event callback returning `false` on a non-model event, end the process. | §5.2 | *read*, `libclingo/src/control.cc` |
 | `null-logger-stderr` | A null logger writes the engine's messages to the process's standard error. | §5.2 | *read*, `libclingo/src/control.cc` |
@@ -726,7 +729,7 @@ here.
 | `ground-order` | A part grounded ahead of the base it reads misses the base's atoms. | §5.7; `solve.md` §4.1, §11.1 | *held*, the multi-shot spike |
 | `late-statement` | A statement lowered into a grounded part is instantiated only when that instance is grounded again, for that instance. | §5.7; `solve.md` §4.1, §11.1 | *held*, the multi-shot spike |
 | `stepwise-grounding` | An atom with no definition when a rule is grounded is false in that rule for good: a later definition does not reach it, and under default negation the instantiation is already a fact — save where the atom was declared `#external` first. | §5.2, §5.7; `solve.md` §4.1 | *held*, the multi-shot spike and conformance obligation 18 |
-| `reground-rules` | Grounding a part again re-emits rules for statements it had instantiated, leaving the answer sets as they were. | `solve.md` §11.1 | *held*, the multi-shot spike |
+| `reground-instantiates` | Grounding a part again re-instantiates every statement it holds over the grown domain, re-emitting the rules it had and possibly deriving atoms the earlier grounding did not. | §5.7; `solve.md` §4.1, §11.1 | *held*, the multi-shot spike |
 | `parts-by-arity` | A grounding selects parts by name and arity, and an instance of no declared part grounds nothing and reports nothing. | §5.7; `solve.md` §6.2, §11.1 | *read*, `libgringo/src/input/program.cc`; *held* by conformance obligation 12 and the multi-shot spike |
 | `failed-grounding` | A grounding opens its output step before it checks the program and, past the check, streams its instantiation into the solver, so a failed grounding leaves state only a fresh control clears. | `solve.md` §4.1 | *read*, `libclingo/src/clingocontrol.cc`; *held*, the failed-grounding spike |
 | `single-shot-run` | With no `main` script and no `#include <incmode>.`, the authority's run grounds `base` and solves. | `solve.md` §6.3 | *read*, `libclingo/src/clingocontrol.cc` (`ClingoControl::main`) |
@@ -768,9 +771,10 @@ here.
   The safety and finiteness boundaries are recorded against the pinned binary (`analysis.md` §5, §12).
 - **Silent no-ops are a class.** A call the engine accepts and then does nothing with, or quietly undoes, is a class,
   not a single case. Its known members are answered by the adapter: `assign_external` of a non-external, or of an
-  external whose part is not yet grounded, and `ground` of an instance that matches no part the program declares,
-  are refused or grounded first; and the reset a re-grounding gives a part's externals is undone by restoring their
-  values (§5.7). The spike suite owns the class, and each further member it finds is refused or characterized here.
+  external whose part is not yet grounded, and `ground` of an instance that matches no part the program declares, are
+  refused or grounded first; and the reset a re-grounding gives a part's externals never arises, since the adapter
+  grounds each engine part once per instance (§5.7). The spike suite owns the class, and each further member it finds
+  is refused or characterized here.
 - **A script's run is held per adapter.** No portable check observes whether a backend runs a `#script`: the
   Potassco adapter refuses one at `lower` and its own tests hold the refusal (§5.6), and a single-shot backend
   carries one and runs nothing by the contract's text (`solve.md` §6.3), held by that backend's own tests. The
