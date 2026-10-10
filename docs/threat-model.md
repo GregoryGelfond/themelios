@@ -351,18 +351,21 @@ section were read in the pinned sources and are version-scoped, each named in th
   of flags that no volume of messages can fill, while the message *text* it keeps is bounded by a named limit, the
   message capture, with a stated default; so a program cannot flood the host's error stream or grow the capture
   without limit, and no message of a class that faults the call is ever lost to the bound — a flood of benign
-  messages followed by one that faults still faults. Within the bound the capture keeps a faulting class's text
-  before a benign one's, evicting benign text first, and among faulting texts the first to arrive, so the fault names
-  the first undefined operation the grounding met, its location intact, whatever flood follows. Each message class
-  the pinned engine logs (`clingo_warning_e`, `libclingo/clingo.h`) has one disposition, applied from the flags after
-  the engine call that logged it returns, with the kept text as the fault's message where there is any:
+  messages followed by one that faults still faults. The capture keeps only a faulting class's text, the first to
+  arrive within its bound — a benign class's arrival is recorded in its flag and its text is not kept, since nothing
+  reads it — so the fault names the first undefined operation the grounding met, its location intact, whatever flood
+  follows. Each message class the pinned engine logs (`clingo_warning_e`, `libclingo/clingo.h`) has one disposition,
+  applied from the flags after the engine call that logged it returns, with the kept text as the fault's message
+  where there is any:
   - *undefined operation* — the engine met an arithmetic operation or aggregate weight it could not evaluate, or an
     `@`-call nothing answers (`libclingo/src/scripts.cc`), treated the instance as false, and went on. The adapter
     refuses that repair: the message faults the call with a Program fault naming the statement it maps back to
     (`solve.md` §11.1), as the program tier's own evaluator refuses the same case (`program.md` §3.5);
   - *runtime error* — it accompanies an engine error the call then reports; it becomes that fault's text;
-  - *undefined atom* — an atom, or a shown signature, no rule defines. The program is well-defined — such an atom is
-    false — so the message is informational and dropped;
+    - *undefined atom* — an atom, or a shown signature, no rule defines when its rule is grounded. The program is
+    well-defined — such an atom is false there — so the message is informational and dropped. On a multi-shot backend
+    it also marks the stepwise reading `solve.md` §4.1 states, where a later definition does not reach the rules
+    grounded now; that is the language's semantics, and no fault;
   - *file included* — unreachable, since the lowering refuses `#include` (§5.6);
   - *variable unbounded* — declared by the header and raised nowhere in the pinned source (§7.1). Should one arrive,
     it takes the disposition of *other*, below: it faults the call with the adapter locus until the spike suite
@@ -520,12 +523,14 @@ changes the answers, and no check above the seam can see it (`solve.md` §10.1).
   suite's check, `solve.md` §13.1).
 - **Multi-shot.** Grounding and the engine's automatic cleanup invalidate its atom iterators between steps, so the
   adapter re-reads what it needs after each step; a rebuild resets the control and replays the retained state
-  (`solve.md` §6.2). The engine searches only what was grounded, grounds a part over the atoms grounded before it,
-  instantiates a statement lowered into a grounded part only when that instance is grounded again, and resets the
-  externals a part declares whenever it grounds the part again; so the adapter grounds what is pending — `base`'s
-  statements first, then each grounded instance with statements pending — before anything else reads it, restores
-  the external values it holds after each grounding it performs, and refuses an instance that matches no lowered
-  part, which the engine would ground as nothing and report nowhere (`solve.md` §4.1, §11.1).
+  (`solve.md` §6.2). Grounding is stepwise, as the language's multi-shot reading is: an atom with no definition when
+  a rule is grounded is false in that rule for good, a later definition reaching it only where the program declared
+  the atom `#external` first (`solve.md` §4.1). The engine searches only what was grounded, grounds a part over the
+  atoms grounded before it, instantiates a statement lowered into a grounded part only when that instance is grounded
+  again, and resets the externals a part declares whenever it grounds the part again; so the adapter grounds what is
+  pending — `base`'s statements first, then each grounded instance with statements pending — before anything else
+  reads it, restores the external values it holds after each grounding it performs, and refuses an instance that
+  matches no lowered part, which the engine would ground as nothing and report nowhere (`solve.md` §4.1, §11.1).
 - **Cancellation**, when realised, reaches the backend-owned slot and never a pointer into a freed control
   (`solve.md` §4.1). Until then the adapter declares `cancellation` false, and a budgeted request over it refuses
   (`solve.md` §6.3).
@@ -653,11 +658,11 @@ Each context adds to the one before it and inherits the rest.
 - **The developer tool.** The file door's `DEFAULT` nesting on any thread, and `CEILING` only on a
   `REQUIRED_STACK_BYTES` thread (§3.2). The adapter's engine-safe depth likewise: its `DEFAULT` holds on the
   platforms' default stacks and asks for no thread, and its `CEILING` needs a thread of its own required stack
-  (§5.6). For a solve that runs long, the line falls between search and grounding: a worker stuck in search burns
-  its CPU and keeps its control until cancellation is realised, and can be abandoned; a worker stuck in grounding
-  holds the process's interning lock for good (§5.3), so every later engine call in the process fails after the
-  bounded wait — a tool that may meet such input runs engine work where it can be killed, as the service does, or
-  accepts a restart (§5.9).
+  (§5.6). For a solve that runs long, the line falls between search and grounding: a worker stuck in search burns its
+  CPU and keeps its control until cancellation is realised, and can be abandoned; a worker stuck in grounding holds
+  the process's interning lock for good (§5.3), so every later interning write in the process — any new question —
+  fails after the bounded wait — a tool that may meet such input runs engine work where it can be killed, as the
+  service does, or accepts a restart (§5.9).
 - **The batch pipeline** adds the job's own timeout and memory limit around any solving; the `is_safe() && Holds`
   gate before grounding contributed programs (§3.4); and `Inconclusive` and `Unknown` read as not passing (§2.5).
 - **The service boundary** adds source admitted only through the syntax tier, under a request-size cap far below
@@ -677,15 +682,18 @@ Each context adds to the one before it and inherits the rest.
 
 ### 7.1 The register of engine claims
 
-Every claim the designs of record make about the pinned engines' behaviour — this document's §5 and `solve.md`'s —
-holds of clingo 5.8.2 and clingcon 5.2.1 as their pinned sources build, and this table is the one register of them:
-exhaustive over those claims, each with a stable name, the sections that cite it, and its holder — *held* by a case
-that fails if the claim does, or *read* in the named source at that version, where no suite can exercise it without
-ending the process or where it is a fact about the code's shape. The spike suite holds every claim marked *held* by a
-spike, each spike case carrying the claim's name, and `solve.md` §13.2 cites this register rather than listing its
-own. An engine upgrade re-runs the held claims and re-reads the read ones, re-establishing each compensation's
-necessity or retiring it (specification §5.2, §10.1). A claim cited without a row here is a defect of this document
-(§8).
+Every claim this document's §5 and `solve.md` make about the pinned engines' behaviour holds of clingo 5.8.2 and
+clingcon 5.2.1 as their pinned sources build, and this table is the one register of them: exhaustive over those
+claims, each with a stable name, the sections that cite it, and its holder — *held* by a case that fails if the claim
+does, or *read* in the named source at that version, where no suite can exercise it without ending the process or
+where it is a fact about the code's shape. The spike suite holds every claim marked *held* by a spike, each spike
+case carrying the claim's name, and `solve.md` §13.2 cites this register rather than listing its own. An engine
+upgrade re-runs the held claims and re-reads the read ones, re-establishing each compensation's necessity or retiring
+it (specification §5.2, §10.1). A claim cited without a row here is a defect of this document (§8). The lower tiers'
+claims about the authority — the text parser's measured ceiling, the grounder's wrapping arithmetic, the safety and
+finiteness boundaries — are held where those tiers measure them, in grammar §11's register and the program and
+analysis differentials (`syntax.md` §6.6; `program.md` §3.5; `analysis.md` §10), and §3 cites them there rather than
+here.
 
 | Name | Claim | Cited at | Holder |
 |---|---|---|---|
@@ -700,36 +708,39 @@ necessity or retiring it (specification §5.2, §10.1). A claim cited without a 
 | `model-read` | Reading a model's symbols copies existing handles out, interning nothing and taking no lock. | §5.3 | *read*, `libclingo/src/control.cc` (`clingo_model_symbols`), `libgringo/src/output/output.cc` (`OutputBase::atoms`); *held* by the race harness |
 | `hash-consing` | The engine hash-conses its symbols, and its symbol hash embeds addresses and is not stable across processes. | §5.4; `solve.md` §11.1 | *read*, `libgringo/src/symbol.cc`; the sharing *held* by the unfold tripwire |
 | `symbol-identity` | Creating a symbol and finding an atom recurse on no depth: a symbol is built from its arguments' stored hashes, compared by identity, and found by hash. | §5.4, §5.6; `solve.md` §11.1 | *read*, `libgringo/src/symbol.cc`, `libgringo/gringo/domain.hh` |
-| `nul-terminated-input` | The engine's string input stops at the first NUL. | §5.4; `solve.md` §11.1 | *read*, `libclingo/clingo.h`; *held* by conformance obligation 17 |
+| `nul-terminated-input` | The engine's string input stops at the first NUL. | §5.4; `solve.md` §11.1 | *held*, the NUL spike, creating a string symbol through the raw binding and observing the truncation; the compensation held by conformance obligation 17 |
 | `symbol-comparison` | The engine's symbol comparison recurses in argument depth. | §5.4, §5.6; `solve.md` §11.1 | *read*, `libgringo/src/symbol.cc`; measured by the engine-safe depth |
 | `symbol-printing` | The engine's symbol printing recurses in depth. | §5.4 | *read*, `libgringo/src/symbol.cc` |
 | `lent-pointers` | A pointer the engine lends a callback is valid only for that callback. | §5.5 | *read*, `libclingo/clingo.h` |
 | `term-recursion` | The AST builder's add and grounding's term handling recurse in term depth. | §5.6; `solve.md` §11.1 | *read* in `libgringo`; *held* by the engine-safe depth's measurement |
 | `no-include-node` | The engine resolves `#include` only while parsing text, its AST having no include node, and a build without a script runtime runs no `#script`. | §5.6; `solve.md` §11.1 | *read*, `libclingo/clingo.h`, `libclingo/src/scripts.cc` |
 | `builder-add-partial` | `clingo_program_builder_add` can fail partway, on an allocation, leaving the statements added before it. | `solve.md` §4.1 | *read*, `libclingo/clingo.h` |
-| `handle-lifecycle` | The engine refuses the next solve over an unclosed handle, `get` does not drain a satisfiable search, and a model's memory is reused when the search resumes. | §5.7 | *held*, the solve path's tests and the leak harness |
-| `iterator-invalidation` | Grounding and automatic cleanup invalidate atom iterators between steps. | §5.7 | *held*, the conformance suite's multi-shot cases |
+| `unclosed-handle` | The engine refuses a solve on a control whose solve handle is open. | §5.7 | *held*, the handle spike through the raw binding; the compensation — the handle closed on drop — held by the solve path's tests and the leak harness |
+| `get-no-drain` | `get` does not drain a satisfiable search: the handle still yields models after it. | §5.7 | *held*, the handle spike; the compensation — draining before reading the result — held by the solve path's tests |
+| `model-lifetime` | A model's memory is valid only until the search resumes, which reuses it. | §5.7 | *read*, `libclingo/src/control.cc`; the compensation — copying out before the next pull — held by the leak harness |
+| `iterator-invalidation` | Grounding and automatic cleanup invalidate atom iterators between steps. | §5.7 | *read*, `libclingo/clingo.h` ("Iterators are valid as long as the underlying sequence is not modified"); the compensation — re-reading after each step — held by the conformance suite's multi-shot cases |
 | `concurrent-solve` | A second concurrent solve on one control is undefined behaviour. | §5.7 | *read*, `libclingo/clingo.h`; no test can exercise it, and the borrow makes it unwritable |
 | `external-noop` | `assign_external` of a non-external does nothing, and so does an assignment before the external's part is grounded. | §5.7; `solve.md` §11.1 | *held*, the external spike |
 | `external-reset` | Grounding a part again resets every external the part declares. | §5.7; `solve.md` §4.1, §11.1 | *held*, the external spike |
 | `search-covers-grounded` | A search covers only what was grounded. | §5.7; `solve.md` §4.1, §11.1 | *held*, the multi-shot spike |
 | `ground-order` | A part grounded ahead of the base it reads misses the base's atoms. | §5.7; `solve.md` §4.1, §11.1 | *held*, the multi-shot spike |
 | `late-statement` | A statement lowered into a grounded part is instantiated only when that instance is grounded again, for that instance. | §5.7; `solve.md` §4.1, §11.1 | *held*, the multi-shot spike |
+| `stepwise-grounding` | An atom with no definition when a rule is grounded is false in that rule for good: a later definition does not reach it, and under default negation the instantiation is already a fact — save where the atom was declared `#external` first. | §5.2, §5.7; `solve.md` §4.1 | *held*, the multi-shot spike and conformance obligation 18 |
 | `reground-rules` | Grounding a part again re-emits rules for statements it had instantiated, leaving the answer sets as they were. | `solve.md` §11.1 | *held*, the multi-shot spike |
 | `parts-by-arity` | A grounding selects parts by name and arity, and an instance of no declared part grounds nothing and reports nothing. | §5.7; `solve.md` §6.2, §11.1 | *read*, `libgringo/src/input/program.cc`; *held* by conformance obligation 12 and the multi-shot spike |
 | `failed-grounding` | A grounding opens its output step before it checks the program and, past the check, streams its instantiation into the solver, so a failed grounding leaves state only a fresh control clears. | `solve.md` §4.1 | *read*, `libclingo/src/clingocontrol.cc`; *held*, the failed-grounding spike |
 | `single-shot-run` | With no `main` script and no `#include <incmode>.`, the authority's run grounds `base` and solves. | `solve.md` §6.3 | *read*, `libclingo/src/clingocontrol.cc` (`ClingoControl::main`) |
-| `time-limit-alarm` | `--time-limit` is a wall-clock alarm armed before grounding begins. | `solve.md` §6.3 | *read*, `libpotassco/src/application.cpp` |
+| `time-limit-alarm` | `--time-limit` is a wall-clock alarm armed before grounding begins. | `solve.md` §6.3 | *read*, `clasp/libpotassco/src/application.cpp` |
 | `arming-window` | The engine's interrupt cuts the active call or the following one; the adapter's slot forwards a pull only while a search is active. | `solve.md` §4.1 | *held*, the arming spike, with the cancellation increment |
 | `display-rule` | A signature-form `#show` turns on the display filter; the term form adds a statement and restricts nothing. | `solve.md` §5.1 | *read*, `libgringo/src/input/programbuilder.cc`, `libgringo/gringo/output/output.hh`; *held*, the display spike |
 | `consequence-premise` | The consequence search tracks the displayed atoms, or a `#project` directive's, unless neither is lowered. | `solve.md` §4.1 | *read*, `clasp/src/cb_enumerator.cpp`, `clasp/clasp/shared_context.h`; *held*, the consequence spike |
 | `all-atoms-fidelity` | The all-atoms selection omits an atom with no solver literal, dropping no true atom in a single-shot solve. | `solve.md` §13.2 | *read*, `libgringo/src/output/statements.cc` (`Translator::atoms`); *held*, the all-atoms spike, which characterizes it across a multi-shot cleanup |
-| `extended-symbols` | Extended model symbols appear only under the `theory` selection. | §5.8; `solve.md` §11.1 | *read*, `libclingo/clingo/clingocontrol.hh`; *held* by the conformance suite's answer-set reads |
+| `extended-symbols` | Extended model symbols appear only under the `theory` selection. | §5.8; `solve.md` §11.1 | *read*, `libclingo/clingo/clingocontrol.hh`; *held*, the model-hook spike, which calls clingcon's model hook in a test harness and reads each selection |
 | `aspif-naming` | An aspif stream names an atom only where it displays one, and `clingo_backend_add_atom` records an atom's symbol. | `solve.md` §10.3 | *read*, `clasp/libpotassco/potassco/aspif.h`, `libclingo/clingo.h`; *held* by the aspif spike once an ingestion is built |
 | `grounding-uninterruptible` | Grounding cannot be interrupted: `ClingoControl::interrupt` reaches the solver alone. | §5.9; `solve.md` §10.1, §11.1 | *read*, `libclingo/src/clingocontrol.cc` |
-| `clingcon-fixed` | A registered theory can be neither reconfigured nor unregistered, so the theory outlives its control. | §5.8; `solve.md` §11.1, §11.3 | *read*, `libclingcon/clingcon.h`; *held* by the leak harness's drop paths |
+| `clingcon-fixed` | A registered theory can be neither reconfigured nor unregistered, so the theory outlives its control. | §5.8; `solve.md` §11.1, §11.3 | *read*, `libclingcon/clingcon.h`; the compensation — the drop order — held by the leak harness's drop paths |
 | `clingcon-registration` | Registration parses the fixed definition through `clingo_control_add`. | §5.2, §5.8 | *read*, `libclingcon/src/clingcon.cc` |
-| `clingcon-rewrite-callback` | The rewrite calls back once per rewritten statement, within its own call. | §5.3, §5.8 | *read*, `libclingcon/src/clingcon.cc` |
+| `clingcon-rewrite-callback` | The rewrite unpools each statement, shifts it where the key is on, and calls back once per unpooled statement, within its own call. | §5.3, §5.6, §5.8; `solve.md` §10.1, §11.1 | *read*, `libclingcon/src/clingcon.cc`, `libclingcon/src/parsing.cc` (`transform`); *held* by the clingcon backend's lowering tripwire |
 | `clingcon-rewrite-mandatory` | The registered definition names only the rewritten atoms, so the rewrite is mandatory. | §5.8; `solve.md` §11.1 | *held*, the clingcon spikes |
 | `clingcon-range` | Values are 32-bit, bounded to ±(2³⁰−1). | §5.8; `solve.md` §11.1 | *read*, `libclingcon/clingcon/base.hh` |
 | `clingcon-checked` | Arithmetic raises on overflow and on an out-of-range constant, when the propagator initialises. | §5.8; `solve.md` §11.1 | *read*, `libclingcon/clingcon/util.hh`, `base.hh`; *held*, the out-of-range spike |
@@ -742,6 +753,7 @@ necessity or retiring it (specification §5.2, §10.1). A claim cited without a 
 | `clingcon-decide-latch` | The first registration in a process fixes whether the decision hook is installed for every later one. | §5.8; `solve.md` §11.3 | *read*, `libclingcon/src/clingcon.cc` |
 | `clingcon-undo` | The propagator's `undo` catches nothing, so an exception there would unwind through the engine. | §5.5 | *read*, `libclingcon/src/clingcon.cc` |
 | `clingcon-keys` | `shift-constraints` decides a body constraint's meaning, `translate-opt` keeps an objective in the theory, and `split-all` shapes only the search. | §5.8; `solve.md` §11.1 | *read*, `libclingcon/src/solver.cc` and the configuration sources |
+| `clingcon-show` | `&show` shapes the printed output alone: it projects neither the enumeration nor a model's identity, and the programmatic reading reports every named variable. | `solve.md` §11.1 | *read*, `libclingcon/src/clingcon.cc` and `libclingcon/src/propagator.cc`; *held*, the clingcon spikes, over a program with a `&show` |
 
 ### 7.2 Residual risks
 
@@ -793,4 +805,5 @@ necessity or retiring it (specification §5.2, §10.1). A claim cited without a 
 
 This statement fails in three ways, each a defect to repair in the same change that finds it, in the code or here,
 never left between: a surface, tier, door, or extension the stack exposes with no entry here; an engine claim with no
-row in the register, or a row with no holder (§7.1); and a surface that defends less than stated here.
+row in the register §7.1 scopes, or in the registers it names, or a row with no holder; and a surface that defends
+less than stated here.
