@@ -1,6 +1,6 @@
 # themelios-analysis — tier design
 
-2026-08-24, revised through 2026-09-05 (§13). The design of record, which the
+2026-08-24, revised through 2026-09-30 (§13). The design of record, which the
 build follows; §13 records each revision. This document is the API design of
 `themelios-analysis` — the types, traits, signatures, semantics, and
 computational costs of the crate that reads a `Program` and reports its
@@ -154,12 +154,12 @@ facet would rebuild the graph each time; one pass builds it once. Every facet is
 a typed value, never a rendered string, so a consumer acts on the fact and no
 consumer parses prose (spec §1.5).
 
-**Computational cost.** `Analysis::of` is `O(program + edges)` — one iterative
-walk of the program (program §13) to scan constructs and collect dependency
-edges and safety facts, plus the strongly-connected-components decomposition of
-the dependency graph, which is linear in the graph (§4). It allocates the graph
-and the facets and nothing per query thereafter; reading a facet is `O(1)`, and
-reading a witness is `O(the witness)`. Clone is linear; equality is structural.
+**Computational cost.** `Analysis::of` is `O(unpooled + edges)` (§8) — one iterative
+walk of the program (program §13) to scan constructs, one of the unpooled program to
+collect dependency edges and safety facts, plus the strongly-connected-components
+decomposition of the dependency graph, which is linear in the graph (§4). It allocates
+the graph and the facets and nothing per query thereafter; reading a facet is `O(1)`,
+and reading a witness is `O(the witness)`. Clone is linear; equality is structural.
 
 ## 4. The predicate dependency graph
 
@@ -466,9 +466,10 @@ consumer that needs full grounding finiteness conjoins `Holds` with those. Withi
 the reading is a sound over-approximation: it may report `Unknown` where the ground program
 is in fact finite (a deepening a lower stratum in fact bounds), never a false `Holds`.
 
-**Computational cost.** Safety is `O(rules · variables)` — one pass per rule
-collecting binding occurrences; finiteness reads the components (§4) and the
-term structure of the recursive rules, `O(program + edges)`.
+**Computational cost.** Safety is `O(rules · variables)` over the unpooled program's
+rules — one pass per rule collecting binding occurrences; finiteness reads the
+components (§4) and the term structure of the recursive rules, `O(unpooled + edges)`
+(§8).
 
 ## 6. The program classes
 
@@ -713,8 +714,9 @@ the scan's witness for them is a `Statement::Rule`; negation is not, since the s
 records a directive's negation too (`#external -p`, `#show a : not p`), so Horn
 reads it from the derivation rules alone (§6.3).
 
-**Computational cost.** `O(program)` — one walk; `uses` is `O(1)`, and reading a
-witness clones a statement, `O(witness)` (§8).
+**Computational cost.** `O(program)` — one walk of the program as written, since the
+scan reads constructs before any unpooling; `uses` is `O(1)`, and reading a witness
+clones a statement, `O(witness)` (§8).
 
 ## 8. Posture, totality, and cost
 
@@ -746,27 +748,38 @@ this section states what it adds.
   thresholds (§1). A convenience that decided a policy — a `should_use(algorithm)`
   — would breach the separation and is refused as a design defect, not added.
 
-**Computational cost, consolidated.** `Analysis::of` is `O(program + edges)`: one
-iterative walk builds the construct scan, the dependency edges, and the safety
-facts, and the strongly-connected-components decomposition is linear in the graph
-(§4). Every read thereafter is `O(1)` for a flag or a facet and `O(witness)` for a
-witness. Clone is linear; equality, ordering, and hashing are structural. No walk
-recurses on the call stack (the graph decomposition is iterative, §4; the program
-walks are the program tier's iterative ones, program §13), so a pathological
-program cannot overflow one.
+**Computational cost, consolidated.** `Analysis::of` is `O(unpooled + edges)`, where
+`unpooled` is the pool-eliminated program the analysis reads (§5; program §9): one
+iterative walk of the program as written builds the construct scan (§7), one of the
+unpooled program builds the dependency edges and the safety facts, and the
+strongly-connected-components decomposition is linear in the graph (§4). For a pool-free
+program `unpooled` is the program itself. Every read thereafter is `O(1)` for a flag or
+a facet and `O(witness)` for a witness. Clone is linear; equality, ordering, and hashing
+are structural. No walk recurses on the call stack (the graph decomposition is
+iterative, §4; the program walks are the program tier's iterative ones, program §13), so
+a pathological program cannot overflow one.
 
 **The `edges` term is the real cost driver, and it can be `Θ(program²)`.** A rule
 with an `h`-atom head over a `b`-atom body contributes `h · b` dependency edges, so a
 single wide rule `p1;…;pn :- q1,…,qn.` of size `Θ(n)` yields `Θ(n²)` edges, which every
 `O(nodes + edges)` reader then pays. This is *faithful*, not a defect: the graph
-genuinely has that many edges; `O(program + edges)` names `edges` separately precisely
-because it can exceed `program`; and clingo's own grounding is likewise super-linear on
+genuinely has that many edges; `O(unpooled + edges)` names `edges` separately precisely
+because it can exceed `unpooled`; and clingo's own grounding is likewise super-linear on
 such a program. An adversary at the untrusted boundary (spec §12.4) can push the
 analysis to `Θ(program²)` only by handing it a program whose graph *is* that large — the
 work equals the output, never a multiplier on top of it. The linear commitments
-elsewhere in this crate (safety, finiteness, the SCC build) are `O(program + edges)` in
+elsewhere in this crate (safety, finiteness, the SCC build) are `O(unpooled + edges)` in
 exactly this sense: linear in the graph the program defines, with no term super-linear
 in the program on top of the edges the program spells out.
+
+**Pools are the one way the graph outgrows the text by more than its edges.** The
+analysis reads the unpooled program, and a rule's pools multiply out: `unpool`'s
+cross-product is exponential in the number of pooled positions (program §9.1), so a
+rule of `k` two-way pools becomes `2^k` rules before this crate reads one. The cost is
+still linear in what it reads — `unpool` is output-linear — but what it reads can be
+exponentially larger than the text an adversary wrote. At an untrusted boundary the
+embedder therefore bounds pooled input, or runs the analysis where it can be cut off
+(`threat-model.md` §3.4, §6).
 
 ## 9. Failure semantics, consolidated
 
@@ -1005,3 +1018,7 @@ Refinements made after this design was settled, each with the build that surface
 - **§5** (2026-09-05): the deepening walk's fifth path — a variable a positive body atom
   carries through an invertible arithmetic former (`p(X) :- p(X+1).`) deepens, so such a
   program is `Unknown`, never a false `Holds`.
+- **§3, §5, §7, §8** (2026-09-30): the cost is stated over what the analysis reads —
+  `O(unpooled + edges)`, the unpooled program exponential in the pooled positions — the
+  construct scan's walk over the program as written, and the embedder's bound on pooled
+  input named (`threat-model.md` §3.4, §6).

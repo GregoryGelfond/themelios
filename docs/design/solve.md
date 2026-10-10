@@ -1,6 +1,6 @@
 # themelios-solve — design of record
 
-2026-09-03, revised through 2026-10-04 (§17). The design of record, which the build follows; §17 records
+2026-09-03, revised through 2026-10-10 (§17). The design of record, which the build follows; §17 records
 each revision, the reconciliations with built code among them. This is the normative design for the
 **solve tier** — `themelios-solve` and the adapter crates that realise it — the fourth tier over the
 shared base (§12.1 of the specification). Its sibling `themelios-query` has its own design
@@ -84,6 +84,16 @@ the classifier's structure-driven routing (specification §1.1) or a build choic
 knob. Engine *parameters*, where they must surface at all, are typed, per-operation, and optional
 (§6.3), never a stringly-typed configuration object. By default a program author sees only the
 abstract object and its questions.
+
+**The vocabulary is ours, at three levels.** *Program text* is the language of record — clingo's grammar
+with clingcon's constraint atoms (`&sum{…} <= 5`, `&dom`, `&distinct`) — so existing programs, and the
+out-of-band oracles that read them, keep working; this is where a name cashes out to the engine's. *The
+programmatic surface* names things by what they mean, not by what an engine calls them: a theory is a
+typed `Theory` (§4.1) such as `IntegerConstraints`, never the engine's definition name, and the tier's
+other names follow the same rule (`Determination` and `Conclusion` over the engines' conflated result
+words, §5.1). *Engine-internal vocabulary* — a theory's rewritten atoms, its display atoms, its
+configuration keys — stays below the seam, where the adapter translates it, and never reaches a public
+surface.
 
 ---
 
@@ -262,9 +272,12 @@ pub trait Backend {
     }
 
     // --- REQUIRED iff capabilities().multi_shot (provided defaults that refuse) ---
-    /// A grounding that fails is never accepted: it leaves the backend needing a rebuild (a backend's own
-    /// state, below the trait), and the agent recovers by its rebuild, replaying what it accepted (§6.2).
-    fn ground(&mut self, parts: &[Part], opts: &GroundOptions) -> Result<(), Fault> {
+    /// Ground these part instances — `step(3)` for the declared `step(t)` (§6.2) — together with the `base`
+    /// statements lowered since base's last grounding (below, a backend's own state). An instance that
+    /// matches no part the lowered program holds refuses (`Presupposition::NotAPart`, §5.4), never a silent
+    /// no-op. A grounding that fails is never accepted: it leaves the backend needing a rebuild (a backend's
+    /// own state), and the agent recovers by its rebuild, replaying what it accepted (§6.2).
+    fn ground(&mut self, parts: &[PartInstance], opts: &GroundOptions) -> Result<(), Fault> {
         Err(Fault::unsupported(Capability::MultiShot))
     }
     fn assign_external(&mut self, ext: Symbol, v: TruthValue) -> Result<(), Fault> {
@@ -368,8 +381,62 @@ pub enum Capability {
 ```
 
 A request beyond declared capability receives a **typed refusal** naming the capability it needed
-(`Fault::unsupported`, §5.4), never a silent degrade. Cost note: `capabilities()` is `O(1)` and pure — it is
-read *before* a request is paid for.
+(`Fault::unsupported`, §5.4), never a silent degrade. Cost note: `capabilities()` is pure — it is read
+*before* a request is paid for — and `O(1)` but
+for the set of evaluated theories below, which it clones in `O(k)`: a handful, and nothing for a backend
+evaluating none.
+
+**Which theories a backend evaluates** is an open set of typed theories, each named by what it evaluates
+(§1.4):
+
+```rust
+/// A theory — named by what it evaluates, never by an engine's definition name (§1.4). Non-exhaustive:
+/// each theory library a backend comes to bind adds its variant, named the same way.
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum Theory {
+    /// Constraints over integer variables with finite domains — linear and nonlinear sums, differences,
+    /// domains, all-different, and disjointness. The linked clingcon backend evaluates it (§11.1).
+    IntegerConstraints,
+    /// A theory registered from Rust on the propagator surface, by the name its registrant gives it (§8.1).
+    Registered(Name),
+}
+
+/// Which theories a backend evaluates. `Default` evaluates none.
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct TheorySupport { /* the evaluated theories, ordered */ }
+impl TheorySupport {
+    pub fn of(theories: impl IntoIterator<Item = Theory>) -> TheorySupport;   // the backend's door
+    pub fn evaluates(&self, theory: &Theory) -> bool;                          // O(log k)
+    pub fn theories(&self) -> impl Iterator<Item = &Theory> + '_;              // canonical order
+}
+```
+
+A theory atom is evaluated only by a backend that evaluates its theory. An evaluated theory carries a
+**program-facing vocabulary** — the theory-atom names a program writes, in the language of record (§1.4) —
+which is not always its engine's registered definition: `IntegerConstraints` answers `&sum`, `&nsum`,
+`&diff`, `&dom`, `&distinct`, `&disjoint`, `&minimize`, `&maximize`, and `&show`, though clingcon's
+registered definition declares the first three only in their rewritten forms (§11.1); a theory registered
+from Rust answers the atoms its own definition declares (§8.1). The vocabulary is the backend's knowledge;
+`TheorySupport` names the theories. The theories one backend evaluates have **disjoint vocabularies** — two
+that answer one atom name (a difference-logic theory and `IntegerConstraints` both answer `&diff`) cannot be
+evaluated together, and the backend refuses the combination rather than guess whose atom it is. `lower`
+resolves each theory atom in order: an atom a `#theory` definition **in the program** declares belongs to
+that program-defined theory, whether or not an evaluated theory's vocabulary also claims the name; an atom
+no program definition declares belongs to the evaluated theory whose vocabulary names it; and an atom
+declared nowhere belongs to no theory. A theory atom whose theory the backend does not evaluate — on a
+backend that evaluates none, any theory atom — is refused at `lower` with a Program fault naming its
+statement (§5.4, §10.2): a theory atom no theory evaluates is left unconstrained, and the answer sets it
+yields are not the program's. On the clingcon backend the resolution
+runs before clingcon's rewrite, which matches atoms by name and would otherwise take a program-defined
+`&sum` into `IntegerConstraints`. The set is open because theories are: the linked clingcon backend
+evaluates `IntegerConstraints`; each further theory library a backend binds adds a named variant — a
+difference-logic theory's `DifferenceLogic`, a linear-arithmetic theory's `LinearArithmetic` — together with
+a `TheoryValue` arm where its values need one (§5.4); and a theory written in Rust on the propagator surface
+joins the set as `Registered` by being registered (§8.1), with no change to the contract. Its values read
+back through `TheoryAssignments` (§5.4) under the same `Theory`, so the declaration and the reading name a
+theory alike.
 
 **The `enumeration` bit carries a soundness obligation, not merely a hint.** A backend that declares
 `enumeration: false` (it decides consistency but does not enumerate the answer sets) must **never**
@@ -425,9 +492,7 @@ the program lowered
 before it, the backend ready; a grounding that fails fails its solve and leaves the lowered program as it was;
 and an engine refusal past `lower`'s check leaves every other method that touches the engine refusing, as
 above, until a `lower` replaces the program. The agent recovers by its rebuild (§6.2); a caller driving the
-backend directly rebuilds what it still wants. Whether a multi-shot backend's search covers what is lowered
-but not yet grounded the contract does not yet say: the agent and the conformance suite solve straight after
-`lower`, and the first multi-shot adapter settles it with its engine in hand (§11.1).
+backend directly rebuilds what it still wants.
 
 The law is uniform by decision. A backend whose engine could undo a failed grounding still refuses until its
 rebuild, so a client's recovery is one path on every backend — the rebuild the agent already performs — and a
@@ -442,6 +507,19 @@ whatever an engine keeps. The conformance suite holds what it can drive (§13.1)
 adding nothing, a failed grounding refusing until the rebuild, a registration surviving it — and cannot drive
 an engine refusal past the check: a backend that passes has no bug there to drive, and no portable test runs
 an engine out of memory.
+
+**What a ready backend searches.** With nothing lowered, a ready backend answers as the empty program does —
+`solve` one model, the empty answer set, and each consequence door the empty set — since nothing lowered is
+the empty program, never an absent one: no presupposition fails, so nothing refuses (§13.1, obligation 14).
+A single-shot backend grounds its `base` part within each solve (§6.3). A multi-shot backend grounds the
+`base` statements lowered since base's last grounding before anything else reads them — a `ground` in one
+step with the instances it asks for, and each run-opening method (`solve`, `solve_assuming`, `optimize`,
+`consequences_native`) ahead of its search, inside its run — so a search straight after `lower` covers the
+base as a single-shot solve does, and a question reads the same on either (§6.4); a named part is searched
+only once `ground` has instantiated it. The order is the language's: a part grounded ahead of the base it
+reads would miss the base's atoms, and an engine that searches only what was grounded would answer a search
+straight after `lower` as the empty program — both so in the pinned engine, which the Potassco adapter's
+grounding answers (§11.1).
 
 ### 4.2 Refuse-or-derive, disclosed before it is paid for
 
@@ -527,15 +605,18 @@ impl Model {
         // the symbols the program's term directives display in this model — the half of the display only
         // an engine evaluates (below); O(|terms| log (|terms| + |M|)), and the union with the answer set,
         // O(|M| + |terms|), where some term is not one of its atoms
+    pub fn with_assignment(self, assignment: TheoryAssignments) -> Model;
+        // a theory-evaluating backend's door; O(1)
     pub fn atoms(&self) -> &AnswerSet;                // the answer set — what every reading reads
     pub fn shown(&self) -> Shown<'_>;                 // the display the core derives, a type of its own — no reading
                                                       // consults it
     pub fn assignment(&self) -> &TheoryAssignments;   // empty unless the backend evaluates a theory
     pub fn is_consistent(&self) -> bool;              // no atom beside its strong negation (query.md §2.3)
     pub fn is_set_of_literals(&self) -> bool;         // every member a literal, a function symbol; O(|M|)
-    // Equality compares the display by content. The assignment-bearing construction door lands with
-    // `TheoryAssignments`' own constructors, when a theory-evaluating backend is built (§11.1); until then
-    // every model's assignment is empty.
+    // Equality compares the display by content. A backend evaluating a theory builds each model as
+    // `Model::of(atoms).with_assignment(assignment)`; the assignment's own door (§5.4) carries its
+    // invariants, so this one is infallible. Two models with equal answer sets and different assignments
+    // are different models — the constraint answer set is the pair.
 }
 
 /// A program's show rule — which of a model's atoms its `#show` directives display (below): every atom
@@ -897,10 +978,35 @@ conformance suite (§13.1) still *attempts* each, but the guarantee is structura
 ### 5.4 Theory assignments, blame, faults
 
 ```rust
-/// Theory (constraint) assignments — a DISTINCT typed component of the outcome, never laundered
-/// into Herbrand-looking atoms. Carries the wider-than-i32 constraint values (see below).
+/// Theory (constraint) assignments — a DISTINCT typed component of the outcome, never laundered into
+/// Herbrand-looking atoms: for each theory the backend evaluates, the value of each variable the program
+/// names, in canonical order. Empty for a backend that evaluates no theory, and then allocation-free.
 #[non_exhaustive]
-pub struct TheoryAssignments { /* per-variable typed constraint values */ }
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct TheoryAssignments { /* Theory → (variable → value), both maps ordered */ }
+
+impl TheoryAssignments {
+    /// The backend's construction door: `(theory, variable, value)` triples in any order. Refuses a
+    /// variable given twice for one theory (never last-wins: a repeat is a reading defect to surface). A
+    /// theory with no values is not recorded — absent and empty are one value.
+    pub fn of(values: impl IntoIterator<Item = (Theory, Symbol, TheoryValue)>)
+        -> Result<TheoryAssignments, RepeatedVariable>;
+    pub fn is_empty(&self) -> bool;                                                     // O(1)
+    pub fn theories(&self) -> impl Iterator<Item = &Theory> + '_;                       // canonical order
+    pub fn values(&self, theory: &Theory) -> impl Iterator<Item = (&Symbol, &TheoryValue)> + '_;
+        // empty if absent
+    pub fn value(&self, theory: &Theory, variable: &Symbol) -> Option<&TheoryValue>;    // O(log)
+}
+
+/// A theory variable's value. Integer-valued today; a wider or rational kind is a new arm, and every arm
+/// is `Eq + Ord`, so a `Model` stays `Eq` (no bare float).
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum TheoryValue { Integer(i64) }
+
+/// The one refusal of `TheoryAssignments::of`: a variable given twice for one theory. Display + Error.
+#[non_exhaustive]
+pub struct RepeatedVariable { /* theory: Theory, variable: Symbol */ }
 
 /// The `Inconsistent` payload (§5.1). For an assumption-scoped solve it answers blame.
 pub struct Unsat { /* … */ }
@@ -970,6 +1076,7 @@ pub enum Presupposition {
     Spent,                     // an observation already forgotten, or another agent's (§6.2)
     NotAnAtom,                 // an observed fact that is not an atom (§6.2, §7.3)
     NotExternal,               // a truth value assigned to an atom that is not external (§6.2)
+    NotAPart,                  // a part instance matching no part the lowered program holds (§4.1, §6.2)
     UnrealisableBudget,        // a budget the backend neither enforces nor lets the core enforce (§6.3)
 }
 impl Fault {
@@ -1002,14 +1109,22 @@ impl Fault {
 impl std::fmt::Display for Fault {}                        // Fault is Display + Error — NOT ToDiagnostic
 ```
 
-- **Theory results — constraint assignments — are a distinct typed component** of the outcome, beside
-  the answer set, never laundered into Herbrand-looking atoms. This separation is load-bearing: it is
-  what a CP or DL client reads back cleanly (laundering theory values into Herbrand-looking atoms is
-  where a client's name-collisions come from), and it is where the `i32`/wider-integer question
-  resolves — program literals stay `Symbol` (`i32`), constraint assignments are a wider solve-tier
-  typed value. **The component is rich enough for a full CP theory** (§8.2): a global constraint's
-  domain values (`&dom`), a sum's result (`&sum`), and an `alldifferent`'s witness assignment are all
-  read back here as typed data, not just difference/sum scalars.
+- **Theory results — constraint assignments — are a distinct typed component** of the outcome, beside the
+  answer set, never laundered into Herbrand-looking atoms. This separation is load-bearing: it is what a CP or
+  DL client reads back cleanly (laundering theory values into Herbrand-looking atoms is where a client's
+  name-collisions come from), and it is where the `i32`/wider-integer question resolves — program literals
+  stay `Symbol` (`i32`), constraint assignments are a wider solve-tier typed value. **The component is rich
+  enough for a full CP theory** (§8.2): a global constraint's domain values (`&dom`), a sum's result (`&sum`),
+  and an `alldifferent`'s witness assignment are all read back here as typed data, not just difference/sum
+  scalars. The component is keyed by the `Theory` (§4.1) — `IntegerConstraints` for clingcon's — and then by
+  the variable, a ground `Symbol`: two theories over one engine may name the same variable and must not
+  collide, and the same program under two backends evaluating the same theory yields comparable assignments
+  (witness 15, §13.4). A value is an integer, and its arm is 64-bit: the separation above keeps constraint
+  values apart from program literals precisely so they need not share `i32`, and a theory's range is its own —
+  clingcon's values are 32-bit, within ±(2³⁰−1) (§11.1), and embed losslessly, while a theory built on the
+  propagator surface (§8.3) chooses its own. A real or rational theory adds an arm, never a float, so equality
+  and order stay total. Cost: nothing for a backend evaluating no theory; for one that does, per model, the
+  named variables it reports, each once, in `O(v log v)`.
 - **Assumption blame** — when a scenario is inconsistent, which assumptions are responsible is an
   answerable, typed question (`Refutation` above), scoped by the scenario it ranged over.
 - **Faults** are values with the closed locus taxonomy above, with "is this a backend bug" a closed bit.
@@ -1146,7 +1261,7 @@ impl<B: Backend> Agent<B> {
     pub fn forget(&mut self, obs: Observation) -> Result<(), Fault>;                     // retract an observation
 
     // --- retained full-fidelity multi-shot mechanisms (the loop's realisation floor) ---
-    pub fn ground(&mut self, parts: &[Part]) -> Result<(), Fault>;          // instantiate #program parts
+    pub fn ground(&mut self, parts: &[PartInstance]) -> Result<(), Fault>;  // instantiate #program parts
     pub fn assign_external(&mut self, ext: Symbol, v: TruthValue) -> Result<(), Fault>; // toggle an open truth
 
     // --- ask (the shared question vocabulary — the same names the bare `Program` carries, §6.4) ---
@@ -1185,20 +1300,39 @@ readings range over the scenario's models — so the `_assuming` surface mirrors
 `solve_assuming` mirrors `solve`.
 
 **Assertion is monotone and clean; retraction is the sharp edge, made honest by owning the knowledge base.**
-`assert` adds one statement — any `Statement` (`program.md` §4.2): a rule, a fact, a constraint, an
-objective (`Optimize`) — and returns a `StatementId` naming it; `ground` instantiates a named `#program`
-part, today without its arguments (§14) — the two are the fine- and coarse-grained faces of the same
-monotone extension. `observe` is the bulk assertion of ground facts through the `Facts` pillar (§7.3), the
-loop's *observe* step, returning an `Observation` a later step can `forget`. Because themelios **owns the
-knowledge base as a first-class `Program` value** — which neither Prolog's flat clause database nor an
-engine's write-only backend has — `retract` is a *true* operation on that value: it removes the named
-statement from the knowledge base, and the agent then realises the removal against the engine by the
-cheapest faithful means its declared capabilities allow — **toggling an external** where the retracted
-statement was so guarded and the backend declares `externals`, or **resetting** the engine's accumulated
-program (`Backend::reset`) and reloading the amended program (`lower`) otherwise — `lower` accumulates, so a
-rebuild is a reset then one lowering, never a bare re-lower. The realisation is the agent's to choose; the
-register the caller writes stays declarative. This is why themelios can offer retraction where an engine
-offers only externals: it holds the program the external mechanism can only approximate.
+`assert` adds one statement — any `Statement` (`program.md` §4.2): a rule, a fact, a constraint, an objective
+(`Optimize`) — and returns a `StatementId` naming it; `ground` instantiates `#program` parts by their
+instances, `step(3)` for the declared `step(t)` (below) — the two are the fine- and coarse-grained faces of
+the same monotone extension. `observe` is the bulk assertion of ground facts through the `Facts` pillar
+(§7.3), the loop's *observe* step, returning an `Observation` a later step can `forget`. Because themelios
+**owns the knowledge base as a first-class `Program` value** — which neither Prolog's flat clause database nor
+an engine's write-only backend has — `retract` is a *true* operation on that value: it removes the named
+statement from the knowledge base, and the agent then realises the removal against the engine by the cheapest
+faithful means its declared capabilities allow — **toggling an external** where the retracted statement was so
+guarded and the backend declares `externals`, or **resetting** the engine's accumulated program
+(`Backend::reset`) and reloading the amended program (`lower`) otherwise — `lower` accumulates, so a rebuild
+is a reset then one lowering, never a bare re-lower. The realisation is the agent's to choose; the register
+the caller writes stays declarative. This is why themelios can offer retraction where an engine offers only
+externals: it holds the program the external mechanism can only approximate.
+
+A part instance names what `ground` instantiates:
+
+```rust
+/// A part instance: a part's name with one ground argument per formal. `step(3)` instantiates every lowered
+/// part named `step` with one formal — `step(t)` and `step(u)` alike, since parts combine at ground time by
+/// name and arity, as the language grounds them (program.md §4.1 leaves that to this tier) — and `base()` is
+/// the instance of `base`. Whether an instance matches a part the lowered program holds is the backend's
+/// check at `ground` (`Presupposition::NotAPart`, §5.4), so construction refuses nothing. O(arguments).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct PartInstance { /* the part's name + one ground Symbol per formal */ }
+impl PartInstance {
+    pub fn new(name: Name, arguments: impl IntoIterator<Item = Symbol>) -> PartInstance;
+    pub fn base() -> PartInstance;
+    pub fn name(&self) -> &Name;
+    pub fn arguments(&self) -> &[Symbol];
+    pub fn instantiates(&self, part: &PartKey) -> bool;   // the same name, one argument per formal; O(1)
+}
+```
 
 Retraction's two realisations diverge in cost by the whole program size and the loss of the engine's
 warm search, so — following §4.2, which forbids hiding a divergence of that magnitude behind a uniform
@@ -1220,14 +1354,14 @@ back to re-grounding the amended `Program` — a `reset` then a `lower` on a mul
 **single-shot** backend a plain `lower`, which *replaces* the program there (each solve is independent,
 so nothing accumulates and no `reset` is needed) — a rebuild any backend that solves at all supports. A
 rebuild on a multi-shot backend re-establishes after its lowering the state the loop carries — the open
-truths assigned through `assign_external`, the parts instantiated through `ground` — so a `reset`
+truths assigned through `assign_external`, the part instances grounded through `ground` — so a `reset`
 discards nothing the agent retains. The retained state upholds the two-representation correspondence
 (owned program ↔ engine-internal state) across the cycle, which is also what gives a transform on the
 owned side a defined effect under multi-shot. Cost: retained state is
-`Θ(program size + assigned externals + grounded parts)`, not `Θ(ground size)` — the ground instantiation
+`Θ(program size + assigned externals + grounded instances)`, not `Θ(ground size)` — the ground instantiation
 stays in the engine (§10), and beyond the program the loop keeps a truth value per external it assigned
-and the parts it grounded; an external-toggle step is `O(1)` at the seam; a rebuild is a `reset`, one
-lowering (§10.1), then the replay — the grounded parts first, in the order they were grounded, then each
+and the part instances it grounded; an external-toggle step is `O(1)` at the seam; a rebuild is a `reset`, one
+lowering (§10.1), then the replay — the grounded instances first, in the order they were grounded, then each
 assigned external's latest value, since an external is assigned only once grounded — whose re-grounding
 the engine pays again. A grounding that fails is never accepted: it leaves the backend needing a rebuild
 (§4.1, a backend's own state), and the agent recovers by this same rebuild at its next step that touches the
@@ -1241,11 +1375,11 @@ pending and the tracking is trivial; the pending mark takes effect with the reta
 neither a fault's locus nor `Presupposition::NeedsRebuild` to decide — that
 presupposition's consumer is a client composing over `Backend` (§4.1) — and a refusal that needed no rebuild
 costs one, never a wrong answer. Should the replay itself be refused — an
-accepted part whose `@`-function now faults, say — the knowledge base stays intact, the backend still needs
-its rebuild, and the refusal surfaces from that step; so it does from every later step that touches the
-engine, each retrying the rebuild and refusing at the same part, until a replay succeeds — the knowledge
-amended so that the part grounds, say. The loop has no un-ground, as an engine's multi-shot has none: a
-grounded part stays in every replay.
+accepted instance whose `@`-function now faults, say — the knowledge base stays intact, the backend still
+needs its rebuild, and the refusal surfaces from that step; so it does from every later step that touches the
+engine, each retrying the rebuild and refusing at the same instance, until a replay succeeds — the knowledge
+amended so that the instance grounds, say. The loop has no un-ground, as an engine's multi-shot has none: a
+grounded instance stays in every replay.
 
 ### 6.3 Per-operation typed options; budgets; cancellation; assumptions
 
@@ -1311,7 +1445,7 @@ statement's to say (specification §12.4). Reading forms that carry options are 
 the need.
 
 **The phases of a question, and what the time budget covers.** A single-shot backend answers a question in
-two phases, and the contract fixes what each may do:
+two phases, and the contract fixes what each may do; a multi-shot backend's differ as the last item states:
 
 - **`lower` validates and retains.** It makes its checks at the door, each bounded by the program's size,
   and keeps the program it will solve. It grounds nothing: grounding belongs to `solve`. Its retention is
@@ -1327,8 +1461,8 @@ two phases, and the contract fixes what each may do:
   `ClingoControl::main`, its last branch; a version-scoped claim). themelios's rule holds whatever the
   program carries, departing from the authority's other branches: a `#script` block is carried and never
   run, and an `#include` parsed and never resolved (program.md §4.8, §17). A named part, with formals or
-  without, is instantiated only through a multi-shot backend's `ground`, which today takes a part without
-  its arguments (§14). So a single-shot backend either leaves a part beyond the base ungrounded — the
+  without, is instantiated only through a multi-shot backend's `ground`, by its instance (§6.2). So a
+  single-shot backend either leaves a part beyond the base ungrounded — the
   language's reading — or refuses the program at `lower` with a Program fault naming the part
   (`Fault::program_part`, §5.4). The refusal is §12's fragment interim: a backend that admits only `base`
   refuses a named part as it refuses any construct outside its fragment, until the fragment declaration
@@ -1340,6 +1474,12 @@ two phases, and the contract fixes what each may do:
 - **What may be reused.** A backend may reuse any immutable preparation of a retained program across
   questions — an index, a dependency graph, a compiled form — since each question reads the same program.
   The contract promises no shared mutable search state, and no incremental grounding between questions.
+- **A multi-shot backend's phases.** `lower` adds to the engine's program and grounds nothing; `ground`, a
+  call of its own, grounds the instances it is asked for together with the `base` statements lowered since
+  base's last grounding; and a run-opening method grounds those `base` statements, where any are pending,
+  inside its run and ahead of its search, so the deadline covers that grounding as it covers a single-shot
+  solve's. A grounding that fails there fails the run and leaves the backend needing its rebuild, as any
+  failed grounding on a multi-shot backend does (§4.1).
 
 The time budget is a **wall-clock deadline fixed when `solve` is called**. It covers everything the run then
 does: grounding, search, and the delivery of each model. It is a deadline rather than a meter of the
@@ -1549,6 +1689,23 @@ during solving). The decision-level and clause-addition mechanics above are CDNL
 is fixed, its claimed engine portability (§8.3) is reviewed against a non-CDNL engine — zetesis's
 reduct-based execution (§12).
 
+**The registration target: a theory is nearly as simple to add as an `@`-function.** The aim is
+simplicity and ease of use beyond the engines' own propagator interfaces. Through clingo's or clingcon's
+interfaces a theory's author adds the theory's grammar as program text, maps theory atoms to solver
+literals, manages watches, and pushes values out through the model; here that plumbing lives beneath the
+safe surface, where this section already places it. An `@`-function is a plain Rust function registered on
+the agent (§7.1). A theory is likewise one Rust value registered with one call — its `#theory` definition
+(a program-tier value, built however the program tier builds one), its propagator, and the values it
+reports, carried together — so adding a theory is a type and a registration call. The ease-of-use target
+is the one program construction answers to, but the form is each surface's own: a macro face was the
+natural answer for spelling rules and facts (§3.1), and an extension surface — a theory here, an
+`@`-function in §7.1 — takes whatever form makes it simplest to write, a macro only where one does. A
+registered theory enters the backend's `TheorySupport` as `Theory::Registered` under the name its
+registrant gives it, as the linked clingcon backend declares `IntegerConstraints` (§4.1), and its
+per-model values read back through `TheoryAssignments` under that `Theory` (§5.4), so a theory written
+in Rust and clingcon's are one experience on the declaring and the reading side alike. The trait's exact
+shape stays governed by the litmus (§8.2); this is the bar its ergonomics answer to.
+
 ### 8.2 The litmus, and the full CP target
 
 The acceptance test is that **difference logic, CP, and linear/real arithmetic must each be *pleasant*
@@ -1619,16 +1776,21 @@ is a derivation over that. It shares the conversion pillar with `@`-functions (�
 
 ### 10.1 The load-bearing surface
 
-The bridge lowers the owned `Program` to the engine and streams answers back. It is where the program
-tier's design pays off or fails, and it is itself an algorithms-of-import-class surface: it must be
-**fast** (a perf claim) *and* **faithful** (a wrong lowering is a soundness bug at the seam that no
-themelios-side rigor catches), so it earns the mgu/finiteness treatment — a differential against the
-engine plus worst-case cost tripwires. Cost model: **the lowering — the conversion of a typed value into
-a backend's input — is linear in program size** (the scaling bench asserts it, §13.3), and it never
-materializes the ground instantiation on the owned side. Past the conversion, preparation and grounding
-are the backend's own work, and grounding's cost is the program's — exponential in the program in the
-worst case, and unending for a program that does not ground finitely, which a budget bounds (§6.3) — so
-the linear bound is the conversion's, never a claim about grounding's time or storage.
+The bridge lowers the owned `Program` to the engine and streams answers back. It is where the program tier's
+design pays off or fails, and it is itself an algorithms-of-import-class surface: it must be **fast** (a perf
+claim) *and* **faithful** (a wrong lowering is a soundness bug at the seam that no themelios-side rigor
+catches), so it earns the mgu/finiteness treatment — a differential against the engine plus worst-case cost
+tripwires. Cost model: **the lowering — the conversion of a typed value into a backend's input — is linear in
+the program the backend reads** (the scaling bench asserts it, §13.3), and it never materializes the ground
+instantiation on the owned side. On the clingo backend that is the program itself: the engine unpools inside
+grounding, off the owned side. On the clingcon backend it is the unpooled program: clingcon's rewrite unpools
+each statement and hands every alternative back to be added (§11.1), so the adapter's share is `Θ(unpooled)` —
+exponential in the pooled positions (`program.md` §9.1) and bounded at an untrusted boundary as `unpool` is
+(`threat-model.md` §3.3, §6). Each backend's tripwire names its own adversarial shape (§13.3). Past the
+conversion, preparation and grounding are the backend's own work, and grounding's cost is the program's —
+exponential in the program in the worst case, and unending for a program that does not ground finitely, which
+a budget bounds only where the backend's engine can cut its grounding (§6.3; the pinned Potassco engines
+cannot, §11.1) — so the linear bound is the conversion's, never a claim about grounding's time or storage.
 
 ### 10.2 The doors
 
@@ -1773,7 +1935,8 @@ naming the statement it was instantiated from, with that statement's part and it
 /// names its statement within it — the register a Program fault keeps its statement in (§5.4) — so a merged
 /// statement's every origin reaches its rules, two content-equal statements under different parts stay
 /// apart, and no rule clones its statement. The part is the statement's as declared, `step(t)`; the instance
-/// a grounding gave it, `step(3)`, belongs to the fuller observer surface the reserved seams carry (§14). Its
+/// a grounding gave it, `step(3)` (a `PartInstance`, §6.2), belongs to the fuller observer surface the
+/// reserved seams carry (§14). Its
 /// construction door lands with the observer that produces it (§11.1), as `Incumbent`'s lands with
 /// `optimize` (§5.2); ahead of it one value is constructible, `Default`'s empty ground program — what a
 /// backend declaring the observer exposes for the empty program. Cost: the statements and their parts' keys once, Θ(program), which a backend that
@@ -1848,9 +2011,10 @@ Where an engine keeps immutable catalogs and scoped identities, as a native engi
 as the Potassco engines do, creating its symbol *handle* from a `Symbol` **is** an interning write —
 serialized under its adapter's single interning discipline, not a free correspondence. The FFI cost
 concentrates at that process-global interning; the adapter owns a single interning discipline
-(specification §5.2) — interning writers under one lock, a reentrant-interning tripwire, and a lint over
-every direct interning FFI call — so `@`-functions and located AST construction intern correctly and a
-non-returning grounder call is a loud error, not a silent process-wide wedge. The discipline is the
+(specification §5.2) — interning writers under one lock, waited on for a bounded time, a reentrant-interning
+tripwire, and a lint over every direct interning FFI call — so `@`-functions and located AST construction
+intern correctly and a non-returning grounder call is a loud error on every other thread, the bounded wait's
+doing, not a silent process-wide wedge. The discipline is the
 adapter's, stated with it (§11.1), and a backend whose engine interns nothing process-globally owes none
 of it. **This compensation is version-scoped to the pinned engine and retired by the spike suite**
 (specification §5.2), a framing the adapter design carries.
@@ -1867,20 +2031,172 @@ erased.
 `themelios-potassco` wires **clingo** (5.8.2, the pinned authority) **and clingcon**, each a first-class
 native backend behind the contract. The crate is named for the engine *family*, not `themelios-clingo`,
 because it binds more than one Potassco C library and keeps room for another: should a further Potassco
-library with a stable ABI ever warrant binding, it is a feature of this crate under the same honest name,
-not a new crate each. **clingcon ⊇ clingo** — it is clingo extended with an integer constraint theory —
-so a theory-free program runs identically on either, while a program with `&sum`/`&dom`/global
-constraints reads its per-model constraint assignments back through `TheoryAssignments` (§5.4) from the
-clingcon backend. The interchange seam between the two engines (and to any further backend, the in-house
-engine of §12 included) is the `Backend` contract itself (§4): the adapter for each engine is one
-implementation of it, so no adapter reaches around another. What is particular to the Potassco engines is
-the adapter's to handle and to state: their own input format — an aspif ingestion, under §10.3's
-obligation to name every atom by its symbol or refuse — and their process-global interning, under the
-discipline of §10.5. The adapter is also the backend committed to the ground-program observer (§10.4),
-which it declares when its observer is built, and it reads Door A in source order (§10.2). How its
-observer attributes a ground rule to a statement — the mechanism over an engine whose own observer
-reports no statement, what it costs, and its grain, per statement or per occurrence — is designed with
-that observer, and per-occurrence attribution is promised only once that mechanism exists.
+library with a stable ABI ever warrant binding, it is a feature of this crate under the same honest name, not
+a new crate each. **clingcon ⊇ clingo** — it is clingo extended with an integer constraint theory — so a
+theory-free program runs identically on either, while a program with `&sum`/`&dom`/global constraints reads
+its per-model constraint assignments back through `TheoryAssignments` (§5.4) from the clingcon backend. The
+interchange seam between the two engines (and to any further backend, the in-house engine of §12 included) is
+the `Backend` contract itself (§4): the adapter for each engine is one implementation of it, so no adapter
+reaches around another. What is particular to the Potassco engines is the adapter's to handle and to state:
+their own input format — an aspif ingestion, under §10.3's obligation to name every atom by its symbol or
+refuse — and their process-global interning, under the discipline §10.5 requires and this section states. The
+adapter is also the backend committed to the ground-program observer (§10.4), which it declares when its
+observer is built, and it reads Door A in source order (§10.2). How its observer attributes a ground rule to a
+statement — the mechanism over an engine whose own observer reports no statement, what it costs, and its
+grain, per statement or per occurrence — is designed with that observer, and per-occurrence attribution is
+promised only once that mechanism exists.
+
+**What it declares, and how it grounds.** The clingo backend enumerates, solves under assumptions, honours
+externals, grounds multi-shot, and answers the native consequence doors (§4.1). It declares `optimization`,
+`cancellation`, the time budget, `functions`, `propagators`, and the observer absent until each is realised,
+so a request for one refuses as unsupported or as an unrealisable budget (§4.1, §6.3), and it evaluates no
+theory — the clingcon backend evaluates `IntegerConstraints` (below). `lower` adds to its control's program
+and grounds nothing; `reset` makes a fresh control under the pinned configuration and registers on it again
+what was registered (§4.1); and the adapter grounds as §4.1's law requires, the `base` statements lowered
+since base's last grounding first — in one step with the instances a `ground` asks for, or on their own
+ahead of a run's search. The pinned engine searches only what was grounded, and grounds a part over the
+atoms grounded before it: without that order a solve straight after `lower` would answer as the empty
+program, and a part grounded ahead of the base it reads would miss the base's atoms. An instance that
+matches no lowered part refuses (`Presupposition::NotAPart`) where the engine would ground it as nothing
+and say nothing — a silent no-op of the class the threat model tracks (`threat-model.md` §7). The adapter
+reads Door A in source order, lowering each occurrence with its part and naming the occurrence in any fault
+about it, and Door B in the program's canonical order; either way the engine receives the statements as the
+door carries them (§10.2).
+
+**What the lowering refuses.** The lowering builds clingo's AST through the program builder and never
+renders text for the engine to parse (§10.2). Five constructs never reach the engine. Each is refused at
+`lower` with a Program fault naming its statement (§5.4), located where the statement carries a parsed
+origin, and the refusal leaves the program lowered before it as it was (§4.1):
+
+- a term nested past the **engine-safe depth**. The lowering itself is iterative, but the engine's own
+  handling of a term recurses in its depth — the AST builder's add, grounding's term handling, and the
+  symbol comparison among it — and a `Program` built in Rust can nest deeper than any parse admits
+  (`program.md` §13). The adapter therefore measures those paths at the pin and names two points, as the
+  syntax tier names `NestingLimit` (`syntax.md` §6.6): a `DEFAULT` whose engine calls are safe on a
+  two-mebibyte stack, so no embedder owes a thread, and a `CEILING` with its own required stack, for an
+  embedder who needs deeper terms and runs its engine calls on a thread of that size. Both are recorded
+  beside their measurement and re-measured when the pin moves; the engine's text parser, whose measured
+  ceiling motivates the bound (grammar §11 D2), is not on the adapter's path. The bound covers every
+  lowered rule and observed fact. An assumption's atom, and an external's, need none: the engine builds a
+  symbol from its arguments' stored hashes and finds an atom by hash and identity, recursing on no depth
+  (`libgringo/src/symbol.cc`, `MFun`; `libgringo/gringo/domain.hh`);
+- an **`#include`**: the engine resolves inclusion only by reading a file while parsing text, and its AST has
+  no include node, so honouring one would give the engine reach to the filesystem — an embedder resolves
+  inclusion under its own file policy and hands over the included program;
+- a **`#script`**, which would run a script runtime: the engine is built without one, and the refusal stands
+  regardless — the program tier carries a script and runs nothing (`program.md` §4.8), and neither does this
+  backend;
+- a theory atom of a theory the backend does not evaluate (§4.1) — on the clingo backend, every theory
+  atom;
+- an **`@`-call** on a backend that does not evaluate `@`-functions — and, once they are realised, one whose
+  name no registered function answers: the engine treats an unanswered call as an undefined operation and
+  drops every instance of its rule, so the answer sets would not be the program's.
+
+Two kinds of directive stay out of the engine by design, not by refusal: the restricting `#show`
+directives, whose rule the core applies to each model (§5.1), and `#project`, since projective enumeration
+is reserved (§5.2) — so the engine's search, and its consequence search, range over every atom (§4.1). A
+term directive does reach the engine, which evaluates the terms each model displays; the adapter reads them
+through the engine's term selection and supplies them with `Model::with_terms` (§5.1).
+
+**What grounding reveals, the adapter refuses too.** The engine repairs an undefined arithmetic operation or
+aggregate weight by treating its instance as false, and says so only in a log message. The adapter refuses
+that repair, as the program tier's own evaluator does (`program.md` §3.5): an undefined-operation message
+faults the grounding with a Program fault naming the statement the message maps back to (§5.4) — the
+adapter keeps a map from the locations it gives the AST to the statements it lowered, the retention §5.4
+costs at Θ(program size). The engine's other message classes each have a stated disposition
+(`threat-model.md` §5.2). The adapter's privileged interface admits no call that loads, writes, or parses
+program text, or registers a script runtime (`threat-model.md` §5.2).
+
+**The interning discipline.** The pinned libclingo interns every symbol process-globally and crashes under
+concurrent interning (specification §5.2), so the adapter owns the compensation §10.5 requires: every
+interning writer runs under one process-global lock, and a lint holds every direct interning FFI call to it.
+A call that calls back into Rust while it holds the lock — grounding calling an `@`-function, clingcon's
+rewrite handing back a statement (below) — hands its callbacks the holder's token, and nested interning goes
+through the token, never re-acquiring the lock; an acquisition by a thread that already holds it is the
+reentrancy the tripwire refuses as a typed fault, never left to deadlock. A writer on another thread waits a
+bounded time — a named constant with a stated default an embedder may change — and then fails with a Resource
+fault naming the operation that holds the lock, its typed cause attached (§5.1). That bounded wait, not the
+tripwire, is what makes a non-returning grounding call a loud error on every other thread rather than a
+silent process-wide wedge: the pinned engine cannot interrupt grounding (`threat-model.md` §5.9). The lock
+guards no data, only the order of calls into the engine, and every callback contains its panic before
+returning to the engine, so a poisoned lock is recovered. Creating the engine's symbol from a `Symbol` is an
+interning write, and a string holding an interior NUL is refused in a statement, since the engine's string
+input stops at the first NUL and would silently truncate; no statement the engine holds can therefore
+mention such a string, so an assumption on an atom holding one fixes an atom the program does not have, and
+an external assignment to one refuses as any non-external's does (`Presupposition::NotExternal`). **This
+compensation is version-scoped to the pinned engine and retired by the spike suite** (specification §5.2).
+
+**Reading a symbol out, bounded.** The engine hash-conses its symbols — a symbol is a node in a shared
+graph — while `Symbol` is an owned tree (`program.md` §3.1), so a symbol a few dozen engine nodes large can
+unfold to exponentially many owned ones: `s(i+1) = f(s(i), s(i))`, thirty levels deep, is about 2³⁰ owned
+nodes from a five-line program, and a memo keyed on the engine's handle saves the walk but not the output.
+The adapter therefore sizes an unfolding before it builds it: one memoised pass over the shared graph
+computes the owned size, saturating at the limit in force, in time linear in the shared graph's nodes and
+edges; past the limit the read refuses with a Resource fault at that stream item, its typed cause attached
+(§5.1, §5.2), and within it the copy is iterative and linear in its output. The limit is named —
+`UnfoldLimit`, counted in owned nodes per read — with its default fixed by measurement when the adapter is
+built and recorded beside that measurement, as `NestingLimit::DEFAULT` records its own (`syntax.md` §6.6);
+an embedder may choose a tighter one. It governs every door where an engine symbol becomes an owned value: a
+model's atoms and displayed terms, a native consequence set, an `@`-function's arguments, and the variable
+names a theory reports. A model's symbols arrive unsorted; the canonical order is the program tier's own
+`Ord`, which is the engine's order (`program.md` §3.1), computed on the owned side — never by the engine's
+comparator, which recurses on argument depth.
+
+**The clingcon backend is the clingo adapter with clingcon's theory registered**, and it evaluates
+`IntegerConstraints` (§4.1). libclingcon exposes no control, grounder, solver, or model of its own, only a
+plug-in on a clingo control. The adapter creates the theory and configures it before registering it — a
+registered theory can be neither reconfigured nor unregistered — and registration adds clingcon's `#theory cp`
+definition to the `base` part and registers its propagator. Every lowered statement passes through clingcon's
+rewrite on its way to the program builder: the registered definition declares `&sum`, `&nsum`, and `&diff`
+only in their rewritten head and body forms, and its other six atoms under their program names (§4.1), while
+the rewrite also gives the element tuples of the sums and of `&distinct`, `&disjoint`, `&minimize`, and
+`&maximize` the fields multiset semantics needs — so the rewrite is part of the lowering, not an option; it
+also unpools the statement and, by default, shifts a constraint atom out of an integrity constraint's body
+into its head. Before the rewrite, `lower` resolves each theory atom (§4.1), so an atom a program's own
+`#theory` definition declares never reaches it. The adapter pins the request's model count before calling
+clingcon's `prepare` between grounding and solving, so the one thing `prepare` does — setting an unpinned
+count to all models when a theory objective is present — never applies.
+
+While each model is current — after the engine hands it out, before the search resumes — the adapter reads the
+theory's values through clingcon's assignment calls, for the thread that found the model, and builds the
+model's `TheoryAssignments` (§5.4) under `Theory::IntegerConstraints`. It reports every variable the program
+names — a constant, function, or tuple used as a variable — not only those a `&show` directive lists: `&show`
+shapes clingcon's printed output and projects neither the enumeration nor a model's identity, and clingcon's
+programmatic reading reports every named variable as well. Auxiliary variables clingcon introduces for its
+translation have no name and are never reported. clingcon's integers are 32-bit, ±(2³⁰−1) by default; the
+adapter pins that range, because it is the domain of every variable no `&dom` bounds and so part of the
+program's meaning. clingcon evaluates theory terms when its propagator initialises — at the first solve after
+a `lower` that succeeded — so a constant or coefficient outside the range faults that solve, with the engine
+locus and no location; refusing it at `lower` instead would mean duplicating the theory's own term evaluation
+in the adapter.
+
+The adapter never calls clingcon's model hook. That hook writes `__csp(variable, value)` atoms into the
+engine's display output and tightens a theory objective's bound; left uncalled, no value is laundered into
+atoms, and a theory objective never narrows the search, so `solve` enumerates the stable models with the
+objective ignored, as the model-set law requires (§5.2) — the same answer `#minimize` gets. The adapter reads
+a model's answer set through the engine's all-atoms selection and its displayed terms through the term
+selection, neither of which carries an extended symbol — those reach a model only under the theory selection
+(`libclingo/clingo/clingocontrol.hh`) — so a program's own `__csp` atoms stay its own. The clingcon backend
+declares `optimization: false` until optimization is realised; a theory objective's optimum — the improving
+chain the hook drives, proven by exhausting it — is part of that seam (§14).
+
+The theory's configuration is fixed when the theory is created, for the backend's lifetime — a rebuild
+recreates it identically — while the control's solve configuration (enumeration mode, model count,
+optimization mode) is set per request shape (§11.3). Four of the theory's keys bear on the program's meaning,
+and each is pinned with its reason: `min-int` and `max-int` at clingcon's defaults (the default domain,
+above); `shift-constraints` on, clingcon's default — it moves a `&sum` or `&diff` atom out of an integrity
+constraint's body into its head with the relation negated, where the head form is strict and the body form is
+not, so it decides what `:- &sum{x} > 5.` means, and the backend means what the clingcon binary means; and
+`translate-opt` at 0, so a theory objective stays inside the theory and the rule above holds. Two more are
+pinned for assurance: `check-solution` on, so clingcon verifies each solution at a total assignment, and
+`check-state` off. The rest change the search and not the model set, and stay at clingcon's defaults, recorded
+with the pin — `split-all`, `sort-constraints`, `translate-clauses`, `translate-pb`, `translate-distinct`,
+`literals-only`, `add-order-clauses`, `sign-value`, `refine-reasons`, `refine-introduce`, and
+`propagate-chain` — but for `order-heuristic`, pinned to none for the reason §11.3 gives. `split-all` is among
+them because at a total assignment clingcon splits an unassigned variable's domain, the first or, with the key
+on, all of them, and accepts a model only once every variable is assigned, so the key shapes the branching and
+not which models exist. A program that defines clingcon's `cp` theory itself is refused: the backend registers
+that definition.
 
 Our own **in-house CP theory** on the propagator platform (§8.3) is **not** clingcon's replacement but
 its **portable, Rust-native alternative** — written once, it runs behind *any* conforming backend, where
@@ -1894,24 +2210,50 @@ ahead of the satellite.
 Correctness is proved the way the syntax/program/analysis tiers prove themselves — against **external
 oracles** invoked out of band: the clingo and clingcon packages pinned in the out-of-band environment (via
 pixi, never linked into the shipped stack), each driven through its Python module — the route that reads a
-model whole, its answer set and its display apart (§13.2), where printed output shows the display alone.
-**clingo** is the grounding/solving authority over the corpus (§13.2); **clingcon** plays the identical
-role for the constraint theory — the differential authority that keeps *both* the linked clingcon backend
-and our own Rust CP theory (§8.3) honest on answer sets and constraint assignments. These out-of-band
-*packages* are distinct from the *linked* libclingo/libclingcon of §11.1: the linked library is the
-shipped backend, the package is the pinned-for-tests oracle it (and the satellite) is differenced
-against, so a divergence is caught rather than trusted.
+model whole — its answer set and its display apart (§13.2), and its constraint values with the has-a-name
+guard (§11.3) — where printed output shows the display alone. **clingo** is the grounding/solving authority
+over the corpus (§13.2); **clingcon** plays the identical role for the constraint theory — the differential
+authority that keeps *both* the linked clingcon backend and our own Rust CP theory (§8.3) honest on answer
+sets and constraint assignments. These out-of-band *packages* are distinct from the *linked*
+libclingo/libclingcon of §11.1: the linked library is the shipped backend, the package is the pinned-for-tests
+oracle it (and the satellite) is differenced against, so a divergence is caught rather than trusted.
 
 ### 11.3 The trusted computing base
 
-The adapter is the TCB under the microkernel criteria (specification §12.3): FFI calls enumerated
-against a per-area manifest, each privileged operation carrying stated pre- and postconditions, the
-interning discipline (§10.5) implemented once behind the capability story, engine defaults explicitly
-configured per request shape so the adapter cannot transmit an ambush upward — projection off among them
-(§5.2) — and panic containment on
-every callback the engine makes into Rust. With the adapter feature disabled the entire stack is
-FFI-free. The threat model of record (specification §12.4) lands before adapter-tier implementation
-and is the security audit's object, not this design's.
+The adapter is the TCB under the microkernel criteria (specification §12.3): FFI calls enumerated against a
+per-area manifest, each privileged operation carrying stated pre- and postconditions, the interning discipline
+(§10.5, §11.1) implemented once behind the capability story, engine defaults explicitly configured per request
+shape so the adapter cannot transmit an ambush upward — projection off among them (§5.2) — and panic
+containment on every callback the engine makes into Rust. With the adapter feature disabled the entire stack
+is FFI-free. The threat model of record (specification §12.4) is `threat-model.md`, beside the specification;
+it lands before adapter-tier implementation and is the security audit's object, not this design's.
+
+Both libraries are built from their **unmodified upstream sources** at the pinned releases — clingo 5.8.2
+and clingcon 5.2.1, each a submodule of the `-sys` crate fixed at its release commit — static, by that
+crate's build script, with the embedded interpreters and the applications turned off. No local patch
+enters the trusted computing base, so a divergence the differentials find is the engine's behaviour, never
+a modification of ours.
+
+For clingcon: the theory outlives the control it is registered on — the control holds the propagator's
+state and clingcon offers no unregister — so the adapter frees the control before destroying the theory on
+every path, and a rebuild makes a fresh control and a fresh theory. Registration parses clingcon's fixed
+definition into the control, an interning write under the interning discipline (§11.1). The rewrite's
+callback is a call from the engine into Rust and crosses the panic-containing trampoline; clingcon's
+rewrite and the builder's add both intern, so the rewrite and its callback are one critical section, and
+the callback adds under the lock its caller holds, never re-acquiring it. An assignment read names a
+variable only after clingcon confirms the index has one — its symbol lookup is undefined on an unnamed
+index. The first registration in a process fixes whether clingcon installs its decision hook for every later
+one; the adapter pins the order heuristic to none on every registration, so the latch is always set the
+same way.
+
+The trust check holds the build as it holds the closures (§16). Once the `-sys` crate's build script compiles
+the engines, a workspace-wide assertion holds that it is the one build script that compiles native code or
+links a native library, and the engine-free closures keep running only the build scripts they admit by name.
+The `-sys` crate's `links = "clingo"` claims libclingo by name, so no second package in a build links another
+copy; libclingcon is built in the same build script against that one library and links beside it, under no
+claim of its own, since a package claims one name. Both libraries sit behind the one `clingo` feature, which
+`themelios-potassco`'s `potassco` feature enables and the facade enables by default (§2.1): a build that
+disables `potassco` links neither, and no build links one without the other's crate.
 
 ---
 
@@ -2021,23 +2363,33 @@ obligation a backend's declared capabilities cannot drive is skipped, and the re
     `Exhausted` (§5.3, §6.3); the native consequence door's answer is its known one over the corpus through
     both doors, and `NoModel` over a program with no answer set and under a scenario that admits none
     (§5.2); and the observer's declaration is honest by §10.4's law.
-12. **Only the base grounds.** A single-shot solve grounds the `base` part alone (§6.3). Over `q. #program
-    step(t). p(t).`, driven through both doors, which must agree (§10.2), a backend either answers as the
-    base alone denotes — its every model `{q}`, and where it enumerates, `{q}` the one answer set, its
-    search closing the space — or refuses at `lower` with a Program fault naming the part `step(t)` by its
-    key, unlocated (§5.4), and the program lowered before it stays: the fact `a.`, lowered first, still
-    answers `{a}` (§4.1's transactional `lower`, witnessed here with a part). It never yields a model holding
-    `p`, never answers other than its base alone denotes, and never refuses naming a statement. No other
-    check lowers the program, so every answer over it is this obligation's. The obligation binds a
-    single-shot backend. A multi-shot backend instantiates its parts
-    through `ground`, and whether its search covers a part lowered but not yet grounded the contract does
-    not yet say (§4.1), so the report says the check was not driven.
+12. **Only the base grounds unasked.** A solve grounds the `base` part alone, and a named part is grounded
+    only by `ground` (§4.1, §6.3). Over `q. #program step(t). p(t).`, driven through both doors, which must
+    agree (§10.2), a single-shot backend either answers as the base alone denotes — its every model `{q}`,
+    and where it enumerates, `{q}` the one answer set, its search closing the space — or refuses at `lower`
+    with a Program fault naming the part `step(t)` by its key, unlocated (§5.4), and the program lowered
+    before it stays: the fact `a.`, lowered first, still answers `{a}` (§4.1's transactional `lower`,
+    witnessed here with a part). It never yields a model holding `p`, never answers other than its base
+    alone denotes, and never refuses naming a statement. A multi-shot backend, lowering the program from a
+    `reset`, answers as the base alone denotes until `ground` instantiates the part: then `step(1)` yields
+    the one answer set `{p(1), q}`, and an instance that matches no lowered part — `stpe(1)`, or `step(1,
+    2)` — refuses with `Presupposition::NotAPart` (§5.4). No other check lowers the program, so every
+    answer over it is this obligation's.
+13. **Theories.** Every backend refuses a program holding a theory atom of a theory it does not evaluate —
+    on a backend that evaluates none, any theory atom — at `lower`, with a Program fault naming the
+    statement, through both doors (§4.1, §5.4). Where a backend declares `IntegerConstraints`, it evaluates
+    `&dom{1..3} = x.` to the three models the program has, each with no atoms and `x` bound to 1, 2, and 3
+    under `IntegerConstraints` (§5.4).
+14. **The empty program.** A ready backend with nothing lowered — fresh, or after `reset` on a multi-shot
+    one — answers as the empty program does (§4.1): `solve` yields one model, the empty answer set, and an
+    enumerating backend's search closes the space; the consequence doors answer the empty set, the native
+    door where it is declared. Nothing lowered is the empty program, never a refusal.
 
 Door A's admission is the core's, before any backend is asked (§10.2), so its refusals are the core's own
 check, not an adapter's. The suite's skeleton is exercisable **engine-free over a stub backend** before any
 adapter — that run is the core's own check (it streams models through the real contract), not an adapter's
 authority. The **clingo and clingcon adapters** run it (clingcon adds the constraint-theory cases),
-differenced against the out-of-band binaries (§13.2). The **second, architecture-independent implementor**
+differenced against the out-of-band packages (§13.2). The **second, architecture-independent implementor**
 that proves the contract is not clingo-shaped is **zetesis** (§12), for the surface it exercises (§15
 criterion 1) — a real engine on a radically different architecture, stronger corroboration than a naive
 built-in oracle would give.
@@ -2046,26 +2398,37 @@ built-in oracle would give.
 
 The clingo package as the grounding/solving authority over the corpus, driven through its Python module
 (§11.2), which reads a model's answer set under its all-atoms selection and its display under its shown
-selection, so each is compared against its own (§5.1); a run's models are compared as a multiset, since
-two models may display alike (`{a}. #show.` displays nothing, twice) and two with theory assignments may
-share an answer set (§5.1, §5.2); the Potassco adapter's ground-program observer, where declared, is
-differenced against the package's own observer by the relation stated with it (§10.4). The **clingcon
-package** is the external oracle for the constraint
-theory — differencing *both* the linked clingcon backend and the in-house CP satellite (§11.2), a theory
-atom's by-occurrence elements among its cases (`&sum{x; x} = 4`, program.md §4.9). Beside them stand the
-native-versus-derived consequence differential the tier gets for free (query.md §2.4) and the bridge
-differential with its worst-case cost tripwires (§10.1). A backend that
-shares the program tier's `Symbol` (zetesis, §12) adds a further cross-implementation differential, run
-against the Potassco adapters once they land. The **spike suite** (specification §5.2, §10.1) holds the
-design's version-scoped claims about the pinned engines' behaviour — the interning compensation (§10.5), the
-cancellation arming's window (§4.1), what a failed grounding leaves in the engine (§4.1, a backend's own
-state), the display rule (§5.1), the consequence search's premise — that it tracks the displayed atoms, or a
-`#project` directive's, unless neither is lowered (§4.1) — and the fidelity of the all-atoms selection, which
-omits an atom with no solver literal (`libgringo/src/output/statements.cc`, `Translator::atoms`): the spike
-establishes that it drops no true atom in a single-shot solve and characterizes it across a multi-shot cleanup
-— and, for an aspif ingestion, the stream's naming and the backend's atom–symbol correspondence (§10.3); an
-engine upgrade re-runs it, re-establishing each claim or retiring the compensation it warrants. Every
-instrument documents what it proves *and what it cannot* (specification §10.2).
+selection, so each is compared against its own (§5.1); a run's models are compared as a multiset, since two
+models may display alike (`{a}. #show.` displays nothing, twice) and two with theory assignments may share an
+answer set (§5.1, §5.2); the Potassco adapter's ground-program observer, where declared, is differenced
+against the package's own observer by the relation stated with it (§10.4). The **clingcon package** is the
+external oracle for the constraint theory — differencing *both* the linked clingcon backend and the in-house
+CP satellite (§11.2), a theory atom's by-occurrence elements among its cases (`&sum{x; x} = 4`, program.md
+§4.9). It runs out of band as clingo's does — clingcon's Python module, pinned beside clingo and built against
+the same clingo line — reading per model the answer set, the display, and every named variable's value, the
+last with the has-a-name guard (§11.3), differenced as a multiset of models against the clingcon backend's.
+Beside them stand the native-versus-derived consequence differential the tier gets for free (query.md §2.4)
+and the bridge differential with its worst-case cost tripwires (§10.1). A backend that shares the program
+tier's `Symbol` (zetesis, §12) adds a further cross-implementation differential, run against the Potassco
+adapters once they land. The **spike suite** (specification §5.2, §10.1) holds the design's version-scoped
+claims about the pinned engines' behaviour. Their one register is the threat model's (`threat-model.md` §7),
+which names each claim's holder — *held* by a spike case that fails if the claim does, or *read* in the cited
+source where no case can exercise it — and the suite holds every claim that register marks *held*: among them
+the interning compensation (§10.5), the cancellation arming's window (§4.1), what a failed grounding leaves in
+the engine (§4.1, a backend's own state), the display rule (§5.1), the consequence search's premise — that it
+tracks the displayed atoms, or a `#project` directive's, unless neither is lowered (§4.1) — and the fidelity
+of the all-atoms selection, which omits an atom with no solver literal (`libgringo/src/output/statements.cc`,
+`Translator::atoms`): the spike establishes that it drops no true atom in a single-shot solve and
+characterizes it across a multi-shot cleanup; what a multi-shot search covers — nothing that was lowered and
+not grounded, a part grounded ahead of the base it reads missing the base's atoms, and an instance of no
+declared part grounding nothing (§4.1, §11.1); for an aspif ingestion, the stream's naming and the backend's
+atom–symbol correspondence (§10.3); and for clingcon, that a theory-free program yields the clingo backend's
+models as a multiset, each with an empty assignment, that an assignment read while the model is current equals
+the value the engine's own display reports, that a theory objective, with the model hook uncalled, leaves the
+program's model set as it is without the objective, and that across multi-shot steps the read skips unnamed
+indices (§11.1, §11.3). An engine upgrade re-runs the suite and re-reads the register's *read* claims,
+re-establishing each claim or retiring the compensation it warrants. Every instrument documents what it proves
+*and what it cannot* (specification §10.2).
 
 ### 13.3 The mission bar
 
@@ -2074,10 +2437,12 @@ semantics; every walk over user-reachable structure is work-list based (the dept
 specification §5.2); the trust floor is minimal and legible (unsafe confined to the potassco TCB, zero
 above it, FFI-free with the adapter disabled); leak- and race-checking harnesses at the TCB; the
 scaling-shape benches, each beside an in-suite scaling tripwire, assert complexity class for the
-load-bearing operations (the bridge's conversion linear in program size, §10.1; the query tier's matching
-scan; the agent's knowledge-ledger rebuild), and streaming enumeration's constant resident set on the
-owned side is asserted by the laziness law — a bounded pull count that goes red if the core's handle
-pulls a model ahead of its consumer (§5.2); what an engine holds behind its run is the engine's.
+load-bearing operations (the bridge's conversion linear in the program each backend reads, with a tripwire
+per backend on its own adversarial shape, §10.1; the Potassco adapter's read of a symbol out, sized in time
+linear in the engine's shared graph, §11.1; the query tier's matching scan; the agent's knowledge-ledger
+rebuild, `observe`, and `forget`), and streaming enumeration's constant resident set on the owned side is
+asserted by the laziness law — a bounded pull count that goes red if the core's handle pulls a model ahead
+of its consumer (§5.2); what an engine holds behind its run is the engine's.
 
 ### 13.4 Examples as a deliverable, and the witness roster
 
@@ -2103,7 +2468,7 @@ Two roster points this tier discharges specifically:
   (§5.4) — *and* by a worked **CP propagator** on the in-house platform — `alldifferent` + `&sum`, real
   global-constraint CP — whose assignments read back through the same typed component, with the
   agent-driving and outcome-reading code identical to first-solve but for the propagator registration.
-  The two agreeing on that typed component *is* the uniformity, and the clingcon binary keeps both honest
+  The two agreeing on that typed component *is* the uniformity, and the clingcon package keeps both honest
   (§11.2). The full best-of-breed CP theory is the satellite (§8.3, §14), of which the propagator witness
   is the in-themelios floor.
 
@@ -2151,10 +2516,6 @@ The **reserved seams** are only the genuinely-separate:
 - **a located part refusal** — a part carrying its `#program` delimiter's origin, so a part refused over
   parsed text lowers to a diagnostic at the delimiter (program.md §4.1, §8). Until a consumer needs it, a
   part refusal is unlocated and renders through its `Display` (§6.3);
-- **`ground` over part instances** — `ground` taking a part with its ground arguments, `step(3)` for the
-  declared `step(t)` (the distinction §10.4 draws), so a part with formals has a route to its instances.
-  Today `ground` takes declared parts, and the agent's replay retains them (§6.2); the slice that builds
-  multi-shot grounding brings it;
 - **an agent door from an `Admitted`** — an agent whose first lowering is through Door A, its rebuilds
   through Door B, for a consumer that needs the occurrences across the reasoning loop (§10.2); until one
   does, a client composing over `Backend` walks through Door A, and the agent's loop runs over the set;
@@ -2187,6 +2548,9 @@ The **reserved seams** are only the genuinely-separate:
   drop-in** (it touches neither the trait nor `Measurement`), not a breaking change; the future
   **multi-backend benchmarking driver** (themelios-solve as a neutral harness
   over a corpus) builds on the trait;
+- a **theory objective's optimum** under `optimize` — clingcon's improving chain, proven by exhausting
+  it — which lands with optimization; and **readings over theory values** (a value every model shares),
+  since no epistemic reading consults the assignment (query.md §2.3);
 - and the standing specification seams that touch this tier: the ground-program observer's fuller
   surface beyond what the committed §10.4 capability delivers, formal-methods tooling over the TCB,
   and additional engine backends beyond the Potassco family.
@@ -2267,13 +2631,14 @@ its founded clauses to:
   seam's **second independent implementor** (§9.5, §9.8) and the **native-backend seed** (§1.1, §13) are
   **zetesis** (§12), which — on a radically different architecture — is the independent implementor a private
   in-house solver could never be as convincingly; the **small-case oracle** (§2 item 4, §9.1, §9.8) and its
-  differential against clingo (§10.1) are the clingo/clingcon binaries (§11.2) plus the engine-free stub the
-  conformance suite runs against; the **build-order item** (§11 item 6) and the **crate-roster entry** (§12.2)
-  are struck. The one clause this *weakened* rather than re-homed is §9.5's "the seam's second engine is the
-  reference solver": the second *independent* engine is zetesis, named a **post-v1 obligation** (§15 criterion
-  1) gated on the tier landing (§14), and its proof stands from zetesis 0.3.0, ahead of v1, for the surface
-  zetesis exercises — the weakening undone there, the capability-gated surfaces still awaiting an independent
-  implementor (§15 criterion 1). This is a considered supersession on the record, not a silent descope.
+  differential against clingo (§10.1) are the clingo and clingcon packages (§11.2) plus the engine-free stub
+  the conformance suite runs against; the **build-order item** (§11 item 6) and the **crate-roster entry**
+  (§12.2) are struck. The one clause this *weakened* rather than re-homed is §9.5's "the seam's second engine
+  is the reference solver": the second *independent* engine is zetesis, named a **post-v1 obligation** (§15
+  criterion 1) gated on the tier landing (§14), and its proof stands from zetesis 0.3.0, ahead of v1, for the
+  surface zetesis exercises — the weakening undone there, the capability-gated surfaces still awaiting an
+  independent implementor (§15 criterion 1). This is a considered supersession on the record, not a silent
+  descope.
 - **The clingcon adapter (§9.5, §4, §2 item 5, §12.2) — RESTORED.** An earlier revision permanently
   superseded the specification's clingcon adapter with the in-house CP theory; **that supersession is
   reversed.** clingcon is **restored as a first-class native backend** in `themelios-potassco` (§11.1),
@@ -2656,3 +3021,45 @@ necessity where it is declared.
     solver's removal reaches is corrected (§9.8, §10.1, and §13, not §12.5), and §16 is named the authority
     the specification's status note keys its founded clauses to. §2.1 cites the macros design's schedule for
     the solve-adjacent macros and attributes.
+21. **The theories a backend evaluates, the Potassco adapter, and what a ready backend searches**
+    (2026-09-30/10-10). The vocabulary rule is stated at three levels — program text keeps the language of
+    record, the programmatic surface names by meaning, engine-internal names stay below the seam (§1.4). A
+    theory is a typed `Theory`, `IntegerConstraints` among them, and the theories a backend evaluates are an
+    open set, each with a program-facing vocabulary, one backend's vocabularies disjoint; `lower` resolves a
+    theory atom against the program's own definitions before the evaluated vocabularies and refuses one whose
+    theory the backend does not evaluate, with a Program fault naming its statement (§4.1).
+    `TheoryAssignments` is given its shape — per `Theory`, each named variable's value — with its construction
+    door and refusal, `TheoryValue` with its integer arm and that arm's warrant, and the model's assignment
+    door: two models with equal answer sets and different assignments are different models (§5.1, §5.4). The
+    propagator surface's registration target is stated: a theory is one Rust value registered with one call,
+    nearly as simple as an `@`-function (§8.1). What a ready backend searches is settled (§4.1): with nothing
+    lowered, the empty program; on a multi-shot backend, the `base` statements lowered since base's last
+    grounding are grounded first — in one step with the instances a `ground` asks for, or on their own ahead
+    of a run's search — and a named part only once `ground` has instantiated it, so a search straight after
+    `lower` covers the base as a single-shot solve does (revision 16's open question, §6.3's multi-shot
+    phases). `ground` takes part instances — a `PartInstance`, a part's name with one ground argument per
+    formal, matching parts by name and arity, `step(t)` and `step(u)` alike — refusing one that matches no
+    lowered part (`Presupposition::NotAPart`), and the agent's replay keeps them; the reserved seam is
+    realised (§4.1, §5.4, §6.2, §14). The lowering's cost is stated over the program each backend reads, and a
+    budget bounds a grounding only where the engine can cut it (§10.1); §10.5 names the bounded wait that
+    makes a non-returning grounding loud. The Potassco adapter's design is stated with it (§11.1): what it
+    declares and how it grounds; Door A read in source order, Door B in canonical order; the five constructs
+    the lowering refuses — a term past the engine-safe depth, a `DEFAULT`/`CEILING` pair measured on the
+    engine's own paths, with an assumption's or an external's atom, which no recursive engine path meets,
+    needing none; `#include`; `#script`; an unevaluated theory atom; an `@`-call no function answers — the
+    restricting `#show` and `#project` kept from the engine, and the engine's undefined-operation repair
+    refused; the interning discipline — the holder's token, the reentrancy tripwire, the bounded wait, poison
+    recovery, an interior NUL refused in a statement; reading a symbol out bounded by `UnfoldLimit`, sized in
+    time linear in the shared graph, the canonical order computed on the owned side; and the clingcon backend
+    as the clingo adapter with clingcon's theory registered — the resolution before the rewrite, the rewrite
+    as part of the lowering, `prepare` after the model count is pinned, the per-model read of every named
+    variable, the model hook left uncalled and why, the out-of-range constant's door, the theory's
+    configuration fixed at creation with its four meaning-bearing keys pinned, two pinned for assurance, and
+    the rest search-only. The trusted computing base names the threat model of record, builds both engines
+    from their unmodified upstream sources at the pinned releases, carries clingcon's obligations, and states
+    the trust check's build assertions and the libraries' link (§11.3). The oracles are the clingo and
+    clingcon packages (§11.2, §13.1, §13.4, §16). The conformance suite holds obligation 12 over a multi-shot
+    backend too, and gains obligations 13, the theories, and 14, the empty program (§13.1); the spike suite
+    defers to the threat model's one register of version-scoped claims and holds the multi-shot coverage and
+    clingcon's claims (§13.2); each backend's lowering tripwire names its own shape, and the symbol read has
+    its own (§13.3); a theory objective's optimum and readings over theory values are reserved (§14).
